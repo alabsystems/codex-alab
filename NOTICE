@@ -1,0 +1,21 @@
+codex-alab
+Copyright 2026 Andrew Yates
+
+codex-alab is licensed under the ALab Academic Use License 1.0; the terms are in LICENSE.
+
+codex-alab's binaries include third-party components. Each remains under its own
+license, and nothing in the ALab Academic Use License limits the rights that license
+gives you.
+
+codex-alab is built on OpenAI Codex (https://github.com/openai/codex). OpenAI's
+code in it remains under the Apache License, Version 2.0 (licenses/Apache-2.0.txt);
+ALab's changes, and codex-alab as a whole, are licensed under the ALab Academic
+Use License. OpenAI Codex's notice follows.
+
+OpenAI Codex
+Copyright 2025 OpenAI
+
+This project includes code derived from Ratatui (https://github.com/ratatui/ratatui),
+licensed under the MIT license (licenses/MIT.txt).
+Copyright (c) 2016-2022 Florian Dehau
+Copyright (c) 2023-2025 The Ratatui Developers
