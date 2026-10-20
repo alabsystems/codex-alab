@@ -1,0 +1,38 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+#
+# codex-alab-aterm: the codex-alab TUI's client for aterm's control socket. It speaks the
+# wire `aterm ctl` speaks, from this process, on one close-on-exec connection it owns
+# (plus one push connection for `subscribe`). It depends on no codex crate.
+[package]
+name = "codex-alab-aterm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_alab_aterm"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[features]
+# The in-process fake aterm server (`fake`), for ALab crates that test against it.
+test-support = []
+
+[dependencies]
+codex-alab-core = { path = "../alab-core" }
+libc = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+
+# The fake aterm as a process of its own, for a real codex binary (alab/smoke/native.py).
+[[example]]
+name = "fake_aterm"
+required-features = ["test-support"]

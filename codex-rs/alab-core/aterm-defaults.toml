@@ -1,0 +1,25 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+#
+# ALab's packaged defaults that hold only inside aterm (`TERM_PROGRAM=aterm`), merged over
+# `defaults.toml` in the same lowest layer: any user, profile, project or `-c` value wins.
+
+[tui]
+# ALab's built-in pet, drawn from the binary (never fetched). aterm draws codex's kitty
+# graphics, so the pet shows there; in another terminal no default pet is set, and nothing
+# is written into CODEX_HOME for it. A person's own `tui.pet`, "disabled" included, wins.
+pet = "alab-kitty"
+# aterm takes OSC 9 notifications. Outside aterm upstream's "auto" stands: it picks the
+# method the terminal supports (BEL for one it does not know).
+notification_method = "osc9"
+# aterm's typed input (aterm ctl send, drive) arrives as a burst: it must submit. Outside
+# aterm upstream's paste-burst detection stands, so an unbracketed multi-line paste is held
+# as one paste rather than submitted at its first newline.
+disable_paste_burst = true
+# codex-alab's turn as aterm's progress bar (ConEmu OSC 9;4, `alab-tui/src/progress.rs`):
+# indeterminate while a turn works, this turn's plan as a percent, red when it fails, gone at
+# rest. aterm's rainbow kitty turns to look when a value bar changes: a failed turn, or a plan
+# filling, which needs `[tools.update_plan] enabled = true` (upstream's opt-in, left so here).
+# ALab's own key (upstream's `[tui]` ignores it); a person's `alab_progress = false` turns the
+# bar off (vendor codex's `--strict-config` refuses the key; codex-alab's takes it).
+alab_progress = true

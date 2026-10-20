@@ -1,0 +1,5 @@
+---
+source: alab-tui/src/banner/tests.rs
+expression: review_text(&lines)
+---
+--

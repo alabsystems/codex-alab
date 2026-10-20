@@ -1,0 +1,10 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+#
+# ALab builds with the Trust toolchain (targo, trustc). This file selects the compiler for
+# commands run from the repository root; it names no lane, which each command picks:
+# `targo --unverified <cmd>` (no proof claim) or `targo trust <cmd>` (verified).
+# codex-rs/rust-toolchain.toml is upstream's stock pin and stays as upstream ships it: targo
+# runs Trust there regardless (alab/README.md, Decisions 7 and 10).
+[toolchain]
+channel = "trust"

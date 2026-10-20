@@ -1,0 +1,40 @@
+# alab/watched-paths — upstream paths whose changes a sync calls out, in its output and in
+# the merge message, because ALab copies or depends on what they say.
+#
+# Same syntax as alab/removed-paths. A watched path may also be a removed one: the merge
+# drops it from the tree, but upstream's change is still news.
+
+# Upstream's release recipe: how it builds, stamps, signs and packages codex
+# (alab/README.md, "Packaging"). Read any of them with git show upstream/main:<path>.
+.github/workflows/rust-release.yml
+.github/scripts/macos-signing
+.github/scripts/build-codex-package-archive.sh
+.github/actions/setup-rusty-v8
+scripts/build_codex_package.py
+scripts/codex_package
+:(glob)third_party/v8/rusty_v8_*_release_manifests.sha256
+
+# The toolchain pin and the packaged-defaults layer ALab's config defaults go into.
+codex-rs/rust-toolchain.toml
+codex-rs/config/defaults.toml
+
+# What the binary decides from its version: the daemon's install and auto-update rules and
+# the update check (alab/README.md, "Packaging").
+codex-rs/app-server-daemon/src/prepare_install.rs
+codex-rs/app-server-daemon/src/update_loop.rs
+codex-rs/tui/src/updates.rs
+codex-rs/build-info/src/lib.rs
+
+# What the vendor daemon's package tidy copies (alab-tui/src/daemon_packages.rs): the package
+# layout and release names, selection-history and the pruning rules, the installer's and the
+# lifecycle's locks, the pid file names and record, the migration marker, the control socket
+# path and how codex's client reaches a long one. A change here may leave the tidy's guard
+# checking a lock, file or rule upstream no longer uses.
+codex-rs/app-server-daemon/src/release_pruning.rs
+codex-rs/app-server-daemon/src/install_lock.rs
+codex-rs/app-server-daemon/src/lib.rs
+codex-rs/app-server-daemon/src/managed_install.rs
+codex-rs/app-server-daemon/src/migration.rs
+codex-rs/app-server-daemon/src/backend/pid.rs
+codex-rs/app-server-transport/src/transport/mod.rs
+codex-rs/uds/src/lib.rs

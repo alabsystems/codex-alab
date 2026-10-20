@@ -1,0 +1,96 @@
+# alab/removed-paths — upstream paths codex-alab does not carry.
+#
+# One git pathspec per line, relative to the repository root; a line starting with `#` is a
+# comment. alab/sync.sh re-applies every entry after each upstream merge: a conflict inside
+# a removed path resolves to the removal, and a file upstream adds under one is dropped.
+# Remove upstream content only by adding its path here and `git rm`-ing it in the same
+# commit; alab/delta.sh flags an upstream file deleted any other way.
+
+# OpenAI's GitHub automation and repository metadata. As shipped, its CI would run on every
+# push to main here, its cron job daily, and Dependabot would open pull requests; the rest is
+# what those workflows call (composite actions, CI and release/signing scripts) or GitHub UI
+# for OpenAI's org (CODEOWNERS, issue forms, the codex app's config). codex-alab runs no CI:
+# alab/check.sh is the gate a sync passes. Upstream's release recipe stays readable with
+# `git show upstream/main:.github/<path>`, and alab/watched-paths calls out its changes.
+# Nothing ALab owns can live under .github while this entry stands.
+.github
+
+# The Bazel build. ALab builds with targo; nothing on the cargo build or test path reads
+# these. Verified with every entry below removed: `targo --unverified check --workspace
+# --all-targets`, the codex build and run, and the tests of every crate that resolves repo
+# files all pass, with the same failures as an untrimmed tree (an environment's missing
+# gstreamer, a rusty_v8 archive 404, four timing-sensitive app_server_daemon tests).
+:(glob)**/*.bazel
+:(glob)**/*.bzl
+.bazelignore
+.bazelrc
+.bazelversion
+MODULE.bazel.lock
+workspace_root_test_launcher.bat.tpl
+workspace_root_test_launcher.sh.tpl
+.worktreeinclude
+bazel
+patches
+scripts/check-module-bazel-lock.sh
+scripts/list-bazel-clippy-targets.sh
+scripts/list-bazel-release-targets.sh
+scripts/workspace-status.sh
+scripts/workspace-status.cmd
+tools/argument-comment-lint/list-bazel-targets.sh
+codex-rs/docs/bazel.md
+# Bazel-only sources inside codex-rs: no cargo target, mod or #[path] reaches them.
+codex-rs/cli/e2e_benches
+codex-rs/exec-server/testing
+codex-rs/core/tests/remote_env_windows
+# Bazel's V8 build inputs; the cargo packager reads only the *_release_manifests.sha256 pins.
+third_party/v8/libcxx_config
+third_party/v8/gnu_libcxx_shared_exception_symbols.txt
+:(glob)third_party/v8/rusty_v8_*[0-9].sha256
+
+# OpenAI's npm and installer distribution. atpkg ships codex-alab instead.
+codex-cli
+codex-rs/responses-api-proxy/npm
+scripts/stage_npm_packages.py
+scripts/install
+
+# Nix packaging.
+flake.nix
+flake.lock
+codex-rs/default.nix
+
+# Upstream's repository linters, run only by its CI, and its editor and Windows setup.
+.codespellrc
+.codespellignore
+.markdownlint-cli2.yaml
+scripts/asciicheck.py
+scripts/readme_toc.py
+scripts/check_blob_size.py
+scripts/debug-codex.sh
+.vscode
+codex-rs/scripts/setup-windows.ps1
+
+# OpenAI's security policy (it sends reports to OpenAI's Bugcrowd program, which does not
+# cover ALab's build; owner, 2026-10-16).
+SECURITY.md
+
+# OpenAI-organization documents, a changelog stub pointing at OpenAI's releases, the repo
+# copy of the announcement feed (the binary fetches OpenAI's copy over HTTP either way:
+# alab/README.md, "Runtime behavior"), and an 838 KB test fixture nothing reads.
+docs/CLA.md
+# OpenAI's contribution policy and its open-source fund: both are about OpenAI's repository,
+# and upstream's README, their one link, is ALab's own now (alab/owned-paths).
+docs/contributing.md
+docs/open-source-fund.md
+CHANGELOG.md
+announcement_tip.toml
+codex-rs/config.md
+codex-rs/tui/tests/fixtures/oss-story.jsonl
+
+# Bundled skills for OpenAI's own product: image generation (codex-alab turns the tool off),
+# OpenAI's API docs, and an installer that fetches skills from OpenAI's GitHub. Each would
+# sit in every session's skill catalog. The skills crate embeds the samples directory whole,
+# so what is left (review-agent, skill-creator) still ships.
+codex-rs/skills/src/assets/samples/imagegen
+codex-rs/skills/src/assets/samples/openai-docs
+codex-rs/skills/src/assets/samples/skill-installer
+

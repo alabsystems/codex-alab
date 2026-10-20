@@ -1,0 +1,8 @@
+# alab/merge-attributes — merge attributes for alab/sync.sh's upstream merges only: sync.sh
+# passes this file as core.attributesFile to those commands, so no other merge in a clone
+# sees it.
+#
+# codex-rs/Cargo.lock is derived data. When both sides changed it, upstream's side wins
+# (the alab-upstream driver sync.sh defines), and sync.sh re-resolves it for ALab's crates
+# before committing, refusing if that moves any package upstream locked.
+codex-rs/Cargo.lock merge=alab-upstream

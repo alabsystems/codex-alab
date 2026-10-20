@@ -1,0 +1,15 @@
+# alab/owned-paths — paths outside alab/ that ALab owns although upstream may also ship them.
+#
+# Same syntax as alab/removed-paths. When an upstream merge conflicts in one of these,
+# alab/sync.sh keeps ALab's side and saves upstream's version as alab/upstream/<path>, so
+# whoever maintains the ALab file can carry over what matters from it.
+
+# The root agent rules. Upstream deleted its own root AGENTS.md on 2026-09-30 (18131270f,
+# 320 lines, 78 commits of history); should it come back, ALab's stays and upstream's waits
+# in alab/upstream/AGENTS.md.
+AGENTS.md
+
+# The front page. GitHub shows the root README.md, and upstream's sends readers to OpenAI's
+# installers and to docs/ that the published snapshot does not carry. ALab's says what
+# codex-alab is; upstream's next change to its own waits in alab/upstream/README.md.
+README.md

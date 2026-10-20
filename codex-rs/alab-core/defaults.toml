@@ -1,0 +1,56 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+#
+# codex-alab's packaged defaults: merged over upstream's config/defaults.toml in the codex
+# binary only (codex_alab_core::packaged_defaults), so any user, profile, project or -c value
+# still overrides each one. An owner-only build, installed and updated by atpkg, run inside
+# aterm: nothing goes to OpenAI but the model, login and usage traffic the product needs.
+
+# atpkg updates codex-alab; the update check polls GitHub and Homebrew every 20 h.
+check_for_update_on_startup = false
+
+[history]
+# history.jsonl had no cap.
+max_bytes = 8388608
+
+# No product analytics to chatgpt.com (this also stops Statsig), no Statsig metrics if
+# analytics comes back on, no /feedback upload to OpenAI's Sentry.
+[analytics]
+enabled = false
+
+[otel]
+metrics_exporter = "none"
+
+[feedback]
+enabled = false
+
+[features]
+# The shared app-server daemon: 1.5 GB of package copies here, one environment for every
+# tab, a process that never exits, and OpenAI's own updater. Each TUI embeds its app-server.
+daemon_auto_start = false
+# ChatGPT connectors (an MCP server at chatgpt.com in every session) and the plugin
+# marketplace (syncs at every start, ~142 MB of caches, skills in every prompt).
+apps = false
+plugins = false
+# A per-turn shadow ranking experiment, the image tool's spec in every request, and
+# model-initiated "install this plugin" popups.
+skill_search = false
+image_generation = false
+tool_suggest = false
+
+[tui]
+# No tips (and so no desktop-app ad), no server-version notice, no automatic recap (a
+# model call per unfocused tab: in aterm most tabs are unfocused).
+show_tooltips = false
+show_server_version_notice = false
+auto_recap = false
+status_line = ["model-with-reasoning", "context-remaining", "five-hour-limit", "weekly-limit", "git-branch", "thread-name"]
+# The title without the 10 Hz activity spinner: aterm shows activity itself.
+terminal_title = ["run-state", "thread-name", "project-name"]
+# The default pet, OSC 9 notifications and the paste-burst switch are set only inside aterm
+# (`aterm-defaults.toml`): elsewhere they would change what codex does in a terminal they
+# were never chosen for.
+
+[notice]
+hide_rate_limit_model_nudge = true
+hide_gov_cloud_guidance = true

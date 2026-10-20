@@ -1,0 +1,23 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+#
+# codex-alab-core: the switch every ALab behavior keys off, and ALab's packaged defaults.
+# It depends on no codex crate, so any codex crate can depend on it.
+[package]
+name = "codex-alab-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_alab_core"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+toml = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

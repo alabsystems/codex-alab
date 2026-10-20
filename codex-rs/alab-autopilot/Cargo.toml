@@ -1,0 +1,46 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+#
+# codex-alab-autopilot: codex-alab's native autopilot, an app-server extension (CONTRACT §5).
+# Upstream reaches it through one ALAB(autopilot) line in app-server/src/extensions.rs; it acts
+# only in the codex binary, for the TUI's root threads, while a proven aterm claim is held.
+[package]
+name = "codex-alab-autopilot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_alab_autopilot"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+codex-alab-aterm = { path = "../alab-aterm" }
+codex-alab-core = { path = "../alab-core" }
+codex-alab-tui = { path = "../alab-tui" }
+codex-config = { workspace = true }
+codex-core = { workspace = true }
+codex-execpolicy = { workspace = true }
+codex-extension-api = { workspace = true }
+codex-features = { workspace = true }
+codex-file-watcher = { workspace = true }
+codex-goal-extension = { workspace = true }
+codex-history = { workspace = true }
+codex-protocol = { workspace = true }
+codex-shell-command = { workspace = true }
+codex-state = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+codex-alab-aterm = { path = "../alab-aterm", features = ["test-support"] }
+core_test_support = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+wiremock = { workspace = true }

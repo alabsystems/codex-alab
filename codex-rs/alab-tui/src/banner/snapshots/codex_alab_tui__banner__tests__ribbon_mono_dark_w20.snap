@@ -1,0 +1,8 @@
+---
+source: alab-tui/src/banner/tests.rs
+expression: review_text(&lines)
+---
+ 0||
+ 1|  codex-alab|
+--
+r1 [2..12) bold
