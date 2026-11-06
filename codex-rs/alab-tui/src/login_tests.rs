@@ -18,7 +18,7 @@ use codex_alab_aterm::Client;
 
 use crate::login::KIND;
 use crate::login::WHY;
-use crate::login::clear_stale;
+use crate::waiting::clear_stale;
 use crate::login::during_with;
 
 async fn fake() -> (tempfile::TempDir, FakeAterm) {

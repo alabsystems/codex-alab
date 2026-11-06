@@ -1,7 +1,8 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! The box hooks (`ALAB(answer)`, CONTRACT §5 rows "question overlay" and "plan box"): what
+//! The box hooks (`ALAB(answer)`, CONTRACT §5 rows "question overlay", "plan box" and "goal
+//! box"): what
 //! the glue inside codex-tui calls while a box is the TUI's active view.
 //!
 //! - `glue/question_answer.rs` (a child of `bottom_pane::request_user_input`, ticked from the
@@ -10,7 +11,8 @@
 //!   own connection exactly as a person's Enter sends it, the history cell is written and
 //!   the overlay closes.
 //! - `glue/plan_answer.rs` (a child of `bottom_pane::list_selection_view`, ticked from the
-//!   view's `pre_draw_tick`) does the same for "Implement this plan?".
+//!   view's `pre_draw_tick`) does the same for "Implement this plan?" and for "Resume paused
+//!   goal?" (the goal box).
 //! - `glue/session_observe.rs` hands over the frame request ([`set_waker`]) and ends each
 //!   frame ([`end_frame`]), which closes a box no glue reported.
 //!
@@ -23,12 +25,12 @@ pub use codex_alab_core::boxes::BoxOption;
 pub use codex_alab_core::boxes::BoxOutcome;
 pub use codex_alab_core::boxes::BoxQuestion;
 pub use codex_alab_core::boxes::Choice;
+pub use codex_alab_core::boxes::GoalStop;
 pub use codex_alab_core::boxes::OpenBox;
 pub use codex_alab_core::session::Shared;
 pub use codex_alab_core::session::now_ms;
 use codex_alab_core::session::shared;
 use std::cell::Cell;
-use std::sync::Mutex;
 
 /// "Implement this plan?" rows, as `tui/src/chatwidget/plan_implementation.rs` builds them
 /// (the chat glue's test pins these to that file's own constants).
@@ -37,6 +39,14 @@ pub const PLAN_CLEAR_CONTEXT: &str = "Yes, clear context and implement";
 pub const PLAN_NO: &str = "No, stay in Plan mode";
 /// The user message the plan box's yes submits.
 pub const PLAN_MESSAGE: &str = "Implement the plan.";
+/// "Resume paused goal?" rows, as `tui/src/chatwidget/goal_menu.rs` builds them (the chat
+/// glue's test pins these to that file's own view).
+pub const GOAL_RESUME: &str = "Resume goal";
+pub const GOAL_LEAVE: &str = "Leave paused";
+/// The history line the goal box's `Leave paused` adds, and its hint.
+pub const GOAL_LEFT: &str =
+    "Goal left as it was: codex-alab answered the prompt under aterm's Autopilot";
+pub const GOAL_LEFT_HINT: &str = "/goal resume continues it";
 
 thread_local! {
     static SCOPED: Cell<Option<&'static Shared>> = const { Cell::new(None) };
@@ -69,33 +79,39 @@ pub fn is_plan_box(labels: &[&str]) -> bool {
     labels == [PLAN_YES, PLAN_CLEAR_CONTEXT, PLAN_NO]
 }
 
-/// The plan box has no id of its own: a view keeps one while it stays the active view
-/// (`addr` is its place in memory, stable while it is boxed on the view stack).
-static PLAN_IDS: Mutex<(Option<usize>, u64)> = Mutex::new((None, 0));
-
-fn plan_ids() -> std::sync::MutexGuard<'static, (Option<usize>, u64)> {
-    PLAN_IDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// Whether a selection view's rows are the goal box's.
+pub fn is_goal_box(labels: &[&str]) -> bool {
+    labels == [GOAL_RESUME, GOAL_LEAVE]
 }
 
-/// The id of the plan box at `addr`.
-pub fn plan_id(addr: usize) -> String {
-    let mut ids = plan_ids();
-    if ids.0 != Some(addr) {
-        ids.0 = Some(addr);
-        ids.1 += 1;
-    }
-    format!("plan-{}", ids.1)
+thread_local! {
+    static ANSWERED: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// The glue's box `id`, the view at `view` (its place in memory), took codex-alab's answer:
+/// the box is shut, and if the view completed, the view stack's tick that follows
+/// (`bottom_pane::tick_active_view`, [`take_answered`]) pops only that view, as a person's
+/// Enter does, never the views under it.
+pub fn close_answered(state: &Shared, id: &str, view: usize) {
+    state.close_box(id);
+    ANSWERED.with(|cell| cell.set(Some(view)));
+}
+
+/// ALAB(answer) hook in `bottom_pane::tick_active_view`, each tick, for the active view at
+/// `view`: whether codex-alab's answer was what it took this tick ([`close_answered`]). Read
+/// once. Upstream clears the whole view stack when a view completes in its tick (its own timed
+/// completions); an answer must leave a box under it standing, as a person's Enter does
+/// (review of 78440aa555, finding 1: an approval under "Resume paused goal?" went with it,
+/// unanswered).
+pub fn take_answered(view: usize) -> bool {
+    ANSWERED.with(Cell::take) == Some(view)
 }
 
 /// ALAB(answer) glue, each frame after the views ticked (`session_observe.rs`): a box no
 /// glue reported this frame is closed, with any answer pending for it.
 pub fn end_frame() {
-    if let Some(state) = tick_shared()
-        && state.end_frame_boxes()
-    {
-        plan_ids().0 = None;
+    if let Some(state) = tick_shared() {
+        state.end_frame_boxes();
     }
 }
 

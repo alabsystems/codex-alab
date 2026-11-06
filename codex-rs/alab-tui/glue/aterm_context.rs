@@ -143,14 +143,16 @@ mod tests {
             "[Image #1]"
         );
         // Upstream's transcript reader shows only the person's words.
-        let (request, _) = crate::ide_context::extract_prompt_request_with_offset(text);
+        let (request, _) = crate::user_prompt::extract_prompt_request_with_offset(text);
         assert_eq!(request, "fix [Image #1]");
     }
 
     #[test]
     fn a_turn_without_text_gets_a_text_item_ahead() {
         let mut items = vec![UserInput::Audio {
-            url: "data:audio/wav;base64,AAAA".to_string(),
+            audio: codex_app_server_protocol::AudioReference::Inline {
+                url: "data:audio/wav;base64,AAAA".to_string(),
+            },
         }];
         prefix(&mut items, "ctx\n");
         assert!(matches!(&items[0], UserInput::Text { text, .. } if text.starts_with("ctx\n")));

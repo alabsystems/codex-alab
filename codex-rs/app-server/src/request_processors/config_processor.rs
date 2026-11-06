@@ -1,3 +1,4 @@
+use codex_app_server_protocol::ApplicationStorageRequirements;
 use std::sync::Arc;
 
 use crate::config_manager::ConfigManager;
@@ -5,6 +6,7 @@ use crate::config_manager_service::ConfigManagerError;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
 use crate::model_catalog::ModelCatalog;
+use crate::otel_config::map_otel_requirements_to_api;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_analytics::AnalyticsEventsClient;
@@ -71,6 +73,7 @@ const SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT: &[&str] = &[
     BACKGROUND_PAGINATED_ROLLOUT_MIGRATION_FEATURE,
     "codex_apps_mcp_2026_07_28",
     "mcp_2026_07_28",
+    "mcp_connection_sharing",
     "memories",
     "mentions_v2",
     "remote_control",
@@ -206,6 +209,16 @@ impl ConfigRequestProcessor {
             )
             .await;
         Ok(None)
+    }
+
+    pub(crate) async fn model_provider_list(
+        &self,
+        params: codex_app_server_protocol::ModelProviderListParams,
+    ) -> Result<codex_app_server_protocol::ModelProviderListResponse, JSONRPCErrorError> {
+        self.config_manager
+            .model_provider_list(params)
+            .await
+            .map_err(map_error)
     }
 
     pub(crate) async fn model_provider_capabilities_read(
@@ -374,7 +387,7 @@ pub(super) async fn reload_user_config(
 }
 
 async fn reload_user_config_inner(config_manager: &ConfigManager, thread_manager: &ThreadManager) {
-    config_manager.revoke_mcp_ema();
+    config_manager.revoke_mcp_ema_startups();
     if let Err(err) = config_manager.load_config_layers(/*cwd*/ None).await {
         tracing::warn!("failed to rebuild user config for runtime refresh: {err}");
         for thread_id in thread_manager.list_thread_ids().await {
@@ -450,6 +463,12 @@ pub(crate) fn map_requirements_to_api(
         }
         None => ConfigRequirementsToml::default(),
     };
+    let network = requirements
+        .permissions
+        .as_ref()
+        .and_then(|permissions| permissions.network.as_deref())
+        .cloned()
+        .or_else(|| requirements.network.clone());
 
     Some(ConfigRequirements {
         model_provider: requirements.model_provider,
@@ -462,6 +481,14 @@ pub(crate) fn map_requirements_to_api(
         allowed_login_methods: Some(allowed_login_methods),
         application: requirements.application.map(|application| {
             codex_app_server_protocol::ApplicationRequirements {
+                storage: application
+                    .storage
+                    .map(|storage| ApplicationStorageRequirements {
+                        default_project_parent: storage.default_project_parent.map(Into::into),
+                        projectless_workspace_root: storage
+                            .projectless_workspace_root
+                            .map(Into::into),
+                    }),
                 network: application.network.map(|network| {
                     codex_app_server_protocol::ApplicationNetworkRequirements {
                         enabled: network.enabled,
@@ -567,7 +594,7 @@ pub(crate) fn map_requirements_to_api(
         enforce_residency: requirements
             .enforce_residency
             .map(map_residency_requirement_to_api),
-        network: requirements.network.map(map_network_requirements_to_api),
+        network: network.map(map_network_requirements_to_api),
         auto_review: requirements
             .auto_review
             .map(|auto_review| AutoReviewRequirements {
@@ -581,6 +608,9 @@ pub(crate) fn map_requirements_to_api(
                 service_tier: new_thread.service_tier,
             }),
         }),
+        otel: requirements
+            .otel
+            .map(|otel| map_otel_requirements_to_api(*otel)),
         sqlite_home: requirements.sqlite_home.map(Into::into),
         log_dir: requirements.log_dir.map(Into::into),
         model_catalog_json: requirements.model_catalog_json.map(Into::into),
@@ -859,6 +889,7 @@ fn map_network_requirements_to_api(
                 })
                 .collect()
         }),
+        review_domains: network.review_domains,
         managed_allowed_domains_only: network.managed_allowed_domains_only,
         allowed_domains,
         denied_domains,

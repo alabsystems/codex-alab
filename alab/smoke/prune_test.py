@@ -14,8 +14,8 @@ one, never a real package): which packages past the newest <n> it keeps, and why
             real output's form, its paths under a directory with a space) is kept.
   owed      a package only a standing codex-alab session record names (its resumeArgv[0]:
             a crash relaunch still owed, its process dead) is kept.
-  running   a package a live process executes from (an ad hoc signed copy of /bin/sleep
-            as its bin/codex) is kept.
+  running   a package a live process executes from (an ad hoc signed copy of /bin/cat
+            as its bin/codex, proven by its echo before cleanup is permitted) is kept.
   pruned    a package nothing uses, past the newest <n>, is removed.
   homes     a record under a home named only in ALAB_CODEX_HOMES keeps its package (a
             dry run), and is unseen without it.
@@ -28,10 +28,12 @@ usage: prune_test.py     Exit 0 when every check passes, 1 otherwise.
 
 import json
 import os
+import selectors
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PRUNE = os.path.join(os.path.dirname(HERE), "prune.py")
@@ -71,6 +73,8 @@ def prune(root, prefix, keep, codex_home, aterm_dir=None):
             str(keep),
             "--prefix",
             prefix,
+            "--repo",
+            os.path.dirname(prefix),
             "--codex-home",
             codex_home,
         ],
@@ -89,7 +93,8 @@ def dry_run_default_homes(root, prefix, homes):
     if homes is not None:
         env["ALAB_CODEX_HOMES"] = homes
     done = subprocess.run(
-        [sys.executable, "-I", PRUNE, "--root", root, "--keep", "1", "--prefix", prefix, "--dry-run"],
+        [sys.executable, "-I", PRUNE, "--root", root, "--keep", "1", "--prefix", prefix,
+         "--repo", os.path.dirname(prefix), "--dry-run"],
         capture_output=True,
         text=True,
         timeout=HANG,
@@ -104,12 +109,18 @@ def left(root):
 
 def main():
     scratch = tempfile.mkdtemp(prefix="alab-prune-test.")
-    sleeper = None
+    child = None
+    copied = False
+    first_exec_proved = False
+    print(f"scratch: {scratch}")
     try:
+        subprocess.run(["git", "init", "-q", scratch], check=True)
         root = os.path.join(scratch, "artifacts", "codex")
         prefix = os.path.join(scratch, "pkg")
         for sub in ("links", "bin", "agents"):
             os.makedirs(os.path.join(prefix, sub))
+        with open(os.path.join(prefix, "store.lock"), "x"):
+            pass
         names = ["p1", "p2", "p 3", "p4", "p5", "p6"]
         dirs = {n: package(root, n, f"2026-10-16T0{i}:00:00Z") for i, n in enumerate(names)}
         # Older than all of them: candidates whatever --keep is.
@@ -157,12 +168,35 @@ def main():
                 },
                 f,
             )
-        # running: a copy of /bin/sleep as p4's bin/codex, signed ad hoc, left running.
+        # running: a copy of /bin/cat as p4's bin/codex, signed ad hoc, left running.
+        # A live argv is no first-exec proof: observe the copied image's own output before
+        # permitting removal, even if spawning or proving it fails and its child is killed.
         exe = os.path.join(dirs["p4"], "bin", "codex")
-        shutil.copyfile("/bin/sleep", exe)
+        shutil.copyfile("/bin/cat", exe)
+        copied = True
         os.chmod(exe, 0o755)
         subprocess.run(["codesign", "--force", "--sign", "-", exe], check=True, capture_output=True)
-        sleeper = subprocess.Popen([exe, "600"])
+        deadline = time.monotonic() + HANG
+        child = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        print(f"running stand-in pid: {child.pid}")
+        marker = b"alab-prune-first-exec\n"
+        child.stdin.write(marker)
+        child.stdin.flush()
+        echoed = bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(child.stdout, selectors.EVENT_READ)
+            while len(echoed) < len(marker):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise TimeoutError("the copied cat did not prove its first exec")
+                chunk = os.read(child.stdout.fileno(), len(marker) - len(echoed))
+                if not chunk:
+                    raise RuntimeError("the copied cat ended before its first-exec proof")
+                echoed.extend(chunk)
+        if echoed != marker:
+            raise RuntimeError("the copied cat's output did not match its first-exec proof")
+        first_exec_proved = True
+        check("the copied running image proved its first exec before cleanup", True)
 
         try:
             code, said = prune(root, prefix, 1, codex_home, aterm_dir)
@@ -191,14 +225,17 @@ def main():
         code, said = prune(root, prefix, 1, codex_home)
         check("control: an unreadable record prunes nothing", left(root) == before, said)
         os.remove(bad)
-        # A writer's temporary is no record.
-        with open(os.path.join(sessions, "999998.json.1a2b.tmp"), "w") as f:
+        # Unrecognized junk is no record. Recoverable *.json.<nonce>.tmp files are records.
+        with open(os.path.join(sessions, "999998.json.pending"), "w") as f:
             f.write("{half")
 
         # Controls: nothing uses p1..p4 any more.
-        sleeper.kill()
-        sleeper.wait()
-        sleeper = None
+        child.kill()
+        child.wait(timeout=HANG)
+        print(f"reaped stand-in pid: {child.pid}")
+        child.stdin.close()
+        child.stdout.close()
+        child = None
         for f in ("links/codex", "bin/codex", "agents/codex"):
             os.remove(os.path.join(prefix, f))
         # A marker that stands but cannot be read: fail closed, nothing pruned.
@@ -223,10 +260,25 @@ def main():
         code, said = prune(root, prefix, 1, codex_home)
         check("control: with no record naming it, the owed package is pruned", left(root) == ["p6"], said)
     finally:
-        if sleeper is not None:
-            sleeper.kill()
-            sleeper.wait()
-        shutil.rmtree(scratch, ignore_errors=True)
+        safe_to_remove = not copied or first_exec_proved
+        if child is not None:
+            try:
+                child.kill()
+                child.wait(timeout=HANG)
+                print(f"reaped stand-in pid: {child.pid}")
+            except (OSError, subprocess.TimeoutExpired) as error:
+                safe_to_remove = False
+                check("the owned stand-in was reaped", False, str(error))
+            finally:
+                for pipe in (child.stdin, child.stdout):
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
+        if safe_to_remove:
+            shutil.rmtree(scratch)
+        else:
+            print(f"retaining scratch without a completed first-exec/cleanup proof: {scratch}")
     print("prune_test: " + ("ok" if not failures else f"{len(failures)} failed"))
     return 1 if failures else 0
 

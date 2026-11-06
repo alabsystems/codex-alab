@@ -11,7 +11,13 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 
-pub(crate) const MCP_USER_AGENT: &str = concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION"));
+// ALAB(version): package changes do not change this library's Cargo identity.
+pub(crate) fn mcp_user_agent() -> String {
+    format!(
+        "codex-mcp-client/{}",
+        codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION"))
+    )
+}
 
 pub(crate) fn create_env_for_mcp_server(
     extra_env: Option<HashMap<OsString, OsString>>,
@@ -105,7 +111,10 @@ pub(crate) fn build_default_headers(
     env_http_headers: Option<HashMap<String, String>>,
 ) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static(MCP_USER_AGENT));
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_str(&mcp_user_agent())?,
+    ); // ALAB(version): running executable identity
 
     if let Some(static_headers) = http_headers {
         for (name, value) in static_headers {
@@ -355,3 +364,7 @@ mod tests {
         assert_eq!(env.get(OsStr::new("PATH")), Some(&expected));
     }
 }
+
+#[cfg(test)]
+#[path = "../../alab-core/glue/running_version_mcp_tests.rs"]
+mod running_version_tests; // ALAB(version): actual default headers in isolated children

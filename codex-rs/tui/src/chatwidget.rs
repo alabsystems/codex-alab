@@ -77,7 +77,7 @@ use crate::terminal_title::set_terminal_title;
 use crate::text_formatting::proper_join;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
-use crate::version::CODEX_CLI_VERSION;
+use crate::version::cli_version;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AppSummary;
@@ -106,7 +106,7 @@ use codex_app_server_protocol::SkillMetadata;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadTokenUsage;
@@ -281,6 +281,7 @@ mod goal_menu;
 mod ide_context;
 use self::ide_context::IdeContextState;
 mod input_queue;
+mod provider_error;
 mod reconnect;
 use self::input_queue::InputQueueState;
 mod image_submission;
@@ -379,6 +380,7 @@ mod review;
 mod review_popups;
 use self::review::ReviewState;
 mod safety_buffering;
+mod safety_recourse;
 mod service_tiers;
 mod settings;
 mod settings_popups;
@@ -395,7 +397,6 @@ mod status_surfaces;
 use self::status_surface_commands::StatusSurfaceOverrides;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
-mod thread_title_status;
 mod thread_usage;
 pub(crate) use self::thread_usage::ThreadUsageOutcome;
 mod tool_lifecycle;
@@ -545,6 +546,8 @@ pub(crate) struct ChatWidget {
     has_codex_backend_auth: bool,
     model_catalog: Arc<ModelCatalog>,
     model_popup_request_id: Option<uuid::Uuid>,
+    /// An app event has been queued to open the permissions picker, but no view exists yet.
+    pub(crate) permission_popup_pending: bool,
     permission_popup_request_id: Option<uuid::Uuid>,
     permission_discovery: Option<crate::permission_discovery::PermissionDiscovery>,
     inline_permission_profile_selection:
@@ -570,6 +573,7 @@ pub(crate) struct ChatWidget {
     token_usage_pending: bool,
     // Status and polling use account usage reads; response streams may identify meters differently.
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
+    alab_allowance: alab_allowance::State, // ALAB(interface): widget-local account usage history and reset-credit details.
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
     pending_rate_limit_reset_request_id: Option<u64>,
@@ -596,6 +600,7 @@ pub(crate) struct ChatWidget {
     // Remember the account's Reserve entry notice across chats and transient banner refreshes.
     luna_reserve_notice_account_id: Option<String>,
     pub(crate) warning_display_state: WarningDisplayState,
+    pub(crate) composer_images: Option<crate::transcript_image::composer::ComposerImages>,
     pub(crate) rendered_selection: std::cell::RefCell<crate::rendered_selection::RenderedSelection>,
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     add_credits_nudge_email_in_flight: Option<rate_limits::PendingCreditsNudge>,
@@ -619,6 +624,7 @@ pub(crate) struct ChatWidget {
     last_unified_wait: Option<UnifiedExecWaitState>,
     unified_exec_wait_streak: Option<UnifiedExecWaitStreak>,
     turn_lifecycle: TurnLifecycleState,
+    safety_recourse: Option<safety_recourse::PendingRecourse>,
     realtime_conversation: RealtimeConversationUiState,
     realtime_conversation_available_for_thread: bool,
     safety_buffering: SafetyBufferingState,
@@ -682,6 +688,7 @@ pub(crate) struct ChatWidget {
     active_side_conversation: bool,
     blocks_direct_input: bool,
     external_writer_view: bool,
+    provider_error: Option<codex_app_server_protocol::ModelProviderError>,
     /// Covers both queued and executing forks so repeated shortcuts cannot queue another one.
     pub(crate) fork_in_progress: bool,
     misalignment_policy_violation: Option<misalignment_policy::MisalignmentViolation>,
@@ -1035,7 +1042,11 @@ impl ChatWidget {
             self.thread_id
                 .is_some_and(|thread_id| thread_id.to_string() == request_thread_id)
         }) && self.interrupts.remove_resolved_prompt(request);
+        let had_modal_or_popup = !self.bottom_pane.no_modal_or_popup_active();
         let removed_visible = self.bottom_pane.dismiss_app_server_request(request);
+        if removed_visible && had_modal_or_popup && self.bottom_pane.no_modal_or_popup_active() {
+            self.on_modal_or_popup_closed();
+        }
         if removed_deferred || removed_visible {
             self.request_redraw();
         }
@@ -1181,13 +1192,14 @@ impl ChatWidget {
     }
 
     pub(crate) fn pre_draw_tick(&mut self) {
+        self.alab_refresh_quota_freshness(); // ALAB(interface): expire cached quota locally when a disconnected server cannot refresh it.
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
         self.bottom_pane.pre_draw_tick();
         self.flush_realtime_transcript_history();
         self.refresh_realtime_microphone_level();
         if let Some(pet) = self.ambient_pet.as_ref() {
-            pet.schedule_next_frame();
+            alab_pet_layout::schedule_before_draw(pet); // ALAB(pet-perf): the visible dock owns animation timing; native layout keeps its pre-draw timer
         }
         self.refresh_goal_status_indicator_for_time_tick();
         if self.terminal_title_shows_action_required() != self.last_terminal_title_requires_action {
@@ -1205,6 +1217,7 @@ impl ChatWidget {
 
     pub(crate) fn refresh_terminal_program_status(&self) {
         let status = self.desired_program_status();
+        if self.alab_report_program_status(status) { return; } // ALAB(turns): inside aterm, codex-alab writes the report as aterm counts turns: MCP startup left out (alab-tui/src/turns.rs)
         if let Err(err) = crate::terminal_program_status::set_terminal_program_status(
             status,
             self.iterm_session_detail(status),
@@ -1408,12 +1421,15 @@ impl ChatWidget {
             || !display.local_images.is_empty()
             || !display.remote_image_urls.is_empty()
         {
-            self.add_to_history(history_cell::new_user_prompt(
-                display.message,
-                display.text_elements,
-                display.local_images,
-                display.remote_image_urls,
-            ));
+            self.add_to_history(
+                history_cell::new_user_prompt(
+                    display.message,
+                    display.text_elements,
+                    display.local_images,
+                    display.remote_image_urls,
+                )
+                .with_async_replies(display.replies, self.config.cwd.as_path()),
+            );
         }
     }
 
@@ -1533,7 +1549,7 @@ impl ChatWidget {
                 DEFAULT_MODEL_DISPLAY_NAME.to_string(),
                 /*reasoning_effort*/ None,
                 config.cwd.to_path_buf(),
-                CODEX_CLI_VERSION,
+                cli_version(), // ALAB(version): running executable identity
             )
             .with_yolo_mode(history_cell::is_yolo_mode(config)),
         )
@@ -2063,7 +2079,16 @@ impl ChatWidget {
 
     #[cfg(test)]
     pub(crate) fn status_line_text(&self) -> Option<String> {
-        self.bottom_pane.status_line_text()
+        self.status_line_content()
+            .cloned()
+            .map(|content| content.into_hyperlink_line().line.to_string())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_line_content(
+        &self,
+    ) -> Option<&crate::bottom_pane::footer_content::FooterContent> {
+        self.bottom_pane.status_line_content()
     }
 
     pub(crate) fn clear_token_usage(&mut self) {
@@ -2129,3 +2154,7 @@ pub(crate) fn extract_first_bold(s: &str) -> Option<String> {
 #[cfg(test)]
 pub(crate) mod tests;
 #[path = "../../alab-tui/glue/chat_hand.rs"] mod alab_hand; // ALAB(session): the input ChatWidget still holds, for codex-rs/alab-tui
+#[path = "../../alab-tui/glue/interface_controls.rs"] mod alab_interface; // ALAB(interface): presentation controls live in ALab's layer
+#[path = "../../alab-tui/glue/pet_layout.rs"] mod alab_pet_layout; // ALAB(interface): the pet has a reserved dock beside the whole bottom pane
+#[path = "../../alab-tui/glue/task_terminals.rs"] mod alab_tasks; // ALAB(tasks): expose current terminal summaries without duplicating runtime state
+#[path = "../../alab-tui/glue/allowance.rs"] mod alab_allowance; // ALAB(interface): retain accepted native quota and reset-credit observations.

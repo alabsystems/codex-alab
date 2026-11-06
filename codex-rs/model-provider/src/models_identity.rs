@@ -10,12 +10,17 @@ use sha2::Digest;
 use sha2::Sha256;
 
 use crate::auth::resolve_provider_auth;
+use crate::provider::resolve_api_provider;
 
-pub(crate) fn identity(
+pub(crate) fn identity(provider_info: &ModelProviderInfo, auth: Option<&CodexAuth>) -> CoreResult<String> { identity_of_build(provider_info, auth, codex_alab_core::active().then_some(codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")))) } // ALAB(model-poll): a catalog another codex-alab build cached is not this build's
+
+// ALAB(model-poll): upstream's identity, the caller naming the codex-alab build whose cache it keys
+fn identity_of_build(
     provider_info: &ModelProviderInfo,
     auth: Option<&CodexAuth>,
+    build: Option<&str>, // ALAB(model-poll): the build, or None for upstream's identity
 ) -> CoreResult<String> {
-    let mut api_provider = provider_info.to_api_provider(auth.map(CodexAuth::auth_mode))?;
+    let mut api_provider = resolve_api_provider(provider_info, auth)?;
     let mut digest = Sha256::new();
     // Length-prefix every field to avoid ambiguity between adjacent values.
     let mut field = |value: &[u8]| {
@@ -23,6 +28,7 @@ pub(crate) fn identity(
         digest.update(value);
     };
     field(b"models-cache-v1");
+    if let Some(build) = build { field(b"alab-build"); field(build.as_bytes()); } // ALAB(model-poll): every dev build reads as version 0.165.0, and an older one drops the catalog fields it does not know when it writes the cache
     field(api_provider.name.as_bytes());
     field(api_provider.base_url.as_bytes());
     // Preserve existing cache identities when no explicit catalog is configured.
@@ -76,7 +82,9 @@ pub(crate) fn identity(
     // different account, so reuse requires stable owner metadata. Explicit provider
     // keys take precedence over the header auth's account identity.
     if !has_stable_account || explicit_bearer {
-        let headers = resolve_provider_auth(auth, provider_info)?.to_auth_headers();
+        let headers = resolve_provider_auth(auth, provider_info)?
+            .to_auth_headers()
+            .map_err(|error| codex_api::map_api_error(error.into()))?;
         api_provider.headers.extend(headers);
     }
     let mut headers: Vec<_> = api_provider.headers.iter().collect();
@@ -100,3 +108,4 @@ pub(crate) fn identity(
 #[cfg(test)]
 #[path = "models_identity_tests.rs"]
 mod tests;
+#[cfg(test)] #[path = "../../alab-core/glue/models_identity_tests.rs"] mod alab_tests; // ALAB(model-poll): the identity's two arms

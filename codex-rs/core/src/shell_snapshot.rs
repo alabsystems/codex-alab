@@ -580,6 +580,7 @@ async fn capture_snapshot(
     credential_broker: Option<&SnapshotCredentialBroker>,
     sandbox: Option<&ShellSnapshotSandbox>,
 ) -> Result<(String, Option<SnapshotCredentials>)> {
+    #[cfg(test)] let _phase = crate::alab_test_fixtures::phase("snapshot capture and credential processing"); // ALAB(core-test-fixtures): locate deadline failures without changing capture policy or budgets.
     let broker_config_revision = credential_broker
         .map(|broker| broker.network_proxy.credential_broker_config_revision())
         .unwrap_or_default();
@@ -1031,6 +1032,7 @@ async fn run_script_with_timeout(
     credential_broker: Option<&SnapshotCredentialBroker>,
     sandbox: Option<&ShellSnapshotSandbox>,
 ) -> Result<String> {
+    #[cfg(test)] let _phase = crate::alab_test_fixtures::phase(if matches!(&shell_mode, SnapshotShellMode::Validation(_)) { "snapshot validation command" } else { "snapshot capture command" }); // ALAB(core-test-fixtures): time command phases under their existing deadline.
     let suppress_startup_files =
         credential_broker.is_some() && matches!(shell_mode, SnapshotShellMode::Validation(_));
     let mut args = shell.derive_exec_args(script, matches!(shell_mode, SnapshotShellMode::Login));

@@ -27,10 +27,13 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_exec_command_call;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
+use core_test_support::responses::sse_completed;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_target_windows;
 use core_test_support::skip_if_wine_exec;
@@ -689,6 +692,88 @@ async fn execpolicy_blocks_shell_invocation() -> Result<()> {
 }
 
 #[tokio::test]
+async fn inherited_policy_allows_remembered_commands_and_enforces_managed_denials() -> Result<()> {
+    skip_if_target_windows!(Ok(()), "uses POSIX touch");
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_cloud_config_bundle(CloudConfigBundleFixture::loader_with_enterprise_requirement(
+            r#"[rules]
+prefix_rules = [{ pattern = [{ token = "touch" }, { token = "denied-marker" }], decision = "forbidden" }]"#,
+        ))
+        .build_with_auto_env(&server)
+        .await?;
+    let mut options = test.start_thread_options().await;
+    options.config.permissions.approval_policy =
+        Constrained::allow_any(AskForApproval::UnlessTrusted);
+    let stack = options
+        .config
+        .config_layer_stack
+        .clone()
+        .with_user_and_project_exec_policy_rules_ignored(
+            /*ignore_user_and_project_exec_policy_rules*/ true,
+        );
+    let managed = stack
+        .requirements()
+        .exec_policy
+        .as_deref()
+        .expect("managed rule")
+        .clone();
+    let mut snapshot = managed.as_ref().clone();
+    snapshot.add_prefix_rule(&["touch".into(), "allowed-marker".into()], Decision::Allow)?;
+    options.config.config_layer_stack = stack;
+    options.set_inherited_exec_policy(snapshot.into(), Some(managed.into()));
+    let child = test.thread_manager.start_thread(options).await?.thread;
+
+    let requests = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("commands"),
+                ev_exec_command_call("allowed", "touch allowed-marker"),
+                ev_exec_command_call("denied", "touch denied-marker"),
+                ev_completed("commands"),
+            ]),
+            sse_completed("done"),
+        ],
+    )
+    .await;
+    child
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "run both commands".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let event = wait_for_event(&child, |event| {
+        matches!(
+            event,
+            EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
+        )
+    })
+    .await;
+    assert!(
+        matches!(event, EventMsg::TurnComplete(_)),
+        "unexpected approval: {event:?}"
+    );
+    let files = test
+        .fs()
+        .read_directory(
+            &test.executor_environment().selection().cwd,
+            /*sandbox*/ None,
+        )
+        .await?;
+    assert!(files.iter().any(|file| file.file_name == "allowed-marker"));
+    assert!(!files.iter().any(|file| file.file_name == "denied-marker"));
+    let denial = requests
+        .function_call_output_text("denied")
+        .expect("denied command output");
+    assert!(
+        denial.contains("policy forbids commands starting with `touch denied-marker`"),
+        "{denial}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn malformed_custom_rules_preserve_managed_forbidden_prefix() -> Result<()> {
     skip_if_target_windows!(
         Ok(()),
@@ -803,6 +888,7 @@ async fn environment_command_restrictions_override_saved_prefix_approvals() -> R
         .environment_ready(
             &selection,
             EnvironmentConfig {
+                environment_hooks: Default::default(),
                 allow_login_shell: true,
                 workspace_roots: selection.workspace_roots.clone(),
                 permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::Disabled),
@@ -830,6 +916,7 @@ async fn environment_command_restrictions_override_saved_prefix_approvals() -> R
         .environment_ready(
             &selection,
             EnvironmentConfig {
+                environment_hooks: Default::default(),
                 allow_login_shell: true,
                 workspace_roots: selection.workspace_roots.clone(),
                 permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::Disabled),
@@ -936,6 +1023,7 @@ async fn environment_command_policy_changes_invalidate_session_approvals() -> Re
                 .environment_ready(
                     &selection,
                     EnvironmentConfig {
+                        environment_hooks: Default::default(),
                         allow_login_shell: true,
                         workspace_roots: selection.workspace_roots.clone(),
                         permission_profile: PermissionProfileSnapshot::legacy(

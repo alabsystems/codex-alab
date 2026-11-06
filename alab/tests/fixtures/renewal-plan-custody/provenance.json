@@ -1,0 +1,9 @@
+{
+  "kind": "actual-rollout-durable-plan-projection",
+  "case": "native-renewal-143d-f519-happy-h1",
+  "source": "rollout-2026-11-03T01-24-24-01a1a0b9-5d01-7731-88fd-31312f78463d.jsonl",
+  "sha256": "384b66970946c1c271d7cff1da1a87d4a15458606305f4a8ab0bdebfb118f791",
+  "codexSourceCommit": "143dca0fa4d625ebf97a38204e839bb1a23c65fd",
+  "controllerSourceCommit": "a4e1d0712e1292ff3b0d845d55cdc38891a841fc",
+  "projection": "Only event/response type, original turn_id, tool name/arguments/call_id/output and unexpected plan UI payload. All prose, credentials, environment and private paths omitted."
+}

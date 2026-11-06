@@ -4,11 +4,11 @@
 # ALab's packaged defaults that hold only inside aterm (`TERM_PROGRAM=aterm`), merged over
 # `defaults.toml` in the same lowest layer: any user, profile, project or `-c` value wins.
 
+# Native defaults also cover direct launches and older aterm resume/fork wrappers.
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
 [tui]
-# ALab's built-in pet, drawn from the binary (never fetched). aterm draws codex's kitty
-# graphics, so the pet shows there; in another terminal no default pet is set, and nothing
-# is written into CODEX_HOME for it. A person's own `tui.pet`, "disabled" included, wins.
-pet = "alab-kitty"
 # aterm takes OSC 9 notifications. Outside aterm upstream's "auto" stands: it picks the
 # method the terminal supports (BEL for one it does not know).
 notification_method = "osc9"

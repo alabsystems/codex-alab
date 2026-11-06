@@ -66,7 +66,7 @@ const SYSTEM_SKILLS_MARKER_SALT: &str = "v1";
 pub fn system_cache_root_dir(codex_home: &AbsolutePathBuf) -> AbsolutePathBuf {
     codex_home
         .join(SKILLS_DIR_NAME)
-        .join(SYSTEM_SKILLS_DIR_NAME)
+        .join(codex_alab_core::home::system_skills_dir(SYSTEM_SKILLS_DIR_NAME)) // ALAB(skills): codex-alab's embedded skills sit beside codex-old's, never over them
 }
 
 /// Installs embedded system skills into `CODEX_HOME/skills/.system`.

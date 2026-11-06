@@ -1,4 +1,4 @@
-//! Refreshes the email omitted by account-update notifications without blocking terminal input.
+//! Refreshes identity details omitted by account-update notifications without blocking terminal input.
 //! Results carry a request ID so account changes and reconnects reject obsolete identities.
 
 use super::App;
@@ -16,6 +16,7 @@ impl App {
     pub(super) fn refresh_account_email(&mut self, app_server: &AppServerSession) {
         let request_id = Uuid::new_v4();
         self.account_email_request_id = Some(request_id);
+        if self.alab_start_account_email_read(app_server, request_id) { return; } // ALAB(interface): retry missing identity without changing the native Off reader.
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
@@ -31,8 +32,20 @@ impl App {
             .await;
             match result {
                 Ok(Ok(response)) => {
-                    if let Some(Account::Chatgpt { email, .. }) = response.account {
-                        app_event_tx.send(AppEvent::AccountEmailLoaded { request_id, email });
+                    if let Some(Account::Chatgpt {
+                        email,
+                        workspace_name,
+                        ..
+                    }) = response.account
+                    {
+                        app_event_tx.send(AppEvent::AccountEmailLoaded {
+                            request_id,
+                            email,
+                            workspace: crate::app_server_session::workspace_display(
+                                workspace_name,
+                                response.workspace_routing,
+                            ),
+                        });
                     }
                 }
                 Ok(Err(_)) | Err(_) => {

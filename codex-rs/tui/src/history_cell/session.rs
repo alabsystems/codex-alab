@@ -42,6 +42,7 @@ pub(crate) fn with_border_with_inner_width(
 
 /// Brand title shared by the session header and the status card; each owns its own indentation.
 pub(crate) fn codex_title(version: &str) -> Vec<Span<'static>> {
+    if let Some(title) = codex_alab_tui::interface::session_title() { return title; } // ALAB(interface): distinguish the fork's version from its upstream Codex source in launch and status cards
     vec![
         ">_ ".fg(accent_color()),
         "OpenAI Codex".bold(),
@@ -177,6 +178,13 @@ impl HistoryCell for SessionInfoCell {
     fn raw_lines(&self) -> Vec<Line<'static>> {
         self.0.raw_lines()
     }
+
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        self.0
+            .parts
+            .iter()
+            .find_map(|part| part.transcript_animation_tick())
+    }
 }
 
 /// Session-level cells that stay ahead of every loaded transcript page.
@@ -205,7 +213,7 @@ pub(crate) fn new_session_info(
         model_display_name.to_string(),
         session.reasoning_effort.clone(),
         config.cwd.to_path_buf(),
-        CODEX_CLI_VERSION,
+        cli_version(), // ALAB(version): running executable identity
     )
     .with_yolo_mode(has_yolo_permissions(
         session.approval_policy,
@@ -214,7 +222,7 @@ pub(crate) fn new_session_info(
     let mut parts: Vec<Box<dyn HistoryCell>> = vec![Box::new(header)];
     alab_banner::prepend(&mut parts, local_settings); // ALAB(banner): ALab's rainbow kitty launch banner is part 0, once per process
 
-    if is_first_event {
+    if is_first_event && local_settings.tui.show_tooltips {
         // Help lines below the header (new copy and list)
         let help_lines: Vec<Line<'static>> = vec![
             "  To get started, describe a task or try one of these commands:"
@@ -249,7 +257,7 @@ pub(crate) fn new_session_info(
         ];
 
         parts.push(Box::new(PlainHistoryCell { lines: help_lines }));
-    } else {
+    } else if !is_first_event {
         if local_settings.tui.show_tooltips
             && let Some(tooltips) = tooltip_override
                 .or_else(|| tooltips::get_tooltip(auth_plan, &local_settings.tui.keymap))
@@ -291,6 +299,29 @@ pub(crate) fn has_yolo_permissions(
                 }
         )
 }
+/// The fresh terminal header marks the start of visible scrollback after Ctrl+L.
+/// It has no transcript representation because the original session header is still retained.
+#[derive(Debug)]
+pub(crate) struct ClearScreenHeader(pub(crate) SessionHeaderHistoryCell);
+
+impl HistoryCell for ClearScreenHeader {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.0.display_lines(width)
+    }
+
+    fn live_raw_lines(&self) -> Vec<Line<'static>> {
+        self.0.raw_lines()
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        Vec::new()
+    }
+
+    fn transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        Vec::new()
+    }
+}
+
 /// Session banner with a model label already resolved for presentation by its caller.
 #[derive(Debug)]
 pub(crate) struct SessionHeaderHistoryCell {
@@ -370,6 +401,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
                     .dim(),
             ]),
         ];
+        if let Some(model) = codex_alab_tui::service_tier::header_model(&self.model, self.reasoning_label()) { lines.insert(2, model); } // ALAB(speed): show the model, supported processing tier and matching reasoning in enhanced headers.
         if self.yolo_mode {
             lines.push(Line::from(vec![
                 "  permissions: ".dim(),
@@ -384,7 +416,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         let mut lines = vec![
-            Line::from(format!("OpenAI Codex (v{})", self.version)),
+            codex_alab_tui::interface::session_title().map(Line::from).unwrap_or_else(|| Line::from(format!("OpenAI Codex (v{})", self.version))), // ALAB(interface): raw scrollback identifies the fork and upstream source just as the rendered header does
             Line::from(format!(
                 "model: {}{}",
                 self.model,
@@ -404,7 +436,8 @@ impl HistoryCell for SessionHeaderHistoryCell {
     }
 }
 
+#[path = "../../../alab-tui/glue/banner_cell.rs"]
+mod alab_banner;
 #[cfg(test)]
 #[path = "session_transcript_tests.rs"]
-mod transcript_tests;
-#[path = "../../../alab-tui/glue/banner_cell.rs"] mod alab_banner; // ALAB(banner): the banner's cell lives in codex-rs/alab-tui; HistoryCell is pub(crate)
+mod transcript_tests; // ALAB(banner): the banner's cell lives in codex-rs/alab-tui; HistoryCell is pub(crate)

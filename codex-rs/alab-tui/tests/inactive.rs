@@ -25,6 +25,14 @@ async fn without_the_switch_upstream_defaults_stand() {
     assert!(codex_alab_tui::attach_shared_daemon());
     assert!(!codex_alab_tui::is_upsell_cta("open_pricing_dialog"));
     assert!(!codex_alab_tui::skip_optional_model_upgrade());
+    assert!(!codex_alab_tui::reload_skills_after_import());
+    assert_eq!(
+        codex_alab_tui::auth_path_daemon_exclusion_with(
+            codex_alab_core::active(),
+            Some(home.path().join("auth.json").as_os_str()),
+        ),
+        None,
+    );
 }
 
 /// Without the switch the life and session hooks do nothing: no launch snapshot, no stamp,
@@ -53,7 +61,8 @@ fn without_the_switch_the_life_hooks_are_inert() {
         editor_open: false,
         pending_user_turn: false,
     });
-    codex_alab_tui::session::human_input();
+    codex_alab_tui::session::human_input(true);
+    codex_alab_tui::session::human_input(false);
     codex_alab_tui::life::at_exit(/*is_fatal*/ false);
     codex_alab_tui::life::reraise_signal();
     let shared = codex_alab_core::session::shared();
@@ -80,7 +89,7 @@ async fn without_the_switch_folder_trust_is_never_answered() {
         trust_target: folder,
     };
     assert_eq!(
-        trust::judge(&gate).await,
+        trust::judge(&gate, trust::SETTLE_WITHIN).await,
         trust::Verdict::Show("not codex-alab".to_string())
     );
     assert_eq!(trust::take_notice(), None);
@@ -131,4 +140,93 @@ fn without_the_switch_the_log_database_keeps_feedback_tags() {
     let filter = codex_state::log_db::default_filter();
     assert!(filter.would_enable("feedback_tags", &tracing::Level::INFO));
     assert!(filter.would_enable("codex_core::session", &tracing::Level::TRACE));
+    assert!(filter.would_enable("codex_http_client::custom_ca", &tracing::Level::TRACE));
+}
+
+/// Without the switch the OSC 7501 hooks leave the report to upstream (`ALAB(turns)`): nothing
+/// is written through them, inside aterm or not.
+#[test]
+fn without_the_switch_upstream_writes_the_program_report() {
+    use codex_alab_core::session::ProgramState;
+    use codex_alab_tui::turns;
+    assert!(!codex_alab_core::active());
+    assert!(!turns::enabled());
+    let frame = turns::Frame {
+        state: ProgramState::Working,
+        startup_only: true,
+        rest: ProgramState::Idle,
+        submitted: false,
+        elsewhere: false,
+        held: false,
+    };
+    assert!(turns::frame(frame, |_| panic!("upstream writes the report")).is_none());
+    assert!(
+        !turns::running_elsewhere(None),
+        "no shared state is read for another thread's turn"
+    );
+    assert!(
+        !turns::seen_elsewhere(None),
+        "no shared state is read for a turn the TUI saw"
+    );
+    assert!(
+        turns::starting(
+            /*asked*/ true,
+            |_| panic!("upstream writes the report")
+        )
+        .is_none()
+    );
+}
+
+/// Without the switch the account notice is never routed (`ALAB(notices)`): the session is not
+/// even looked for, no connection is made though an aterm is there, and upstream's banner
+/// shows.
+#[tokio::test]
+async fn without_the_switch_no_notice_is_routed() {
+    use codex_alab_aterm::fake::FakeAterm;
+    use codex_alab_aterm::fake::Mode;
+    use codex_alab_tui::notices;
+    assert!(!codex_alab_core::active());
+    let dir = tempfile::tempdir().unwrap_or_else(|err| panic!("scratch dir: {err}"));
+    let fake = FakeAterm::start(dir.path(), Mode::Current)
+        .await
+        .unwrap_or_else(|err| panic!("fake aterm: {err}"));
+    let notice = notices::RoutedNotice {
+        account: "acct-0123".to_string(),
+        user: "user-abcd".to_string(),
+        title: "Set up security for Daybreak mode".to_string(),
+        description: "Finish setup by October 15.".to_string(),
+        url: "https://chatgpt.com/cyber".to_string(),
+    };
+    let looked = std::cell::Cell::new(false);
+    let endpoint = fake.endpoint();
+    let locate = || {
+        looked.set(true);
+        Some(endpoint)
+    };
+    assert!(!notices::route_from(locate, &notice).await);
+    assert!(!looked.get(), "the session is not looked for");
+    assert_eq!(fake.connections(), 0, "{:?}", fake.requests());
+    assert!(!notices::route(&notice).await);
+    assert_eq!(fake.connections(), 0);
+    let looked = std::cell::Cell::new(false);
+    let locate = || {
+        looked.set(true);
+        Some(fake.endpoint())
+    };
+    assert!(!notices::settle_from(locate, &notice.account, &notice.user).await);
+    assert!(!looked.get(), "no session is looked for to settle");
+    assert!(!notices::settle(&notice.account, &notice.user).await);
+    assert_eq!(fake.connections(), 0, "{:?}", fake.requests());
+}
+
+/// Without the switch the system skills stay where upstream keeps them (`ALAB(skills)`).
+#[test]
+fn without_the_switch_system_skills_stay_in_dot_system() {
+    assert!(!codex_alab_core::active());
+    let home = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path("/codex-home")
+        .unwrap_or_else(|err| panic!("absolute: {err}"));
+    assert_eq!(
+        codex_skills::system_cache_root_dir(&home).as_path(),
+        std::path::Path::new("/codex-home/skills/.system")
+    );
 }

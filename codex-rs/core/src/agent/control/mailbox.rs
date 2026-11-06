@@ -1,22 +1,27 @@
 //! Retains queue-only mail while local sessions are unloaded.
 //! Eviction transfers mail before releasing the recipient's residency guard.
 
+// ALAB(exec-mail): retain unread controller mail through native account replacement.
+#[path = "../../../../alab-core/glue/exec_agent_mailboxes.rs"]
+pub(crate) mod exec;
+
+use crate::PendingAgentMessage;
 use crate::agent_communication::PENDING_MAILBOX_MESSAGES;
 use codex_diagnostics::GaugeGuard;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
-use codex_protocol::protocol::InterAgentCommunication;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use tokio::sync::watch;
 
-pub(super) struct Mailboxes(Mutex<Option<HashMap<ThreadId, Mailbox>>>);
+// ALAB(exec-mail): custody outlives sealing while accepted eviction transfers finish.
+pub(super) struct Mailboxes(Mutex<Option<HashMap<ThreadId, Mailbox>>>, exec::ExecMailboxCustody);
 
 impl Default for Mailboxes {
     fn default() -> Self {
-        Self(Mutex::new(Some(HashMap::new())))
+        Self(Mutex::new(Some(HashMap::new())), Default::default()) // ALAB(exec-mail): private custody starts empty.
     }
 }
 
@@ -28,7 +33,7 @@ struct Mailbox {
 
 struct StoredMail {
     id: Option<String>,
-    communication: InterAgentCommunication,
+    communication: PendingAgentMessage,
     _diagnostics_guard: GaugeGuard,
 }
 
@@ -37,7 +42,7 @@ impl Mailboxes {
         &self,
         agent: ThreadId,
         id: Option<String>,
-        messages: Vec<InterAgentCommunication>,
+        messages: Vec<PendingAgentMessage>,
     ) -> Result<()> {
         let mut mailboxes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let mailbox = mailboxes
@@ -56,7 +61,7 @@ impl Mailboxes {
         Ok(())
     }
 
-    pub(super) fn take(&self, agent: ThreadId) -> Vec<InterAgentCommunication> {
+    pub(super) fn take(&self, agent: ThreadId) -> Vec<PendingAgentMessage> {
         let mut mailboxes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(mailbox) = mailboxes
             .as_mut()
@@ -94,18 +99,20 @@ impl Mailboxes {
     }
 
     pub(super) fn remove(&self, agent: ThreadId) {
-        if let Some(mailboxes) = self
+        // Dropping pending mail can run extension destructors. Release the lock first.
+        let mailbox = self
             .0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_mut()
-        {
-            mailboxes.remove(&agent);
-        }
+            .and_then(|mailboxes| mailboxes.remove(&agent));
+        drop(mailbox);
     }
 
     pub(super) fn close(&self) {
-        if let Some(mailboxes) = self.0.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        // Detach under the lock, then notify readers and drop pending mail outside it.
+        let mailboxes = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(mailboxes) = mailboxes {
             for mailbox in mailboxes.values() {
                 mailbox.state.send_replace(false);
             }

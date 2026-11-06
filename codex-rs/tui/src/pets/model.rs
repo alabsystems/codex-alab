@@ -162,6 +162,7 @@ struct AnimationSpec {
 }
 
 fn load_builtin_pet(pet: catalog::BuiltinPet, codex_home: Option<&Path>) -> Result<Pet> {
+    if let Some(pet) = catalog::alab_pets::load(pet, codex_home)? { return Ok(pet); } // ALAB(pets): ALab's smooth sprite tracks carry their own geometry and timing
     let codex_home = codex_home.context("CODEX_HOME is not available")?;
     let spritesheet_path = super::builtin_spritesheet_path(codex_home, pet.spritesheet_file);
     if !spritesheet_path.exists() {

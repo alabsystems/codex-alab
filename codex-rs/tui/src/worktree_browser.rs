@@ -54,12 +54,15 @@ pub(crate) fn fetch(
 ) {
     tokio::spawn(async move {
         let result = async {
+            #[cfg(test)] let list_phase = crate::app::alab_test_assertions::worktree_phase("list configuration and Git worktrees"); // ALAB(test-assertions): locate browser deadline failures without changing its work.
             let mut entries = list(codex_home.clone(), request.cwd.clone()).await?;
+            #[cfg(test)] list_phase.complete(); // ALAB(test-assertions): distinguish completion from cancellation before owner annotation.
             let archive_root = codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
             for entry in &mut entries {
                 let Owner::Unavailable(id) = entry.owner else {
                     continue;
                 };
+                #[cfg(test)] let owner_phase = crate::app::alab_test_assertions::worktree_phase("read worktree owner thread"); // ALAB(test-assertions): retain serial owner reads and the original response deadline.
                 let response = app_server
                     .request_typed::<ThreadReadResponse>(ClientRequest::ThreadRead {
                         request_id: RequestId::String(uuid::Uuid::new_v4().to_string()),
@@ -69,6 +72,7 @@ pub(crate) fn fetch(
                         },
                     })
                     .await;
+                #[cfg(test)] owner_phase.complete(); // ALAB(test-assertions): a received error is still a completed owner request.
                 if let Ok(response) = response {
                     let thread = response.thread;
                     let Some(path) = thread.path.as_ref() else {
@@ -116,6 +120,7 @@ pub(crate) fn fetch(
 }
 
 pub(crate) async fn list(codex_home: PathBuf, cwd: PathBuf) -> anyhow::Result<Vec<Entry>> {
+    #[cfg(test)] let config_phase = crate::app::alab_test_assertions::worktree_phase("load worktree browser configuration"); // ALAB(test-assertions): separate config loading from blocking Git discovery.
     let host = crate::legacy_core::config::load_config_toml_with_layer_stack(
         &codex_home,
         /*cwd*/ None,
@@ -125,12 +130,17 @@ pub(crate) async fn list(codex_home: PathBuf, cwd: PathBuf) -> anyhow::Result<Ve
     .await?;
     let settings =
         codex_worktree::WorktreeSettings::for_cli(&codex_home, host.config_toml.desktop.as_ref())?;
+    #[cfg(test)] config_phase.complete(); // ALAB(test-assertions): configuration and settings are ready.
     // Closing the popup discards its result; an already-running blocking Git call still finishes.
-    tokio::task::spawn_blocking(move || {
+    #[cfg(test)] let blocking_phase = crate::app::alab_test_assertions::worktree_phase("await blocking Git discovery"); // ALAB(test-assertions): include queue delay separately from work inside the closure.
+    let entries = tokio::task::spawn_blocking(move || {
+        #[cfg(test)] let discovery_phase = crate::app::alab_test_assertions::worktree_phase("enumerate validated Git worktrees"); // ALAB(test-assertions): locate metadata enumeration before ownership reads.
         let cwd = codex_git_utils::get_git_repo_root(&cwd).unwrap_or(cwd);
         let manager = codex_worktree::WorktreeManager::new(settings);
-        Ok(manager
-            .list(&cwd)?
+        let checkouts = manager.list(&cwd)?;
+        #[cfg(test)] discovery_phase.complete(); // ALAB(test-assertions): Git enumeration completed before reading owners.
+        #[cfg(test)] let owners_phase = crate::app::alab_test_assertions::worktree_phase("read validated worktree ownership metadata"); // ALAB(test-assertions): keep metadata work within the original blocking closure.
+        let entries = checkouts
             .into_iter()
             .map(|checkout| Entry {
                 owner: manager
@@ -142,9 +152,13 @@ pub(crate) async fn list(codex_home: PathBuf, cwd: PathBuf) -> anyhow::Result<Ve
                 root: checkout.root,
                 cwd: checkout.cwd,
             })
-            .collect())
+            .collect();
+        #[cfg(test)] owners_phase.complete(); // ALAB(test-assertions): all metadata ownership reads completed.
+        Ok(entries)
     })
-    .await?
+    .await?;
+    #[cfg(test)] blocking_phase.complete(); // ALAB(test-assertions): distinguish a returned result from a dropped await.
+    entries
 }
 
 pub(crate) async fn remove(

@@ -31,6 +31,12 @@ pub use codex_protocol::turn_input::TurnStartOptions;
 pub use responses_metadata::CodexResponsesMetadata;
 pub use turn_metadata::detached_memory_responses_metadata;
 mod codex_thread;
+pub use agent::control::exec_tree_gate::{ExecTreeSeal, ExecPreparedChildRestore, ExecRestoredChild, ExecRestoredMember}; // ALAB(exec-tree): typed start barrier, not recovery authority.
+pub use tasks::alab_exec_launch::{ExecLaunchBarrier, ExecLaunchPermit}; // ALAB(exec-tree): bind launch ordering to fresh runtimes and original turns.
+pub use tasks::review_recovery::{ExecFrozenReview, ExecReviewSnapshot}; // ALAB(exec-review): closed-source review data is not execution authority.
+pub use session::alab_exec_recovery_options::{ExecTreeSnapshot, ExecThreadSnapshot, ExecCapturedTree, ExecCapturedThread, ExecPreparedTree, ExecPreparedChild, ExecEphemeralHistory, ExecInputSnapshot, ExecInputBatch, PreparedExecInputBatch, PreparedExecIdleInput, ExecRecoveryOptions, quota_observation::{ExecQuotaWall, ExecQuotaWatch}}; // ALAB(exec-recovery): typed original settings and history, not execution authority.
+mod thread_input;
+pub use thread_input::InputWaitOutcome;
 mod turn_extension_data;
 pub use turn_extension_data::WithTurnExtensionData;
 mod compact_model_fallback;
@@ -55,6 +61,7 @@ pub use codex_thread::GuardianAuthorizationVersion;
 pub use codex_thread::GuardianRootMessage;
 pub use codex_thread::GuardianRootSnapshot;
 pub use codex_thread::ThreadConfigSnapshot;
+pub use guardian::ScoreAuthorization as GuardianScoreAuthorization;
 pub use session::turn_context::TurnContext;
 pub use thread_startup_metadata::ThreadStartupMetadata;
 mod agent;
@@ -77,6 +84,7 @@ pub use agent::types::SpawnAgentForkMode;
 pub use agent::types::SpawnAgentOptions;
 pub use rollout_budget::RolloutBudgetReminder;
 mod agent_communication;
+pub use agent_communication::PendingAgentMessage;
 mod agent_message_board;
 pub use agent_message_board::install_agent_message_board;
 mod attestation;
@@ -96,8 +104,12 @@ pub mod exec_env;
 mod exec_policy;
 #[cfg(test)]
 mod git_info_tests;
+#[cfg(test)]
+#[path = "../../alab-core/glue/test_fixtures.rs"]
+mod alab_test_fixtures; // ALAB(core-test-fixtures): unit fixtures use writable scratch without changing runtime containment.
 mod guardian;
 pub mod guardian_review;
+mod hook_environment_executor;
 mod hook_mcp_executor;
 mod hook_runtime;
 mod image_preparation;
@@ -108,6 +120,7 @@ mod mcp_tool_approval_templates;
 mod mcp_tool_exposure;
 mod network_policy_decision;
 pub use mcp::McpManager;
+pub use mcp::McpServersDisabled;
 mod original_image_detail;
 pub use codex_mcp::CodexAppsToolsCache;
 pub use codex_mcp::SandboxState;
@@ -149,6 +162,14 @@ mod event_mapping;
 pub use codex_prompts as review_prompts;
 mod thread_manager;
 mod thread_spawn;
+pub use agent::host::AgentMcpMetadataRecipient;
+pub use agent::host::HostThreadSpawnReservation;
+pub use agent::host::HostToolInvocationLookup;
+pub use agent::host::PreparedChildContext;
+pub use agent::host::ToolInvocationContext;
+pub use thread_spawn::ThreadCreateRequest;
+pub use thread_spawn::ThreadSpawnError;
+pub use thread_spawn::ThreadSpawnResult;
 pub(crate) mod web_search;
 pub(crate) mod windows_sandbox_read_grants;
 pub use agent::control::ThreadEvictionOutcome;
@@ -159,8 +180,10 @@ pub use thread_manager::AgentTreeShutdownReport;
 pub use thread_manager::ForkSnapshot;
 pub use thread_manager::InternalSessionParent;
 pub use thread_manager::NewThread;
+pub use thread_manager::PromptCacheKey;
 pub use thread_manager::StartThreadOptions;
 pub use thread_manager::ThreadManager;
+pub use thread_manager::ThreadRegistration;
 pub use thread_manager::ThreadShutdownReport;
 pub use thread_manager::build_models_manager;
 pub use thread_manager::local_agent_graph_store_from_state_db;

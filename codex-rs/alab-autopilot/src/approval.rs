@@ -188,7 +188,7 @@ fn has_asking_rule(policy: &ExecPolicy) -> bool {
                 .is_none_or(|prefix| {
                     matches!(
                         prefix.decision,
-                        RuleDecision::Prompt | RuleDecision::Forbidden
+                        RuleDecision::Prompt | RuleDecision::PromptUser | RuleDecision::Forbidden
                     )
                 })
         })
@@ -215,7 +215,10 @@ pub fn rule_prompt(policy: &ExecPolicy, command: &[String]) -> RulePrompt {
             .iter()
             .any(|m| match m {
                 RuleMatch::PrefixRuleMatch { decision, .. } => {
-                    matches!(decision, RuleDecision::Prompt | RuleDecision::Forbidden)
+                    matches!(
+                        decision,
+                        RuleDecision::Prompt | RuleDecision::PromptUser | RuleDecision::Forbidden
+                    )
                 }
                 RuleMatch::HeuristicsRuleMatch { .. } => false,
             })

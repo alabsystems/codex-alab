@@ -36,8 +36,9 @@
 //! Only in the codex binary ([`codex_alab_core::active`]), only inside aterm
 //! (`TERM_PROGRAM=aterm`, [`codex_alab_core::inside_aterm`]) with no multiplexer between
 //! (tmux, zellij, screen's `STY`: their terminal is not aterm, and zellij and screen pass
-//! `TERM_PROGRAM` on; upstream's OSC 21337 gate), only to a terminal, and only while
-//! `[tui] alab_progress` is `true`:
+//! `TERM_PROGRAM` on; upstream's OSC 21337 gate), only to a terminal, not while the harness
+//! leaves the session unsupervised ([`crate::banner::Harness::Unsupervised`]; under Autopilot
+//! off the harness is still on), and only while `[tui] alab_progress` is `true`:
 //! `alab-core/aterm-defaults.toml` sets it inside aterm, and a person's `alab_progress = false`
 //! (`~/.codex/config.toml`, or `-c tui.alab_progress=false`) turns it off. Anything else
 //! writes nothing, ever. codex-alab's `--strict-config` accepts the key (the `ALAB(progress)`
@@ -229,6 +230,7 @@ pub fn observe<'a>(
 ) {
     static PLACE: OnceLock<(bool, bool, bool)> = OnceLock::new();
     if !codex_alab_core::active() {
+        clear();
         return;
     }
     let (inside_aterm, multiplexed, to_terminal) = *PLACE.get_or_init(|| {
@@ -238,8 +240,11 @@ pub fn observe<'a>(
             io::stdout().is_terminal(),
         )
     });
+    // The bar is harness chrome: it shows while the harness is on, under any Autopilot word
+    // (Off included), and with no supervisor at all; it goes while the harness does not
+    // supervise the session (its policy off for another reason, the claim not proven).
     let enabled = enabled(
-        /*active*/ true,
+        crate::banner::harness_state() != Some(crate::banner::Harness::Unsupervised),
         inside_aterm,
         multiplexed,
         to_terminal,

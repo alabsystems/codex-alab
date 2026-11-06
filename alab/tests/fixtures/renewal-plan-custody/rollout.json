@@ -1,0 +1,33 @@
+[
+  {
+    "type": "event_msg",
+    "payload": {
+      "type": "task_started",
+      "turn_id": "01a1a0b9-5d1d-75b3-9a56-2759728375aa"
+    }
+  },
+  {
+    "type": "response_item",
+    "payload": {
+      "type": "function_call",
+      "name": "update_plan",
+      "arguments": "{\"plan\": [{\"step\": \"Completed work survives a capacity retry\", \"status\": \"completed\"}]}",
+      "call_id": "capacity-smoke-plan"
+    }
+  },
+  {
+    "type": "response_item",
+    "payload": {
+      "type": "function_call_output",
+      "call_id": "capacity-smoke-plan",
+      "output": "Plan updated"
+    }
+  },
+  {
+    "type": "event_msg",
+    "payload": {
+      "type": "task_started",
+      "turn_id": "01a1a0b9-5d1d-75b3-9a56-2759728375aa"
+    }
+  }
+]

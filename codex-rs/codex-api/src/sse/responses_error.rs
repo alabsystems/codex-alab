@@ -2,7 +2,7 @@
 //! Only rate-limit codes derive retry delays from plaintext messages.
 
 use crate::error::ApiError;
-use crate::error::parse_flex_unavailable;
+use crate::error::parse_terminal_provider_error;
 use crate::responses_headers::json_headers_to_http_headers;
 use codex_http_client::RetryAfter;
 use codex_protocol::protocol::MisalignmentErrorDetails;
@@ -29,7 +29,7 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
         .and_then(|error| error.get("headers"))
         .and_then(Value::as_object)
         .and_then(|headers| RetryAfter::from_headers(&json_headers_to_http_headers(headers)));
-    if let Some(error) = error.and_then(parse_flex_unavailable) {
+    if let Some(error) = parse_terminal_provider_error(error, /*status*/ None) {
         return error;
     }
     let Some(error) = error.and_then(|error| serde_json::from_value::<Error>(error.clone()).ok())
@@ -84,6 +84,9 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
                 .message
                 .unwrap_or_else(|| "Invalid request.".to_string()),
         },
+        Some("policy_capacity_unavailable") => ApiError::PolicyCapacityUnavailable {
+            retry_after: retry_after_header,
+        },
         Some("server_is_overloaded") => ApiError::ServerOverloaded {
             retry_after: retry_after_header,
         },
@@ -95,6 +98,7 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
                 retry_after,
             }
         }
+        Some(code) if codex_alab_core::capacity::streamed_quota_alias(code) => ApiError::QuotaExceeded, // ALAB(quota): retain the exact HTTP quota classification for streamed errors.
         _ => ApiError::Retryable {
             message: error.message.unwrap_or_default(),
             retry_after: retry_after_header,
@@ -145,3 +149,7 @@ fn rate_limit_regex() -> &'static regex_lite::Regex {
 #[cfg(test)]
 #[path = "responses_error_parser_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../alab-core/glue/responses_error_quota_tests.rs"]
+mod alab_quota_tests; // ALAB(quota): isolated parser controls live in ALab core.

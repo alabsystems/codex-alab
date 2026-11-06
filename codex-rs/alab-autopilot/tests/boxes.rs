@@ -1,12 +1,13 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! The question overlay and the plan box from the supervisor's side: a box the TUI's glue
-//! reports in a private shared state is answered (posted, the TUI woken) only under a
-//! proven claim of alab-aterm's in-process FAKE aterm, after the grace; the act is recorded
+//! The question overlay, the plan box and the goal box from the supervisor's side: a box the
+//! TUI's glue reports in a private shared state is answered (posted, the TUI woken) only under
+//! a proven claim of alab-aterm's in-process FAKE aterm, after the grace; the act is recorded
 //! once the glue says the box took it; a box that is a person's raises keyed attention and
 //! clears it when it closes; an old aterm is never claimed and nothing is posted. The glue's
-//! own half (the overlay's submit, the plan box's accept) is tested inside codex-tui.
+//! own half (the overlay's submit, the plan box's and the goal box's accept) is tested inside
+//! codex-tui.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
@@ -24,6 +25,7 @@ use codex_alab_core::boxes::BoxOption;
 use codex_alab_core::boxes::BoxOutcome;
 use codex_alab_core::boxes::BoxQuestion;
 use codex_alab_core::boxes::Choice;
+use codex_alab_core::boxes::GoalStop;
 use codex_alab_core::boxes::OpenBox;
 use codex_alab_core::session::Frame;
 use codex_alab_core::session::ProgramState;
@@ -146,6 +148,40 @@ fn plan_box() -> OpenBox {
     }
 }
 
+fn goal_box(stop: GoalStop) -> OpenBox {
+    OpenBox {
+        id: "goal-1".to_string(),
+        kind: BoxKind::Goal {
+            rows: vec!["Resume goal".to_string(), "Leave paused".to_string()],
+            stop: Some(stop),
+        },
+        opened_ms: now_ms(),
+    }
+}
+
+/// The TUI's frame while a box is its active view: a popup is open, which holds every act
+/// but the box's own answer back.
+fn popup_open(h: &Harness) {
+    h.shared.observe(
+        &Frame {
+            primary_thread: Some("019a0000-0000-7000-8000-0000000000aa"),
+            displayed_thread: Some("019a0000-0000-7000-8000-0000000000aa"),
+            rollout_path: None,
+            cwd: std::path::Path::new("/work"),
+            model: "gpt-5",
+            codex_home: h._dir.path(),
+            embedded: true,
+            state: ProgramState::Idle,
+            draft_empty: true,
+            queued_input: false,
+            popup_open: true,
+            editor_open: false,
+            pending_user_turn: false,
+        },
+        now_ms(),
+    );
+}
+
 /// The glue's half, played: take the answer and say the box took it and closed.
 fn take(h: &Harness, id: &str) -> BoxAnswer {
     let answer = h
@@ -168,8 +204,9 @@ async fn a_question_box_is_answered_after_the_grace_and_recorded_once_the_tui_to
             .wait_for(|f| f.claim().is_some_and(|c| c.proven_pid.is_some()))
             .await
     );
-    h.shared.report_box(question_box());
+    // Before the box's own `opened_ms`, so the grace's lower bound holds.
     let opened = std::time::Instant::now();
+    h.shared.report_box(question_box());
     wait_until("the answer is posted", || h.shared.box_answer_pending()).await;
     assert!(
         opened.elapsed() >= Duration::from_millis(900),
@@ -227,6 +264,124 @@ async fn the_plan_box_is_answered_under_approve_all() {
             .wait_for(|f| f.acts().iter().any(|a| a == "plan-approve@v2"))
             .await
     );
+}
+
+/// "Resume paused goal?" after a resume held every act back ("a popup or modal is open"): over
+/// a paused goal, under any policy word, its `Leave paused` is posted after the grace while
+/// the popup is open, and it is no act of the task: noted and told in aterm's message log,
+/// never `meta set harness_act` (which would move aterm's task face to open) and no story.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_goal_box_over_a_paused_goal_is_left_as_it_was_and_records_no_act() {
+    let h = harness(Mode::Current, &[("approve", "none"), ("questions", "ask")]).await;
+    assert!(
+        h.fake
+            .wait_for(|f| f.claim().is_some_and(|c| c.proven_pid.is_some()))
+            .await
+    );
+    popup_open(&h);
+    // Before the box's own `opened_ms`, so the grace's lower bound holds.
+    let opened = std::time::Instant::now();
+    h.shared.report_box(goal_box(GoalStop::Paused));
+    wait_until("the answer is posted", || h.shared.box_answer_pending()).await;
+    assert!(
+        opened.elapsed() >= Duration::from_millis(900),
+        "not before the grace"
+    );
+    assert_eq!(
+        take(&h, "goal-1"),
+        BoxAnswer::Goal {
+            id: "goal-1".to_string(),
+            row: 1,
+        }
+    );
+    assert!(
+        h.fake
+            .wait_for(|f| f.notices().iter().any(|n| n.contains("Leave paused")))
+            .await,
+        "told in aterm's message log: {:?} {:?}",
+        h.fake.notices(),
+        h.sup.journal()
+    );
+    // Noted after the notice is sent (`told`).
+    wait_until("noted", || {
+        h.sup
+            .journal()
+            .iter()
+            .any(|line| line.contains("act goal-leave@v1"))
+    })
+    .await;
+    assert!(
+        !h.fake.acts().iter().any(|a| a == "goal-leave@v1"),
+        "no act of the task: {:?}",
+        h.fake.acts()
+    );
+    assert!(h.fake.stories().is_empty(), "{:?}", h.fake.stories());
+    assert!(h.fake.attention().is_empty(), "{:?}", h.fake.attention());
+}
+
+/// Over a usage-limited goal the goal box's `Leave paused` is posted after the grace, as over a
+/// paused one: left open, the popup would hold every root thread's acts back, and the goal goes
+/// on only through a usage resume, which the box neither owes nor blocks once it is gone. The
+/// box raises nothing itself: where the point owes no usage resume, the turn end's own look
+/// says a person decides, and says it again after every passive spell (`tests/autopilot.rs`,
+/// `a_stopped_goals_attention_is_raised_again_when_acting_resumes`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_goal_box_over_a_usage_limited_goal_is_left_as_it_was_and_raises_nothing() {
+    let h = harness(Mode::Current, &[]).await;
+    assert!(
+        h.fake
+            .wait_for(|f| f.claim().is_some_and(|c| c.proven_pid.is_some()))
+            .await
+    );
+    popup_open(&h);
+    h.shared.report_box(goal_box(GoalStop::UsageLimited));
+    wait_until("the answer is posted", || h.shared.box_answer_pending()).await;
+    assert_eq!(
+        take(&h, "goal-1"),
+        BoxAnswer::Goal {
+            id: "goal-1".to_string(),
+            row: 1,
+        }
+    );
+    wait_until("noted", || {
+        h.sup
+            .journal()
+            .iter()
+            .any(|line| line.contains("act goal-leave@v1"))
+    })
+    .await;
+    assert!(h.fake.attention().is_empty(), "{:?}", h.fake.attention());
+    assert!(
+        !h.fake.acts().iter().any(|a| a == "goal-leave@v1"),
+        "no act of the task: {:?}",
+        h.fake.acts()
+    );
+}
+
+/// NEGATIVE CONTROL: over a blocked goal the goal box is a person's: nothing is posted, and
+/// keyed attention says why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_goal_box_over_a_blocked_goal_is_left_to_a_person() {
+    let h = harness(Mode::Current, &[]).await;
+    assert!(
+        h.fake
+            .wait_for(|f| f.claim().is_some_and(|c| c.proven_pid.is_some()))
+            .await
+    );
+    popup_open(&h);
+    h.shared.report_box(goal_box(GoalStop::Blocked));
+    assert!(
+        h.fake
+            .wait_for(|f| f
+                .attention()
+                .values()
+                .any(|v| v.starts_with("goal: left to a person (the goal is blocked")))
+            .await,
+        "{:?} {:?}",
+        h.fake.attention(),
+        h.sup.journal()
+    );
+    assert!(!h.shared.box_answer_pending());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

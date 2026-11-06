@@ -31,6 +31,19 @@ pub enum HumanInput {
     Unknown,
 }
 
+/// The session's Autopilot word (`autopilot=`): FOREVER CRUISE / FOREVER LAND (aterm owner
+/// direction 2026-10-19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Autopilot {
+    /// `off`: aterm acts on nothing; nor does codex-alab (its policy reads `effective=off`).
+    Off,
+    /// `cruise`, `-`, missing (an aterm that does not print the word) or a word this reader
+    /// does not know: Cruise, which never ends a task on the worker's words.
+    Cruise,
+    /// `land`: land all of the work into the remote main branch, then end cleanly.
+    Land,
+}
+
 /// The parsed `status` line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
@@ -48,6 +61,9 @@ pub struct Status {
     pub input: String,
     /// `human_ms=`.
     pub human: HumanInput,
+    /// `human_typed_ms=`: the person's typing alone (a key, text, a paste), never a scroll or a
+    /// click; [`HumanInput::Unknown`] from an aterm that does not print it ([`Status::typed`]).
+    pub human_typed: HumanInput,
     /// `human_seq=`.
     pub human_seq: Option<u64>,
     /// `supervisor=`: the live claim's holder.
@@ -83,13 +99,42 @@ pub enum NotReady {
 }
 
 impl Status {
+    /// THE PERSON'S LAST TYPING (aterm's `human_typed_ms=`, its `human_ms=` from a window that
+    /// reports no typing stamp of its own, as aterm's own loop reads it): what holds the owner's
+    /// standing go-ahead for the hour after it.
+    #[must_use]
+    pub fn typed(&self) -> HumanInput {
+        match self.human_typed {
+            HumanInput::Unknown => self.human,
+            typed => typed,
+        }
+    }
+
+    /// ANOTHER DRIVER'S HAND ON THE TAB (aterm's `outside_hand`): `hand=` names a lease or a
+    /// turn whose holder is neither `holder` (this process's) nor a window's own host
+    /// (`aterm-harness@…`): a person's drive or another program's, which holds the owner's
+    /// standing go-ahead as the person's key does.
+    #[must_use]
+    pub fn outside_hand(&self, holder: &str) -> bool {
+        self.hand.as_deref().is_some_and(|hand| {
+            hand.strip_prefix("lease:")
+                .or_else(|| {
+                    hand.strip_prefix("turn:")
+                        .and_then(|turn| turn.split_once(':'))
+                        .map(|(_, held)| held)
+                })
+                .is_some_and(|held| held != holder && !held.starts_with("aterm-harness@"))
+        })
+    }
+
     /// Parse a `status` reply's text after `OK `.
     pub fn parse(rest: &str) -> Result<Status, Error> {
         let fields = wire::parse_fields(rest);
         let schema = fields
             .get("schema")
             .and_then(|s| s.split('.').next())
-            .and_then(|s| s.parse::<u32>().ok())
+            .and_then(wire::canonical_u64)
+            .and_then(|n| u32::try_from(n).ok())
             .ok_or_else(|| Error::Malformed(format!("status without schema: {rest}")))?;
         if schema != STATUS_SCHEMA {
             return Err(Error::Malformed(format!("status schema {schema}")));
@@ -103,11 +148,13 @@ impl Status {
         let input = fields
             .get("input")
             .map_or_else(|| "unknown".to_string(), |raw| wire::pct_decode(raw));
-        let human = match fields.get("human_ms").map(String::as_str) {
+        let human_input = |field: &str| match fields.get(field).map(String::as_str) {
             Some("-") => HumanInput::Never,
-            Some(ms) => ms.parse().map_or(HumanInput::Unknown, HumanInput::Ago),
+            Some(ms) => wire::canonical_u64(ms).map_or(HumanInput::Unknown, HumanInput::Ago),
             None => HumanInput::Unknown,
         };
+        let human = human_input("human_ms");
+        let human_typed = human_input("human_typed_ms");
         let supervisor_proven = match fields.get("supervisor_proven").map(String::as_str) {
             Some("1") => Some(true),
             Some(_) => Some(false),
@@ -120,7 +167,8 @@ impl Status {
             hand_pid: HandPid::parse(fields.get("hand_pid").map(String::as_str)),
             input,
             human,
-            human_seq: fields.get("human_seq").and_then(|v| v.parse().ok()),
+            human_typed,
+            human_seq: fields.get("human_seq").and_then(|v| wire::canonical_u64(v)),
             supervisor: wire::field(&fields, "supervisor"),
             supervisor_proven,
             program: wire::field(&fields, "program"),
@@ -133,6 +181,34 @@ impl Status {
     /// A field by name, decoded; `None` when absent or `-`.
     pub fn get(&self, key: &str) -> Option<String> {
         wire::field(&self.fields, key)
+    }
+
+    /// `autopilot=`, the session's own Autopilot word ([`Autopilot`]).
+    pub fn autopilot(&self) -> Autopilot {
+        match self.get("autopilot").as_deref().map(str::trim) {
+            Some(w) if w.eq_ignore_ascii_case("off") => Autopilot::Off,
+            Some(w) if w.eq_ignore_ascii_case("land") => Autopilot::Land,
+            _ => Autopilot::Cruise,
+        }
+    }
+
+    /// `autopilot=` as aterm said it, `None` where it said no word: missing (an older aterm),
+    /// `-` (aterm names no agent's word until its status sweep admits the one in the session,
+    /// so a codex-alab that asks at launch can read it) or a word this reader does not know.
+    pub fn autopilot_said(&self) -> Option<Autopilot> {
+        match self.get("autopilot").as_deref().map(str::trim) {
+            Some(w) if w.eq_ignore_ascii_case("off") => Some(Autopilot::Off),
+            Some(w) if w.eq_ignore_ascii_case("land") => Some(Autopilot::Land),
+            Some(w) if w.eq_ignore_ascii_case("cruise") => Some(Autopilot::Cruise),
+            _ => None,
+        }
+    }
+
+    /// THE SESSION'S LAND TIMER (`land_at=<unix s>`, aterm's timed Cruise: `cruise until=`,
+    /// its Autopilot menu's land-in and land-at rows), while it is armed; `-`, a missing field
+    /// (an aterm before its timers), `0` or a value this reader cannot read names none.
+    pub fn land_at(&self) -> Option<u64> {
+        wire::canonical_u64(self.get("land_at")?.trim()).filter(|&at| at > 0)
     }
 
     /// Whether `holder` holds a claim aterm says is proven (CONTRACT §1).

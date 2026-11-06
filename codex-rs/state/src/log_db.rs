@@ -61,6 +61,7 @@ const SQLX_LOG_TARGETS: [&str; 3] = ["sqlx", "sqlx_core", "sqlx_sqlite"];
 pub fn default_filter() -> Targets {
     Targets::new()
         .with_default(if codex_alab_core::trace_diagnostics() { LevelFilter::TRACE } else { LevelFilter::INFO }).with_target("feedback_tags", if codex_alab_core::feedback_tags_logged() { LevelFilter::TRACE } else { LevelFilter::OFF }) // ALAB(quiet-logs): INFO and up into SQLite, not every TRACE event, nor /feedback's tags
+        .with_target("codex_http_client::custom_ca", if codex_alab_core::trace_diagnostics() { LevelFilter::TRACE } else if codex_alab_core::ca_choice_logged() { LevelFilter::INFO } else { LevelFilter::WARN }) // ALAB(quiet-logs): with no CA override set, not a row for each HTTP client built (one per usage read), only its failures
         .with_target("h2", LevelFilter::WARN)
         .with_target("hyper_util", LevelFilter::WARN)
         .with_target("log", LevelFilter::OFF)

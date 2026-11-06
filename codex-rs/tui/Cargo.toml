@@ -194,3 +194,11 @@ wiremock = { workspace = true }
 # ALAB(build): codex-alab's TUI policy and banner (codex-rs/alab-tui).
 [dependencies.codex-alab-tui]
 path = "../alab-tui"
+
+# ALAB(version): a low-level immutable running identity; no Codex dependency cycle.
+[dependencies.codex-alab-core]
+path = "../alab-core"
+
+# ALAB(test): isolate the native/TUI finish witness behind a private control server.
+[dev-dependencies.codex-alab-aterm]
+path = "../alab-aterm"

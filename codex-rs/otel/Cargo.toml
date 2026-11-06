@@ -67,9 +67,15 @@ opentelemetry_sdk = { workspace = true, features = [
     "testing",
 ] }
 pretty_assertions = { workspace = true }
+rcgen = { workspace = true }
+tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 seccompiler = { workspace = true }
+
+# ALAB(version): a low-level immutable running identity; no Codex dependency cycle.
+[dependencies.codex-alab-core]
+path = "../alab-core"

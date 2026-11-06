@@ -185,6 +185,39 @@ fn lerp_rgb(a: Rgb, b: Rgb, t: f32) -> Rgb {
     (mix(16) << 16) | (mix(8) << 8) | mix(0)
 }
 
+// --- copied verbatim from aterm crates/aterm-effects/src/harness_card.rs (5736bfb96d) ---
+
+/// The moonbow on a dark ground, `0x00RRGGBB`: white, pearl, silver, steel. aterm's harness
+/// glass wears it under Autopilot off (`CardPalette::Off`).
+pub const MOONBOW: [u32; 4] = [0x00FF_FFFF, 0x00E4_EAF3, 0x00C3_CCDA, 0x00A2_ADBE];
+
+/// The moonbow in print, on a light ground: pearl to graphite.
+pub const PRINT_OFF: [u32; 6] = [
+    0x00C4_CAD4,
+    0x00AA_B1BE,
+    0x0093_9BA9,
+    0x007C_8494,
+    0x0065_6D7D,
+    0x004F_5666,
+];
+
+// --- end of copy ---
+
+/// The moonbow at position `t` (0 white or pearl .. 1 steel or graphite): [`MOONBOW`] on a
+/// dark ground, [`PRINT_OFF`] on a `light` one, its stops spread evenly, as aterm's
+/// `CardPalette::Off.art`. A non-finite `t` draws the first stop.
+pub fn moonbow(t: f32, light: bool) -> Rgb {
+    let stops: &[u32] = if light { &PRINT_OFF } else { &MOONBOW };
+    let t = if t.is_finite() {
+        t.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let x = t * (stops.len() - 1) as f32;
+    let i = (x as usize).min(stops.len() - 2);
+    mix(stops[i], stops[i + 1], x - i as f32)
+}
+
 /// The white-hot twinkle (`effect_util.rs` `twinkle_rgb(false)`), the meteor head and hero star.
 pub const WHITE_HOT: Rgb = 0xFF_FFFF;
 /// The gold twinkle (`effect_util.rs` `twinkle_rgb(true)`).

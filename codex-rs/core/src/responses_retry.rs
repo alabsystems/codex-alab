@@ -56,6 +56,7 @@ pub(crate) struct ExhaustedResponseRetry {
 
 /// Returns `Ok(())` when the caller should retry the request loop, or the original error when
 /// it is terminal or the retry budget is exhausted.
+#[tracing::instrument(level = "trace", skip_all, fields(request = ?request))]
 pub(crate) async fn handle_response_stream_error(
     retry_state: &mut ResponsesStreamRetryState,
     max_retries: u64,
@@ -66,10 +67,11 @@ pub(crate) async fn handle_response_stream_error(
     request: ResponsesStreamRequest,
 ) -> Result<(), CodexErr> {
     let turn_context = &step_context.turn;
-    if alab_capacity_retry::should_retry(&err, request) { // ALAB(capacity): keep the same task and selected model alive
-        alab_capacity_retry::wait(&mut retry_state.capacity, err, sess, turn_context).await;
+    if alab_capacity_retry::should_retry(&err, turn_context) { // ALAB(capacity): keep sampling and compaction on the same task and selected model
+        alab_capacity_retry::wait(&mut retry_state.capacity, err, sess, turn_context, request).await;
         return Ok(());
     }
+    if alab_capacity_retry::should_stop(&err) { return Err(err); } // ALAB(recovery): permanent client refusals need correction before another request
     if matches!(request, ResponsesStreamRequest::Sampling)
         && matches!(err.details(), CodexErrorDetails::ContentFilter)
     {
@@ -106,6 +108,7 @@ pub(crate) async fn handle_response_stream_error(
         && !turn_context.provider.info().is_amazon_bedrock()
     {
         let retry_delay = retry_state.connection_retry_delay;
+        let selected_wait = alab_capacity_retry::ordinary_retry_wait(None, retry_delay, turn_context); // ALAB(wake): select the connection wait before reporting can outlive a host sleep
         warn!(
             turn_id = %turn_context.sub_id,
             error = %err,
@@ -116,7 +119,7 @@ pub(crate) async fn handle_response_stream_error(
             .await;
         retry_state.connection_retries = retry_state.connection_retries.saturating_add(1);
         codex_client::record_retry!(retry_state.connection_retries, retry_delay, operation);
-        tokio::time::sleep(retry_delay).await;
+        let retry_delay = alab_capacity_retry::connection_wait(retry_delay, selected_wait).await; // ALAB(wake): the captured host sleep counts toward the wait and restarts the doubling after a cut-short wait
         retry_state.connection_retry_delay = retry_delay
             .saturating_mul(2)
             .min(MAX_CONNECTION_RETRY_DELAY);
@@ -131,13 +134,13 @@ pub(crate) async fn handle_response_stream_error(
     {
         // Changing transport must not bypass the server's retry deadline.
         if let Some(retry_after) = retry_after {
-            tokio::time::sleep_until(retry_after.deadline()).await;
+            alab_capacity_retry::wait_after(retry_after, turn_context).await; // ALAB(wake): fallback arms and retains its own provider pacing through measured wake cuts
         }
         sess.send_event(
             turn_context,
-            EventMsg::Warning(WarningEvent {
+            alab_capacity_retry::fallback_notice(EventMsg::Warning(WarningEvent { // ALAB(retry-status): fallback updates live retry status
                 message: format!("Falling back from WebSockets to HTTPS transport. {err:#}"),
-            }),
+            }), &err), // ALAB(retry-status): retain the original diagnostic and error metadata
         )
         .await;
         retry_state.retries = 0;
@@ -146,6 +149,7 @@ pub(crate) async fn handle_response_stream_error(
 
     if retry_state.retries < max_retries {
         retry_state.retries = retry_count;
+        let selected_wait = alab_capacity_retry::ordinary_retry_wait(retry_after, delay, turn_context); // ALAB(wake): retain a request-local selection across awaited retry reporting
         log_retry(request, turn_context, &err, retry_count, max_retries, delay);
 
         // In release builds, hide the first websocket retry notification to reduce noisy
@@ -165,10 +169,10 @@ pub(crate) async fn handle_response_stream_error(
         }
         // Use one clock sample so local backoff telemetry retains the selected delay.
         let now = Instant::now();
-        let retry_at = retry_after.map(RetryAfter::deadline).unwrap_or(now + delay);
+        let retry_at = alab_capacity_retry::reported_deadline(retry_after, now, delay); // ALAB(wake): a valid provider deadline needs no unused overflowing local fallback after reporting
         let delay = retry_at.saturating_duration_since(now);
         codex_client::record_retry!(retry_count, delay, operation);
-        tokio::time::sleep_until(retry_at).await;
+        alab_capacity_retry::ordinary_wait_until(retry_at, selected_wait).await; // ALAB(wake): active selections survive reporting; inactive consumers keep upstream's timer
         return Ok(());
     }
 
@@ -216,4 +220,4 @@ fn log_retry(
 mod tests;
 
 #[path = "../../alab-core/glue/responses_retry.rs"]
-mod alab_capacity_retry; // ALAB(capacity): cancellable capacity waiting lives in ALab's layer
+pub(crate) mod alab_capacity_retry; // ALAB(capacity): cancellable capacity waiting and compaction retry advice live in ALab's layer

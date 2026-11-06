@@ -29,6 +29,45 @@ two differences were flags upstream itself added since that vendor version), `co
 --experimental-json` against a local mock model, `app-server` over stdio, `mcp list`, a
 `config.toml` override of an ALab default, the files left in `CODEX_HOME`, and `auth.json`.
 
+## Which OpenAI Codex it is built from
+
+Each build names its upstream base apart from its own version: the newest OpenAI Codex
+stable release whose branch point it has merged, and the exact
+[openai/codex](https://github.com/openai/codex) `main` commit it merged last. On
+2026-10-21 that is `rust-v0.163.0` and `e8aa7c1678ca`, 241 upstream commits past the
+release's branch point.
+
+- **In codex:** the launch card, the session header and `/status` read `codex-alab
+  v0.164.0-dev.12814 · based on OpenAI Codex 0.163.0`, for example. Primary labels keep the
+  release and build number, leaving the opaque source hash to version details. The launch
+  banner names the readable ALab version and says `based on OpenAI Codex 0.163.0` where
+  it has room. `/alab version` (also `/alab update`) shows the full running and installed
+  package versions, update state, and full ALab and OpenAI source commits for the running
+  build. `codex --version` still prints the full `codex-cli <version>`, as upstream's does.
+- **In a package:** `alab-build.json` at the package root (`aterm pkg which codex` names
+  the package's `bin/codex`) records it:
+
+  ```json
+  "upstream": {
+    "release": "rust-v0.163.0",
+    "commits_since_release": 241,
+    "commit": "e8aa7c1678caa9a368243d72bf0e9b7859d97f15",
+    "commit_date": "2026-10-20T13:50:13Z"
+  }
+  ```
+
+  A package built before 2026-10-21 has no `upstream` block, and one built on 2026-10-21
+  has no `commits_since_release`.
+- **On the release pages:** `alab/package.sh --upstream-base [--commit <rev>]` prints the
+  line that names it, `Based on upstream openai/codex rust-v0.163.0 + 241 commits
+  (e8aa7c1678ca, 2026-10-20)`. A source release's GitHub page carries that line for its
+  source commit (`publish/release-body`, which the publication engine runs when it creates
+  the release), and a package release's page (`atpkg-codex-<build>`) the same line read off
+  the package's `alab-build.json`, without the count for a package that records none. The
+  releases published before the pages named it (`v0.164.0`, `atpkg-codex-2026102001`) name
+  none, and a published page is never rewritten ([`alab/README.md`](alab/README.md),
+  "Publication").
+
 ## What ALab changes
 
 Defaults ([`codex-rs/alab-core/defaults.toml`](codex-rs/alab-core/defaults.toml)) turn off:
@@ -57,9 +96,21 @@ and OpenAI's CI, Bazel build and npm/installer distribution
 
 Added:
 
+- **The ALab interface.** An account, subscription and usage footer; `/alab account` for
+  allowance details; `/tasks` for local work; and `Ctrl+S` / `/stash` for parking a prompt.
+  It is on by default; `/alab on` and `/alab off` select the presentation. The
+  [interface guide](alab/interface.md) covers the controls and task checklist setup.
+- **Capacity recovery.** Model-at-capacity failures retry automatically with backoff,
+  retaining the selected model, current input and completed work during responses and
+  foreground context compaction. Malformed or timer-unsafe retry advice falls back to
+  normal backoff. Interrupt the turn to stop waiting.
 - **The rainbow kitty.** A launch banner: aterm's codex kitty riding aterm's spectrum, with
-  "ALab build of OpenAI Codex" under it. Inside [aterm](https://github.com/alabsystems/aterm),
-  Rainbow Kitty is also the default `/pets` pet, drawn from the binary and never downloaded.
+  "bloatware-free · nag-free · optimized for aterm" beside it, what was measured against
+  OpenAI's Codex 0.163 as shipped (about 6× less memory, no background daemon, 1 HTTPS
+  connection open at idle instead of 5; `codex-rs/alab-tui/src/banner/claims.rs` holds the
+  numbers and the date), and the upstream source the build is based on. Inside [aterm](https://github.com/alabsystems/aterm),
+  Rainbow Kitty is also available through `/pets`, drawn from the binary and never downloaded.
+  No pet is selected by default, leaving the full prompt width available.
 - **A native aterm harness.** Inside aterm, codex-alab claims its own session over aterm's
   control socket and does itself what aterm otherwise does by reading the screen
   ([`alab/CONTRACT.md`](alab/CONTRACT.md)): it reports its state, answers its launch folder's
@@ -72,20 +123,42 @@ layering rules and every decision behind the list above.
 
 ## Install
 
-codex-alab is built for Apple-silicon macOS (the one target the Trust toolchain ships), and
-installs through aterm's package manager, atpkg, in place of OpenAI's build:
+On Apple-silicon macOS, aterm's package manager, atpkg, distributes codex-alab as its managed
+`codex`. The signed index selects the production build; install or update it with:
+
+```sh
+aterm pkg install codex
+aterm pkg update codex
+aterm pkg which codex             # the installed source and build
+codex --version
+```
+
+Public `vX.Y.0` releases are source snapshots. Installed binaries carry a version such as
+`X.Y.0-dev.<count>+g<sha>` even in the production channel; atpkg selects them by the signed
+build number, not by comparing that version with OpenAI's. Other targets use OpenAI's build.
+To choose OpenAI's build on this machine, run `aterm pkg update codex --vendor`; use
+`aterm pkg update codex --alab` to return to codex-alab's channel.
+
+For a local development build:
 
 ```sh
 alab/setup.sh                    # once per clone: the upstream remote and its release tags
 alab/package.sh                  # build the package (Trust toolchain; ~11 minutes, ~15 GB of target/)
 aterm pkg link codex <pkgdir> bin/codex   # the command package.sh prints
-aterm pkg unlink codex                    # back to OpenAI's build
+aterm pkg unlink codex                    # restore the previously installed managed build
 ```
 
 `package.sh` builds `codex`, its code-mode host and ripgrep with Trust, stages them with
-upstream's own package layout, smokes the result and prints the link command;
+upstream's own package layout, smokes the result and prints the link command. A local link
+takes priority over managed updates. If no managed build was installed before linking,
+run `aterm pkg install codex` after unlinking.
 [`alab/README.md`](alab/README.md) ("Packaging through atpkg") has every step. aterm
 installs the Trust toolchain.
+
+New launches use an update immediately. Existing sessions adopt it when native live
+upgrade can resume every thread safely. Older builds can defer that upgrade indefinitely
+under Cruise; restart and resume them at a safe stopping point if they keep showing the
+old interface.
 
 ## Turning an ALab default back on
 

@@ -164,7 +164,10 @@ pub(super) fn app_server_rate_limit_error_kind(
     info: &AppServerCodexErrorInfo,
 ) -> Option<RateLimitErrorKind> {
     match info {
-        AppServerCodexErrorInfo::ServerOverloaded => Some(RateLimitErrorKind::ServerOverloaded),
+        AppServerCodexErrorInfo::ServerOverloaded
+        | AppServerCodexErrorInfo::PolicyCapacityUnavailable => {
+            Some(RateLimitErrorKind::ServerOverloaded)
+        }
         AppServerCodexErrorInfo::UsageLimitExceeded => Some(RateLimitErrorKind::UsageLimit),
         AppServerCodexErrorInfo::ResponseTooManyFailedAttempts {
             http_status_code: Some(429),
@@ -214,7 +217,7 @@ impl ChatWidget {
         } else {
             60
         };
-        Some(std::time::Duration::from_secs(seconds))
+        Some(codex_alab_tui::motion::usage_poll(std::time::Duration::from_secs(seconds), self.input_queue.rate_limit_recovery_pending)) // ALAB(usage-poll): while the terminal's focus is out the resting 60 s read waits 5 min
     }
 
     pub(crate) fn hold_rate_limit_recovery(&mut self) -> bool {

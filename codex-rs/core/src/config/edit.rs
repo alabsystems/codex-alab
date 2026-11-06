@@ -702,6 +702,7 @@ impl ConfigDocument {
 }
 
 fn normalize_skill_config_path(path: &Path) -> String {
+    let path = &codex_alab_core::home::shared_skill_rule_path(&dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())); // ALAB(skills): codex-alab saves a system skill's rule under codex-old's path, so it holds in both builds
     dunce::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()

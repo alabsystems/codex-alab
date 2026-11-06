@@ -98,6 +98,7 @@ impl SessionTask for CompactTask {
             if matches!(err.details(), CodexErrorDetails::TurnAborted) {
                 return Err(err);
             }
+            alab_compact_error::notify(&session, ctx.as_ref(), &err).await; // ALAB(recovery): a failed compaction is a wall, not a clean context reset
             let error = err.to_codex_protocol_error();
             if matches!(error, CodexErrorInfo::UsageLimitExceeded) {
                 // Compaction already emitted the error; notify extensions without emitting it twice.
@@ -109,3 +110,5 @@ impl SessionTask for CompactTask {
         Ok(None)
     }
 }
+
+#[path = "../../../alab-core/glue/compact_error.rs"] mod alab_compact_error; // ALAB(recovery): standalone compaction error lifecycle lives in ALab's layer

@@ -86,11 +86,3 @@ announcement_tip.toml
 codex-rs/config.md
 codex-rs/tui/tests/fixtures/oss-story.jsonl
 
-# Bundled skills for OpenAI's own product: image generation (codex-alab turns the tool off),
-# OpenAI's API docs, and an installer that fetches skills from OpenAI's GitHub. Each would
-# sit in every session's skill catalog. The skills crate embeds the samples directory whole,
-# so what is left (review-agent, skill-creator) still ships.
-codex-rs/skills/src/assets/samples/imagegen
-codex-rs/skills/src/assets/samples/openai-docs
-codex-rs/skills/src/assets/samples/skill-installer
-

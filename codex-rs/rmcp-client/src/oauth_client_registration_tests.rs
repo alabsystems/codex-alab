@@ -26,8 +26,8 @@ use super::McpOAuthClientRegistration;
 use super::start_authorization;
 use crate::oauth::validate_authorization_server_endpoints;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
-use crate::utils::MCP_USER_AGENT;
 use crate::utils::build_default_headers;
+use crate::utils::mcp_user_agent;
 
 const CALLBACK_ID: &str = "abc123ABC_-x";
 
@@ -412,7 +412,7 @@ async fn resource_headers_follow_same_origin_registration_redirect_and_sdk_auth_
         .await;
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server"))
-        .and(header("user-agent", MCP_USER_AGENT))
+        .and(header("user-agent", mcp_user_agent())) // ALAB(version): running executable identity
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "issuer": authorization_server.uri(),
             "authorization_endpoint": format!("{}/authorize", authorization_server.uri()),

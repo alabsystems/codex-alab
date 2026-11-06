@@ -8,12 +8,12 @@ use tokio::time::Instant;
 
 /// The earliest time a server advised making a follow-up request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RetryAfter(Instant);
+pub struct RetryAfter(alab_retry_after::Deadline); // ALAB(wake): preserve the sleep count from receipt, including delayed error hooks
 
 impl RetryAfter {
     /// Captures an interval measured from receipt of the server's advice.
     pub fn from_delay(delay: Duration) -> Option<Self> {
-        Instant::now().checked_add(delay).map(Self)
+        Instant::now().checked_add(delay).filter(alab_retry_after::timer_safe).map(alab_retry_after::capture).map(Self) // ALAB(capacity): reserve rounding headroom and retain the receipt's sleep count
     }
 
     /// Reads either nonnegative delay seconds or an HTTP date from `Retry-After`.
@@ -35,20 +35,23 @@ impl RetryAfter {
                 .duration_since(now)
                 .unwrap_or_default()
         };
-        received_at.checked_add(delay).map(Self)
+        received_at.checked_add(delay).filter(alab_retry_after::timer_safe).map(alab_retry_after::capture).map(Self) // ALAB(capacity): streamed and HTTP advice share timer-safe, sleep-aware admission
     }
 
-    /// Returns the original deadline for callers that pass advice on or sleep until it.
+    /// Returns the original real-time deadline, including time the host slept.
     pub fn deadline(self) -> Instant {
-        self.0
+        alab_retry_after::deadline(self.0) // ALAB(wake): a delayed caller cannot restart or postpone advice across a sleep
     }
 
     /// Returns the remaining delay, or zero after the deadline has passed.
     pub fn remaining_delay(self) -> Duration {
-        self.0.saturating_duration_since(Instant::now())
+        self.deadline().saturating_duration_since(Instant::now()) // ALAB(wake): use the same real-time deadline as retry callers
     }
 }
 
 #[cfg(test)]
 #[path = "retry_after_tests.rs"]
 mod tests;
+
+#[path = "../../alab-core/glue/retry_after.rs"]
+mod alab_retry_after; // ALAB(capacity): retry advice must fit the timer's deadline rounding

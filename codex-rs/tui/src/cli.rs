@@ -7,7 +7,7 @@ use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::SharedCliOptions;
 
 #[derive(Parser, Clone, Debug)]
-#[command(version)]
+#[command(version = codex_alab_core::version::product_version(env!("CARGO_PKG_VERSION")))] // ALAB(version): codex-alab's own version (Decision 8)
 pub struct Cli {
     /// Internal: launching CLI that handles daemon updates after the TUI exits.
     #[clap(skip)]
@@ -42,13 +42,9 @@ pub struct Cli {
     #[clap(skip)]
     pub resume_include_non_interactive: bool,
 
-    /// Internal: open the daemon-wide agents overview instead of starting a thread.
+    /// Internal: open the agents overview instead of starting a thread.
     #[clap(skip)]
     pub agents_overview: bool,
-
-    /// Internal: the launching CLI verified that the local daemon has a managed backend.
-    #[clap(skip)]
-    pub managed_daemon: bool,
 
     // Internal controls set by the top-level `codex fork` subcommand.
     // These are not exposed as user flags on the base `codex` command.

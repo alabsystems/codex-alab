@@ -89,7 +89,7 @@ use crate::transcript_reflow::TranscriptReflowState;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
-use crate::version::CODEX_CLI_VERSION;
+use crate::version::cli_version;
 use crate::workspace_command::AppServerWorkspaceCommandRunner;
 use crate::workspace_command::WorkspaceCommandRunner;
 use codex_ansi_escape::ansi_escape_line;
@@ -130,7 +130,7 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SkillErrorInfo;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadMemoryMode;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
@@ -216,6 +216,8 @@ pub(crate) mod app_server_requests;
 mod app_server_thread_ownership;
 mod backend_banner_fallback;
 mod backend_events;
+mod backend_selection;
+pub(crate) mod backend_sessions;
 mod background_requests;
 mod composer_hints;
 mod config_panel;
@@ -259,9 +261,11 @@ mod reconnect;
 mod replay_filter;
 mod resize_reflow;
 mod resume_config;
+mod resume_preparation;
 mod right_click_paste;
 pub(crate) use right_click_paste::PasteEnvironment;
 mod safety_buffering;
+mod safety_recourse;
 mod server_version_notice;
 mod session_lifecycle;
 mod session_picker;
@@ -321,15 +325,15 @@ enum ThreadInteractiveRequest {
 /// receiver thread ids. All other notification variants return `None`.
 fn collab_receiver_thread_ids(notification: &ServerNotification) -> Option<&[String]> {
     match notification {
-        ServerNotification::ItemStarted(notification) => match &notification.item {
-            ThreadItem::CollabAgentToolCall {
+        ServerNotification::ItemStarted(notification) => match &notification.item.payload {
+            ThreadItemPayload::CollabAgentToolCall {
                 receiver_thread_ids,
                 ..
             } => Some(receiver_thread_ids),
             _ => None,
         },
-        ServerNotification::ItemCompleted(notification) => match &notification.item {
-            ThreadItem::CollabAgentToolCall {
+        ServerNotification::ItemCompleted(notification) => match &notification.item.payload {
+            ThreadItemPayload::CollabAgentToolCall {
                 receiver_thread_ids,
                 ..
             } => Some(receiver_thread_ids),
@@ -339,14 +343,14 @@ fn collab_receiver_thread_ids(notification: &ServerNotification) -> Option<&[Str
     }
 }
 
-fn sub_agent_activity_item(notification: &ServerNotification) -> Option<&ThreadItem> {
+fn sub_agent_activity_item(notification: &ServerNotification) -> Option<&ThreadItemPayload> {
     match notification {
-        ServerNotification::ItemStarted(notification) => match &notification.item {
-            ThreadItem::SubAgentActivity { .. } => Some(&notification.item),
+        ServerNotification::ItemStarted(notification) => match &notification.item.payload {
+            ThreadItemPayload::SubAgentActivity { .. } => Some(&notification.item.payload),
             _ => None,
         },
-        ServerNotification::ItemCompleted(notification) => match &notification.item {
-            ThreadItem::SubAgentActivity { .. } => Some(&notification.item),
+        ServerNotification::ItemCompleted(notification) => match &notification.item.payload {
+            ThreadItemPayload::SubAgentActivity { .. } => Some(&notification.item.payload),
             _ => None,
         },
         _ => None,
@@ -358,8 +362,8 @@ fn collab_receiver_is_not_found(
     receiver_thread_id: &str,
 ) -> bool {
     match notification {
-        ServerNotification::ItemCompleted(notification) => match &notification.item {
-            ThreadItem::CollabAgentToolCall { agents_states, .. } => {
+        ServerNotification::ItemCompleted(notification) => match &notification.item.payload {
+            ThreadItemPayload::CollabAgentToolCall { agents_states, .. } => {
                 agents_states.get(receiver_thread_id).is_some_and(|state| {
                     matches!(
                         &state.status,
@@ -493,10 +497,7 @@ pub(crate) enum AppRunControl {
 #[derive(Debug, Clone)]
 pub enum ExitReason {
     UserRequested,
-    Archived(ThreadId),
     TurnInterrupted,
-    /// The current thread was deleted, rather than disconnected.
-    ThreadRemoved,
     Fatal(String),
 }
 
@@ -549,6 +550,10 @@ pub(crate) struct App {
     launch_cwd: PathBuf,
     /// Resume anchor selected by `/cd`; ordinary resumes retain the immutable launch cwd.
     runtime_working_directory_override: Option<PathBuf>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retain the state runtime for the app lifetime")
+    )]
     pub(crate) state_db: Option<StateDbHandle>,
     cli_kv_overrides: Vec<(String, TomlValue)>,
     harness_overrides: ConfigOverrides,
@@ -566,6 +571,7 @@ pub(crate) struct App {
     native_history: native_history::NativeHistory,
     turn_tips: turn_tips::TurnTips,
     pub(crate) transcript_view: crate::transcript_view::TranscriptView,
+    conversation_frame: owned_transcript::ConversationFrame,
     last_rendered_history_tail: Option<history_ui::RenderedHistoryTail>,
     last_thread_usage_status_cell: Option<history_ui::ThreadUsageStatusHistory>,
     pub(crate) pending_thread_usage_history_refresh: bool,
@@ -626,7 +632,7 @@ pub(crate) struct App {
     windows_sandbox: WindowsSandboxState,
 
     thread_event_channels: HashMap<ThreadId, ThreadEventChannel>,
-    pending_realtime_speech_replay: HashMap<ThreadId, Vec<(String, ThreadItem)>>,
+    pending_realtime_speech_replay: HashMap<ThreadId, Vec<(String, ThreadItemPayload)>>,
     pending_realtime_transcript_replay:
         HashMap<ThreadId, VecDeque<crate::chatwidget::RealtimeTranscriptRecord>>,
     realtime_replay_order: VecDeque<ThreadId>,
@@ -672,6 +678,8 @@ pub(crate) struct App {
     startup_pending_protected_request: bool,
     /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
     account_email_request_id: Option<uuid::Uuid>,
+    alab_account_identity: alab_account_identity::State, // ALAB(interface): per-connection cancellation and backoff for missing selected identity.
+    alab_backend_bookkeeping: alab_backend_bookkeeping::State, // ALAB(turns): seen turns retain their authenticated backend owner while its UI is parked.
     rate_limit_hard_stop_generation: u64,
     rate_limit_refresh_state: rate_limit_refresh::RateLimitRefreshState,
     pending_mcp_login_start: Option<PendingMcpLoginStart>,
@@ -863,6 +871,8 @@ impl App {
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
+        self.transcript_view
+            .sync_patch_approval(self.chat_widget.current_patch_approval());
         tui.link_hover.observe(&event);
         self.refresh_link_hover(tui)?;
         self.invalidate_right_click_paste(&event);
@@ -883,10 +893,27 @@ impl App {
             || matches!(&event, TuiEvent::Paste(text) if !text.is_empty())
             || matches!(&event, TuiEvent::Mouse(mouse) if mouse.kind != crossterm::event::MouseEventKind::Moved)
         {
-            codex_alab_tui::session::human_input(); // ALAB(session): a person's key, paste or click stamps the human grace
+            codex_alab_tui::session::human_input(match &event { TuiEvent::Mouse(mouse) => matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_)), _ => true }); // ALAB(session): a person's key, paste or click stamps the human grace; a wheel, drag or release begins no draft
             self.chat_widget.acknowledge_program_status();
         }
         let idle_draw = matches!(event, TuiEvent::Draw);
+        if let TuiEvent::Key(key) = &event {
+            self.backtrack.observe_pending_select_exit_key(*key);
+        }
+        if let TuiEvent::Key(key) = &event
+            && let Some(binding) = self.backtrack.select_exit_key
+        {
+            if binding.parts() == crate::key_hint::KeyBinding::from_event(*key).parts() {
+                if key.kind == KeyEventKind::Release
+                    || !self.enhanced_keys_supported
+                    || !crate::tui::reports_key_releases()
+                {
+                    self.backtrack.select_exit_key = None;
+                }
+                return Ok(AppRunControl::Continue);
+            }
+            self.backtrack.select_exit_key = None;
+        }
         if self.handle_rendered_selection_event(tui, &event)? {
             return Ok(AppRunControl::Continue);
         }
@@ -993,9 +1020,12 @@ impl App {
                     })
                 && app.keymap.chat.toggle_voice.is_pressed(key)
         };
-        // Find consumes otherwise-unhandled keys; let enabled voice controls reach App.
+        // Transcript interactions consume otherwise-unhandled keys; let enabled voice controls
+        // reach App.
         if !matches!(&event, TuiEvent::Key(key)
-            if voice_toggle(self, *key) && !self.transcript_view.owns_interaction_key(*key))
+            if voice_toggle(self, *key)
+                && (!self.transcript_view.owns_interaction_key(*key)
+                    || self.transcript_view.is_select_mode()))
             && self.handle_owned_transcript_event(tui, app_server, &event)?
         {
             return Ok(AppRunControl::Continue);
@@ -1090,6 +1120,7 @@ impl App {
 
         match &event {
             TuiEvent::FocusLost => {
+                app_server.focused_conversation = None;
                 self.chat_widget
                     .set_sparkle_terminal_focus(/*focused*/ false);
                 let now = Instant::now();
@@ -1108,7 +1139,12 @@ impl App {
         }
 
         alab_session::overlay(self.overlay.is_some()); // ALAB(session): a whole-screen overlay holds the autopilot's hand
+        let draws_history = matches!(
+            event,
+            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained
+        );
         if self.overlay.is_some() {
+            alab_pet_cleanup::hide(self, tui)?; // ALAB(pet-perf): overlays hide live pets and release a disabled pet's cached frames
             let _ = self
                 .handle_backtrack_overlay_event(tui, app_server, event)
                 .await?;
@@ -1134,7 +1170,7 @@ impl App {
                     let restrict_disconnected_input = self.reconnect.offline
                         && !self.chat_widget.keymap_contexts().is_warnings()
                         && self.reconnect.presentation
-                            == reconnect::ReconnectPresentation::Conversation
+                            != reconnect::ReconnectPresentation::Overview
                         && !self
                             .chat_widget
                             .active_view_accepts_input_when_disconnected();
@@ -1180,18 +1216,15 @@ impl App {
                         self.discard_startup_modal_input(tui)?;
                     }
                     if self.chat_widget.ambient_pet_image_enabled() {
-                        let ambient_pet_area = Rect::new(
-                            /*x*/ 0,
-                            /*y*/ 0,
-                            screen_size.width,
-                            screen_size.height,
-                        );
+                        let ambient_pet_area = self.conversation_area(screen_size.into());
                         if let Err(err) = tui.draw_ambient_pet_image(
                             self.chat_widget
                                 .ambient_pet_draw(ambient_pet_area, rendered_area.bottom()),
                         ) {
                             self.handle_ambient_pet_image_render_error(tui, err)?;
                         }
+                    } else if codex_alab_tui::interface::active() {
+                        tui.clear_ambient_pet_image()?; // ALAB(pet-perf): disabling a pet releases its placement and cached frames
                     }
                     if let Some(request) = self.chat_widget.pet_picker_preview_draw() {
                         if let Err(err) = tui.draw_pet_picker_preview_image(Some(request)) {
@@ -1212,6 +1245,46 @@ impl App {
                 TuiEvent::FocusLost => {}
             }
         }
+        if draws_history {
+            let frozen = self.chat_widget.is_external_writer_view();
+            let visible = self.current_displayed_thread_id().filter(|&id| {
+                tui.is_terminal_focused()
+                    && matches!(self.overlay, None | Some(Overlay::Transcript(_)))
+                    && self.chat_widget.no_modal_or_popup_active()
+                    && self.initial_history_replay_buffer.is_none()
+                    && (!self.thread_unavailable(id) || frozen)
+            });
+            let previous = std::mem::replace(&mut app_server.focused_conversation, visible);
+            if previous != visible {
+                app_server.attempted_revision = None;
+            }
+            // Opening a full view counts immediately. Within the same view a new result's
+            // receipt can arrive just before the terminal event that finishes rendering it.
+            if let Some(id) = visible
+                && (previous != visible || !self.chat_widget.is_agent_turn_running())
+                && let Some(revision) = app_server.viewed_revision(id, frozen)
+            {
+                // A read-only snapshot does not subscribe to receipt notifications.
+                let refresh = frozen.then(|| {
+                    (
+                        self.app_event_tx.clone(),
+                        AppEvent::RefreshViewedThread {
+                            backend_id: app_server.backend_id(),
+                            thread_id: id,
+                            revision: revision.clone(),
+                        },
+                    )
+                });
+                let update = app_server.acknowledge_read(id, revision);
+                tokio::spawn(async move {
+                    if let Err(error) = update.await {
+                        tracing::warn!(%id, %error, "Could not acknowledge viewed conversation");
+                    } else if let Some((tx, event)) = refresh {
+                        tx.send(event);
+                    }
+                });
+            }
+        }
         // Both transcript owners must consume completions before automatic work advances.
         if idle_draw {
             tui.clipboard.advance(tui.frame_requester());
@@ -1229,14 +1302,23 @@ impl App {
         Ok(())
     }
 
+    fn prepare_frame_images(&mut self) -> Option<crate::pets::ImageProtocol> {
+        let protocol = self.chat_widget.pet_image_support().protocol().filter(|_| {
+            !self.app_server_target.uses_remote_workspace()
+                && crate::projectless::has_only_local_environments(&self.environment_manager)
+        });
+        self.chat_widget.prepare_composer_images(protocol);
+        protocol
+    }
+
     fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui, screen_size: Size) -> Result<Rect> {
         alab_session::observe(self); // ALAB(session): the session record and the autopilot see each frame
-        self.sync_thread_title_progress();
         self.chat_widget
             .set_sparkle_terminal_focus(tui.is_terminal_focused());
         if tui.is_owned_screen() {
             return self.render_owned_transcript(tui, screen_size);
         }
+        self.prepare_frame_images();
         self.chat_widget
             .empty_state_animation
             .borrow_mut()
@@ -1271,6 +1353,9 @@ impl App {
                 let area = frame.area();
                 rendered_area = area;
                 chat_widget.render(area, frame.buffer);
+                if let Some(previews) = &self.chat_widget.composer_images {
+                    frame.image_placements = previews.placements.take();
+                }
                 self.chat_widget.note_rendered_width(area.width);
                 if let Some((x, y)) = chat_widget.cursor_pos(area) {
                     frame.set_cursor_style(chat_widget.cursor_style(area));
@@ -1304,3 +1389,19 @@ pub(super) mod test_support;
 #[cfg(test)]
 mod tests;
 #[path = "../../alab-tui/glue/session_observe.rs"] mod alab_session; // ALAB(session): reads App/ChatWidget state for codex-rs/alab-tui
+#[path = "../../alab-tui/glue/backend_bookkeeping.rs"] mod alab_backend_bookkeeping; // ALAB(turns): parked backend lifecycle retires only its own observed turns.
+#[path = "../../alab-tui/glue/tasks.rs"] mod alab_tasks; // ALAB(tasks): local task collection and actions live in ALab's layer
+#[path = "../../alab-tui/glue/tasks_view.rs"] mod alab_tasks_view; // ALAB(tasks): native searchable lists with live refresh
+#[path = "../../alab-tui/glue/account_identity.rs"] mod alab_account_identity; // ALAB(interface): bounded connected-server identity recovery lives in ALab's layer.
+#[cfg(test)]
+#[path = "../../alab-tui/glue/test_assertions.rs"] pub(crate) mod alab_test_assertions; // ALAB(test-assertions): shared test helpers retain assertions and report bounded lifecycle phases.
+#[cfg(test)]
+#[path = "../../alab-tui/glue/startup_completion.rs"] mod alab_startup_fixture; // ALAB(startup-test-fixture): observe real startup completion and separate proxy close from backend drain.
+
+#[path = "../../alab-tui/glue/thread_event_fifo.rs"] mod alab_thread_event_fifo; // ALAB(retry-status): preserve per-channel event order across bounded queue overflow.
+#[path = "../../alab-tui/glue/pet_cleanup.rs"] mod alab_pet_cleanup; // ALAB(pet-perf): overlay pet cleanup lives in ALab's layer
+#[cfg(test)]
+#[path = "../../alab-tui/glue/pet_cleanup_tests.rs"] mod alab_pet_cleanup_tests; // ALAB(pet-perf): exercise disabled-pet cleanup through the app draw path
+
+#[path = "../../alab-tui/glue/interface_mode.rs"]
+mod alab_interface_mode; // ALAB(interface): reload effective preferences after the saved mode changes

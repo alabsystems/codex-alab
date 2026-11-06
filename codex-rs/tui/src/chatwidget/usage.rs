@@ -361,6 +361,7 @@ impl ChatWidget {
         if self.pending_rate_limit_reset_request_id != Some(request_id) {
             return false;
         }
+        self.alab_invalidate_reset_credit_display(); // ALAB(interface): redemption may have spent a credit; wait for an accepted usage read before showing availability.
 
         match result {
             Ok(response)

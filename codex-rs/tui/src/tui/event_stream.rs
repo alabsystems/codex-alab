@@ -124,10 +124,12 @@ impl<S: EventSource + Default> EventBroker<S> {
     }
 }
 
+#[cfg(not(windows))] #[path = "../../../alab-tui/glue/kitty_replies.rs"] mod alab_kitty_replies; // ALAB(pet-perf): aterm's answers to the pet's placements come off the input
+
 /// Real crossterm-backed event source.
 pub struct CrosstermEventSource {
     #[cfg(not(windows))]
-    events: crossterm::event::EventStream,
+    events: alab_kitty_replies::KittyReplies<crossterm::event::EventStream>, // ALAB(pet-perf): aterm's kitty graphics replies are no keys
     #[cfg(windows)]
     events: super::windows_key_sequence::WindowsKeySequence<crossterm::event::EventStream>,
 }
@@ -137,7 +139,7 @@ impl Default for CrosstermEventSource {
         let events = crossterm::event::EventStream::new();
         Self {
             #[cfg(not(windows))]
-            events,
+            events: alab_kitty_replies::KittyReplies::new(events), // ALAB(pet-perf): aterm's kitty graphics replies are no keys
             #[cfg(windows)]
             events: super::windows_key_sequence::WindowsKeySequence::new(events),
         }
@@ -304,12 +306,14 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             Event::Paste(pasted) => Some(TuiEvent::Paste(pasted)),
             Event::FocusGained => {
                 self.terminal_focused.store(true, Ordering::Relaxed);
+                codex_alab_tui::motion::focus(/*focused*/ true); // ALAB(pet-perf): decorative animation resumes with the terminal's focus
                 // Keep the startup-cached palette: querying terminal colors here blocks the
                 // input loop, and a direct probe would discard keys typed during the refresh.
                 Some(TuiEvent::FocusGained)
             }
             Event::FocusLost => {
                 self.terminal_focused.store(false, Ordering::Relaxed);
+                codex_alab_tui::motion::focus(/*focused*/ false); // ALAB(pet-perf): decorative animation stops while the terminal's focus is out
                 Some(TuiEvent::FocusLost)
             }
             Event::Mouse(mouse) => Some(TuiEvent::Mouse(mouse)),

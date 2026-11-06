@@ -48,7 +48,7 @@ impl Block {
         if toks.next()? != "block" {
             return None;
         }
-        let id = toks.next()?.parse().ok()?;
+        let id = wire::canonical_u64(toks.next()?)?;
         let state = toks.next()?.to_string();
         let fields = wire::parse_fields(&toks.collect::<Vec<_>>().join(" "));
         Some(Block {
@@ -130,6 +130,7 @@ pub async fn gather(client: &Client) -> Result<Gathered, Error> {
             let rest = line.strip_prefix("pane ")?;
             wire::field(&wire::parse_fields(rest), "session")
         })
+        .filter(|sid| wire::canonical_u64(sid).is_some() || crate::locate::valid_sid(sid))
         .filter(|sid| Some(sid) != mine.as_ref())
         .take(MAX_PANES)
         .collect::<Vec<_>>();

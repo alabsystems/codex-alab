@@ -1,5 +1,7 @@
 //! Watch events invalidate discovery; no subscription keeps requests uncached.
 
+#[path = "../../../../alab-core/glue/native_event_temp.rs"] mod alab_event_temp; // ALAB(native-event-temp): real watcher fixtures must leave FSEvents-excluded scratch.
+
 use super::*;
 use crate::DiscoverV2CapabilitiesRequest;
 use crate::LocalFileSystem;
@@ -28,7 +30,7 @@ pub(in crate::discover_v2::capability_manager) async fn stop_listener(
 #[tokio::test]
 async fn watch_events_invalidate_discovery_and_no_subscription_disables_caching()
 -> anyhow::Result<()> {
-    let directory = tempfile::tempdir()?;
+    let directory = alab_event_temp::directory()?; // ALAB(native-event-temp): retain the real watcher and its existing deadlines.
     let root = std::fs::canonicalize(directory.path())?;
     write(
         &root,

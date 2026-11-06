@@ -27,8 +27,8 @@ use wiremock::matchers::path;
 use super::MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES;
 use super::OAuthHttpClientAdapter;
 use crate::http_client_adapter::StreamableHttpRedirectMode;
-use crate::utils::MCP_USER_AGENT;
 use crate::utils::build_default_headers;
+use crate::utils::mcp_user_agent;
 
 async fn metadata_manager(
     resource: &MockServer,
@@ -315,9 +315,9 @@ async fn oauth_registration_redirects_never_forward_resource_only_headers() -> R
             .and(header(
                 "user-agent",
                 if has_resource_only_headers {
-                    RESOURCE_USER_AGENT
+                    RESOURCE_USER_AGENT.to_owned() // ALAB(version): both matcher branches own the dynamic user agent
                 } else {
-                    MCP_USER_AGENT
+                    mcp_user_agent() // ALAB(version): running executable identity
                 },
             ))
             .respond_with(ResponseTemplate::new(307).insert_header(
@@ -330,7 +330,7 @@ async fn oauth_registration_redirects_never_forward_resource_only_headers() -> R
         Mock::given(method("POST"))
             .and(path("/redirected-register"))
             .and(header("content-type", "application/json"))
-            .and(header("user-agent", MCP_USER_AGENT))
+            .and(header("user-agent", mcp_user_agent())) // ALAB(version): running executable identity
             .respond_with(ResponseTemplate::new(201))
             .expect(u64::from(!has_resource_only_headers))
             .mount(&redirect_target)

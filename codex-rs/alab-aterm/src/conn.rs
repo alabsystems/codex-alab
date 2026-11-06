@@ -96,6 +96,21 @@ pub(crate) struct Opened {
     /// The kernel's word on the process serving the socket (its peer pid), `None` when it
     /// cannot be told.
     pub server_pid: Option<u32>,
+    /// The exact capability this listener accepted during this connection's handshake.
+    pub auth_identity: AuthIdentity,
+}
+
+/// A native listener provisions a fresh AUTH token whenever it binds. Retaining the
+/// accepted identity lets observations reject a replacement at the same socket path,
+/// even when its peer pid, restored entry id and observation token coincide. Never format
+/// the AUTH token.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct AuthIdentity(Arc<str>);
+
+impl std::fmt::Debug for AuthIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AuthIdentity(REDACTED)")
+    }
 }
 
 /// Connect to `sock`, mark the fd close-on-exec, read the token beside it, `AUTH` and
@@ -130,6 +145,7 @@ async fn open_inner(sock: &Path) -> Result<Opened, Error> {
             writer,
             version: version.to_string(),
             server_pid,
+            auth_identity: AuthIdentity(token.into()),
         });
     }
     Err(refusal(line))

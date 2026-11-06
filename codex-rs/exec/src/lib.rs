@@ -5,6 +5,8 @@
 #![recursion_limit = "256"]
 #![deny(clippy::print_stdout)]
 
+#[path = "../../alab-core/glue/exec_handoff_runtime.rs"]
+mod alab_handoff; // ALAB(exec-recovery): preserve the original task across native account handoffs.
 mod cli;
 mod daybreak;
 mod event_processor;
@@ -39,7 +41,10 @@ use codex_app_server_protocol::Thread as AppServerThread;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
-use codex_app_server_protocol::ThreadItem as AppServerThreadItem;
+use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemsListCursor;
+use codex_app_server_protocol::ThreadItemsListParams;
+use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
@@ -59,7 +64,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_arg0::Arg0DispatchPaths;
-use codex_cloud_config::cloud_config_bundle_loader_for_storage;
+use codex_cloud_config::managed_config_bundle_loader_for_storage;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLoadError;
 use codex_config::ConfigLoadOptions;
@@ -156,6 +161,7 @@ pub use exec_events::Usage;
 pub use exec_events::WebSearchItem;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::future::Future;
 use std::io::IsTerminal;
 use std::io::Read;
@@ -180,6 +186,7 @@ const DEFAULT_ANALYTICS_ENABLED: bool = true;
 const EXEC_DEFAULT_LOG_FILTER: &str = "error,opentelemetry_sdk=off,opentelemetry_otlp=off";
 
 enum InitialOperation {
+    Recover, // ALAB(exec-recovery): recover an admitted original turn without new input.
     ForkOnly,
     UserTurn {
         items: Vec<UserInput>,
@@ -219,6 +226,8 @@ impl RequestIdSequencer {
 }
 
 struct ExecRunArgs {
+    alab_configuration: Option<codex_core::config::ExecConfiguration>, // ALAB(exec-recovery): original loader inputs accompany the native handoff.
+    alab_recovery: Option<alab_handoff::Recovery>, // ALAB(exec-recovery): retain the grant loaded before managed-worktree allocation.
     in_process_start_args: InProcessClientStartArgs,
     state_db: Option<StateDbHandle>,
     command: Option<ExecCommand>,
@@ -378,6 +387,8 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             std::process::exit(1);
         }
     };
+    let alab_recovery = alab_handoff::Recovery::load(&codex_home).await?; // ALAB(exec-recovery): authenticate the native checkpoint before startup mutates a managed checkout.
+    let recovered_worktree = alab_recovery.as_ref().map(|recovery| recovery.worktree(worktree)).transpose()?.flatten(); // ALAB(exec-recovery): validate the original checkout owner before reusing it.
     let user_config_path = config_profile_v2
         .as_ref()
         .map(|profile_v2| resolve_profile_v2_config_path(&codex_home, profile_v2));
@@ -396,7 +407,11 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         anyhow::bail!("--worktree requires local execution");
     }
 
-    let managed_worktree = if worktree {
+    let managed_worktree = if let Some(recovered) = recovered_worktree { // ALAB(exec-recovery): reuse the admitted original checkout instead of allocating another.
+        resolved_cwd = Some(recovered.cwd.clone());
+        config_cwd = AbsolutePathBuf::from_absolute_path(recovered.cwd)?;
+        Some(ManagedExecWorktree { manager: recovered.manager, checkout: recovered.checkout, source_cwd: recovered.source_cwd })
+    } else if worktree {
         let embedded_network_policy =
             codex_app_server_client::EmbeddedNetworkPolicy::load(&loader_overrides).await;
         let gate_bootstrap = load_bootstrap_config_or_exit(
@@ -408,9 +423,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             CloudConfigBundleLoader::default(),
         )
         .await;
-        let gate_cloud_config = cloud_config_bundle_loader_for_storage(
+        let gate_cloud_config = managed_config_bundle_loader_for_storage(
             embedded_network_policy
                 .bind_bootstrap_auth(bootstrap_auth_config(&codex_home, &gate_bootstrap)?),
+            gate_bootstrap.config_layer_stack.requirements_toml(),
             /*enable_codex_api_key_env*/ false,
         )
         .await?;
@@ -508,8 +524,9 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     // API keys cannot fetch workspace-managed configuration. Preserve the
     // existing ChatGPT bootstrap identity even when model requests allow
     // CODEX_API_KEY.
-    let cloud_config_bundle = cloud_config_bundle_loader_for_storage(
+    let cloud_config_bundle = managed_config_bundle_loader_for_storage(
         bootstrap_auth_config,
+        bootstrap_config.config_layer_stack.requirements_toml(),
         /*enable_codex_api_key_env*/ false,
     )
     .await?;
@@ -613,7 +630,9 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         additional_writable_roots: add_dir,
     };
 
+    let alab_config_capture = alab_handoff::ConfigCapture::default(); // ALAB(exec-recovery): retain the final loader invocation.
     let build_config = |overrides| {
+        alab_config_capture.record(&overrides); // ALAB(exec-recovery): include an approval-policy retry.
         ConfigBuilder::default()
             .codex_home(codex_home.to_path_buf())
             .cli_overrides(cli_kv_overrides.clone())
@@ -630,6 +649,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     )
     .await?;
     embedded_network_policy.activate(&mut config);
+    let alab_configuration = alab_config_capture.finish(alab_recovery.as_ref(), &mut config).await?; // ALAB(exec-recovery): restore original settings under current host requirements.
     let daybreak_override = cli_kv_overrides
         .iter()
         .any(|(key, _)| key == "daybreak")
@@ -663,7 +683,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let otel = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         codex_core::otel_init::build_provider(
             &config,
-            env!("CARGO_PKG_VERSION"),
+            codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")), // ALAB(version): running executable identity
             /*service_name_override*/ None,
             DEFAULT_ANALYTICS_ENABLED,
         )
@@ -729,6 +749,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         .await?
     };
     let in_process_start_args = InProcessClientStartArgs {
+        required_human_approval: false,
         arg0_paths,
         config: std::sync::Arc::new(config.clone()),
         cli_overrides: run_cli_overrides,
@@ -744,13 +765,15 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         session_source: SessionSource::Exec,
         enable_codex_api_key_env: true,
         client_name: "codex_exec".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string(), // ALAB(version): running executable identity
         experimental_api: true,
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     };
     run_exec_session(ExecRunArgs {
+        alab_configuration, // ALAB(exec-recovery): snapshot travels with the event owner.
+        alab_recovery, // ALAB(exec-recovery): pass the already authenticated startup grant to the event owner.
         in_process_start_args,
         state_db,
         command,
@@ -853,6 +876,8 @@ async fn load_bootstrap_config_or_exit(
 
 async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let ExecRunArgs {
+        alab_configuration, // ALAB(exec-recovery): preserve inputs across account replacement.
+        alab_recovery, // ALAB(exec-recovery): startup has already validated the original workspace.
         in_process_start_args,
         state_db,
         command,
@@ -917,7 +942,11 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let default_approval_policy = config.permissions.approval_policy.value();
     let default_effort = config.model_reasoning_effort.clone();
 
-    let (initial_operation, prompt_summary) = match (command.as_ref(), prompt, images) {
+    let recovery = alab_recovery; // ALAB(exec-recovery): use the native ticket inspected before startup and before any stdin/prompt read.
+    let recovered_error_seen = if let Some(recovery) = &recovery { recovery.restore_renderer(event_processor.as_mut())? } else { false }; // ALAB(exec-recovery): restore output IDs and open items before emitting anything.
+    let (initial_operation, prompt_summary) = if recovery.is_some() {
+        (InitialOperation::Recover, String::new())
+    } else { match (command.as_ref(), prompt, images) {
         (Some(ExecCommand::Review(review_cli)), _, _) => {
             let review_request = build_review_request(review_cli)?;
             let summary = codex_core::review_prompts::user_facing_hint(&review_request.target);
@@ -1006,7 +1035,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 prompt_text,
             )
         }
-    };
+    }}; // ALAB(exec-recovery): ordinary input parsing is skipped for a native recovery.
 
     // When --yolo (dangerously_bypass_approvals_and_sandbox) is set, also skip the git repo check
     // since the user is explicitly running in an externally sandboxed environment.
@@ -1027,9 +1056,9 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
     let mut daybreak_enabled = config.daybreak_enabled;
     // Resolve resume and fork through existing app-server thread lifecycle APIs.
-    let (primary_thread_id, fallback_session_configured) = if let Some(ExecCommand::Resume(args)) =
-        command.as_ref()
-    {
+    let (history_mode, fallback_session_configured) = if let Some(recovery) = &recovery { // ALAB(exec-recovery): the receipt names the exact existing thread.
+        recovery.resume(&client, &mut request_ids, &config, resume_approvals_reviewer_override).await?
+    } else if let Some(ExecCommand::Resume(args)) = command.as_ref() {
         if let Some(thread_id) =
             resolve_resume_thread_id(&client, &config, state_db.as_ref(), args).await?
         {
@@ -1053,7 +1082,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             daybreak_enabled = daybreak_override
                 .or(response.thread.daybreak_enabled)
                 .unwrap_or(false);
-            (session_configured.thread_id, session_configured)
+            (response.thread.history_mode, session_configured)
         } else {
             let response = start_thread(&client, &mut request_ids, &config, &thread_source)
                 .await
@@ -1061,7 +1090,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             let session_configured =
                 session_configured_from_thread_start_response(&response, &config)
                     .map_err(anyhow::Error::msg)?;
-            (session_configured.thread_id, session_configured)
+            (response.thread.history_mode, session_configured)
         }
     } else if let Some(ExecCommand::Fork(args)) = command.as_ref() {
         let source_args = crate::cli::ResumeArgs {
@@ -1149,16 +1178,17 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             .or(response.thread.daybreak_enabled)
             .or(source_daybreak)
             .unwrap_or(false);
-        (session_configured.thread_id, session_configured)
+        (response.thread.history_mode, session_configured)
     } else {
         let response = start_thread(&client, &mut request_ids, &config, &thread_source)
             .await
             .map_err(anyhow::Error::msg)?;
         let session_configured = session_configured_from_thread_start_response(&response, &config)
             .map_err(anyhow::Error::msg)?;
-        (session_configured.thread_id, session_configured)
+        (response.thread.history_mode, session_configured)
     };
 
+    let primary_thread_id = fallback_session_configured.thread_id;
     if let Some(worktree) = managed_worktree.as_ref() {
         worktree
             .manager
@@ -1175,7 +1205,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
     // Print the effective configuration and initial request so users can see what Codex
     // is using.
-    event_processor.print_config_summary(&config, &prompt_summary, &session_configured);
+    if recovery.is_none() { event_processor.print_config_summary(&config, &prompt_summary, &session_configured); } // ALAB(exec-recovery): the original process already emitted thread startup.
     if !json_mode
         && let Some(message) = codex_core::config::system_bwrap_warning(
             &config.permissions.effective_permission_profile(),
@@ -1195,7 +1225,11 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         }
     });
 
+    let mut handoff = alab_handoff::Controller::start(client.request_handle(), primary_thread_id,
+        true, // ALAB(exec-ephemeral): preserve memory-backed handoff; ALAB(exec-review): include registered review trees.
+        managed_worktree.as_ref().map(|worktree| alab_handoff::WorktreeSnapshot::capture(&worktree.manager, &worktree.checkout, &worktree.source_cwd, config.cwd.as_path())), alab_configuration).await; // ALAB(exec-recovery): observe real quota waits and retain managed checkout identity while the event pump stays live.
     let task_id = match initial_operation {
+        InitialOperation::Recover => recovery.as_ref().ok_or_else(|| anyhow::anyhow!("native recovery is unavailable"))?.recover(&client).await?, // ALAB(exec-recovery): no fresh turn/start or replayed prompt.
         InitialOperation::ForkOnly => {
             request_shutdown(&client, &mut request_ids, &primary_thread_id_for_span)
                 .await
@@ -1220,6 +1254,9 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         &mut request_ids,
                         &session_configured.model,
                         &session_configured.model_provider_id,
+                        config
+                            .model_providers
+                            .get(&session_configured.model_provider_id),
                         daybreak_enabled,
                     )
                     .await?
@@ -1300,16 +1337,19 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     // Run the loop until the task is complete.
     // Track whether a fatal error was reported by the server so we can
     // exit with a non-zero status for automation-friendly signaling.
-    let mut error_seen = false;
+    let mut error_seen = recovered_error_seen; // ALAB(exec-recovery): retain the original caller's exit status.
     let mut interrupt_channel_open = true;
     let primary_thread_id_for_requests = primary_thread_id.to_string();
+    let mut recovered_start_pending = recovery.is_some(); // ALAB(exec-recovery): continuation does not emit another turn-start frame.
     loop {
         let server_event = tokio::select! {
+            biased; // ALAB(exec-recovery): drain queued presentation events before replacing their owner.
             maybe_interrupt = interrupt_rx.recv(), if interrupt_channel_open => {
                 if maybe_interrupt.is_none() {
                     interrupt_channel_open = false;
                     continue;
                 }
+                if handoff.handling() { anyhow::bail!("native exec handoff interrupted"); } // ALAB(exec-recovery): an interrupt cancels replacement even after Core drained.
                 if let Err(err) = send_request_with_response::<TurnInterruptResponse>(
                     &client,
                     ClientRequest::TurnInterrupt {
@@ -1328,9 +1368,11 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 continue;
             }
             maybe_event = client.next_event() => maybe_event,
+            action = handoff.next() => return action.finish(event_processor.as_ref(), error_seen, &mut interrupt_rx).await, // ALAB(exec-recovery): only the output owner checkpoints and replaces itself.
         };
 
         let Some(server_event) = server_event else {
+            if handoff.handling() { return handoff.next().await.finish(event_processor.as_ref(), error_seen, &mut interrupt_rx).await; } // ALAB(exec-recovery): retain the output owner until replacement or a definite failure.
             break;
         };
 
@@ -1340,6 +1382,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             }
             InProcessServerEvent::ServerNotification(notification) => {
                 let mut notification = *notification;
+                if alab_handoff::skip_recovered_start(&mut recovered_start_pending, &notification, &primary_thread_id_for_requests, &task_id) { continue; } // ALAB(exec-recovery): retain one JSON turn boundary.
                 if let ServerNotification::Error(payload) = &notification {
                     if payload.thread_id == primary_thread_id_for_requests
                         && payload.turn_id == task_id
@@ -1364,8 +1407,10 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     &primary_thread_id_for_requests,
                     &task_id,
                 ) {
+                    if let Some(recovery) = &recovery { recovery.note_completion(&notification, error_seen).await; } // ALAB(exec-recovery): only a successful original turn proves the shared account canary.
                     maybe_backfill_turn_completed_items(
                         config.ephemeral,
+                        history_mode,
                         &client,
                         &mut request_ids,
                         &mut notification,
@@ -1736,14 +1781,13 @@ fn should_process_notification(
 
 async fn maybe_backfill_turn_completed_items(
     thread_ephemeral: bool,
+    history_mode: ThreadHistoryMode,
     client: &InProcessAppServerClient,
     request_ids: &mut RequestIdSequencer,
     notification: &mut ServerNotification,
 ) {
     // In-process delivery may drop non-terminal item notifications under backpressure while still
-    // guaranteeing `turn/completed`. Because app-server currently emits that completion with an
-    // empty `turn.items`, exec does one last `thread/read` here so human/json output can recover
-    // the final message and reconcile any still-running items before shutdown.
+    // guaranteeing `turn/completed`. Recover the completed turn's items before shutdown.
     if !should_backfill_turn_completed_items(thread_ephemeral, notification) {
         return;
     }
@@ -1751,6 +1795,53 @@ async fn maybe_backfill_turn_completed_items(
     let ServerNotification::TurnCompleted(payload) = notification else {
         return;
     };
+
+    if history_mode == ThreadHistoryMode::Paginated {
+        let completion_items = payload.turn.items.clone();
+        let mut items = Vec::new();
+        let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
+        loop {
+            let page: ThreadItemsListResponse = match client
+                .request_typed(ClientRequest::ThreadItemsList {
+                    request_id: request_ids.next(),
+                    params: ThreadItemsListParams {
+                        thread_id: payload.thread_id.clone(),
+                        turn_id: Some(payload.turn.id.clone()),
+                        cursor,
+                        limit: None,
+                        sort_direction: None,
+                    },
+                })
+                .await
+            {
+                Ok(page) => page,
+                Err(err) => {
+                    warn!("thread/items/list failed during turn completion: {err}");
+                    return;
+                }
+            };
+            items.extend(page.data.into_iter().map(ThreadItem::from));
+            let Some(next) = page.next_cursor else { break };
+            if !seen_cursors.insert(next.clone()) {
+                warn!("thread/items/list returned a repeated cursor during turn completion");
+                return;
+            }
+            cursor = Some(ThreadItemsListCursor::Opaque(next));
+        }
+        for completion_item in completion_items {
+            if let Some(item) = items
+                .iter_mut()
+                .find(|item| item.id() == completion_item.id())
+            {
+                *item = completion_item;
+            } else {
+                items.push(completion_item);
+            }
+        }
+        payload.turn.items = items;
+        return;
+    }
 
     let response = send_request_with_response::<ThreadReadResponse>(
         client,
@@ -1793,7 +1884,7 @@ fn should_backfill_turn_completed_items(
 fn turn_items_for_thread(
     thread: &AppServerThread,
     turn_id: &str,
-) -> Option<Vec<AppServerThreadItem>> {
+) -> Option<Vec<codex_app_server_protocol::ThreadItem>> {
     thread
         .turns
         .iter()
@@ -1872,6 +1963,7 @@ async fn resolve_resume_thread_id(
                     request_id: RequestId::Integer(0),
                     params: ThreadListParams {
                         excluded_thread_ids: None,
+                        attached_to_thread_id: None,
                         originators: None,
                         cursor,
                         limit: Some(100),
@@ -1959,6 +2051,7 @@ async fn resolve_resume_thread_id(
                 request_id: RequestId::Integer(0),
                 params: ThreadListParams {
                     excluded_thread_ids: None,
+                    attached_to_thread_id: None,
                     originators: None,
                     cursor,
                     limit: Some(100),

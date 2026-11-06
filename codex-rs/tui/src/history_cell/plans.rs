@@ -2,6 +2,7 @@
 
 use super::markdown_render_cache::MarkdownRenderCache;
 use super::*;
+#[path = "../../../alab-tui/glue/task_plan.rs"] mod alab_tasks; // ALAB(tasks): checklist rows come from the retained native plan cell
 use crate::style::accent_color;
 use crate::terminal_hyperlinks::lines_with_sources_eq;
 

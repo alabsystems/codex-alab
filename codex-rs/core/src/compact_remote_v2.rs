@@ -243,6 +243,7 @@ async fn run_remote_compact_task_inner(
     }
     let status = compaction_status_from_result(&result);
     let codex_error = result.as_ref().err();
+    crate::session::alab_compaction::result(sess, turn_context, phase, codex_error).await; // ALAB(recovery): a post-turn policy refusal still stops automatic context replay
     if result.is_ok() {
         let post_compact_outcome = run_post_compact_hooks(sess, turn_context, trigger).await;
         if let PostCompactHookOutcome::Stopped = post_compact_outcome {
@@ -321,6 +322,7 @@ async fn run_remote_compaction_request_v2(
         }
         CompactionRequestTransport::Foreground(client_session) => client_session,
     };
+    crate::responses_retry::alab_capacity_retry::bind_compaction_weekly(sess, turn_context).await?; // ALAB(weekly-reset): only the foreground compactor binds earned-reset custody before requesting a summary.
     let settings = &turn_context.initial_settings;
     let max_retries = turn_context
         .provider
@@ -356,6 +358,7 @@ async fn run_remote_compaction_request_v2(
         };
         match result {
             Ok(compaction_output) => return Ok(compaction_output),
+            Err(err) if crate::responses_retry::alab_capacity_retry::recover_compaction_weekly(&err, sess, turn_context).await? => continue, // ALAB(weekly-reset): retry the same foreground compaction after verified earned redemption.
             Err(err) => {
                 handle_response_stream_error(
                     &mut retry_state,
@@ -835,6 +838,7 @@ mod tests {
         }
         drop(tx_event);
         ResponseStream {
+            routing_affinity: None,
             rx_event,
             interrupt: None,
             consumer_dropped: CancellationToken::new(),
@@ -1245,6 +1249,7 @@ mod tests {
         let stream = response_stream(vec![Err(CodexErr::new(
             CodexErrorDetails::ResponseIncomplete(Box::new(
                 codex_protocol::error::ResponseIncompleteError {
+                    partial_output: vec![],
                     reason: "max_output_tokens".to_string(),
                     response_id: Some("resp-background".to_string()),
                     token_usage: Some(TokenUsage {

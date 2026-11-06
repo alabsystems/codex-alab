@@ -271,15 +271,20 @@ lock_packages() {
 # (lib.sh, alab_contained), able to write only the lock and the target dir: it reads the
 # .cargo/config.toml upstream just merged, which can name the rustc cargo runs.
 reresolve_cargo_lock() {
-  local lock="${wt}/codex-rs/Cargo.lock"
+  local lock="${wt}/codex-rs/Cargo.lock" build_target rc=0
   [[ -f "${wt}/codex-rs/Cargo.toml" ]] || return 0
   command -v "${cargo}" >/dev/null 2>&1 \
     || alab_die "${cargo} is not on PATH: it re-resolves codex-rs/Cargo.lock (ALAB_CARGO names another)"
   # A target dir is made out here: inside, cargo would make it beside itself, and cannot.
-  mkdir -p "${CARGO_TARGET_DIR:-${wt}/codex-rs/target}"
-  (cd "${wt}/codex-rs" && alab_contained "${lock}" "${CARGO_TARGET_DIR:-${wt}/codex-rs/target}" -- \
-    "${cargo}" metadata --format-version 1 >/dev/null) \
-    || alab_die "${cargo} metadata could not resolve codex-rs in ${wt}: fix the manifests, then --continue"
+  build_target="$(alab_build_target_ready "${wt}/codex-rs" "${CARGO_TARGET_DIR:-${wt}/codex-rs/target}")" \
+    || alab_die "the resolver target could not be prepared; no metadata command started"
+  (cd "${wt}/codex-rs" && \
+    { [[ -z "${CARGO_TARGET_DIR:-}" ]] || export CARGO_TARGET_DIR="${build_target}"; } && \
+    alab_contained --read "${alab_library_root}/alab" "${lock}" "${build_target}" -- \
+    /bin/bash -c '. "$1/alab/lib.sh"; shift; alab_build_command "$@"' \
+    alab-resolver-disk "${alab_library_root}" "${cargo}" metadata --format-version 1 >/dev/null) || rc=$?
+  [[ "${rc}" -ne 75 ]] || exit_with 75 "disk resource stop: no lockfile verdict; free room, then alab/sync.sh --continue"
+  [[ "${rc}" -eq 0 ]] || alab_die "${cargo} metadata could not resolve codex-rs in ${wt}: fix the manifests, then --continue"
   [[ -f "${lock}" && ! -L "${lock}" ]] || alab_die "${lock} is not a regular file after ${cargo} metadata"
   if ! in_wt diff --quiet -- codex-rs/Cargo.lock; then
     in_wt add -- codex-rs/Cargo.lock
@@ -288,15 +293,31 @@ reresolve_cargo_lock() {
   drift_check
 }
 
+# The crates alab/vendor carries in place of upstream's (each one's ALAB-SOURCE.json), one
+# line each in lock_packages' spelling minus the source: name, version, upstream's checksum.
+vendored_packages() {
+  local src
+  for src in "${wt}"/alab/vendor/*/ALAB-SOURCE.json; do
+    [[ -f "${src}" ]] || continue
+    jq -r '"\"\(.crate)\" \"\(.version)\" \"\(.crate_sha256)\""' "${src}" \
+      || alab_die "${src} names no crate, version and crate_sha256"
+  done
+}
+
 # The lock being landed holds every package upstream locked at the sync's target, as upstream
-# locked it, however the merge was committed.
+# locked it, however the merge was committed. A crate alab/vendor carries (patched in by
+# codex-rs/Cargo.toml) loses its registry row only when the copy is of the very version and
+# archive upstream locked; an upstream bump past it is drift like any other.
 drift_check() {
-  local target drift
+  local target own drift
   [[ -f "${wt}/codex-rs/Cargo.toml" ]] || return 0
   target="$(sync_target)"
   in_wt cat-file -e "${target}:codex-rs/Cargo.lock" 2>/dev/null || return 0
+  own="$(vendored_packages)"
   drift="$(comm -23 <(in_wt show "${target}:codex-rs/Cargo.lock" | lock_packages) \
-    <(lock_packages <"${wt}/codex-rs/Cargo.lock"))"
+    <(lock_packages <"${wt}/codex-rs/Cargo.lock") \
+    | awk -v own="${own}" 'BEGIN { n = split(own, l, "\n"); for (i = 1; i <= n; i++) set[l[i]] }
+      !(($1 " " $2 " " $4) in set)')"
   [[ -z "${drift}" ]] || exit_with 3 "codex-rs/Cargo.lock in ${wt} no longer holds these packages \
 as upstream locked them:
 $(printf '%s\n' "${drift}" | awk '{ gsub(/"/, ""); print "  " $1 " " $2 }')
@@ -359,10 +380,10 @@ commit_sync_merge() {
 # The check failed. If it was the build (check.sh exit 2), build the pristine upstream
 # commit with the same toolchain: when that fails too, the fault is the toolchain's.
 check_failed() {
-  local rc="$1" target pristine scratch_home
+  local rc="$1" target pristine scratch_home pristine_rc=0
   target="$(cat "$(state_path target)" 2>/dev/null || true)"
   if [[ "${rc}" -eq 2 && -n "${target}" ]]; then
-    pristine="$(alab_pristine "${wt}")"
+    pristine="$(alab_pristine "${wt}" "${target}")" || exit_with 4 "the pristine upstream revision could not be resolved"
     alab_say "the build failed; building pristine upstream ${target:0:9} to tell an ALab fault from a lane fault"
     alab_pristine_at "${wt}" "${target}" || exit_with 4 "alab/check.sh failed in ${wt} (above), and \
 pristine upstream ${target:0:9} could not be checked out at ${pristine} to tell an ALab fault from a \
@@ -371,12 +392,16 @@ lane fault. Fix that, then alab/sync.sh --continue"
     # counts, in the pristine tree's own target dir (lib.sh, alab_pristine).
     # Contained, as check.sh is (run_check).
     scratch_home="$(mktemp -d "${TMPDIR:-/tmp}/alab-pristine-home.XXXXXX")"
-    mkdir -p "${pristine}/codex-rs/target"
-    if ! (cd "${pristine}/codex-rs" && export CARGO_TARGET_DIR="${pristine}/codex-rs/target" \
+    alab_build_target_ready "${pristine}/codex-rs" "${pristine}/codex-rs/target" >/dev/null \
+      || exit_with 4 "the pristine target could not be prepared; no build started"
+    (cd "${pristine}/codex-rs" && export CARGO_TARGET_DIR="${pristine}/codex-rs/target" \
       CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CODEX_HOME="${scratch_home}" \
-      && alab_contained "${CARGO_TARGET_DIR}" "${scratch_home}" -- \
-        "${cargo}" --unverified run --quiet --locked -p codex-cli --bin codex -- --version); then
+      && alab_contained --pristine "${pristine}" --read "${alab_library_root}/alab" "${CARGO_TARGET_DIR}" "${scratch_home}" -- \
+        /bin/bash -c '. "$1/alab/lib.sh"; shift; alab_build_command "$@"' \
+        alab-pristine-disk "${alab_library_root}" "${cargo}" --unverified run --quiet --locked -p codex-cli --bin codex -- --version) || pristine_rc=$?
+    if [[ "${pristine_rc}" -ne 0 ]]; then
       rm -rf "${scratch_home:?}"
+      [[ "${pristine_rc}" -ne 75 ]] || exit_with 75 "disk resource stop during pristine build: no compiler verdict; free room, then alab/sync.sh --continue"
       exit_with 6 "upstream ${target:0:9} itself does not build and run with ${cargo} (above): a \
 Trust lane fault, fixed in Trust, not in codex-alab. Once the toolchain is fixed: alab/sync.sh --continue"
     fi
@@ -392,21 +417,13 @@ run_check() {
   local rc=0
   [[ "${check}" -eq 1 ]] || return 0
   alab_say "checking $(in_wt log -1 --format='%h %s') with alab/check.sh"
-  # check.sh builds and runs upstream's code, build scripts of newly added crates included:
-  # contained (lib.sh, alab_contained), it can write only the two target dirs. Its step 4
-  # reruns failures on pristine upstream, which it cannot check out from in there, so the
-  # pristine tree is put at that commit first.
-  alab_pristine_at "${wt}" "$(in_wt merge-base HEAD upstream/main)" || exit_with 4 "the pristine \
-upstream tree $(alab_pristine "${wt}") could not be checked out for alab/check.sh. Fix that, then \
-alab/sync.sh --continue"
-  # The target dirs are made out here (daily.sh may have deleted one): inside, cargo would
-  # make one beside itself, and cannot.
-  mkdir -p "${CARGO_TARGET_DIR:-${wt}/codex-rs/target}" "$(alab_pristine "${wt}")/codex-rs/target"
-  (cd "${wt}" && alab_contained "${CARGO_TARGET_DIR:-${wt}/codex-rs/target}" \
-    "$(alab_pristine "${wt}")/codex-rs/target" -- ./alab/check.sh) || rc=$?
+  # The executable gate owns native project selection, the shared target
+  # inventory and containment for both source and pristine.
+  (cd "${wt}" && ./alab/check.sh) || rc=$?
   # Killed by a signal (memory pressure, a person's Ctrl-C), not failed: no fault is known yet,
   # so no stop is recorded and the next run checks again. check.sh passes a killed cargo's
   # status up too.
+  [[ "${rc}" -ne 75 ]] || exit_with 75 "disk resource stop during check: no source verdict; free room, then alab/sync.sh --continue"
   if [[ "${rc}" -gt 128 ]]; then
     [[ "${mode}" == continue ]] && alab_die "alab/check.sh was killed (exit ${rc}): alab/sync.sh --continue checks again"
     alab_die "alab/check.sh was killed (exit ${rc}): the next alab/sync.sh checks again"
@@ -444,14 +461,38 @@ then alab/sync.sh --continue"
 }
 
 push_main() {
-  in_wt push --quiet origin HEAD:refs/heads/main && return 0
-  git fetch --quiet origin || true
-  in_wt merge-base --is-ancestor origin/main HEAD \
-    && alab_die "push refused (above), though origin/main has nothing this sync lacks"
-  take_concurrent_main
-  run_check
-  in_wt push --quiet origin HEAD:refs/heads/main \
-    || alab_die "push refused again (above): alab/sync.sh --continue retries"
+  local before report rc delay=1
+  while :; do
+    before="$(git rev-parse origin/main)"
+    rc=0
+    report="$(LC_ALL=C in_wt push --porcelain origin HEAD:refs/heads/main)" || rc=$?
+    [[ -z "${report}" ]] || printf '%s\n' "${report}"
+    [[ "${rc}" -ne 0 ]] || return 0
+    # A remote hook, authentication failure or transport error is not evidence of a race,
+    # even if someone happened to advance main too. Git's per-ref porcelain distinguishes it.
+    if ! awk -F '\t' '$1 == "!" && $2 == "HEAD:refs/heads/main" &&
+      ($3 == "[rejected] (fetch first)" || $3 == "[rejected] (non-fast-forward)") { race = 1 }
+      END { exit !race }' <<<"${report}"; then
+      alab_die "push refused (above), not a proven concurrent update of main"
+    fi
+    git fetch --quiet origin || alab_die "fetching origin after the push race failed (above)"
+    [[ "$(git rev-parse origin/main)" != "${before}" ]] \
+      || alab_die "push refused (above), but origin/main did not advance"
+    git merge-base --is-ancestor "${before}" origin/main \
+      || alab_die "origin/main changed history during the push (above); a person must inspect it"
+    rc=0
+    in_wt merge-base --is-ancestor origin/main HEAD || rc=$?
+    case "${rc}" in
+      0) alab_die "push refused (above), though origin/main has nothing this sync lacks" ;;
+      1) ;;
+      *) alab_die "could not prove that origin/main has commits this sync lacks" ;;
+    esac
+    alab_say "main advanced during the push; retrying its merge and check after ${delay}s"
+    sleep "${delay}"
+    take_concurrent_main
+    run_check
+    delay=$((delay < 30 ? delay * 2 : 60))
+  done
 }
 
 # Commit the merge (if still open), gate it, land it.
@@ -644,6 +685,19 @@ case "${mode}" in
     echo "origin/main    $(git log -1 --format='%h %cs' origin/main 2>/dev/null || echo missing)"
     echo "upstream/main  $(git log -1 --format='%h %cs' upstream/main) ($(git rev-list --count \
 origin/main..upstream/main 2>/dev/null || echo '?') upstream commits not yet in main; fetch first for news)"
+    # Observe the same kernel lock as the driver before offering stop/recovery
+    # instructions. A committed prefix is still active while its gate runs.
+    activity_rc=0
+    alab_locked "${common_dir}/alab-sync.lockf" /usr/bin/true || activity_rc=$?
+    case "${activity_rc}" in
+      0) echo "sync activity=inactive" ;;
+      75)
+        echo "sync activity=active"
+        echo "sync worktree  active (${wt}; sync lock held)"
+        exit 0
+        ;;
+      *) echo "sync activity=unknown"; exit "${activity_rc}" ;;
+    esac
     if [[ ! -e "${wt}/.git" ]]; then
       echo "sync worktree  none yet (${wt})"
     elif merging || unlanded; then

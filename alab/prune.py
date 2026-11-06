@@ -6,7 +6,12 @@
 alab/package.sh runs this as its last step; it can also be run by hand.
 
 usage: prune.py --root <out>/codex [--keep <n>] [--prefix <atpkg prefix>]
-                [--codex-home <dir>]... [--dry-run]
+                [--codex-home <dir>]... [--repo <clone>] [--dry-run]
+
+The clone-local <git-common-dir>/alab-preserve-builds policy disables deletion. Without
+it, collection holds atpkg's existing <prefix>/store.lock BSD flock across its entire
+census and deletion; a manual selection cannot move between the snapshot and deletion.
+A missing, special, unreadable or contended lock defers collection without creating it.
 
 A package is a directory directly under --root holding a regular alab-build.json; they are
 ordered by its "built_at", newest first, and every one past the newest <n> (default 3) is
@@ -23,9 +28,10 @@ removed, unless it is IN USE:
   running  a live process executes from it: its image (proc_pidpath, for every pid this
            user may read) or its `ps -o comm` path lies inside the package, codex itself or
            its codex-code-mode-host or rg.
-  owed     a codex-alab session record that stands (<home>/alab/sessions/<pid>.json, the
-           crash witness aterm relaunches from) names it: its resumeArgv[0] (the line a crash
-           relaunch types), its exe or its launchArgv0, or a shim one of them is. The record
+  owed     a codex-alab session record that stands (<home>/alab/sessions/<pid>.json or its
+           recoverable <pid>.json.<nonce>.tmp, the crash witness aterm relaunches from)
+           names it: its resumeArgv[0] (the line a crash relaunch types), its exe or its
+           launchArgv0, or a shim one of them is. The record
            of a process that died is exactly a relaunch still owed, with no process left to
            keep its package.
 
@@ -33,8 +39,9 @@ Paths are read whole, spaces and all (`~/Library/Application Support/...`): a sh
 `exec '<path>'`, and in `aterm pkg which` every reading of a path that runs on past a space.
 
 Fail closed: when no link source is readable, a link marker stands but cannot be read, a
-sessions directory or a record in it stands but cannot be read, or no process can be listed,
-nothing is pruned. <prefix> defaults to the directory above $ATPKG_BIN, else
+sessions directory or a record in it cannot be read, a listed record moves before its read,
+or no process can be listed, nothing is pruned. <prefix> defaults to the directory above
+$ATPKG_BIN, else
 ~/Library/Application Support/aterm/pkg; the homes (--codex-home, repeatable) default to
 $CODEX_HOME, ~/.codex and each directory in $ALAB_CODEX_HOMES (colon-separated). Exit 0
 (whatever it pruned or kept), 2 on a usage error.
@@ -51,15 +58,25 @@ or among the newest <n>. A record stands until its own relaunch takes it or it i
 """
 
 import argparse
+from contextlib import contextmanager
 import ctypes
 import ctypes.util
 import json
 import os
 import re
+import runpy
 import shutil
 import stat
 import subprocess
 import sys
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+
+cleanup_allowed = runpy.run_path(os.path.join(os.path.dirname(__file__), "retention.py"))["cleanup_allowed"]
 
 # A shim or a marker larger than this is not one (a copied binary, say): never read whole.
 SMALL_TEXT = 64 * 1024
@@ -75,6 +92,45 @@ def default_prefix():
     if atpkg_bin:
         return os.path.dirname(atpkg_bin.rstrip("/"))
     return os.path.expanduser("~/Library/Application Support/aterm/pkg")
+
+
+@contextmanager
+def store_guard(prefix):
+    """Hold atpkg's writer flock throughout the census and deletion.
+
+    atpkg's lock.rs uses BSD flock on <prefix>/store.lock, opened relative to a
+    no-follow prefix directory. Open the existing rendezvous only: pruning never
+    creates a store or writes an atpkg holder/claim record. Missing or contended
+    locks defer collection instead of racing a manual package selection.
+    """
+    if fcntl is None:
+        raise OSError("BSD flock is unavailable")
+    directory = os.open(prefix, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = None
+    locked = False
+    try:
+        descriptor = os.open(
+            "store.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=directory,
+        )
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("the atpkg writer lock is not regular")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        locked = True
+        current = os.stat(prefix, follow_symlinks=False)
+        opened = os.fstat(directory)
+        named = os.stat("store.lock", dir_fd=directory, follow_symlinks=False)
+        held = os.fstat(descriptor)
+        if ((current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+                or (named.st_dev, named.st_ino) != (held.st_dev, held.st_ino)):
+            raise OSError("the atpkg writer lock moved during acquisition")
+        yield
+    finally:
+        if descriptor is not None:
+            if locked:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+        os.close(directory)
 
 
 def small_text(path):
@@ -211,7 +267,9 @@ def linked(prefix):
 
 # A session record larger than this is not one: never read whole.
 RECORD_MAX = 1024 * 1024
-RECORD_NAME = re.compile(r"[0-9]+\.json")
+# Keep the same filenames as alab-tui's record::owner_pid. A quarantine can be the only
+# durable witness; its nonce is opaque, and the owning pid is an ASCII u32.
+RECORD_NAME = re.compile(r"([0-9]+)\.json(?:\..*\.tmp)?", re.DOTALL)
 
 
 def default_homes():
@@ -224,46 +282,53 @@ def default_homes():
 
 
 def record_text(path):
-    """A record's text (a regular file, never through a symlink), "" when it is gone (removed
-    between the listing and the read), else None."""
+    """A bounded regular record's text, else None, including a listed record that moved.
+
+    Empty existing files are malformed records, not evidence of removal. Validate the
+    opened descriptor so a replacement symlink or FIFO cannot bypass the file checks.
+    """
     try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        return ""
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         return None
-    if not stat.S_ISREG(st.st_mode) or st.st_size > RECORD_MAX:
-        return None
     try:
-        with open(path, "rb") as f:
-            return f.read(RECORD_MAX + 1).decode("utf-8")
-    except FileNotFoundError:
-        return ""
+        with os.fdopen(fd, "rb") as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_size > RECORD_MAX:
+                return None
+            data = f.read(RECORD_MAX + 1)
+            if len(data) > RECORD_MAX:
+                return None
+            return data.decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return None
 
 
 def owed(homes):
     """The paths the codex-alab session records under `homes` name (each one's resumeArgv[0],
-    exe and launchArgv0, and what a shim among them names), or None when a sessions directory
-    or a record in it stands but cannot be read."""
+    exe and launchArgv0, and what a shim among them names), or None when the captured
+    records cannot all be read safely, including a custody rename during the scan."""
     paths = []
     for home in homes:
         sessions = os.path.join(home, "alab", "sessions")
-        if not os.path.lexists(sessions):
+        try:
+            os.lstat(sessions)
+        except FileNotFoundError:
             continue
+        except OSError as e:
+            say(f"the session records {sessions} cannot be inspected ({e.strerror})")
+            return None
         try:
             names = sorted(os.listdir(sessions))
         except OSError as e:
             say(f"the session records {sessions} cannot be listed ({e.strerror})")
             return None
         for name in names:
-            if not RECORD_NAME.fullmatch(name):
-                continue  # a writer's temporary, or not a record
+            match = RECORD_NAME.fullmatch(name)
+            if match is None or int(match[1]) > 0xFFFF_FFFF:
+                continue  # not a filename the native record sweep can recover
             path = os.path.join(sessions, name)
             text = record_text(path)
-            if text == "":
-                continue
             try:
                 record = json.loads(text) if text is not None else None
             except ValueError:
@@ -356,6 +421,8 @@ def main():
     ap.add_argument("--root", required=True, help="<out>/codex, where package.sh writes")
     ap.add_argument("--keep", type=int, default=3)
     ap.add_argument("--prefix", default=None, help="atpkg's prefix")
+    ap.add_argument("--repo", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    help="clone whose common-dir/alab-preserve-builds policy applies")
     ap.add_argument(
         "--codex-home",
         action="append",
@@ -369,9 +436,22 @@ def main():
         ap.error("--keep needs a positive number")
     root = os.path.realpath(args.root)
     prefix = args.prefix or default_prefix()
+    if not cleanup_allowed(args.repo):
+        say("the clone's cleanup policy preserves all packages")
+        return 0
     candidates = packages(root)[args.keep :]
     if not candidates:
         return 0
+    try:
+        with store_guard(prefix):
+            prune_candidates(args, candidates, prefix)
+    except OSError as error:
+        say(f"pruning stopped ({error}); no further packages removed")
+    return 0
+
+
+def prune_candidates(args, candidates, prefix):
+    # `aterm pkg which` is an offline, read-only verb and never takes store.lock.
     links = linked(prefix)
     if links is None:
         say("cannot tell which package aterm links (no link marker, no codex shim, no aterm): pruning nothing")
@@ -401,6 +481,9 @@ def main():
         if args.dry_run:
             say(f"would prune {d} (newest {args.keep} kept)")
             continue
+        if not cleanup_allowed(args.repo):
+            say("the clone's cleanup policy now preserves all remaining packages")
+            return 0
         say(f"pruning {d} (newest {args.keep} kept)")
         shutil.rmtree(d)
     return 0

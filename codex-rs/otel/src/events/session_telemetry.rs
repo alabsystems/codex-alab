@@ -1,4 +1,6 @@
 use crate::TelemetryAuthMode;
+#[path = "../../../alab-core/glue/exec_metric_tags.rs"]
+mod alab_exec_metric_tags; // ALAB(exec-accounting): retain metric attribution across native replacement.
 use crate::ToolDecisionSource;
 use crate::events::shared::log_and_trace_event;
 use crate::events::shared::log_event;
@@ -120,6 +122,7 @@ pub struct SessionTelemetryMetadata {
 #[derive(Debug, Clone)]
 pub struct SessionTelemetry {
     tool_result_log_config: ToolResultLogConfig,
+    log_sse_deltas: bool,
     pub(crate) metadata: SessionTelemetryMetadata,
     pub(crate) metrics: Option<MetricsClient>,
     pub(crate) metrics_use_metadata_tags: bool,
@@ -142,6 +145,12 @@ pub fn bounded_product_sku(product_sku: Option<&str>) -> Option<&'static str> {
 }
 
 impl SessionTelemetry {
+    /// Suppress successful SSE delta logs while retaining errors and all metrics.
+    pub fn without_sse_delta_logs(mut self) -> Self {
+        self.log_sse_deltas = false;
+        self
+    }
+
     pub fn with_tool_result_log_config(mut self, config: ToolResultLogConfig) -> Self {
         self.tool_result_log_config = config;
         self
@@ -609,6 +618,7 @@ impl SessionTelemetry {
             });
         Self {
             tool_result_log_config: ToolResultLogConfig::default(),
+            log_sse_deltas: true,
             metadata: SessionTelemetryMetadata {
                 conversation_id,
                 agent_name,
@@ -626,7 +636,7 @@ impl SessionTelemetry {
                 service_tier: None,
                 model_reasoning_effort: None,
                 log_user_prompts,
-                app_version: env!("CARGO_PKG_VERSION"),
+                app_version: codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")), // ALAB(version): running executable identity
                 terminal_type,
             },
             metrics: crate::metrics::global(),
@@ -1065,6 +1075,9 @@ impl SessionTelemetry {
             duration,
             &[("kind", kind), ("success", "true")],
         );
+        if !self.log_sse_deltas && kind.ends_with(".delta") {
+            return;
+        }
         log_event!(
             self,
             event.name = "codex.sse_event",
@@ -1409,6 +1422,7 @@ impl SessionTelemetry {
             ResponseEvent::ServerModel(_) => "server_model".into(),
             ResponseEvent::ModelVerifications(_) => "model_verifications".into(),
             ResponseEvent::TurnModerationMetadata(_) => "turn_moderation_metadata".into(),
+            ResponseEvent::GuardianAssessment(_) => "guardian_assessment".into(),
             ResponseEvent::SafetyBuffering(_) => "safety_buffering".into(),
             ResponseEvent::ServerReasoningIncluded(_) => "server_reasoning_included".into(),
             ResponseEvent::RateLimits(_) => "rate_limits".into(),

@@ -27,6 +27,7 @@ use codex_app_server_protocol::MarketplaceUpgradeResponse;
 use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::RequestId;
 
+use crate::hooks_rpc::HooksListTarget;
 use crate::hooks_rpc::fetch_hooks_list;
 use crate::hooks_rpc::write_hook_trust;
 use crate::hooks_rpc::write_hook_trusts;
@@ -109,6 +110,7 @@ impl App {
         app_server: &AppServerSession,
         origin: RateLimitRefreshOrigin,
     ) {
+        self.alab_retry_missing_account_email(app_server); // ALAB(interface): quota/inspector refresh can recover a missing verified email after bounded backoff.
         if matches!(
             origin,
             RateLimitRefreshOrigin::Recovery | RateLimitRefreshOrigin::ResetConsume { .. }
@@ -123,10 +125,12 @@ impl App {
             return;
         };
         self.chat_widget.start_usage_notice_read(request_id);
+        self.chat_widget.alab_quota_read_started(request_id); // ALAB(quota): retain causal request start before the provider read.
+        let include_reset_credit_details = self.chat_widget.alab_include_reset_credit_details(); // ALAB(interface): refresh reset expiry details through existing polls, with bounded attempts.
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let request = fetch_account_rate_limits(request_handle, origin);
+            let request = fetch_account_rate_limits(request_handle, origin, include_reset_credit_details); // ALAB(interface): retain native polling while supplying foreground reset details.
             let result = match origin {
                 RateLimitRefreshOrigin::Recovery
                 | RateLimitRefreshOrigin::Periodic
@@ -324,14 +328,18 @@ impl App {
         });
     }
 
-    pub(super) fn fetch_hooks_list(&mut self, app_server: &AppServerSession, cwd: PathBuf) {
+    pub(super) fn fetch_hooks_list(
+        &mut self,
+        app_server: &AppServerSession,
+        target: HooksListTarget,
+    ) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let result = fetch_hooks_list(request_handle, cwd.clone())
+            let result = fetch_hooks_list(request_handle, &target)
                 .await
                 .map_err(|err| err.to_string());
-            app_event_tx.send(AppEvent::HooksLoaded { cwd, result });
+            app_event_tx.send(AppEvent::HooksLoaded { target, result });
         });
     }
 
@@ -603,7 +611,7 @@ impl App {
                     });
                 }
                 Err(err) => {
-                    tracing::warn!(error = %err, "plugin/list failed while refreshing plugin mention candidates");
+                    tracing::warn!(error = %err, "plugin/installed failed while refreshing plugin mention candidates");
                 }
             }
         });
@@ -685,7 +693,7 @@ impl App {
         };
 
         if should_send {
-            match sender.try_send(ThreadBufferedEvent::FeedbackSubmission(event)) {
+            match self.alab_try_send_thread_event(thread_id, &sender, ThreadBufferedEvent::FeedbackSubmission(event)) { // ALAB(retry-status): feedback shares the exact channel overflow order.
                 Ok(()) => {}
                 Err(TrySendError::Full(event)) => {
                     tokio::spawn(async move {
@@ -815,6 +823,7 @@ pub(super) async fn fetch_all_mcp_server_statuses(
 pub(super) async fn fetch_account_rate_limits(
     request_handle: AppServerRequestHandle,
     origin: RateLimitRefreshOrigin,
+    include_reset_credit_details: bool, // ALAB(interface): a foreground account inspector needs the backend's expiry rows.
 ) -> Result<GetAccountRateLimitsResponse> {
     let request_id = RequestId::String(format!("account-rate-limits-{}", Uuid::new_v4()));
     let result = request_handle
@@ -822,7 +831,7 @@ pub(super) async fn fetch_account_rate_limits(
             request_id: request_id.clone(),
             params: Some(GetAccountRateLimitsParams {
                 supports_luna_reserve: true,
-                exclude_reset_credit_details: origin == RateLimitRefreshOrigin::Periodic,
+                exclude_reset_credit_details: origin == RateLimitRefreshOrigin::Periodic && !include_reset_credit_details, // ALAB(interface): background polls stay cheap outside account inspection.
             }),
         })
         .await;
@@ -1423,8 +1432,9 @@ mod tests {
                 serde_json::json!({
                     "threads": [{
                         "thread_id": thread_id.to_string(),
-                        "estimated_usage_credits_micros": 46_000_000,
-                        "estimated_usage_usd_micros": 1_820_000
+                        "estimated_usage_credits_micros": 0,
+                        "estimated_usage_usd_micros": 0,
+                        "native_usage_usd_micros": 750_000
                     }]
                 }),
             ))
@@ -1437,9 +1447,10 @@ mod tests {
                 .await
                 .expect("read thread usage through the authenticated app server"),
             ThreadUsageOutcome::Available(ThreadUsage {
+                native_usage_usd_micros: Some(750_000),
                 thread_id: thread_id.to_string(),
-                estimated_usage_credits_micros: 46_000_000,
-                estimated_usage_usd_micros: Some(1_820_000),
+                estimated_usage_credits_micros: 0,
+                estimated_usage_usd_micros: Some(0),
                 groups: Vec::new(),
             })
         );

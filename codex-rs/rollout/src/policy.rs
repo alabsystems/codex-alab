@@ -45,6 +45,7 @@ pub fn persisted_rollout_item(
         | RolloutItem::WorldState(_)
         | RolloutItem::RetainedContext(_)
         | RolloutItem::SecurityRiskScore(_)
+        | RolloutItem::DynamicToolsUpdated { .. }
         | RolloutItem::SessionMeta(_) => Some(Cow::Borrowed(item)),
     }
 }
@@ -129,6 +130,7 @@ fn persisted_event_msg(
     history_mode: ThreadHistoryMode,
 ) -> Option<Cow<'_, EventMsg>> {
     match ev {
+        _ if alab_compaction::persist(ev) => Some(Cow::Borrowed(ev)), // ALAB(recovery): distinguish a denied compaction from denied regular sampling on resume
         EventMsg::ItemCompleted(event) => persisted_item_completed_event(ev, event, history_mode),
         EventMsg::TokenCount(_)
         | EventMsg::ThreadGoalUpdated(_)
@@ -183,6 +185,7 @@ fn persisted_event_msg(
         | EventMsg::ModelVerification(_)
         | EventMsg::TurnModerationMetadata(_)
         | EventMsg::AgentReasoningSectionBreak(_)
+        | EventMsg::PrivateSessionEvent(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::SessionConfigured(_)
@@ -197,6 +200,7 @@ fn persisted_event_msg(
         | EventMsg::RequestUserInput(_)
         | EventMsg::ElicitationRequest(_)
         | EventMsg::ElicitationAbandoned(_)
+        | EventMsg::NetworkApprovalResolved { .. }
         | EventMsg::ApplyPatchApprovalRequest(_)
         | EventMsg::StreamError(_)
         | EventMsg::PatchApplyBegin(_)
@@ -286,3 +290,5 @@ fn persisted_item_completed_event<'a>(
 #[cfg(test)]
 #[path = "policy_tests.rs"]
 mod tests;
+
+#[path = "../../alab-core/glue/rollout_compaction.rs"] mod alab_compaction; // ALAB(recovery): typed compaction boundaries live in ALab's layer

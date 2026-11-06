@@ -1,88 +1,51 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! What codex-alab tells aterm's presence band (`@self story <verb> [<text>]`), so its own acts
-//! show there as `aterm drive watch`'s decisions do (aterm `supervise/run.rs` `story_of`): a
-//! three-second flash in the phase slot, the tab's story dot until the person looks, and the
-//! approvals and choices counted in the band's `◇ quiet` summary. Without it a self-supervised
-//! codex looked idle on the band while it approved and answered (`harness_act` records a
-//! timeline row only).
+//! What codex-alab tells aterm (`@self story chose [<text>]`): a question box it answered, as
+//! aterm's own approval loop tells one (`story chose <policy word>`, only for a dialog's
+//! answer). aterm counts it as one story point on the tab's presence band and writes one story
+//! mark to the session log (`stories N` in the brief); the text is checked, not kept.
 //!
-//! aterm's verbs are a closed set (`approved dismissed reconnected timeout exit compacted
-//! warned chose`), so each act maps onto the nearest one:
+//! aterm's verbs are a closed set of one since its owner surfaces (aterm main `189ec7bc0d`):
+//! `chose`. The seven others (`approved dismissed reconnected timeout exit compacted warned`)
+//! are refused, so only a dialog's answer is told:
 //!
 //! | codex-alab | story |
 //! | --- | --- |
-//! | an approval (`approve=all`) | `approved` (bare: never the command) |
-//! | the plan box's yes | `approved plan` |
-//! | a question answered (overlay or prose) | `chose <policy word>` |
-//! | a continuation, the done check | `chose continue`, `chose done-check`: the harness chose by policy |
-//! | a retry after an API error or a cut-off reply, the resume at a usage reset, a re-exec onto a new build | `reconnected <what>`: an outage ridden out |
-//! | a compaction | `compacted` |
-//! | a wait for a usage reset or a retry | `warned <the wait's words>` |
-//! | a point left to a person (attention) | `warned needs you: <why>` |
+//! | a question box answered | `chose <policy word>` |
 //!
-//! The finished task, a host-typed turn and the login wall tell nothing of their own: the
-//! last two raise attention, which is told.
+//! Every other act (an approval, the plan box's yes, a prose question answered in the
+//! composer, a continuation, the owner's standing go-ahead, Land's acts, a wall's try, a
+//! compaction, a re-exec), a wait, a point left to a person and the worker's NEEDS YOU tell
+//! nothing here: each is a `harness_act` timeline row, an `appnotice` or keyed attention
+//! already, as aterm's own loop tells none of them.
 
 use crate::answer;
-use crate::extension::RULE_APPROVE;
-use crate::upgrade::RULE_UPGRADE;
-use crate::words;
 
 /// The story an act recorded under `rule` tells: `(verb, text)`, or `None`.
 pub fn for_act(rule: &str) -> Option<(&'static str, &'static str)> {
     Some(match rule {
-        RULE_APPROVE => ("approved", ""),
-        answer::RULE_PLAN => ("approved", "plan"),
         answer::RULE_ANSWER_RECOMMENDED => ("chose", "recommended"),
-        answer::RULE_ANSWER_LONG_TERM | words::RULE_PROSE_LONG_TERM => ("chose", "long-term"),
-        answer::RULE_ANSWER_SHORT_TERM | words::RULE_PROSE_SHORT_TERM => ("chose", "short-term"),
-        words::RULE_ANSWER => ("chose", "answered"),
-        words::RULE_CONTINUE => ("chose", "continue"),
-        words::RULE_DONE_CHECK => ("chose", "done-check"),
-        words::RULE_API_RETRY => ("reconnected", "api retry"),
-        words::RULE_API_CUTOFF => ("reconnected", "cut-off reply"),
-        words::RULE_LIMIT_RESUME => ("reconnected", "usage reset"),
-        RULE_UPGRADE => ("reconnected", "new build"),
-        words::RULE_COMPACT => ("compacted", ""),
+        answer::RULE_ANSWER_LONG_TERM => ("chose", "long-term"),
+        answer::RULE_ANSWER_SHORT_TERM => ("chose", "short-term"),
         _ => return None,
     })
-}
-
-/// The story a shown wait tells: `warned`, with the wait's own words.
-pub fn for_wait(words: &str) -> (&'static str, String) {
-    ("warned", words.to_string())
-}
-
-/// The story a point left to a person tells (`kind: why`, as attention shows it).
-pub fn for_attention(text: &str) -> (&'static str, String) {
-    ("warned", format!("needs you: {text}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extension::RULE_APPROVE;
+    use crate::upgrade::RULE_UPGRADE;
+    use crate::words;
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn every_act_tells_a_verb_aterm_takes() {
+    fn only_a_dialogs_answer_tells_a_story_and_its_verb_is_one_aterm_takes() {
         for rule in [
-            RULE_APPROVE,
-            answer::RULE_PLAN,
             answer::RULE_ANSWER_RECOMMENDED,
             answer::RULE_ANSWER_LONG_TERM,
             answer::RULE_ANSWER_SHORT_TERM,
-            words::RULE_ANSWER,
-            words::RULE_PROSE_LONG_TERM,
-            words::RULE_PROSE_SHORT_TERM,
-            words::RULE_CONTINUE,
-            words::RULE_DONE_CHECK,
-            words::RULE_API_RETRY,
-            words::RULE_API_CUTOFF,
-            words::RULE_LIMIT_RESUME,
-            RULE_UPGRADE,
-            words::RULE_COMPACT,
         ] {
             let (verb, text) = for_act(rule).unwrap_or_else(|| panic!("{rule} tells nothing"));
             assert!(
@@ -91,30 +54,47 @@ mod tests {
             );
             assert!(text.len() <= codex_alab_aterm::STORY_MAX_BYTES, "{rule}");
         }
+        // NEGATIVE CONTROL: aterm's own loop tells none of these (a prose answer included).
         for rule in [
+            words::RULE_ANSWER,
+            words::RULE_PROSE_LONG_TERM,
+            words::RULE_PROSE_SHORT_TERM,
+            RULE_APPROVE,
+            answer::RULE_PLAN,
+            answer::RULE_GOAL_LEAVE,
+            words::RULE_CONTINUE,
+            words::RULE_POLICY_CONTINUE,
+            words::RULE_DONE_CHECK,
+            words::RULE_LAND,
+            words::RULE_LAND_NUDGE,
+            words::RULE_LAND_ANSWER,
+            words::RULE_API_RETRY,
+            words::RULE_API_BACK,
+            words::RULE_API_CUTOFF,
+            words::RULE_LIMIT_RESUME,
+            RULE_UPGRADE,
+            words::RULE_COMPACT,
+            words::RULE_LANDED,
+            words::RULE_LEFT,
             words::RULE_FINISHED,
             words::RULE_HOST_TURN,
             words::RULE_LOGIN,
+            words::RULE_LOGIN_BACK,
+            crate::go_ahead::RULE_GO_AHEAD,
         ] {
             assert_eq!(for_act(rule), None, "{rule}");
         }
-        assert!(codex_alab_aterm::STORY_VERBS.contains(&for_wait("x").0));
-        assert!(codex_alab_aterm::STORY_VERBS.contains(&for_attention("x").0));
     }
 
     #[test]
-    fn an_approval_is_told_bare_as_drive_watch_tells_it() {
-        assert_eq!(for_act(RULE_APPROVE), Some(("approved", "")));
+    fn an_answer_is_told_by_its_policy_word_as_aterms_loop_tells_it() {
         assert_eq!(
             for_act(answer::RULE_ANSWER_RECOMMENDED),
             Some(("chose", "recommended"))
         );
         assert_eq!(
-            for_attention("question: a destructive option"),
-            (
-                "warned",
-                "needs you: question: a destructive option".to_string()
-            )
+            for_act(answer::RULE_ANSWER_LONG_TERM),
+            Some(("chose", "long-term"))
         );
     }
 }

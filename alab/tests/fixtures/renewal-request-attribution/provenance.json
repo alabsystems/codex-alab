@@ -1,0 +1,10 @@
+{
+  "kind": "actual-packet-classification-projection",
+  "source": "native-renewal-baseline-postsignal-f1b-d08-r2/requests.json",
+  "sha256": "30e30d0174948032748dcc00f4febaf834a369b0000af9555928faee00bc4969",
+  "indexes": {
+    "foreground": 0,
+    "thread-title": 1
+  },
+  "projection": "model; tool type/name; user input_text prefixes limited to title classifier prefix length; text output format. Developer/environment/tool-parameter prose omitted."
+}

@@ -37,7 +37,7 @@ pub fn create_env(
     shell_environment::create_env(policy, thread_id.as_deref())
 }
 
-/// Exposes the shared root-session identity and harness version to shell commands.
+/// Exposes the shared root-session identity and running product version to shell commands.
 pub(crate) fn inject_session_env(env: &mut HashMap<String, String>, session_id: SessionId) {
     env.insert(CODEX_SESSION_ID_ENV_VAR.to_string(), session_id.to_string());
     if cfg!(windows) {
@@ -45,7 +45,7 @@ pub(crate) fn inject_session_env(env: &mut HashMap<String, String>, session_id: 
     }
     env.insert(
         CODEX_VERSION_ENV_VAR.to_string(),
-        env!("CARGO_PKG_VERSION").to_string(),
+        codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string(), // ALAB(version): running executable identity
     );
 }
 

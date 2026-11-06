@@ -172,6 +172,7 @@ fn custom_pet_entries(codex_home: &Path) -> Vec<PetPickerEntry> {
             if id == DISABLED_PET_ID || id.starts_with(CUSTOM_PET_PREFIX) {
                 continue;
             }
+            if catalog::alab_pets::shared_copy(id) { continue; } // ALAB(pets): codex-old's copy of an ALab pet lists once, as the built-in
             let selector = custom_pet_selector(id);
             let Ok(pet) =
                 Pet::load_with_codex_home(&selector, /*codex_home*/ Some(codex_home))

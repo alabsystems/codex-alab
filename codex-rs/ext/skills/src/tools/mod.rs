@@ -6,8 +6,6 @@ use std::sync::Arc;
 use codex_analytics::AnalyticsEventsClient;
 use codex_analytics::InvocationType;
 use codex_analytics::build_track_events_context;
-use codex_exec_server::ExecutorCapabilityDiscoveryV2Snapshot;
-use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::FunctionCallError;
@@ -34,19 +32,20 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::aliases::SkillLocator;
 use crate::catalog::SkillAuthority;
-use crate::catalog::SkillCatalog;
 use crate::catalog::SkillCatalogEntry;
 use crate::catalog::SkillSourceKind;
 use crate::catalog::SkillSourceLocation;
-use crate::skills_extension_state::SkillToolAuthoritySelector;
-use crate::skills_extension_state::SkillsStepState;
 use crate::sources::SkillProviders;
 use crate::state::SkillsSessionState;
 use crate::state::SkillsThreadState;
+use crate::step_state::SkillToolAuthoritySelector;
+use crate::step_state::SkillsStepState;
 use crate::telemetry::ActiveSkillTurnMetrics;
 use crate::telemetry::SkillTurnMetrics;
 
+mod installations;
 mod list;
 mod read;
 mod schema;
@@ -64,13 +63,10 @@ pub(crate) fn skill_tools(
     let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
         return Vec::new();
     };
-    let has_executor = step_store
-        .get::<Vec<ResolvedSelectedCapabilityRoot>>()
-        .is_some_and(|roots| !roots.is_empty())
-        || step_store
-            .get::<Vec<ExecutorCapabilityDiscoveryV2Snapshot>>()
-            .is_some();
-    if !thread_state.cloud_skill_enabled() && !has_executor {
+    let Some(step_state) = step_store.get::<SkillsStepState>() else {
+        return Vec::new();
+    };
+    if !step_state.tools_enabled {
         return Vec::new();
     }
     let mcp_resources = session_store
@@ -78,18 +74,25 @@ pub(crate) fn skill_tools(
         .and_then(|state| state.mcp_resources.clone());
     let analytics = SkillAnalytics::from_stores(session_store, thread_store);
     let context = SkillToolContext {
+        thread_id: thread_store.level_id().to_string(),
         providers,
         mcp_resources,
         thread_state,
         analytics,
-        step_catalog: step_store.get_or_init(SkillsStepState::new),
+        step_state,
     };
-    vec![
+    let mut tools: Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> = vec![
         Arc::new(list::ListTool {
             context: context.clone(),
         }),
-        Arc::new(read::ReadTool { context }),
-    ]
+        Arc::new(read::ReadTool {
+            context: context.clone(),
+        }),
+    ];
+    if context.step_state.discovery_v2 {
+        tools.push(Arc::new(installations::InstallationsTool { context }));
+    }
+    tools
 }
 
 #[derive(Clone)]
@@ -202,24 +205,111 @@ impl SkillAnalytics {
 
 #[derive(Clone)]
 struct SkillToolContext {
+    thread_id: String,
     providers: SkillProviders,
     mcp_resources: Option<Arc<McpResourceClient>>,
     thread_state: Arc<SkillsThreadState>,
     analytics: Option<SkillAnalytics>,
-    step_catalog: Arc<SkillsStepState>,
+    step_state: Arc<SkillsStepState>,
 }
 
 impl SkillToolContext {
-    fn catalog(
-        &self,
-        authorities: &[SkillToolAuthoritySelector],
-    ) -> Result<SkillCatalog, FunctionCallError> {
-        let snapshot = self.step_catalog.get().ok_or_else(|| {
-            FunctionCallError::RespondToModel(
-                "skill catalog is not ready for this step".to_string(),
-            )
-        })?;
-        Ok(snapshot.select_from_catalog(authorities))
+    fn matching_packages<'a>(
+        &'a self,
+        package: &SkillLocator,
+    ) -> Vec<(&'a SkillCatalogEntry, SkillSourceLocation)> {
+        let catalog = &self.step_state.catalog.merged;
+        let matching_entries = |resolved_package: &str, alias_source: Option<&SkillSourceKind>| {
+            catalog
+                .entries
+                .iter()
+                .filter_map(|entry| {
+                    entry.source_locations().find_map(|source| {
+                        if source.package.0 != resolved_package
+                            || alias_source.is_some_and(|kind| *kind != source.authority.kind)
+                        {
+                            return None;
+                        }
+                        SkillToolAuthority::from_authority(&source.authority)?;
+                        Some((entry, source))
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let exact = matching_entries(package.as_str(), /*alias_source*/ None);
+        if !exact.is_empty() || package.alias_source().is_none() {
+            return exact;
+        }
+        let resolved_package = self.step_state.catalog.aliases.resolve(package);
+        resolved_package.map_or_else(Vec::new, |resolved| {
+            matching_entries(&resolved, package.alias_source())
+        })
+    }
+}
+
+#[derive(Deserialize, Hash, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum InstallationSource {
+    Cloud,
+    Executor { environment_id: String },
+}
+
+impl InstallationSource {
+    fn validate(&self) -> Result<(), FunctionCallError> {
+        if let Self::Executor { environment_id } = self {
+            validate_handle("environment_id", environment_id, MAX_HANDLE_BYTES)?;
+        }
+        Ok(())
+    }
+
+    fn matches(&self, source: &SkillSourceLocation) -> bool {
+        source.enabled
+            && match self {
+                Self::Cloud => source.authority.kind == SkillSourceKind::Cloud,
+                Self::Executor { environment_id } => {
+                    source.authority.kind == SkillSourceKind::Executor
+                        && source
+                            .main_prompt
+                            .environment_path()
+                            .is_some_and(|(id, _)| id == environment_id)
+                }
+            }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(untagged)]
+#[schemars(deny_unknown_fields)]
+enum InstallationLocation {
+    Cloud {
+        package: String,
+        resource: String,
+    },
+    Executor {
+        environment_id: String,
+        skill_root: String,
+    },
+}
+
+impl InstallationLocation {
+    fn from_source(source: &SkillSourceLocation) -> Option<Self> {
+        if !source.enabled {
+            return None;
+        }
+        match &source.authority.kind {
+            SkillSourceKind::Cloud => Some(Self::Cloud {
+                package: source.package.0.clone(),
+                resource: source.main_prompt.as_str().to_string(),
+            }),
+            SkillSourceKind::Executor => {
+                let (environment_id, path) = source.main_prompt.environment_path()?;
+                Some(Self::Executor {
+                    environment_id: environment_id.to_string(),
+                    skill_root: path.parent()?.inferred_native_path_string(),
+                })
+            }
+            SkillSourceKind::Host | SkillSourceKind::Custom(_) => None,
+        }
     }
 }
 

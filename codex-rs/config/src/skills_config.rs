@@ -195,6 +195,7 @@ pub fn skill_config_rules_from_stack(config_layer_stack: &ConfigLayerStack) -> S
 }
 
 fn skill_config_rule_selector(entry: &SkillConfig) -> Option<SkillConfigRuleSelector> {
+    let entry = &SkillConfig { path: entry.path.as_ref().map(|path| AbsolutePathBuf::from_absolute_path(codex_alab_core::home::own_skill_rule_path(path.as_path())).unwrap_or_else(|_| path.clone())), ..entry.clone() }; // ALAB(skills): a rule on codex-old's system skill covers codex-alab's copy of it
     match (entry.path.as_ref(), entry.name.as_deref()) {
         (Some(path), None) => Some(SkillConfigRuleSelector::Path(PathUri::from_abs_path(
             &path.canonicalize().unwrap_or_else(|_| path.clone()),

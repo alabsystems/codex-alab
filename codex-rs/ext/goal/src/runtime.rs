@@ -24,6 +24,10 @@ use crate::tool::protocol_goal_from_state;
 use tokio::sync::Semaphore;
 use tokio::sync::SemaphorePermit;
 
+#[path = "../../../alab-autopilot/glue/goal_admission.rs"] mod alab_admission; // ALAB(autopilot): automatic native input shares the goal mutation permit
+#[path = "../../../alab-autopilot/glue/goal_admission_recovery.rs"] mod alab_recovery; // ALAB(goal-recovery): failed automatic admissions get one cancellable paced recheck
+#[path = "../../../alab-autopilot/glue/auth_goal_runtime.rs"] mod alab_auth_goal; // ALAB(renewal): restore only the unchanged goal stopped at the verified auth wall.
+
 #[derive(Clone)]
 pub struct GoalRuntimeHandle {
     inner: Arc<GoalRuntimeInner>,
@@ -39,12 +43,18 @@ pub(crate) struct GoalRuntimeConfig {
 
 pub(crate) enum ActiveGoalStopReason {
     TurnError,
+    AuthError { standalone: bool, original_goal: Option<String> }, // ALAB(renewal): preserve original goal association through later goal changes.
+    AccountQuotaError { standalone: bool, original_goal: Option<String> }, // ALAB(accounts): a subscription quota wall retains its original goal, independently of token budgets.
+    BoundTurnError { original_goal: Option<String> }, // ALAB(renewal): typed auth failures retain stop ownership without granting login recovery.
     UsageLimit,
     ExecutionUnavailable { expected_goal_id: String },
     EmptyResponse,
 }
 
 struct GoalRuntimeInner {
+    alab_auth_deferred: AtomicBool, // ALAB(renewal): pending original-turn recovery owns idle continuation.
+    alab_auth_transient: std::sync::Mutex<(u64, bool)>, // ALAB(renewal): token-owned live-only recovery latch.
+    alab_recovery: Arc<codex_alab_core::goal_recovery::GoalAdmissionRecovery>, // ALAB(goal-recovery): one recovery owner per runtime
     thread_id: ThreadId,
     state_dbs: Arc<codex_state::StateRuntime>,
     analytics: GoalAnalytics,
@@ -99,6 +109,9 @@ impl GoalRuntimeHandle {
     ) -> Self {
         Self {
             inner: Arc::new(GoalRuntimeInner {
+                alab_auth_deferred: AtomicBool::new(false), // ALAB(renewal): only an explicit pending receipt defers continuation.
+                alab_auth_transient: std::sync::Mutex::new((0, false)), // ALAB(renewal): no transient latch survives process recreation.
+                alab_recovery: Arc::default(), // ALAB(goal-recovery): initially no admission failure is owed
                 thread_id,
                 state_dbs,
                 analytics: config.analytics,
@@ -162,6 +175,8 @@ impl GoalRuntimeHandle {
     }
 
     pub async fn prepare_external_goal_mutation(&self) -> Result<(), String> {
+        self.alab_cancel_auth_recovery().await?; // ALAB(renewal): explicit goal changes supersede the deferred original turn.
+        self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): an external mutation retires the prior goal's recheck
         if !self.is_enabled() {
             return Ok(());
         }
@@ -286,6 +301,7 @@ impl GoalRuntimeHandle {
         // Hold this through accounting and the status update so external goal
         // mutations and idle continuation cannot interleave between them.
         let _goal_state_permit = self.goal_state_permit().await?;
+        let auth_wall = matches!(&reason, ActiveGoalStopReason::AuthError { .. } | ActiveGoalStopReason::AccountQuotaError { .. }); // ALAB(renewal): retain account-recovery provenance at the native failure.
         let accounting = &self.inner.accounting_state;
         let _turn_start_permit = if matches!(reason, ActiveGoalStopReason::EmptyResponse)
             && accounting.interrupted_turn_id().as_deref() == Some(turn_id)
@@ -304,8 +320,10 @@ impl GoalRuntimeHandle {
             .accounting_state
             .current_active_goal_id_for_turn(turn_id)
         else {
+            if matches!(&reason, ActiveGoalStopReason::AuthError { standalone: true, .. } | ActiveGoalStopReason::AccountQuotaError { standalone: true, .. }) { self.inner.state_dbs.thread_goals().alab_record_auth_standalone(self.thread_id(), turn_id).await.map_err(|error| error.to_string())?; } // ALAB(renewal): only turn-start evidence can prove this was standalone.
             return Ok(());
         };
+        if Self::alab_auth_goal_replaced(&reason, &accounting_goal_id) { return Ok(()); } // ALAB(renewal): an old goal's auth failure cannot block its replacement; native idle continues the new goal's own request.
         if let ActiveGoalStopReason::ExecutionUnavailable { expected_goal_id } = &reason
             && accounting_goal_id != *expected_goal_id
         {
@@ -316,6 +334,8 @@ impl GoalRuntimeHandle {
             ActiveGoalStopReason::TurnError => {
                 ("turn-error", codex_state::ThreadGoalStatus::Blocked, None)
             }
+            ActiveGoalStopReason::AuthError { original_goal, .. } | ActiveGoalStopReason::BoundTurnError { original_goal } => ("turn-error", codex_state::ThreadGoalStatus::Blocked, original_goal), // ALAB(renewal): compare the original goal again at the final database stop boundary.
+            ActiveGoalStopReason::AccountQuotaError { original_goal, .. } => ("usage-limit", codex_state::ThreadGoalStatus::UsageLimited, original_goal), // ALAB(accounts): compare the original goal before retaining quota recovery custody.
             ActiveGoalStopReason::UsageLimit => (
                 "usage-limit",
                 codex_state::ThreadGoalStatus::UsageLimited,
@@ -377,7 +397,7 @@ impl GoalRuntimeHandle {
             .inner
             .state_dbs
             .thread_goals()
-            .update_thread_goal(
+            .alab_update_for_auth_wall( // ALAB(renewal): block and prove the auth cause in one transaction.
                 self.thread_id(),
                 codex_state::GoalUpdate {
                     objective: None,
@@ -385,6 +405,7 @@ impl GoalRuntimeHandle {
                     token_budget: None,
                     expected_goal_id: Some(active_goal.goal_id),
                 },
+                auth_wall.then_some(turn_id), // ALAB(renewal): other stop causes keep native goal updates.
             )
             .await
             .map_err(|err| err.to_string())?
@@ -434,13 +455,17 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
+        if self.alab_auth_recovery_deferred() { return Ok(()); } // ALAB(renewal): receipt recovery must not race a new goal turn.
         if !self.tools_available() {
+            self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): disabled goal execution retires admission recovery
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }
         // Hold this through the read/start window so external set/clear cannot
         // change the goal after we read it but before the continuation launches.
         let _goal_state_permit = self.goal_state_permit().await?;
+        if self.alab_auth_recovery_deferred() { return Ok(()); } // ALAB(renewal): a queued continuation must recheck admission custody under the permit.
+        if !self.inner.alab_recovery.permits_current_attempt() { return Ok(()); } // ALAB(goal-recovery): revalidate a recovery ticket under the existing goal mutation permit
 
         if self
             .inner
@@ -448,16 +473,19 @@ impl GoalRuntimeHandle {
             .thread_goals()
             .has_thread_goal_continuation_deferral(self.thread_id())
             .await
-            .map_err(|err| err.to_string())?
+            .map_err(|err| { self.alab_recheck_failed_read(codex_state::alab_goal_read_recovery::retryable(&err)); err.to_string() })? // ALAB(goal-recovery): only typed transient read failure re-arms admission
         {
+            self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): intentional continuation deferral is not a failed admission
             return Ok(());
         }
 
         let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
+            self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): a gone owner cannot retain a recheck
             tracing::debug!("skipping goal continuation because thread manager is unavailable");
             return Ok(());
         };
         let Ok(thread) = thread_manager.get_thread(self.inner.thread_id).await else {
+            self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): thread removal retires admission recovery
             tracing::debug!("skipping goal continuation because live thread is unavailable");
             return Ok(());
         };
@@ -468,12 +496,14 @@ impl GoalRuntimeHandle {
             .thread_goals()
             .get_thread_goal(self.thread_id())
             .await
-            .map_err(|err| err.to_string())?
+            .map_err(|err| { self.alab_recheck_failed_read(codex_state::alab_goal_read_recovery::retryable(&err)); err.to_string() })? // ALAB(goal-recovery): failed read keeps the active goal's recovery live
         else {
+            self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): no standing goal remains
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         };
         if goal.status != codex_state::ThreadGoalStatus::Active {
+            self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): stopped goals never retain automatic admission work
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }
@@ -500,14 +530,17 @@ impl GoalRuntimeHandle {
                 // Turn-stop evaluation takes the same permit, so even a fast response
                 // cannot finish before this host-admitted continuation is identified.
                 self.inner.accounting_state.mark_goal_continuation(turn_id);
+                self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): admitted work is accounted before its recovery is retired
             }
             Ok(StartIfIdleSubmission::NotSubmitted { reason }) => {
+                self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): intentional rejection, including busy/Plan/interrupted, is not retried
                 tracing::debug!(
                     ?reason,
                     "skipping goal continuation because automatic idle work was rejected"
                 );
             }
             Err(error) => {
+                self.alab_record_goal_admission_failure(&error); // ALAB(goal-recovery): actual transient start errors re-arm; NotSubmitted never does
                 tracing::debug!(
                     %error,
                     "skipping goal continuation because turn input submission failed"
@@ -570,12 +603,13 @@ impl GoalRuntimeHandle {
             .inner
             .state_dbs
             .thread_goals()
-            .account_thread_goal_usage(
+            .alab_account_auth_goal_usage( // ALAB(renewal): only this native turn can advance its accepted recovery witness.
                 self.thread_id(),
                 snapshot.time_delta_seconds,
                 snapshot.token_delta,
                 mode,
                 Some(snapshot.expected_goal_id.as_str()),
+                codex_alab_core::active().then_some(turn_id), // ALAB(renewal): generic/idle accounting keeps ordinary proof invalidation.
             )
             .await
             .map_err(|err| err.to_string())?;

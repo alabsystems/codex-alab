@@ -25,7 +25,7 @@ fn local_context(cwd: &PathUri) -> FileSystemSandboxPolicyContext<'_> {
 #[cfg(target_os = "macos")]
 #[test]
 fn local_system_aliases_do_not_change_remote_patch_permissions() -> std::io::Result<()> {
-    let directory = tempfile::tempdir_in("/tmp")?;
+    let directory = crate::alab_test_fixtures::system_alias_directory()?; // ALAB(core-test-fixtures): retain the literal /tmp alias inside the granted command scratch.
     let cwd = PathUri::from_host_native_path(directory.path())?;
     let target =
         PathUri::from_host_native_path(directory.path().canonicalize()?.join("missing/file"))?;

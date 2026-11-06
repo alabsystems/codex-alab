@@ -55,7 +55,7 @@ pub(super) fn tick(view: &mut ApprovalOverlay) -> bool {
     let taken = applied.is_ok();
     if taken {
         let _ = state.take_preapproval(&key);
-        state.close_box(&id);
+        codex_alab_tui::boxes::close_answered(state, &id, std::ptr::from_ref(view).addr());
     }
     state.set_box_outcome(BoxOutcome { id, applied });
     taken

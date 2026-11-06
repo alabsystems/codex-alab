@@ -34,6 +34,7 @@ codex-context-fragments = { workspace = true }
 codex-config = { workspace = true }
 codex-core-plugins = { workspace = true }
 codex-diagnostics = { workspace = true }
+codex-direct-tool-timing = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-extension-api = { workspace = true }
 codex-extension-items = { workspace = true }
@@ -63,12 +64,14 @@ codex-response-debug-context = { workspace = true }
 codex-prompts = { workspace = true }
 codex-rollout = { workspace = true }
 codex-rollout-trace = { workspace = true }
+codex-runtime-agent-instance = { workspace = true }
 codex-rmcp-client = { workspace = true }
 codex-sandboxing = { workspace = true }
 codex-skills = { workspace = true }
 codex-skills-extension = { workspace = true }
 codex-state = { workspace = true }
 codex-agent-message-board-extension = { workspace = true }
+codex-message-board = { workspace = true }
 codex-agent-message-board-client = { workspace = true }
 codex-terminal-detection = { workspace = true }
 codex-thread-store = { workspace = true }
@@ -76,7 +79,9 @@ codex-tools = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-audio = { workspace = true }
 codex-utils-cache = { workspace = true }
+codex-utils-critical-path = { workspace = true }
 codex-utils-git-discovery = { workspace = true }
+codex-utils-head-tail-buffer = { workspace = true }
 codex-utils-image = { workspace = true }
 codex-utils-home-dir = { workspace = true }
 codex-utils-output-truncation = { workspace = true }
@@ -186,3 +191,7 @@ ignored-paths = ["tests/remote_env_windows/*.rs"]
 # ALAB(build): codex-alab's switch (codex-rs/alab-core)
 [dependencies.codex-alab-core]
 path = "../alab-core"
+
+# ALAB(weekly-reset): redeem earned resets within the original sampler.
+[dependencies.codex-alab-quota-recovery]
+path = "../alab-quota-recovery"

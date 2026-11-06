@@ -14,11 +14,14 @@
 //! in aterm by default (`allow_kitty_file_transfer = false`), and codex's `q=2` would hide the
 //! refusal, so nothing would draw.
 //!
+//! The ambient pet's frames are sent once each and then only placed ([`kitty`], ALAB(pet-perf)).
+//!
 //! [`ImageProtocol::Kitty`]: https://sw.kovidgoyal.net/kitty/graphics-protocol/
 
 /// The codex-alab switch, for the pets glue (codex-tui does not depend on alab-core).
 pub use codex_alab_core::active;
 
+pub mod kitty;
 pub mod pack;
 
 /// Whether codex's pets use the kitty graphics path in this terminal: the codex-alab binary

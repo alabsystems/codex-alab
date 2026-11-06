@@ -28,6 +28,7 @@ pub(super) async fn fork_source(
     )
     .await?;
     let client = InProcessAppServerClient::start(InProcessClientStartArgs {
+        required_human_approval: false,
         arg0_paths: arg0_paths.clone(),
         config: std::sync::Arc::new(config.clone()),
         cli_overrides: cli_overrides.to_vec(),
@@ -46,7 +47,7 @@ pub(super) async fn fork_source(
         session_source: SessionSource::Exec,
         enable_codex_api_key_env: true,
         client_name: "codex_exec".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string(), // ALAB(version): running executable identity
         experimental_api: true,
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),

@@ -39,6 +39,8 @@ image_generation = false
 tool_suggest = false
 
 [tui]
+alab_interface = true
+notifications = false
 # No tips (and so no desktop-app ad), no server-version notice, no automatic recap (a
 # model call per unfocused tab: in aterm most tabs are unfocused).
 show_tooltips = false

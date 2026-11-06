@@ -58,7 +58,7 @@ pub(crate) async fn run(
         .await?;
     let otel = codex_core::otel_init::build_provider(
         &config,
-        env!("CARGO_PKG_VERSION"),
+        codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")), // ALAB(version): running executable identity
         /*service_name_override*/ None,
         /*default_analytics_enabled*/ true,
     )

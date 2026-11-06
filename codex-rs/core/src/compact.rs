@@ -52,7 +52,6 @@ use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_utils_output_truncation::approx_token_count;
@@ -222,6 +221,7 @@ async fn run_compact_task_inner(
     .await;
     let status = compaction_status_from_result(&result);
     let codex_error = result.as_ref().err();
+    crate::session::alab_compaction::result(&sess, &turn_context, phase, codex_error).await; // ALAB(recovery): a post-turn policy refusal still stops automatic context replay
     if result.is_ok() {
         let post_compact_outcome = run_post_compact_hooks(&sess, &turn_context, trigger).await;
         if let PostCompactHookOutcome::Stopped = post_compact_outcome {
@@ -269,6 +269,7 @@ async fn run_compact_task_inner_impl(
     world_state: Arc<WorldState>,
     compaction_metadata: CompactionTurnMetadata,
 ) -> CodexResult<String> {
+    crate::responses_retry::alab_capacity_retry::bind_compaction_weekly(&sess, &turn_context).await?; // ALAB(weekly-reset): bind earned-reset custody before foreground summarization sends its first request.
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(&turn_context, &compaction_item)
         .await;
@@ -293,6 +294,7 @@ async fn run_compact_task_inner_impl(
 
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
+    let mut capacity = codex_alab_core::capacity::CapacityBackoff::default(); // ALAB(capacity): compaction overload waits have their own budget
     // Reuse one client session so turn-scoped state (sticky routing and websocket incremental
     // request tracking) survives retries within this compact turn.
     let mut client_session = sess.services.model_client.new_session();
@@ -300,7 +302,11 @@ async fn run_compact_task_inner_impl(
         // Clone is required because of the loop
         let mut turn_input = history
             .clone()
-            .for_prompt(&turn_context.model_info().input_modalities);
+            .for_prompt(
+                &turn_context.model_info().input_modalities,
+                sess.services.image_store.as_ref(),
+            )
+            .await;
         sess.services
             .executed_tool_calls
             .attach_to_compaction_prompt(&mut turn_input);
@@ -339,6 +345,9 @@ async fn run_compact_task_inner_impl(
             Ok(response) => {
                 break response;
             }
+            Err(e) if crate::responses_retry::alab_capacity_retry::recover_compaction_weekly(&e, &sess, turn_context.as_ref()).await? => continue, // ALAB(weekly-reset): verified earned reset retries this compaction with its original history and prompt.
+            Err(e) if crate::responses_retry::alab_capacity_retry::should_retry(&e, turn_context.as_ref()) => crate::responses_retry::alab_capacity_retry::compact_capacity_wait(&mut capacity, e, &sess, turn_context.as_ref()).await, // ALAB(capacity): retry the same compaction without shrinking history or spending ordinary retries
+            Err(e) if crate::responses_retry::alab_capacity_retry::compact_should_stop(&e, turn_context.as_ref()) => return Err(e), // ALAB(recovery): remember compaction advice and stop terminal refusals before replaying them
             Err(err)
                 if matches!(
                     err.details(),
@@ -373,13 +382,14 @@ async fn run_compact_task_inner_impl(
                 if retries < max_retries {
                     retries += 1;
                     let delay = backoff(retries);
+                    let retry_at = crate::responses_retry::alab_capacity_retry::compact_retry_at(&e, delay, turn_context.as_ref()); // ALAB(recovery): retain the exact legacy wait's provider pacing through measured wake cuts
                     sess.notify_stream_error(
                         turn_context.as_ref(),
                         format!("Reconnecting... {retries}/{max_retries}"),
                         e,
                     )
                     .await;
-                    tokio::time::sleep(delay).await;
+                    crate::responses_retry::alab_capacity_retry::compact_wait(delay, retry_at).await; // ALAB(recovery): reporting a wait never restarts Retry-After
                     continue;
                 } else {
                     return Err(e);
@@ -439,10 +449,6 @@ async fn run_compact_task_inner_impl(
 
     sess.emit_turn_item_completed(&turn_context, compaction_item)
         .await;
-    let warning = EventMsg::Warning(WarningEvent {
-        message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.".to_string(),
-    });
-    sess.send_event(&turn_context, warning).await;
     Ok(summary_suffix)
 }
 
@@ -831,6 +837,7 @@ async fn drain_to_completed(
     prompt: &Prompt,
     phase: CompactionPhase,
 ) -> CodexResult<CompactionResponse> {
+    let mut includes_reasoning = turn_context.model_info().use_responses_lite;
     let mut stream = client_session
         .stream(
             prompt,
@@ -861,7 +868,7 @@ async fn drain_to_completed(
             // Keep each attempt isolated until the response completes successfully.
             Ok(ResponseEvent::OutputItemDone(item)) => output.push(item),
             Ok(ResponseEvent::ServerReasoningIncluded(included)) => {
-                sess.set_server_reasoning_included(included).await;
+                includes_reasoning = included;
             }
             Ok(ResponseEvent::RateLimits(snapshot)) => {
                 sess.update_rate_limits(turn_context, snapshot).await;
@@ -895,8 +902,12 @@ async fn drain_to_completed(
                     usage_metadata.as_ref(),
                 )
                 .await;
-                sess.update_token_usage_info(turn_context, token_usage.as_ref())
-                    .await?;
+                sess.update_token_usage_info(
+                    turn_context,
+                    token_usage.as_ref(),
+                    includes_reasoning,
+                )
+                .await?;
                 return Ok(CompactionResponse {
                     response_id,
                     output,

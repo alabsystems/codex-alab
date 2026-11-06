@@ -3,7 +3,7 @@ use clap::Parser;
 use codex_utils_cli::CliConfigOverrides;
 
 #[derive(Parser, Debug, Default)]
-#[command(version)]
+#[command(version = codex_alab_core::version::product_version(env!("CARGO_PKG_VERSION")))] // ALAB(version): codex-alab's own version (Decision 8)
 pub struct Cli {
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,

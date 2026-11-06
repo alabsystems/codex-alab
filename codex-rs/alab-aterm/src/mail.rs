@@ -50,12 +50,12 @@ impl Row {
         let fields = wire::parse_fields(rest);
         let raw = |k: &str| fields.get(k).filter(|v| !v.is_empty()).cloned();
         Some(Row {
-            id: id.parse().ok()?,
-            off: raw("off")?.parse().ok()?,
+            id: wire::canonical_u64(id)?,
+            off: wire::canonical_u64(&raw("off")?)?,
             from: raw("from")?,
             kind: raw("kind")?,
             trust: raw("trust")?,
-            len: raw("len")?.parse().ok()?,
+            len: usize::try_from(wire::canonical_u64(&raw("len")?)?).ok()?,
             truncated: fields.get("truncated").map(String::as_str) == Some("1"),
             deadline: raw("dl"),
         })
@@ -65,7 +65,9 @@ impl Row {
 /// The `inbox` header's handled watermark (`seen=<id>`).
 pub fn seen_watermark(status: &str) -> Option<u64> {
     let rest = status.strip_prefix("OK ")?;
-    wire::parse_fields(rest).get("seen")?.parse().ok()
+    wire::parse_fields(rest)
+        .get("seen")
+        .and_then(|s| wire::canonical_u64(s))
 }
 
 /// Every message row this session's inbox holds and its handled watermark, read without
@@ -137,7 +139,8 @@ pub async fn read(
         Some(
             fields
                 .get("len")
-                .and_then(|l| l.parse().ok())
+                .and_then(|l| wire::canonical_u64(l))
+                .and_then(|l| usize::try_from(l).ok())
                 .unwrap_or(row.len),
         )
     } else {
@@ -171,7 +174,7 @@ pub async fn stamp(client: &Client) -> Result<Option<String>, Error> {
     let status = client.status().await?;
     let seq = status
         .get("seq")
-        .filter(|s| s.bytes().all(|b| b.is_ascii_digit()));
+        .filter(|s| wire::canonical_u64(s).is_some());
     let hash = status
         .get("hash")
         .filter(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()));

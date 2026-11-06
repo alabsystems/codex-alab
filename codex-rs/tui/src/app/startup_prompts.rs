@@ -369,7 +369,7 @@ pub(super) async fn handle_model_migration_prompt_if_needed(
             target_description,
             can_opt_out,
         );
-        match run_model_migration_prompt(tui, prompt_copy).await? {
+        match codex_alab_tui::waiting::migration(!can_opt_out, model, &target_model, run_model_migration_prompt(tui, prompt_copy)).await? { // ALAB(startup-wait): a forced migration raises codex-alab's attention while it waits for a person
             ModelMigrationOutcome::Accepted => {
                 apply_accepted_model_migration(
                     config,

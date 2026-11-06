@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    version,
+    version = codex_alab_core::version::product_version(env!("CARGO_PKG_VERSION")), // ALAB(version): codex-alab's own version (Decision 8)
     override_usage = "codex exec [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] <COMMAND> [ARGS]"
 )]
 pub struct Cli {

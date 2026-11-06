@@ -6,6 +6,7 @@ use super::*;
 
 impl ChatComposer {
     pub(super) fn status_surface_height(&self, options: ComposerRenderOptions<'_>) -> u16 {
+        if codex_alab_tui::interface::enabled() { return codex_alab_tui::interface::status_height(); } // ALAB(interface): persistent account/quota and active goal rows
         u16::from(options.separate_status_line && self.footer.status_line_enabled)
     }
 
@@ -25,6 +26,7 @@ impl ChatComposer {
         buf: &mut Buffer,
         options: ComposerRenderOptions<'_>,
     ) {
+        if super::composer_layout::alab_border::render_status(area, buf) { return; } // ALAB(interface): one compact status line, preserving the native renderer when off
         if area.is_empty() {
             return;
         }
@@ -43,9 +45,7 @@ impl ChatComposer {
         props.is_task_running = false;
         let line = passive_footer_status_line(&props);
         let full = self.mode_indicator_line(show_cycle_hint);
-        let left_width = line
-            .as_ref()
-            .map_or(/*default*/ 0, |line| line.width() as u16);
+        let left_width = line.as_ref().map_or(/*default*/ 0, FooterContent::width);
         let full_width = full
             .as_ref()
             .map_or(/*default*/ 0, |line| line.width() as u16);
@@ -65,23 +65,25 @@ impl ChatComposer {
             .effort_status_line_transition
             .as_ref()
             .filter(|transition| !transition.is_finished());
-        let line = if let Some(transition) = transition {
-            transition.render_line(line.as_ref(), width)
+        let content = if let Some(transition) = transition {
+            let current = line.map(FooterContent::into_hyperlink_line);
+            transition
+                .render_line(current, width)
+                .map(FooterContent::HyperlinkLine)
         } else {
             line
         };
-        if let Some(line) = line {
-            render_footer_line(
-                area,
+        if let Some(content) = content {
+            content.render(
+                Rect {
+                    width,
+                    ..inset_footer_hint_area(area)
+                },
                 buf,
-                truncate_line_with_ellipsis_if_overflow(line, usize::from(width)),
             );
         }
         if let Some(right) = right {
             render_context_right(area, buf, &right);
-        }
-        if let Some(url) = self.footer.status_line_hyperlink_url.as_deref() {
-            mark_underlined_hyperlink(buf, area, url);
         }
         if transition.is_some()
             && let Some(frame_requester) = &self.frame_requester

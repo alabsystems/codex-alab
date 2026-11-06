@@ -295,11 +295,20 @@ impl SkillCatalogEntry {
             display_path: self.display_path.clone(),
             plugin_id: self.plugin_id.clone(),
             enabled: self.enabled,
+            alias_root: self.alias_root.clone(),
+            prompt_visible: self.prompt_visible,
         }
     }
 
     pub(crate) fn source_locations(&self) -> impl Iterator<Item = SkillSourceLocation> + '_ {
         std::iter::once(self.primary_source()).chain(self.sources.iter().cloned())
+    }
+
+    pub(crate) fn unaliased_locator(&self) -> &str {
+        match &self.authority.kind {
+            SkillSourceKind::Executor | SkillSourceKind::Cloud => self.id.0.as_str(),
+            SkillSourceKind::Host | SkillSourceKind::Custom(_) => self.rendered_path(),
+        }
     }
 
     pub(crate) fn rendered_path(&self) -> &str {
@@ -331,6 +340,8 @@ pub struct SkillSourceLocation {
     /// Installation attribution belongs to the route used, not the merged primary entry.
     pub plugin_id: Option<String>,
     pub enabled: bool,
+    pub alias_root: Option<String>,
+    pub prompt_visible: bool,
 }
 
 /// Merged catalog for one turn.

@@ -15,6 +15,7 @@ mod extract;
 pub mod log_db;
 mod migrations;
 mod model;
+mod nfs_migration;
 mod paths;
 mod runtime;
 mod sqlite;
@@ -34,6 +35,8 @@ pub use model::QueuedUserSubmissionRecord;
 pub use model::RolloutMigrationCursor;
 pub use model::RolloutMigrationSkippedRollout;
 pub use model::RolloutMigrationState;
+pub use nfs_migration::NfsDbMigration;
+pub use nfs_migration::NfsDbMigrationOutcome;
 pub use runtime::GuardianReviewRecord;
 pub use runtime::MAX_GUARDIAN_REVIEW_BYTES;
 pub use runtime::MAX_GUARDIAN_REVIEW_RECORDS;
@@ -44,6 +47,7 @@ pub use sqlite::SqliteConfig;
 pub use sqlite::SqlitePoolWriteExt;
 
 pub use audit::ThreadStateAuditRow;
+pub use audit::read_thread_rollout_paths;
 pub use audit::read_thread_state_audit_rows;
 pub use delegated_preview::delegated_output_preview;
 pub use extract::GUARDIAN_THREAD_PREVIEW;
@@ -166,3 +170,5 @@ pub const LOG_WRITE_ENTRIES_METRIC: &str = "codex.sqlite.logs.write.entries";
 pub const LOG_WRITE_MAX_ENTRY_BYTES_METRIC: &str = "codex.sqlite.logs.write.max_entry_bytes";
 /// SQLite log entries discarded before they can be queued. Tags: [reason]
 pub const LOG_QUEUE_DROPPED_METRIC: &str = "codex.sqlite.logs.queue.dropped";
+#[path = "../../alab-autopilot/glue/goal_read_recovery.rs"]
+pub mod alab_goal_read_recovery; // ALAB(goal-recovery): typed SQLite contention may re-arm automatic goal admission

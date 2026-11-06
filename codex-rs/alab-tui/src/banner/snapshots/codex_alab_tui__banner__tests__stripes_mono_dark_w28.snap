@@ -3,12 +3,11 @@ source: alab-tui/src/banner/tests.rs
 expression: review_text(&lines)
 ---
  0||
- 1|        ▄██▄        ▄██▄|
- 2|    ▀▀▀▀██▄██████████▄██|
- 3|    ▀▀▀▀███  ██████  ███ ▄|
- 4|    ▀▀▀▀▀██████▄▄██████▀█▄|
- 5|    ▀▀▀▀  ▀▀████████▀▀|
- 6|  codex-alab  rainbow kitty|
+ 1|  codex-alab|
+ 2|  bloatware-free · nag-free|
+ 3|  optimized for aterm|
+ 4|  based on Codex 0.163.0|
 --
-r6 [2..12) bold
-r6 [12..27) dim
+r1 [2..12) bold
+r2 [16..19) dim
+r4 [2..24) dim

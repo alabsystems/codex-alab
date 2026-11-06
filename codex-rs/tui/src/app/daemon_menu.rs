@@ -168,7 +168,7 @@ impl App {
             DaemonUpdateSource::ThisCli => {
                 let version = codex_install_context::InstallContext::current()
                     .package_manifest()
-                    .map_or_else(|| CODEX_CLI_VERSION.to_string(), |manifest| manifest.version.to_string());
+                    .map_or_else(|| cli_version().to_string(), |manifest| manifest.version.to_string()); // ALAB(version): running executable identity
                 format!("Use this CLI package v{version} from {}. Copy the complete package and pin it against automatic updates.", executable.display())
             }
         };

@@ -619,6 +619,13 @@ impl BottomPaneView for ApprovalOverlay {
 
     fn pre_draw_tick(&mut self, _now: std::time::Instant) -> bool { alab_answer::tick(self) } // ALAB(answer): codex-alab's one-shot yes for a box it cleared, under a proven aterm claim
 
+    fn current_patch_approval(&self) -> Option<&ApplyPatchApprovalRequest> {
+        let ApprovalRequest::ApplyPatch(patch) = self.current_request.as_ref()? else {
+            return None;
+        };
+        Some(patch)
+    }
+
     fn try_consume_approval_request(
         &mut self,
         request: ApprovalRequest,

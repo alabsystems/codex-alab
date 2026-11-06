@@ -80,6 +80,7 @@ impl App {
             goal.status,
             ThreadGoalStatus::Paused | ThreadGoalStatus::Blocked | ThreadGoalStatus::UsageLimited
         ) {
+            super::alab_session::goal_prompt_over(goal.status); // ALAB(answer): why the goal stopped, so codex-alab answers the goal box by it
             self.chat_widget
                 .show_resume_paused_goal_prompt(thread_id, goal.objective);
         }

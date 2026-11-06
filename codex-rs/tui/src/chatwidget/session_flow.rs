@@ -7,6 +7,26 @@ use crate::history_cell::ForkedThreadHistoryCell;
 use crate::style::accent_color;
 
 impl ChatWidget {
+    pub(crate) fn accept_startup_approval_policy(
+        &mut self,
+        app_policy: &mut Constrained<codex_protocol::protocol::AskForApproval>,
+        server_policy: AskForApproval,
+    ) -> codex_config::ConstraintResult<()> {
+        let server_policy = server_policy.to_core();
+        if app_policy.can_set(&server_policy).is_err() {
+            let local = app_policy.clone();
+            *app_policy = Constrained::new(server_policy, move |candidate| {
+                if *candidate == server_policy {
+                    Ok(())
+                } else {
+                    local.can_set(candidate)
+                }
+            })?;
+            self.config.permissions.approval_policy = app_policy.clone();
+        }
+        Ok(())
+    }
+
     /// Offer the flourish only for a successful primary thread/start without initial work.
     pub(crate) fn mark_fresh_task_for_sparkle(
         &mut self,
@@ -93,8 +113,7 @@ impl ChatWidget {
         self.bottom_pane
             .set_queue_submissions(/*queue_submissions*/ false);
         if previous_thread_id != self.thread_id {
-            if (previous_thread_id.is_some()
-                || (self.remote_connection.is_some() && self.config.cwd != session.cwd))
+            if (previous_thread_id.is_some() || self.config.cwd != session.cwd)
                 && self.status_account_display == Some(StatusAccountDisplay::ApiKey)
             {
                 self.refresh_account_scoped_models();
@@ -106,6 +125,7 @@ impl ChatWidget {
             self.clear_thread_usage_state();
         }
         self.turn_lifecycle.reset_thread();
+        self.safety_recourse = None;
         self.clear_safety_buffering();
         self.thread_name = session.thread_name.clone();
         self.current_goal_status_indicator = None;
@@ -216,7 +236,7 @@ impl ChatWidget {
                 &self.config,
                 &self.local_settings,
                 &model_for_header,
-                self.model_catalog.display_name(&session.model),
+                &self.alab_session_model_with_service_tier(&session.model, session.service_tier.as_deref()), // ALAB(speed): pair the session model and reasoning with its supported tier.
                 &session,
                 self.show_welcome_banner,
                 startup_tooltip_override,
@@ -336,8 +356,8 @@ impl ChatWidget {
         self.transcript.reset_turn_flags();
         for turn in retained_turns {
             let mut replaying_delegation = false;
-            for item in &turn.items {
-                if matches!(item, ThreadItem::UserMessage { content, .. }
+            for item in turn.item_payloads() {
+                if matches!(item, ThreadItemPayload::UserMessage { content, .. }
                     if realtime::realtime_delegation_input(content).is_some())
                 {
                     replaying_delegation = true;
@@ -346,11 +366,11 @@ impl ChatWidget {
                     continue;
                 }
                 let (markdown, source) = match item {
-                    ThreadItem::AgentMessage { text, .. } => (
+                    ThreadItemPayload::AgentMessage { text, .. } => (
                         parse_assistant_markdown(text, self.config.cwd.as_path()).visible_markdown,
                         text,
                     ),
-                    ThreadItem::Plan { text, .. } => (text.clone(), text),
+                    ThreadItemPayload::Plan { text, .. } => (text.clone(), text),
                     _ => continue,
                 };
                 if !markdown.trim().is_empty() {

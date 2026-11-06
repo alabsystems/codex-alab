@@ -21,9 +21,12 @@ fn due() -> UpgradeFacts {
     UpgradeFacts {
         enabled: true,
         other_build: true,
+        unconfirmed: None,
         unresumable: None,
         threads: vec![idle("t1"), idle("sub")],
-        timers_pending: false,
+        waits_pending: false,
+        carried: 0,
+        undecided: None,
         left_to_person: None,
     }
 }
@@ -31,6 +34,52 @@ fn due() -> UpgradeFacts {
 #[test]
 fn every_precondition_holding_is_go() {
     assert_eq!(check(&due()), UpgradeCheck::Go);
+}
+
+/// UNDER `upgrade_ask` THE RE-EXEC WAITS FOR THE AGENT'S READINESS (CONTRACT §5 row "live
+/// upgrade", amended 2026-10-28 after the parity sweep, gap 27), its round's words shown.
+/// NEGATIVE CONTROLS: readiness in hand (`None`) goes, and the upgrade off is still not due.
+#[test]
+fn an_unconfirmed_readiness_holds_the_upgrade() {
+    let why = "waiting for the agent to say it is ready to restart (notice 1 of 4)";
+    let asking = UpgradeFacts {
+        unconfirmed: Some(why.to_string()),
+        ..due()
+    };
+    assert_eq!(
+        check(&asking),
+        UpgradeCheck::Wait(format!("upgrade_ask: {why}"))
+    );
+    assert_eq!(check(&due()), UpgradeCheck::Go);
+    let off = UpgradeFacts {
+        enabled: false,
+        ..asking
+    };
+    assert!(matches!(check(&off), UpgradeCheck::NotDue(_)));
+}
+
+/// FOREVER CRUISE (aterm owner direction 2026-10-19): a paced act owed on one thread (its
+/// back-off pending) crosses the re-exec in the record, so it does not hold the upgrade.
+/// NEGATIVE CONTROLS: a wait the record does not carry holds it, and so do acts owed on two
+/// threads (the record carries one).
+#[test]
+fn a_paced_act_owed_does_not_hold_the_upgrade() {
+    let one = UpgradeFacts {
+        carried: 1,
+        ..due()
+    };
+    assert_eq!(check(&one), UpgradeCheck::Go);
+    let wall = UpgradeFacts {
+        waits_pending: true,
+        carried: 1,
+        ..due()
+    };
+    assert!(matches!(check(&wall), UpgradeCheck::Wait(why) if why.contains("wait is pending")));
+    let two = UpgradeFacts {
+        carried: 2,
+        ..due()
+    };
+    assert!(matches!(check(&two), UpgradeCheck::Wait(why) if why.contains("2 threads owe")));
 }
 
 #[test]
@@ -92,10 +141,17 @@ fn each_precondition_alone_holds_the_upgrade() {
         ),
         (
             UpgradeFacts {
-                timers_pending: true,
+                waits_pending: true,
                 ..due()
             },
             "wait is pending",
+        ),
+        (
+            UpgradeFacts {
+                undecided: Some("t1".into()),
+                ..due()
+            },
+            "thread t1 stands at a point not decided yet",
         ),
         (
             UpgradeFacts {

@@ -4,14 +4,17 @@ use std::time::Instant;
 
 use codex_api::AuthProvider;
 use codex_api::SharedAuthProvider;
+use codex_http_client::CHATGPT_ACCOUNT_ID_HEADER;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::HttpResponse;
+use codex_http_client::Request;
 use codex_http_client::RouteAwareClientPool;
 use futures::FutureExt;
 use http::HeaderMap;
 use http::HeaderName;
 use http::HeaderValue;
+use http::Method;
 use http::StatusCode;
 use http::header::AUTHORIZATION;
 use serde::Deserialize;
@@ -59,6 +62,7 @@ use direct::run_direct_environment;
 const ERROR_BODY_PREVIEW_BYTES: usize = 4096;
 const NOISE_RELAY_SECURITY_PROFILE: &str = "noise_hybrid_ik_v1";
 
+mod auth;
 #[path = "remote/connection_diagnostics.rs"]
 mod connection_diagnostics;
 mod reconnect_backoff;
@@ -176,25 +180,12 @@ impl EnvironmentRegistryClient {
             security_profile: NOISE_RELAY_SECURITY_PROFILE.to_string(),
             executor_public_key: executor_public_key.clone(),
         };
-        let (response, executor_credential) = timeout_at(deadline, async {
-            let (auth_headers, executor_credential) = self.resolve_auth().await?;
-            let response = self
-                .http_for_auth()
-                .post(url)
-                .headers(auth_headers)
-                .headers(current_trace_context_headers())
-                .json(&body)
-                .send()
-                .await
-                .map_err(ExecServerError::EnvironmentRegistryRequest)?;
-            Ok((response, executor_credential))
-        })
-        .await
-        .unwrap_or_else(|_| {
-            Err(ExecServerError::EnvironmentRegistryRequest(
-                codex_http_client::RouteAwareRequestError::Timeout,
-            ))
-        })?;
+        let (response, executor_credential) = self
+            .send_authenticated(
+                Request::new(Method::POST, url).with_json(&body),
+                Some(deadline),
+            )
+            .await?;
         let status = response.status();
         // Read diagnostics within the same attempt budget, preserving a known error status.
         let response: EnvironmentRegistryRegistrationResponse = timeout_at(deadline, async {
@@ -266,18 +257,22 @@ impl EnvironmentRegistryClient {
             &format!("/cloud/environment/{environment_id}/connect"),
         );
         let body = EnvironmentRegistryConnectRequest { harness_public_key };
-        let (auth_headers, _) = self.resolve_auth().await?;
-        let response = self
-            .http_for_auth()
-            .post(url)
-            .headers(auth_headers)
-            .headers(current_trace_context_headers())
-            .json(&body)
-            .timeout(self.connect_timeout)
-            .send()
-            .await?;
         let response: EnvironmentRegistryConnectResponse =
-            self.parse_json_response(response).await?;
+            timeout_at(tokio::time::Instant::now() + self.connect_timeout, async {
+                let (response, _) = self
+                    .send_authenticated(
+                        Request::new(Method::POST, url).with_json(&body),
+                        /*deadline*/ None,
+                    )
+                    .await?;
+                self.parse_json_response(response).await
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(ExecServerError::EnvironmentRegistryRequest(
+                    codex_http_client::RouteAwareRequestError::Timeout,
+                ))
+            })?;
         if response.environment_id != environment_id {
             return Err(ExecServerError::Protocol(
                 "environment registry returned a different environment id".to_string(),
@@ -309,13 +304,9 @@ impl EnvironmentRegistryClient {
     async fn resolve_auth(&self) -> Result<(HeaderMap, Option<HeaderValue>), ExecServerError> {
         let mut headers = self
             .auth_provider
-            .resolve_auth_headers()
+            .apply_auth_headers(HeaderMap::new())
             .await
-            .map_err(|error| {
-                ExecServerError::EnvironmentRegistryAuth(format!(
-                    "failed to resolve environment registry authentication: {error}"
-                ))
-            })?;
+            .map_err(auth::registry_auth_error)?;
         let executor_credential = if self.auth_mode == RegistryAuthMode::ExecutorCredential {
             // Scoped mode sends exactly one bearer and never accompanying account credentials.
             let token = (headers.len() == 1)
@@ -408,6 +399,7 @@ impl HarnessKeyValidator for RegistryHarnessKeyValidator {
         &self,
         harness_public_key: &NoiseChannelPublicKey,
         authorization: &str,
+        stream_id: Option<uuid::Uuid>,
     ) -> Result<(), ExecServerError> {
         let environment_id = &self.environment_id;
         let url = endpoint_url(
@@ -419,15 +411,18 @@ impl HarnessKeyValidator for RegistryHarnessKeyValidator {
             harness_public_key: harness_public_key.clone(),
             harness_key_authorization: authorization.to_string(),
         };
-        let (auth_headers, executor_credential) = self.client.resolve_auth().await?;
-        let response = self
+        let mut request = Request::new(Method::POST, url).with_json(&body);
+        if let Some(stream_id) = stream_id {
+            request.headers.insert(
+                "x-codex-noise-stream-id",
+                HeaderValue::from_str(&stream_id.to_string()).map_err(|error| {
+                    ExecServerError::Protocol(format!("invalid Noise stream ID header: {error}"))
+                })?,
+            );
+        }
+        let (response, executor_credential) = self
             .client
-            .http_for_auth()
-            .post(url)
-            .headers(auth_headers)
-            .headers(current_trace_context_headers())
-            .json(&body)
-            .send()
+            .send_authenticated(request, /*deadline*/ None)
             .await?;
         let status = response.status();
         if !status.is_success() {
@@ -560,14 +555,15 @@ impl std::fmt::Debug for StaticBearerAuthProvider {
 }
 
 impl AuthProvider for StaticBearerAuthProvider {
-    fn add_auth_headers(&self, headers: &mut HeaderMap) {
+    fn add_auth_headers(&self, headers: &mut HeaderMap) -> Result<(), codex_api::AuthError> {
         headers.insert(http::header::AUTHORIZATION, self.authorization.clone());
         if let Some(chatgpt_account_id) = &self.chatgpt_account_id {
             headers.insert(
-                HeaderName::from_static("chatgpt-account-id"),
+                HeaderName::from_static(CHATGPT_ACCOUNT_ID_HEADER),
                 chatgpt_account_id.clone(),
             );
         }
+        Ok(())
     }
 }
 
@@ -1130,11 +1126,12 @@ mod tests {
     struct StaticRegistryAuthProvider;
 
     impl AuthProvider for StaticRegistryAuthProvider {
-        fn add_auth_headers(&self, _headers: &mut HeaderMap) {}
+        fn add_auth_headers(&self, _headers: &mut HeaderMap) -> Result<(), codex_api::AuthError> {
+            Ok(())
+        }
 
-        fn resolve_auth_headers(&self) -> codex_api::AuthHeadersFuture<'_> {
-            Box::pin(async {
-                let mut headers = HeaderMap::new();
+        fn apply_auth_headers(&self, mut headers: HeaderMap) -> codex_api::AuthHeadersFuture<'_> {
+            Box::pin(async move {
                 let _ = headers.insert(
                     http::header::AUTHORIZATION,
                     HeaderValue::from_static("Bearer registry-token"),
@@ -1155,11 +1152,12 @@ mod tests {
     struct ScopedExecutorAuth;
 
     impl AuthProvider for ScopedExecutorAuth {
-        fn add_auth_headers(&self, headers: &mut HeaderMap) {
+        fn add_auth_headers(&self, headers: &mut HeaderMap) -> Result<(), codex_api::AuthError> {
             headers.insert(
                 AUTHORIZATION,
                 HeaderValue::from_static("Bearer synthetic-scoped-token"),
             );
+            Ok(())
         }
     }
 
@@ -1168,8 +1166,12 @@ mod tests {
         struct InvalidExecutorAuth(HeaderMap);
 
         impl AuthProvider for InvalidExecutorAuth {
-            fn add_auth_headers(&self, headers: &mut HeaderMap) {
+            fn add_auth_headers(
+                &self,
+                headers: &mut HeaderMap,
+            ) -> Result<(), codex_api::AuthError> {
                 headers.extend(self.0.clone());
+                Ok(())
             }
         }
 
@@ -1235,7 +1237,11 @@ mod tests {
                 executor_registration_id: "registration".to_string(),
             };
             let validation = validator
-                .validate_harness_key(&public_key, "harness-authorization")
+                .validate_harness_key(
+                    &public_key,
+                    "harness-authorization",
+                    /*stream_id*/ None,
+                )
                 .await
                 .expect_err("invalid credentials must be rejected");
             assert!(matches!(
@@ -1317,7 +1323,11 @@ mod tests {
             executor_registration_id: "registration".to_string(),
         };
         let error = validator
-            .validate_harness_key(&public_key, "harness-authorization")
+            .validate_harness_key(
+                &public_key,
+                "harness-authorization",
+                /*stream_id*/ None,
+            )
             .await
             .expect_err("validation must reject a non-loopback HTTP registry");
         assert!(matches!(
@@ -1400,7 +1410,11 @@ mod tests {
             environment_id: "environment-requested".to_string(),
             executor_registration_id: "registration".to_string(),
         }
-        .validate_harness_key(&public_key, "harness-authorization")
+        .validate_harness_key(
+            &public_key,
+            "harness-authorization",
+            /*stream_id*/ None,
+        )
         .await
         .expect("validate directly");
         registry.verify().await;
@@ -1418,11 +1432,15 @@ mod tests {
         const TOKEN: &str = "synthetic-scoped-registry-secret";
         struct ExecutorAuth;
         impl AuthProvider for ExecutorAuth {
-            fn add_auth_headers(&self, headers: &mut HeaderMap) {
+            fn add_auth_headers(
+                &self,
+                headers: &mut HeaderMap,
+            ) -> Result<(), codex_api::AuthError> {
                 let mut credential =
                     HeaderValue::from_str(&format!("Bearer {TOKEN}")).expect("bearer");
                 credential.set_sensitive(true);
                 headers.insert(AUTHORIZATION, credential);
+                Ok(())
             }
         }
         let encoded_echo = serde_json::json!({
@@ -1488,7 +1506,11 @@ mod tests {
                 executor_registration_id: "registration".to_string(),
             };
             let validation = validator
-                .validate_harness_key(&public_key, "harness-authorization")
+                .validate_harness_key(
+                    &public_key,
+                    "harness-authorization",
+                    /*stream_id*/ None,
+                )
                 .await
                 .expect_err("invalid validation response");
             assert!(!format!("{validation:?} {validation}").contains(TOKEN));

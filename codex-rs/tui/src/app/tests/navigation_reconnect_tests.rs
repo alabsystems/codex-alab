@@ -60,7 +60,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
                     vec![test_turn(
                         "cached",
                         TurnStatus::Completed,
-                        vec![ThreadItem::Plan {
+                        vec![ThreadItemPayload::Plan {
                             id: "cached-plan".into(),
                             text: "Cached previous conversation".into(),
                         }],
@@ -287,6 +287,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             &session,
             stale_request,
             Ok(AgentsOverviewThreadRefresh {
+                cleared_unread: Vec::new(),
                 last_messages: HashMap::new(),
                 threads: HashMap::new(),
                 recent_seed_complete: false,
@@ -329,7 +330,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             &mut session,
             &mut events,
             connected,
-            CODEX_CLI_VERSION,
+            cli_version(), // ALAB(version): running executable identity
         )
         .await?;
         if interrupted_setup {
@@ -433,8 +434,12 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             &session,
             stale_request,
             Ok(AgentsOverviewThreadRefresh {
+                cleared_unread: Vec::new(),
                 last_messages: HashMap::new(),
-                threads: stale_threads,
+                threads: stale_threads
+                    .into_iter()
+                    .map(|(id, thread)| (id, thread.map(|thread| (thread, false))))
+                    .collect(),
                 recent_seed_complete: true,
                 discovery: None,
                 pinned_thread_ids: None,

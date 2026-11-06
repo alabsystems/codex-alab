@@ -1,8 +1,8 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! The boxes the TUI shows that codex-alab answers (CONTRACT §5 rows "question overlay" and
-//! "plan box"), as plain data between the TUI's glue and the autopilot.
+//! The boxes the TUI shows that codex-alab answers (CONTRACT §5 rows "question overlay",
+//! "plan box" and "goal box"), as plain data between the TUI's glue and the autopilot.
 //!
 //! The TUI's glue (`codex-rs/alab-tui/glue/`) reports the box that is the TUI's ACTIVE view
 //! on each frame it draws ([`crate::session::Shared::report_box`]); a frame that drew none
@@ -46,6 +46,13 @@ pub enum BoxKind {
     },
     /// "Implement this plan?": each row's label and why it is disabled, if it is.
     Plan { rows: Vec<(String, Option<String>)> },
+    /// "Resume paused goal?", which a resume opens over a goal that is not active: each
+    /// row's label, and why the goal stopped as the TUI said it when it opened the box (`None`:
+    /// it said nothing).
+    Goal {
+        rows: Vec<String>,
+        stop: Option<GoalStop>,
+    },
     /// An approval box (a command or an edit) the approval contributor reviewed and would
     /// approve once, but not at the moment it was asked ([`Preapproval`]).
     Approval {
@@ -63,9 +70,22 @@ impl BoxKind {
         match self {
             BoxKind::Question { .. } => "question",
             BoxKind::Plan { .. } => "plan",
+            BoxKind::Goal { .. } => "goal",
             BoxKind::Approval { .. } => "approval",
         }
     }
+}
+
+/// Why the goal "Resume paused goal?" opens over is not active (`tui/src/app/
+/// thread_goal_actions.rs` opens it for these three).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GoalStop {
+    /// `/goal pause`, or the model's own pause.
+    Paused,
+    /// The goal says it cannot go on without a person.
+    Blocked,
+    /// The account's usage window ran out under it.
+    UsageLimited,
 }
 
 /// The box the TUI shows now, as its glue reported it.
@@ -97,6 +117,8 @@ pub enum BoxAnswer {
     },
     /// The plan box's row at this index.
     Plan { id: String, row: usize },
+    /// The goal box's row at this index.
+    Goal { id: String, row: usize },
     /// The approval box's one-shot yes ("Yes, proceed"), never a standing one.
     Approval { id: String },
 }
@@ -106,6 +128,7 @@ impl BoxAnswer {
         match self {
             BoxAnswer::Question { id, .. }
             | BoxAnswer::Plan { id, .. }
+            | BoxAnswer::Goal { id, .. }
             | BoxAnswer::Approval { id } => id,
         }
     }
@@ -141,4 +164,10 @@ pub(crate) struct BoxSlot {
     /// When `pending` was posted (ms since the epoch).
     pub(crate) pending_ms: u64,
     pub(crate) outcome: Option<BoxOutcome>,
+    /// The place in memory of the selection view whose box is numbered `views`
+    /// ([`crate::session::Shared::view_box_id`]).
+    pub(crate) view_at: Option<usize>,
+    pub(crate) views: u64,
+    /// Why the goal the TUI last opened "Resume paused goal?" over stopped.
+    pub(crate) goal_stop: Option<GoalStop>,
 }

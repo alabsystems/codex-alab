@@ -4,6 +4,8 @@ use crate::sqlite::SqlitePoolWriteExt;
 use crate::sqlite::SqliteWriteQueryExt;
 use uuid::Uuid;
 
+#[path = "../../../alab-core/glue/auth_goal_store.rs"] mod alab_auth_goal; // ALAB(renewal): atomic auth-block provenance, revoked by every subsequent goal edit.
+
 #[derive(Clone)]
 pub struct GoalStore {
     pool: Arc<SqlitePool>,

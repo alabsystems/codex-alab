@@ -496,7 +496,7 @@ fn agent_identity_authapi_url(agent_identity_authapi_base_url: &str, api_path: &
 
 pub fn build_abom(session_source: SessionSource) -> AgentBillOfMaterials {
     AgentBillOfMaterials {
-        agent_version: env!("CARGO_PKG_VERSION").to_string(),
+        agent_version: codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string(), // ALAB(version): running executable identity
         agent_harness_id: match &session_source {
             SessionSource::VSCode => "codex-app".to_string(),
             SessionSource::Cli
@@ -829,7 +829,7 @@ mod tests {
 
     fn test_rsa_encoding_key() -> EncodingKey {
         EncodingKey::from_rsa_pem(
-            br#"-----BEGIN PRIVATE KEY-----
+            /* ALAB(release): gitleaks:allow -- public upstream test fixture, never deployed */ br#"-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDWpAXYypOsYAwO
 bvBduMk/mxaoYDze0AZSzaSzLuIlcsl2EKDgC3AabhIWXh/qTGEJLOU3VB1e5mO9
 FPbBlmIZSL3FQTbyt/hYutPFKfCou5PLmScw/TzILS3/RhT8UY9kxxZvXiEbTki9

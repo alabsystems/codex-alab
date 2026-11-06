@@ -44,6 +44,10 @@ const DROPPED_IDS: [&str; 6] = [
     "include_non_interactive",
 ];
 
+/// Arguments that cannot be resumed in place (`codex resume` rejects `--worktree`, and
+/// aterm refuses `--remote`, `--remote-auth-token-env`, and `--worktree`).
+const REFUSED_IDS: [&str; 3] = ["remote", "remote_auth_token_env", "worktree"];
+
 /// The subcommands whose session can be resumed; the rewrite always says `resume`.
 const RESUMABLE: [&str; 2] = ["resume", "fork"];
 
@@ -115,6 +119,79 @@ pub fn rebuild(
     Some(rebuilt)
 }
 
+/// Rebuild a durable exec invocation without replaying its prompt or attachments.
+/// This preserves exec's output and execution options, rather than converting it
+/// to a TUI invocation. It supplies no authority to resume an interrupted turn.
+pub fn rebuild_exec(
+    mut command: Command,
+    launch_args: &[OsString],
+    argv0: &str,
+    thread_id: &str,
+) -> Option<Vec<String>> {
+    command.build();
+    let launched = command.clone().try_get_matches_from(launch_args).ok()?;
+    let (name, launched_exec) = launched.subcommand()?;
+    if name != "exec"
+        || launched_exec
+            .try_get_one::<bool>("ephemeral")
+            .ok()
+            .flatten()
+            == Some(&true)
+    {
+        return None;
+    }
+    let args = launch_args
+        .iter()
+        .map(|arg| arg.to_str())
+        .collect::<Option<Vec<_>>>()?;
+    let root = split_level(&command, &args, 1, true)?;
+    let (_, start) = root.subcommand?;
+    let exec = command.find_subcommand("exec")?;
+    let level = split_level(exec, &args, start, true)?;
+    let mut child_flags = Vec::new();
+    if let Some((name, start)) = level.subcommand {
+        let child = exec.find_subcommand(name)?;
+        if child.get_name() != "resume" || launched_exec.subcommand_name() != Some("resume") {
+            return None;
+        }
+        child_flags = split_level(child, &args, start, false)?.kept;
+    } else if launched_exec.subcommand().is_some() {
+        return None;
+    }
+    let mut rebuilt = vec![argv0.to_owned()];
+    rebuilt.extend(root.kept.into_iter().map(str::to_owned));
+    rebuilt.push("exec".into());
+    rebuilt.extend(level.kept.into_iter().map(str::to_owned));
+    rebuilt.push("resume".into());
+    rebuilt.extend(child_flags.into_iter().map(str::to_owned));
+    rebuilt.push(thread_id.to_owned());
+    let resumed = command.clone().try_get_matches_from(&rebuilt).ok()?;
+    let (name, resumed_exec) = resumed.subcommand()?;
+    let (child, resumed_turn) = resumed_exec.subcommand()?;
+    if name != "exec"
+        || child != "resume"
+        || resumed_turn
+            .try_get_raw("session_id")
+            .ok()??
+            .collect::<Vec<_>>()
+            != [OsStr::new(thread_id)]
+        || !same_flags(&command, &launched, &resumed, false)
+        || !same_flags(exec, launched_exec, resumed_exec, false)
+    {
+        return None;
+    }
+    let empty = ArgMatches::default();
+    if !same_flags(
+        exec.find_subcommand("resume")?,
+        launched_exec.subcommand().map(|(_, m)| m).unwrap_or(&empty),
+        resumed_turn,
+        true,
+    ) {
+        return None;
+    }
+    Some(rebuilt)
+}
+
 struct Level<'a> {
     kept: Vec<&'a str>,
     subcommand: Option<(&'a str, usize)>,
@@ -141,6 +218,9 @@ fn split_level<'a>(
                 None => (long, false),
             };
             let arg = find_long(command, name)?;
+            if refused(arg) {
+                return None;
+            }
             let end = values_end(arg, args, index + 1, attached);
             if !dropped(arg) {
                 kept.extend_from_slice(&args[index..end]);
@@ -155,6 +235,9 @@ fn split_level<'a>(
             let mut end = index + 1;
             for (offset, short) in cluster.char_indices() {
                 let arg = find_short(command, short)?;
+                if refused(arg) {
+                    return None;
+                }
                 members.push(arg);
                 if takes_values(arg) {
                     let attached = offset + short.len_utf8() < cluster.len();
@@ -215,24 +298,27 @@ fn dropped(arg: &Arg) -> bool {
     DROPPED_IDS.contains(&arg.get_id().as_str())
 }
 
+fn refused(arg: &Arg) -> bool {
+    REFUSED_IDS.contains(&arg.get_id().as_str())
+}
+
 /// The index after `arg`'s values, which start at `next` unless they are `attached` to the
 /// flag token. A one-value flag takes the next token whatever it looks like (clap accepted
-/// the launch); a many-value flag takes tokens until one starts with `-`.
+/// the launch); a many-value flag takes its minimum values plus tokens until one is an option.
 fn values_end(arg: &Arg, args: &[&str], next: usize, attached: bool) -> usize {
-    if !takes_values(arg) {
+    if !takes_values(arg) || attached {
         return next;
     }
     let range = arg.get_num_args();
     let (min, max) = range.map_or((1, 1), |range| (range.min_values(), range.max_values()));
-    let mut end = next;
-    if attached {
-        if max <= 1 {
-            return end;
-        }
-    } else if min >= 1 && max == 1 {
+    if min >= 1 && max == 1 {
         return (next + 1).min(args.len());
     }
-    while end < args.len() && !args[end].starts_with('-') && (end - next) < max {
+    let mut end = (next + min).min(args.len());
+    while end < args.len()
+        && !(args[end].len() > 1 && args[end].starts_with('-'))
+        && (end - next) < max
+    {
         end += 1;
     }
     end

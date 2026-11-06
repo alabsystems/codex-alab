@@ -15,6 +15,11 @@ pub(crate) enum KeyEventAction {
 }
 
 impl ChatWidget {
+    pub(crate) fn current_patch_approval(&self) -> Option<(ThreadId, &str)> {
+        let patch = self.bottom_pane.current_patch_approval()?;
+        Some((patch.thread_id, &patch.id))
+    }
+
     pub(crate) fn clear_composer_selection(&mut self) {
         self.bottom_pane.clear_composer_selection();
     }
@@ -46,6 +51,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_composer_mouse(&mut self, event: crossterm::event::MouseEvent) -> bool {
+        if self.alab_interface_mouse(event) { return true; } // ALAB(interface): edition controls own only their painted text targets
         self.bottom_pane.handle_composer_mouse(event)
     }
 
@@ -63,10 +69,6 @@ impl ChatWidget {
 
     pub(crate) fn prepare_composer_mouse(&mut self, event: crossterm::event::MouseEvent) -> bool {
         self.bottom_pane.prepare_composer_mouse(event)
-    }
-
-    pub(crate) fn set_agents_navigation_enabled(&mut self, enabled: bool) {
-        self.bottom_pane.set_agents_navigation_enabled(enabled);
     }
 
     pub(crate) fn agents_navigation_key_available(&self) -> bool {
@@ -542,7 +544,9 @@ impl ChatWidget {
 
     pub(crate) fn handle_paste(&mut self, text: String) {
         self.cancel_quick_dial_menu();
-        if self.external_writer_view && !self.bottom_pane.has_active_view() {
+        if (self.external_writer_view || self.has_provider_error())
+            && !self.bottom_pane.has_active_view()
+        {
             return;
         }
         if !self.startup_submission_has_protected_input() {

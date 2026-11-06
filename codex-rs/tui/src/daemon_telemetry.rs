@@ -3,22 +3,22 @@
 use super::*;
 use crate::terminal_size_telemetry::LaunchTags;
 
-/// Emit once after connection, or as unconfirmed if startup returns early.
-pub(super) struct Launch<F: FnOnce(&AppServerTarget, bool) -> LaunchTags>(pub(super) Option<F>);
+/// Record the connection mode or update handoff once. Other early exits are unconfirmed.
+pub(super) struct Launch<F: FnOnce(&'static str) -> LaunchTags>(pub(super) Option<F>);
 
-impl<F: FnOnce(&AppServerTarget, bool) -> LaunchTags> Launch<F> {
-    pub(super) fn record(mut self, target: &AppServerTarget, connected: bool) -> LaunchTags {
+impl<F: FnOnce(&'static str) -> LaunchTags> Launch<F> {
+    pub(super) fn record(mut self, app_server_mode: &'static str) -> LaunchTags {
         self.0
             .take()
-            .map(|record| record(target, connected))
+            .map(|record| record(app_server_mode))
             .unwrap_or_default()
     }
 }
 
-impl<F: FnOnce(&AppServerTarget, bool) -> LaunchTags> Drop for Launch<F> {
+impl<F: FnOnce(&'static str) -> LaunchTags> Drop for Launch<F> {
     fn drop(&mut self) {
         if let Some(record) = self.0.take() {
-            record(&AppServerTarget::Embedded, /*connected*/ false);
+            record("unconfirmed");
         }
     }
 }
@@ -44,7 +44,7 @@ pub(super) async fn record_start(
     let Ok(Ok(Some(otel))) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         codex_app_server_client::build_otel_provider(
             config,
-            env!("CARGO_PKG_VERSION"),
+            codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")), // ALAB(version): running executable identity
             /*service_name_override*/ None,
             /*default_analytics_enabled*/ true,
         )

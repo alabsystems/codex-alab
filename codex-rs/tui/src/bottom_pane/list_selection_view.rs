@@ -812,11 +812,11 @@ impl ListSelectionView {
                             .auto_number_shortcuts
                             .then_some(item.display_shortcut)
                             .flatten(),
-                        match_indices: None,
                         description,
                         wrap_indent,
                         is_disabled,
                         disabled_reason: item.disabled_reason.clone(),
+                        ..Default::default()
                     }
                 })
             })
@@ -1274,7 +1274,7 @@ impl ListSelectionView {
 }
 
 impl BottomPaneView for ListSelectionView {
-    fn pre_draw_tick(&mut self, _now: std::time::Instant) -> bool { alab_answer::tick(self) } // ALAB(answer): codex-alab selects the plan box's yes under a proven aterm claim
+    fn pre_draw_tick(&mut self, _now: std::time::Instant) -> bool { alab_answer::tick(self) } // ALAB(answer): codex-alab answers the plan box and the goal box under a proven aterm claim
     fn presentation(&self) -> super::ViewPresentation {
         self.presentation
     }
@@ -3514,4 +3514,4 @@ mod tests {
 #[cfg(test)]
 #[path = "selection_picker_tests.rs"]
 mod picker_tests;
-#[path = "../../../alab-tui/glue/plan_answer.rs"] mod alab_answer; // ALAB(answer): reports the plan box to codex-alab and applies its answer
+#[path = "../../../alab-tui/glue/plan_answer.rs"] mod alab_answer; // ALAB(answer): reports the plan box and the goal box to codex-alab and applies their answers

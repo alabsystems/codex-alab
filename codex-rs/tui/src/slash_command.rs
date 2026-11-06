@@ -51,6 +51,10 @@ pub enum SlashCommand {
     Export,
     Raw,
     Tui,
+    Alab, // ALAB(interface): live presentation controls keep the native interface available
+    Accounts, // ALAB(accounts): native subscription pool inspection stays outside conversation history.
+    Tasks, // ALAB(tasks): a local checklist, agent and background-terminal hub
+    Stash, // ALAB(stash): recover a structured prompt without losing its attachments
     Diff,
     Mention,
     Status,
@@ -112,6 +116,10 @@ impl SlashCommand {
             SlashCommand::Export => "export the conversation as markdown",
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
             SlashCommand::Tui => "choose the TUI mode for the next launch",
+            SlashCommand::Alab => "ALab controls: on, off, cruise, land, account, tasks or help", // ALAB(interface): discover account details and the presentation switch
+            SlashCommand::Accounts => "inspect subscription accounts and cached usage", // ALAB(accounts): an async native pool view.
+            SlashCommand::Tasks => "view this session's checklist, agents and background terminals", // ALAB(tasks): local work stays visible without a shared daemon
+            SlashCommand::Stash => "restore this conversation's stashed prompt", // ALAB(stash): structured draft recovery; runtime help resolves shortcut availability
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
@@ -173,6 +181,8 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Review
+                | SlashCommand::Alab // ALAB(interface): explicit on/off and controls help
+                | SlashCommand::Accounts // ALAB(accounts): enrollment arguments stay in the native account view.
                 | SlashCommand::Model
                 | SlashCommand::Permissions
                 | SlashCommand::Title
@@ -204,6 +214,9 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Copy
+                | SlashCommand::Alab // ALAB(interface): presentation works in side conversations
+                | SlashCommand::Accounts // ALAB(accounts): inspection does not change a conversation.
+                | SlashCommand::Tasks | SlashCommand::Stash // ALAB(tasks): local work and drafts belong to the displayed conversation
                 | SlashCommand::Agents
                 | SlashCommand::Export
                 | SlashCommand::Raw
@@ -221,7 +234,7 @@ impl SlashCommand {
     /// Whether dispatch needs thread state to validate this command before consuming its draft.
     /// The composer must defer busy-state rejection and draft clearing for these commands.
     pub(crate) fn requires_dispatch_validation(self) -> bool {
-        matches!(self, SlashCommand::Review)
+        matches!(self, SlashCommand::Fork | SlashCommand::Review)
     }
 
     /// Commands that do not require a writable current thread. The server must still be connected.
@@ -229,6 +242,9 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::New
+                | SlashCommand::Alab // ALAB(interface): presentation does not require a thread
+                | SlashCommand::Accounts // ALAB(accounts): inspection explains unavailable native state.
+                | SlashCommand::Tasks | SlashCommand::Stash // ALAB(tasks): local views explain unavailable session state
                 | SlashCommand::Clear
                 | SlashCommand::Resume
                 | SlashCommand::Agents
@@ -271,6 +287,9 @@ impl SlashCommand {
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate => false,
             SlashCommand::Diff
+            | SlashCommand::Alab // ALAB(interface): presentation can change while work runs
+            | SlashCommand::Accounts // ALAB(accounts): inspection never stops a turn.
+            | SlashCommand::Tasks | SlashCommand::Stash // ALAB(tasks): inspecting work and recovering drafts never stop a turn
             | SlashCommand::Archive
             | SlashCommand::Resume
             | SlashCommand::Model
@@ -315,6 +334,9 @@ impl SlashCommand {
 
     fn is_visible(self) -> bool {
         match self {
+            SlashCommand::Alab => codex_alab_tui::interface::available(), // ALAB(interface): no extra command in upstream consumers
+            SlashCommand::Accounts => codex_alab_core::is_alab_binary(), // ALAB(accounts): explicit account controls remain available with enhanced UI off.
+            SlashCommand::Tasks | SlashCommand::Stash => codex_alab_tui::interface::enabled(), // ALAB(tasks): the off state keeps the original command set
             SlashCommand::Copy => !cfg!(target_os = "android"),
             SlashCommand::App => cfg!(any(target_os = "macos", target_os = "windows")),
             SlashCommand::Voice => true,

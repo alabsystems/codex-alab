@@ -205,6 +205,7 @@ where
     fn on_thread_stop<'a>(&'a self, input: ThreadStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(runtime) = goal_runtime_handle(input.thread_store) {
+                runtime.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): teardown retires a pending automatic admission
                 self.goal_service.unregister_runtime(&runtime);
             }
         })
@@ -248,6 +249,7 @@ where
                 tracing::warn!("skipping goal turn accounting: token baseline unavailable");
                 return;
             };
+            runtime.alab_auth_turn_started(); // ALAB(renewal): native admission now owns the original work.
 
             let accounting = runtime.accounting_state();
             let Ok(_turn_start_permit) = accounting.turn_start_permit().await else {
@@ -282,6 +284,7 @@ where
             else {
                 return;
             };
+            if codex_alab_core::active() { input.turn_store.insert(codex_alab_core::renewal::GoalAtTurnStart { goal_id: goal.as_ref().filter(|goal| matches!(goal.status, codex_state::ThreadGoalStatus::Active | codex_state::ThreadGoalStatus::BudgetLimited)).map(|goal| goal.goal_id.clone()) }); } // ALAB(renewal): retain original association even if this turn later completes its goal.
             if let Some(goal) = goal
                 && matches!(
                     goal.status,
@@ -427,6 +430,8 @@ where
             };
 
             let reason = match input.error {
+                ref error if codex_alab_core::active() && GoalRuntimeHandle::alab_is_auth_wall(error) => GoalRuntimeHandle::alab_auth_stop_reason(input.turn_store), // ALAB(renewal): typed auth failure plus original turn association.
+                CodexErrorInfo::UsageLimitExceeded if codex_alab_core::active() => GoalRuntimeHandle::alab_quota_stop_reason(input.turn_store), // ALAB(accounts): only an owned subscription request retains quota recovery custody.
                 CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
                 // The turn has ended because the error was non-retryable or its
                 // retries were exhausted. Block the goal to prevent automatic

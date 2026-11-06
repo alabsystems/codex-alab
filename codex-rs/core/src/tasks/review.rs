@@ -32,6 +32,8 @@ use codex_thread_store::PersistContext;
 
 use super::SessionTask;
 use super::SessionTaskResult;
+#[path = "../../../alab-core/glue/exec_review_stream.rs"]
+pub(crate) mod alab_exec_review; // ALAB(exec-review): freeze and retain the parent event consumer before tree transfer.
 
 #[derive(Clone, Copy)]
 pub(crate) struct ReviewTask;
@@ -73,16 +75,17 @@ impl SessionTask for ReviewTask {
             }
         }
 
+        let _review_recovery = alab_exec_review::begin(&session, &ctx, &cancellation_token); // ALAB(exec-review): retain typed consumer state for this original review.
         // Start sub-codex conversation and get the receiver for events.
-        let output = match start_review_conversation(
+        let output = match alab_exec_review::start_or_resume(
             session.clone(),
             ctx.clone(),
             user_input,
             cancellation_token.clone(),
         )
-        .await
+        .await? // ALAB(exec-review): invalid restored bindings fail instead of starting another reviewer.
         {
-            Some(receiver) => process_review_events(session.clone(), ctx.clone(), receiver).await,
+            Some(receiver) => alab_exec_review::process_events(session.clone(), ctx.clone(), receiver).await, // ALAB(exec-review): preserve ordinary processing outside exec and checkpoint exec consumers.
             None => None,
         };
         if !cancellation_token.is_cancelled() {

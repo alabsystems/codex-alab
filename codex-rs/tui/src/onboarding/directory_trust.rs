@@ -94,7 +94,7 @@ pub(crate) async fn check_directory_trust(
         }
         let remote_trust_key =
             connected.then(|| project.trust_target.to_string_lossy().into_owned());
-        if alab_trust::answered(tui, app_server, target, &project, &mut consent, startup_draft.as_deref_mut()).await { continue; } // ALAB(trust): inside aterm, under its harness policy's trust roots, codex-alab trusts its own launch folder
+        if alab_trust::answered(tui, app_server, target, &project, &mut consent, startup_draft.as_deref_mut()).await? { continue; } // ALAB(trust): inside aterm, under its harness policy's trust roots, codex-alab trusts its own launch folder
         if let Some(draft) = startup_draft.as_deref_mut() {
             draft.flush_pending_events(tui).await?;
         }
@@ -103,11 +103,7 @@ pub(crate) async fn check_directory_trust(
             steps: vec![Step::TrustDirectory(TrustDirectoryWidget {
                 restricted: project.trust_level == Some(TrustLevel::Untrusted),
                 existing_task: connected && resumed_thread.is_some(),
-                cancel: cancel.unwrap_or(if connected {
-                    TrustCancelAction::AgentsOverview
-                } else {
-                    TrustCancelAction::Quit
-                }),
+                cancel: cancel.unwrap_or(TrustCancelAction::AgentsOverview),
                 cwd: project.cwd,
                 trust_target: project.trust_target,
                 show_windows_create_sandbox_hint: false,
@@ -120,13 +116,7 @@ pub(crate) async fn check_directory_trust(
             is_done: false,
             should_exit: false,
         };
-        let result = run_onboarding_screen(
-            screen,
-            Some(app_server.request_handle()),
-            /*app_server*/ None,
-            tui,
-        )
-        .await?;
+        let result = alab_trust::during(screen, |screen| run_onboarding_screen(screen, Some(app_server.request_handle()), /*app_server*/ None, tui)).await?; // ALAB(trust): a screen codex-alab's answer left raises its attention while it waits for a person
         tui.terminal.clear()?;
         tui.frame_requester().schedule_frame();
         if result.should_exit {

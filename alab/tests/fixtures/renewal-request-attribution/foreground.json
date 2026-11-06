@@ -1,0 +1,71 @@
+{
+  "model": "gpt-5",
+  "tools": [
+    {
+      "type": "function",
+      "name": "exec_command"
+    },
+    {
+      "type": "function",
+      "name": "write_stdin"
+    },
+    {
+      "type": "function",
+      "name": "list_mcp_resources"
+    },
+    {
+      "type": "function",
+      "name": "list_mcp_resource_templates"
+    },
+    {
+      "type": "function",
+      "name": "read_mcp_resource"
+    },
+    {
+      "type": "function",
+      "name": "update_plan"
+    },
+    {
+      "type": "function",
+      "name": "request_user_input"
+    },
+    {
+      "type": "function",
+      "name": "view_image"
+    },
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1"
+    },
+    {
+      "type": "namespace",
+      "name": "mcp__codex_tui"
+    },
+    {
+      "type": "function",
+      "name": "get_goal"
+    },
+    {
+      "type": "function",
+      "name": "create_goal"
+    },
+    {
+      "type": "function",
+      "name": "update_goal"
+    },
+    {
+      "type": "web_search"
+    }
+  ],
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Keep this headless capacity smoke task and"
+        }
+      ]
+    }
+  ]
+}

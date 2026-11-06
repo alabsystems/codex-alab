@@ -1,11 +1,14 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
+#[path = "../../alab-core/glue/exec_human_renderer.rs"]
+mod alab_renderer; // ALAB(exec-recovery): checkpoint presentation data independently of terminal styling.
+
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TurnStatus;
 use codex_core::config::Config;
@@ -67,16 +70,16 @@ impl EventProcessorWithHumanOutput {
         }
     }
 
-    fn render_item_started(&self, item: &ThreadItem) {
+    fn render_item_started(&self, item: &ThreadItemPayload) {
         match item {
-            ThreadItem::CommandExecution { command, cwd, .. } => {
+            ThreadItemPayload::CommandExecution { command, cwd, .. } => {
                 eprintln!(
                     "{}\n{} in {cwd}",
                     "exec".style(self.italic).style(self.magenta),
                     command.style(self.bold),
                 );
             }
-            ThreadItem::McpToolCall { server, tool, .. } => {
+            ThreadItemPayload::McpToolCall { server, tool, .. } => {
                 eprintln!(
                     "{} {} {}",
                     "mcp:".style(self.bold),
@@ -84,22 +87,22 @@ impl EventProcessorWithHumanOutput {
                     "started".style(self.dimmed)
                 );
             }
-            ThreadItem::WebSearch(item) => {
+            ThreadItemPayload::WebSearch(item) => {
                 eprintln!("{} {}", "web search:".style(self.bold), item.query);
             }
-            ThreadItem::FileChange { .. } => {
+            ThreadItemPayload::FileChange { .. } => {
                 eprintln!("{}", "apply patch".style(self.bold));
             }
-            ThreadItem::CollabAgentToolCall { tool, .. } => {
+            ThreadItemPayload::CollabAgentToolCall { tool, .. } => {
                 eprintln!("{} {:?}", "collab:".style(self.bold), tool);
             }
             _ => {}
         }
     }
 
-    fn render_item_completed(&mut self, item: ThreadItem) {
+    fn render_item_completed(&mut self, item: ThreadItemPayload) {
         match item {
-            ThreadItem::AgentMessage { text, .. } => {
+            ThreadItemPayload::AgentMessage { text, .. } => {
                 eprintln!(
                     "{}\n{}",
                     "codex".style(self.italic).style(self.magenta),
@@ -108,7 +111,7 @@ impl EventProcessorWithHumanOutput {
                 self.final_message = Some(text);
                 self.final_message_rendered = true;
             }
-            ThreadItem::Reasoning {
+            ThreadItemPayload::Reasoning {
                 summary, content, ..
             } => {
                 if self.show_agent_reasoning
@@ -119,7 +122,7 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{}", text.style(self.dimmed));
                 }
             }
-            ThreadItem::CommandExecution {
+            ThreadItemPayload::CommandExecution {
                 command: _,
                 aggregated_output,
                 exit_code,
@@ -163,7 +166,7 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{output}");
                 }
             }
-            ThreadItem::FileChange {
+            ThreadItemPayload::FileChange {
                 changes, status, ..
             } => {
                 let status_text = match status {
@@ -177,7 +180,7 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{}", change.path.style(self.dimmed));
                 }
             }
-            ThreadItem::McpToolCall {
+            ThreadItemPayload::McpToolCall {
                 server,
                 tool,
                 status,
@@ -199,10 +202,10 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{}", error.message.style(self.red));
                 }
             }
-            ThreadItem::WebSearch(item) => {
+            ThreadItemPayload::WebSearch(item) => {
                 eprintln!("{} {}", "web search:".style(self.bold), item.query);
             }
-            ThreadItem::ContextCompaction { .. } => {
+            ThreadItemPayload::ContextCompaction { .. } => {
                 eprintln!("{}", "context compacted".style(self.dimmed));
             }
             _ => {}
@@ -211,14 +214,16 @@ impl EventProcessorWithHumanOutput {
 }
 
 impl EventProcessor for EventProcessorWithHumanOutput {
+    fn alab_handoff_snapshot(&self) -> Result<serde_json::Value, String> { alab_renderer::snapshot(self) } // ALAB(exec-recovery): retain the active renderer.
+    fn alab_restore_handoff(&mut self, state: serde_json::Value) -> Result<(), String> { alab_renderer::restore(self, state) } // ALAB(exec-recovery): continue the same presentation.
     fn print_config_summary(
         &mut self,
         config: &Config,
         prompt: &str,
         session_configured_event: &SessionConfiguredEvent,
     ) {
-        const VERSION: &str = env!("CARGO_PKG_VERSION");
-        eprintln!("OpenAI Codex v{VERSION}\n--------");
+        let version = codex_alab_core::version::exec_title(env!("CARGO_PKG_VERSION")); // ALAB(version): codex-alab's own version (Decision 8), never the client version
+        eprintln!("{version}\n--------"); // ALAB(version): use the runtime stamp
         for (key, value) in config_summary_entries(config, session_configured_event) {
             eprintln!("{} {}", format!("{key}:").style(self.bold), value);
         }
@@ -287,11 +292,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 CodexStatus::Running
             }
             ServerNotification::ItemStarted(notification) => {
-                self.render_item_started(&notification.item);
+                self.render_item_started(&notification.item.payload);
                 CodexStatus::Running
             }
             ServerNotification::ItemCompleted(notification) => {
-                self.render_item_completed(notification.item);
+                self.render_item_completed(notification.item.payload);
                 CodexStatus::Running
             }
             ServerNotification::ModelRerouted(notification) => {
@@ -499,17 +504,19 @@ fn reasoning_text(
     }
 }
 
-fn final_message_from_turn_items(items: &[ThreadItem]) -> Option<String> {
+fn final_message_from_turn_items(
+    items: &[impl std::borrow::Borrow<ThreadItemPayload>],
+) -> Option<String> {
     items
         .iter()
         .rev()
-        .find_map(|item| match item {
-            ThreadItem::AgentMessage { text, .. } => Some(text.clone()),
+        .find_map(|item| match item.borrow() {
+            ThreadItemPayload::AgentMessage { text, .. } => Some(text.clone()),
             _ => None,
         })
         .or_else(|| {
-            items.iter().rev().find_map(|item| match item {
-                ThreadItem::Plan { text, .. } => Some(text.clone()),
+            items.iter().rev().find_map(|item| match item.borrow() {
+                ThreadItemPayload::Plan { text, .. } => Some(text.clone()),
                 _ => None,
             })
         })
@@ -541,3 +548,7 @@ fn should_print_final_message_to_tty(
 #[cfg(test)]
 #[path = "event_processor_with_human_output_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../alab-core/glue/exec_title_tests.rs"]
+mod alab_exec_title_tests; // ALAB(version): the report's opening line names codex-alab's own version, in isolated children

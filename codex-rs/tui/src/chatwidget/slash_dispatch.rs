@@ -139,6 +139,12 @@ impl ChatWidget {
         cmd: SlashCommand,
         source: SlashCommandDispatchSource,
     ) -> bool {
+        if source == SlashCommandDispatchSource::Live && cmd.requires_dispatch_validation() {
+            return self.is_user_turn_pending_or_running()
+                || (cmd == SlashCommand::Review
+                    && self.input_queue.has_queued_follow_up_messages());
+        }
+
         (!cmd.available_during_task()
             && (self.turn_lifecycle.agent_turn_running
                 || self.review.is_review_mode
@@ -149,10 +155,6 @@ impl ChatWidget {
                 && (self.input_queue.user_turn_pending_start
                     || self.turn_lifecycle.agent_turn_running))
             || (cmd == SlashCommand::Export && self.input_queue.suppress_queue_autosend)
-            || (cmd == SlashCommand::Review
-                && source == SlashCommandDispatchSource::Live
-                && (self.is_user_turn_pending_or_running()
-                    || self.input_queue.has_queued_follow_up_messages()))
     }
 
     pub(super) fn dispatch_command(&mut self, cmd: SlashCommand) {
@@ -185,6 +187,12 @@ impl ChatWidget {
             }
             self.request_redraw();
             return;
+        }
+
+        if source == SlashCommandDispatchSource::Live && cmd.requires_dispatch_validation() {
+            self.bottom_pane
+                .set_composer_text(String::new(), Vec::new(), Vec::new());
+            self.bottom_pane.drain_pending_submission_state();
         }
 
         match cmd {
@@ -285,12 +293,7 @@ impl ChatWidget {
                             ..Default::default()
                         },
                         SelectionItem {
-                            name: if self.remote_connection.is_some() {
-                                "Yes, delete and return to command center"
-                            } else {
-                                "Yes, delete and exit"
-                            }
-                            .to_string(),
+                            name: "Yes, delete and return to command center".to_string(),
                             description: Some("Permanently delete this session now".to_string()),
                             actions: vec![Box::new(|tx| {
                                 tx.send(AppEvent::DeleteCurrentThread);
@@ -359,11 +362,6 @@ impl ChatWidget {
                     .send(AppEvent::GenerateRecap { thread_id });
             }
             SlashCommand::Review => {
-                if source == SlashCommandDispatchSource::Live {
-                    self.bottom_pane
-                        .set_composer_text(String::new(), Vec::new(), Vec::new());
-                    self.bottom_pane.drain_pending_submission_state();
-                }
                 self.open_review_popup();
                 if self.mcp_startup_status.is_some() {
                     self.defer_input_until_settings_applied();
@@ -415,16 +413,10 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
             SlashCommand::Permissions => {
-                if self.remote_connection.is_some()
-                    || self.windows_sandbox_local_server
-                        && self.windows_sandbox_host != WindowsSandboxHost::Remote
-                        && self.windows_sandbox_config.requirements.is_none()
-                {
-                    self.app_event_tx.send(AppEvent::OpenPermissionsPopup);
-                } else {
-                    self.open_permissions_popup();
-                }
-                self.defer_input_until_settings_applied();
+                // Hold queued prompts while the app checks whether it can open the menu.
+                self.set_queue_autosend_suppressed(/*suppressed*/ true);
+                self.permission_popup_pending = true;
+                self.app_event_tx.send(AppEvent::OpenPermissionsPopup);
             }
             SlashCommand::Vim => {
                 self.toggle_vim_mode_and_notify();
@@ -506,6 +498,10 @@ impl ChatWidget {
                 self.emit_raw_output_mode_changed(enabled);
             }
             SlashCommand::Tui => self.show_tui_mode_picker(),
+            SlashCommand::Alab => self.alab_interface_command(""), // ALAB(interface): live branded/native switch
+            SlashCommand::Accounts => self.alab_accounts_command(""), // ALAB(accounts): native metadata stays in the bottom pane.
+            SlashCommand::Tasks => self.app_event_tx.send(AppEvent::OpenAlabTasks), // ALAB(tasks): the local task hub does not require a daemon
+            SlashCommand::Stash => { self.bottom_pane.alab_stash_prompt(); } // ALAB(stash): restore only into an empty composer
             SlashCommand::Diff => {
                 self.add_diff_in_progress();
                 let tx = self.app_event_tx.clone();
@@ -712,7 +708,7 @@ impl ChatWidget {
                     args,
                     text_elements,
                     pending_pastes: self.bottom_pane.composer_pending_pastes(),
-                    local_images: self.bottom_pane.composer_local_images(),
+                    local_images: self.bottom_pane.composer_local_images().to_vec(),
                     remote_image_urls: self.bottom_pane.remote_image_urls(),
                     mention_bindings: Vec::new(),
                     source: SlashCommandDispatchSource::Live,
@@ -815,6 +811,8 @@ impl ChatWidget {
                 self.handle_model_command_args(trimmed);
                 self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
             }
+            SlashCommand::Accounts => self.alab_accounts_command(trimmed), // ALAB(accounts): account arguments never become model input.
+            SlashCommand::Alab => self.alab_interface_command(trimmed), // ALAB(interface): explicit on/off or controls help
             SlashCommand::Title => {
                 self.handle_terminal_title_command_args(trimmed);
                 self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
@@ -1312,6 +1310,9 @@ impl ChatWidget {
             | SlashCommand::Copy
             | SlashCommand::Raw
             | SlashCommand::Vim
+            | SlashCommand::Alab // ALAB(interface): presentation commands do not stall the queue
+            | SlashCommand::Accounts // ALAB(accounts): inspection does not stall queued work.
+            | SlashCommand::Tasks | SlashCommand::Stash // ALAB(tasks): local views do not stall queued input
             | SlashCommand::Daybreak
             | SlashCommand::Diff
             | SlashCommand::App
@@ -1405,7 +1406,9 @@ impl ChatWidget {
             "'/{}' is unavailable in side conversations. {SIDE_SLASH_COMMAND_UNAVAILABLE_HINT}",
             cmd.command()
         ));
-        self.bottom_pane.drain_pending_submission_state();
+        if !cmd.requires_dispatch_validation() {
+            self.bottom_pane.drain_pending_submission_state();
+        }
         false
     }
 

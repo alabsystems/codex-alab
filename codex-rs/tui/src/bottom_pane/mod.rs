@@ -90,6 +90,7 @@ pub(crate) use multi_select_picker::MultiSelectPicker;
 mod question_tests;
 mod questions;
 mod request_user_input;
+pub(crate) mod status_line_content;
 mod status_line_setup;
 mod status_line_style;
 mod status_surface_preview;
@@ -116,9 +117,11 @@ pub(crate) use approval_overlay::format_requested_permissions_rule;
 pub(crate) use async_questions::AsyncQuestions;
 pub(crate) use async_questions::QuestionState;
 pub(crate) use async_questions::QuestionSubmission;
+pub(crate) use footer::footer_content;
 pub(crate) use mcp_server_elicitation::McpServerElicitationFormRequest;
 pub(crate) use mcp_server_elicitation::McpServerElicitationOverlay;
 pub(crate) use request_user_input::RequestUserInputOverlay;
+pub(crate) use status_line_style::STATUS_LINE_SEPARATOR;
 pub(crate) use status_line_style::status_line_from_segments;
 pub(crate) use voice_strip::VoiceStripPhase;
 pub(crate) use voice_strip::VoiceStripState;
@@ -153,7 +156,10 @@ mod experimental_features_view;
 mod file_search_popup;
 mod footer;
 mod list_selection_view;
+#[path = "../../../alab-tui/glue/task_view_state.rs"] mod alab_tasks; // ALAB(tasks): observe native list state before applying a queued refresh
 mod memories_settings_view;
+mod mention_usage;
+pub(crate) use mention_usage::MentionUsage;
 mod mentions_v2;
 mod picker_presets;
 mod picker_rows;
@@ -264,10 +270,10 @@ pub(crate) use chat_composer::ChatComposerConfig;
 pub(crate) use chat_composer::ClipboardPasteTarget;
 pub(crate) use chat_composer::ComposerDraftSnapshot;
 pub(crate) use chat_composer::InputResult;
+pub(crate) use chat_composer::KillBufferSnapshot;
 pub(crate) use chat_composer::QueuedInputAction;
 pub(crate) use chat_composer::RestrictedInputMode;
 pub(crate) use chat_composer_history::HistoryEntry;
-pub(crate) use textarea::KillBufferSnapshot;
 
 use crate::status_indicator_widget::StatusDetailsCapitalization;
 use crate::status_indicator_widget::StatusIndicatorWidget;
@@ -352,6 +358,18 @@ pub(crate) struct BottomPaneParams {
 }
 
 impl BottomPane {
+    pub(crate) fn set_mention_usage_home(
+        &mut self,
+        codex_home: &std::path::Path,
+        persistence: codex_config::types::HistoryPersistence,
+    ) {
+        self.composer.mention_usage = MentionUsage::load(codex_home, persistence);
+    }
+
+    pub(crate) fn mention_usage_mut(&mut self) -> &mut MentionUsage {
+        &mut self.composer.mention_usage
+    }
+
     pub fn new(params: BottomPaneParams) -> Self {
         Self::new_with_composer_config(params, ChatComposerConfig::default())
     }
@@ -472,9 +490,8 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    pub(crate) fn set_agents_navigation_enabled(&mut self, enabled: bool) {
-        self.composer.set_agents_navigation_enabled(enabled);
-        self.request_redraw();
+    pub(crate) fn enable_agents_navigation(&mut self) {
+        self.composer.command_center_enabled = true;
     }
 
     pub(crate) fn agents_navigation_key_available(&self) -> bool {
@@ -736,6 +753,13 @@ impl BottomPane {
         self.view_stack.last().map(std::convert::AsRef::as_ref)
     }
 
+    pub(crate) fn current_patch_approval(&self) -> Option<&ApplyPatchApprovalRequest> {
+        self.view_stack
+            .iter()
+            .rev()
+            .find_map(|view| view.current_patch_approval())
+    }
+
     fn push_view(&mut self, view: Box<dyn BottomPaneView>) {
         self.key_chord_reset_requested = true;
         self.view_stack.push(view);
@@ -968,6 +992,7 @@ impl BottomPane {
                 self.request_redraw();
                 return InputResult::None;
             }
+            if self.alab_stash_key(key_event) { return InputResult::None; } // ALAB(stash): Ctrl+S stashes only when no active native binding or search owns it
             let (input_result, needs_redraw) = self.composer.handle_key_event(key_event);
             if records_composer_activity {
                 self.record_composer_activity_at(Instant::now());
@@ -1107,7 +1132,7 @@ impl BottomPane {
         };
         let needs_redraw = view.pre_draw_tick(now);
         let view_complete = view.is_complete();
-        if view_complete {
+        if codex_alab_tui::boxes::take_answered(std::ptr::from_ref::<dyn BottomPaneView>(&**view).addr()) && view_complete { let completion = view.completion(); self.pop_active_view_with_completion(completion); } else if view_complete { // ALAB(answer): codex-alab's answer pops only its own box, as a person's Enter does
             self.view_stack.clear();
             self.on_active_view_complete();
         }
@@ -1221,7 +1246,7 @@ impl BottomPane {
         self.composer.text_elements()
     }
 
-    pub(crate) fn composer_local_images(&self) -> Vec<LocalImageAttachment> {
+    pub(crate) fn composer_local_images(&self) -> &[LocalImageAttachment] {
         self.composer.local_images()
     }
 
@@ -1356,8 +1381,8 @@ impl BottomPane {
     }
 
     #[cfg(test)]
-    pub(crate) fn status_line_text(&self) -> Option<String> {
-        self.composer.status_line_text()
+    pub(crate) fn status_line_content(&self) -> Option<&footer_content::FooterContent> {
+        self.composer.status_line_content()
     }
 
     pub(crate) fn show_esc_backtrack_hint(&mut self) {
@@ -2331,6 +2356,10 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn record_local_user_message_history(&mut self, entry: HistoryEntry) {
+        self.composer.record_local_user_message_history(entry);
+    }
+
     pub(crate) fn record_replayed_user_message_history(&mut self, entry: HistoryEntry) {
         self.composer.record_replayed_user_message_history(entry);
     }
@@ -2535,6 +2564,7 @@ impl BottomPane {
             let composer: RenderableItem<'_> = if let Some(questions) = question_editor {
                 RenderableItem::Borrowed(questions.as_ref())
             } else if options.max_height.is_none()
+                && options.image_previews.is_none()
                 && options.textarea_right_reserve == 0
                 && options.warning_count == 0
                 && options.footer.is_none()
@@ -2563,7 +2593,7 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
+    pub(crate) fn set_status_line(&mut self, status_line: Option<footer_content::FooterContent>) {
         if self.composer.set_status_line(status_line) {
             self.request_redraw();
         }
@@ -2571,12 +2601,6 @@ impl BottomPane {
 
     pub(crate) fn set_luna_reserve_active(&mut self, active: bool) {
         if self.composer.set_luna_reserve_active(active) {
-            self.request_redraw();
-        }
-    }
-
-    pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) {
-        if self.composer.set_status_line_hyperlink(url) {
             self.request_redraw();
         }
     }

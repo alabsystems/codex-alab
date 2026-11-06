@@ -1,0 +1,26 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "codex-alab-quota-recovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lints]
+workspace = true
+[dependencies]
+codex-alab-core = { path = "../alab-core" }
+codex-backend-client = { workspace = true }
+codex-http-client = { workspace = true }
+codex-login = { workspace = true }
+codex-protocol = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+wiremock = { workspace = true }
+tempfile = { workspace = true }

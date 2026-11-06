@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # codex-alab-core: the switch every ALab behavior keys off, and ALab's packaged defaults.
-# It depends on no codex crate, so any codex crate can depend on it.
+# It depends on no codex crate, so any codex crate can depend on it (tokio's timer and libc's
+# clocks and open flags only: the host's sleep, src/wake.rs; the login lock, src/auth_lock.rs).
 [package]
 name = "codex-alab-core"
 version.workspace = true
@@ -17,7 +18,15 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+rand = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 toml = { workspace = true }
+tracing = { workspace = true }
+zeroize = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }

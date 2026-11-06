@@ -25,7 +25,7 @@ pub(super) fn multi_agent_v2_handler(
     parameters_override: Option<&str>,
 ) -> Arc<dyn CoreToolRuntime> {
     let parameters_override = parameters_override.map(|parameters| -> Result<JsonSchema, &str> {
-        let mut parameters = super::catalog_parameters::parse(parameters)?;
+        let mut parameters = codex_tools::parse_catalog_tool_parameters(parameters)?;
         if let ToolSpec::Function(tool) = handler.spec()
             && let Some(properties) = tool.parameters.properties
         {
@@ -117,6 +117,10 @@ impl ToolExecutor<ToolInvocation> for MultiAgentV2ToolOverrides {
 }
 
 impl CoreToolRuntime for MultiAgentV2ToolOverrides {
+    fn finishes_on_cancellation(&self) -> bool {
+        self.handler.finishes_on_cancellation() // ALAB(exec-transfer): namespace overrides preserve the handler's cancellation contract.
+    }
+
     fn wait_until_ready<'a>(&'a self, session: &'a Arc<Session>) -> Option<BoxFuture<'a, ()>> {
         self.handler.wait_until_ready(session)
     }

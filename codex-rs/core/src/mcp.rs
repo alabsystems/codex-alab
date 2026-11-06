@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::mcp_tool_exposure::SharedMcpDefinitions;
 use codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID;
 use codex_config::McpServerConfig;
 use codex_config::types::PluginsConfigToml;
@@ -41,6 +42,10 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 
 const LEGACY_CODEX_APPS_REGISTRATION_ID: &str = "legacy_codex_apps";
+
+/// Thread-local policy that excludes all MCP servers, including runtime contributions.
+/// Insert into `StartThreadOptions::thread_extension_init` before starting the thread.
+pub struct McpServersDisabled;
 
 /// MCP configuration and capability availability derived from the same inputs.
 #[derive(Clone)]
@@ -106,10 +111,13 @@ enum OrderedMcpOverlay {
 
 #[derive(Clone)]
 pub struct McpManager {
+    connection_pool: codex_mcp::McpConnectionPool,
     plugins_manager: Arc<PluginsManager>,
     extensions: Arc<ExtensionRegistry<Config>>,
     codex_apps_tools_cache: ConnectorRuntimeManager<ToolInfo>,
     tool_catalog_cache: McpToolCatalogCache,
+    shared_definitions: Arc<SharedMcpDefinitions>,
+    ema_state: Arc<codex_mcp::EmaState>,
 }
 
 impl McpManager {
@@ -128,10 +136,13 @@ impl McpManager {
         codex_apps_tools_cache: ConnectorRuntimeManager<ToolInfo>,
     ) -> Self {
         Self {
+            connection_pool: codex_mcp::McpConnectionPool::default(),
             plugins_manager,
             extensions,
             codex_apps_tools_cache,
             tool_catalog_cache: McpToolCatalogCache::default(),
+            shared_definitions: Arc::new(SharedMcpDefinitions::default()),
+            ema_state: Arc::default(),
         }
     }
 
@@ -141,6 +152,14 @@ impl McpManager {
 
     pub fn tool_catalog_cache(&self) -> McpToolCatalogCache {
         self.tool_catalog_cache.clone()
+    }
+
+    pub(crate) fn connection_pool(&self) -> codex_mcp::McpConnectionPool {
+        self.connection_pool.clone()
+    }
+
+    pub(crate) fn shared_definitions(&self) -> &SharedMcpDefinitions {
+        &self.shared_definitions
     }
 
     /// Returns the MCP config after applying compatibility built-ins and
@@ -201,18 +220,12 @@ impl McpManager {
         plugins_config: &PluginsConfigToml,
         disabled_plugin_ids: &[String],
     ) -> SelectedPluginSnapshot {
-        let roots = context
-            .ready_selected_capability_roots()
-            .unwrap_or_default();
         let mut selected = SelectedPluginSnapshot {
             disabled_plugin_ids: disabled_plugin_ids.to_vec(),
             ..Default::default()
         };
-        let v2 = context.executor_capability_discovery_v2().is_some();
         let available_roots = available_plugin_roots(context);
-        if roots.is_empty() && !v2 {
-            return selected;
-        }
+        // Check hosted plugins even when no executor roots are selected.
         for contributor in self.extensions.mcp_server_contributors() {
             for SelectedPlugin {
                 selected_root_id,
@@ -263,6 +276,19 @@ impl McpManager {
         disabled_plugin_ids: &[String],
     ) -> McpRuntimeProjection {
         let config = context.config();
+        if context
+            .thread_init()
+            .is_some_and(|init| init.get::<McpServersDisabled>().is_some())
+        {
+            let mut mcp_config = config.to_mcp_config_with_loaded_plugins(&Default::default(), []);
+            mcp_config.mcp_server_catalog = Default::default();
+            mcp_config.apps_enabled = false;
+            return McpRuntimeProjection {
+                config: mcp_config,
+                plugins_available: false,
+                selected_plugins: Default::default(),
+            };
+        }
         let plugins_config = &config.plugins;
         let mut selected_plugin_connector_sources = Vec::new();
         let mut selected_plugin_registrations = Vec::new();
@@ -433,6 +459,7 @@ impl McpManager {
             !selected_plugins.is_empty() || !loaded_plugins.capability_summaries().is_empty();
         let mut mcp_config = config
             .to_mcp_config_with_loaded_plugins(&loaded_plugins, selected_plugin_registrations);
+        mcp_config.ema_state = Arc::clone(&self.ema_state);
         let mut catalog = mcp_config.mcp_server_catalog.to_builder();
         // Isolated sessions do not inherit the implicit Apps connection.
         if mcp_config.apps_enabled

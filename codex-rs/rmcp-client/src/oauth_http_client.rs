@@ -32,7 +32,7 @@ use url::Url;
 
 use crate::auth_status::OAuthDiscoveryTimeout;
 use crate::http_client_adapter::StreamableHttpRedirectMode;
-use crate::utils::MCP_USER_AGENT;
+use crate::utils::mcp_user_agent;
 
 const MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
 const MAX_OAUTH_HTTP_REDIRECTS: usize = 10;
@@ -237,13 +237,14 @@ impl OAuthHttpClientAdapter {
         for name in parts.headers.keys() {
             headers.remove(name);
         }
+        let user_agent = HeaderValue::from_str(&mcp_user_agent()).map_err(oauth_http_client_error)?; // ALAB(version): parse the dynamic default once and preserve request errors
         let has_resource_only_headers = is_resource_origin
             && headers.iter().any(|(name, value)| {
-                name != USER_AGENT || value != HeaderValue::from_static(MCP_USER_AGENT)
+                name != USER_AGENT || value != user_agent // ALAB(version): running executable identity
             });
         headers.extend(parts.headers);
         if !is_resource_origin {
-            headers.insert(USER_AGENT, HeaderValue::from_static(MCP_USER_AGENT));
+            headers.insert(USER_AGENT, user_agent); // ALAB(version): running executable identity
         }
         let redirect_policy = oauth_redirect_policy(
             self.redirect_mode,

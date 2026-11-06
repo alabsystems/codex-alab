@@ -10,6 +10,7 @@
 //!
 //! - `leader <pid>`: that pid leads the session's foreground group (its claim is proven);
 //! - `policy <key> <value>`: one `[harness]` key (a new generation, announced);
+//! - `status <key> <value>`: one raw `@self status` field (`status autopilot land`);
 //! - `dump`: one `STATE <json>` line (claim, acts, attention, notices, requests);
 //! - `quit` (or end of input).
 
@@ -91,6 +92,12 @@ async fn main() -> std::io::Result<()> {
             }
             (Some("policy"), Some(key), Some(value)) => {
                 fake.set_policy_key(key, value);
+                println!("OK");
+            }
+            // A raw `status` field, such as the session's Autopilot word (`status autopilot
+            // land`).
+            (Some("status"), Some(key), Some(value)) => {
+                fake.set_status(key, value);
                 println!("OK");
             }
             (Some("dump"), None, None) => println!("STATE {}", dump(&fake)),

@@ -8,6 +8,8 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
+#[path = "../../../../alab-tui/glue/unicode_debug.rs"] mod alab_unicode_debug; // ALAB(test-assertions): keep Unicode Debug spelling portable while preserving rendered cells.
+
 #[test]
 fn halfwidth_sound_marks_are_truncated_at_a_grapheme_boundary() {
     let line = Line::from("abｶﾞ tail");
@@ -30,8 +32,9 @@ fn halfwidth_sound_marks_are_truncated_and_rendered_at_a_grapheme_boundary() {
 
     Paragraph::new(lines.to_vec()).render(area, &mut buf);
 
-    insta::assert_snapshot!(
-        "request_user_input_halfwidth_sound_marks_truncation",
-        format!("{buf:?}\n{lines:#?}")
+    alab_unicode_debug::assert_render_snapshot( // ALAB(test-assertions): canonicalize both line references and actual debug spelling, keeping Buffer exact.
+        &buf,
+        &lines,
+        include_str!("snapshots/codex_tui__bottom_pane__request_user_input__render__tests__request_user_input_halfwidth_sound_marks_truncation.snap"),
     );
 }

@@ -122,6 +122,7 @@ impl SkillsWatcher {
             .watchable_skill_root_paths(&skills_input, environment.get_filesystem())
             .await
             .into_iter()
+            .filter(|path| codex_alab_core::watches_skill_root(path.as_path())) // ALAB(skills-watch): no FSEvents stream over the whole home directory for a missing ~/.agents/skills
             .map(|path| WatchPath {
                 path: path.into_path_buf(),
                 recursive: true,
@@ -155,7 +156,7 @@ impl SkillsWatcher {
                 if event
                     .paths
                     .iter()
-                    .all(|path| path.starts_with(system_skills_root.as_path()))
+                    .all(|path| path.starts_with(system_skills_root.as_path()) || codex_alab_core::home::in_other_system_skills(system_skills_root.as_path(), path)) // ALAB(skills): codex-old's reinstall of its own set is no change to codex-alab's skills
                 {
                     continue;
                 }

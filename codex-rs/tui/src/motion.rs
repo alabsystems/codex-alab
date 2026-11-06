@@ -64,7 +64,7 @@ pub(crate) fn loading_glyph_with_delay(
         requester.schedule_frame_in(delay - elapsed);
         return "";
     }
-    requester.schedule_frame_in(FRAME_DURATION);
+    requester.schedule_frame_in(codex_alab_tui::motion::pace(FRAME_DURATION)); // ALAB(pet-perf): while the terminal's focus is out the spinner ticks with the 1 s clock
     let frame = elapsed.as_millis() / FRAME_DURATION.as_millis();
     FRAMES[usize::try_from(frame).unwrap_or_default() % FRAMES.len()]
 }

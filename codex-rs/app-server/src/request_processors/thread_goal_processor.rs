@@ -162,7 +162,7 @@ impl ThreadGoalRequestProcessor {
             && let Ok(thread) = self.thread_manager.get_thread(thread_id).await
         {
             self.config_manager
-                .check_thread_model_provider(thread.config().await.as_ref())
+                .check_thread_model_provider_for_input(thread.config().await.as_ref())
                 .await
                 .map_err(|error| config_load_error(&error))?;
         }
@@ -214,6 +214,7 @@ impl ThreadGoalRequestProcessor {
             .await
             .map_err(goal_service_error)?;
         let goal = ThreadGoal::from(outcome.goal.clone());
+        if params.origin == Some(ThreadGoalMutationOrigin::User) { codex_alab_core::goal_stops::person_set(&thread_id.to_string(), outcome.goal.status != codex_protocol::protocol::ThreadGoalStatus::Active); } // ALAB(autopilot): a person's goal stop is never a wall's to resume
 
         let persist_result = match self.thread_manager.get_thread(thread_id).await {
             Ok(thread) => {
@@ -557,3 +558,4 @@ fn parse_thread_id_for_request(thread_id: &str) -> Result<ThreadId, JSONRPCError
     ThreadId::from_string(thread_id)
         .map_err(|err| invalid_request(format!("invalid thread id: {err}")))
 }
+#[cfg(test)] #[path = "../../../alab-core/glue/goal_person_stop_tests.rs"] mod alab_goal_person_stop_tests; // ALAB(autopilot): drive the person's goal-stop hook through the real request path

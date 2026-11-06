@@ -41,7 +41,7 @@ use crate::tui;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
-use crate::version::CODEX_CLI_VERSION;
+use crate::version::cli_version;
 
 const STARTUP_EVENT_BATCH_SIZE: usize = 64;
 const STARTUP_PASTE_NEWLINE_TIMEOUT: Duration = Duration::from_millis(120);
@@ -123,7 +123,7 @@ impl StartupDraft {
     /// Adopt the initialized terminal and apply editing policy before the first composer paint.
     pub(crate) fn new(
         mut initialized_terminal: tui::InitializedTerminal,
-        terminal_restore_guard: TerminalRestoreGuard,
+        mut terminal_restore_guard: TerminalRestoreGuard,
         initial_screen: StartupDraftInitialScreen,
         session_action: StartupDraftSessionAction,
         screen: StartupScreen,
@@ -135,6 +135,7 @@ impl StartupDraft {
             initialized_terminal.enhanced_keys_supported,
             initialized_terminal.stderr_guard,
         );
+        terminal_restore_guard.events = Some(tui.event_broker.clone());
         tui.terminal_app_over_ssh = initialized_terminal.terminal_app_over_ssh;
         tui.set_alt_screen_enabled(screen.use_alt_screen);
         let mut pump = StartupDraftPump::new(&tui, initial_screen, session_action);
@@ -421,6 +422,7 @@ impl StartupDraftPump {
         }
         Ok(())
     }
+    pub(crate) fn alab_draws(&self) -> bool { self.initial_screen == StartupDraftInitialScreen::Composer } // ALAB(trust): only a draft that draws its composer waits out a busy aterm (alab-tui/glue/folder_trust.rs)
 
     /// Reveal the editable composer once an expected protected screen has finished.
     pub(crate) fn show(&mut self, tui: &mut Tui) -> io::Result<()> {
@@ -470,7 +472,7 @@ fn startup_session_header(cwd: Option<&Path>) -> Box<dyn HistoryCell> {
         "loading".to_string(),
         /*reasoning_effort*/ None,
         cwd.map_or_else(|| PathBuf::from("loading"), Path::to_path_buf),
-        CODEX_CLI_VERSION,
+        cli_version(), // ALAB(version): running executable identity
     ))
 }
 

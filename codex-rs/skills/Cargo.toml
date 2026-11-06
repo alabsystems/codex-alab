@@ -27,3 +27,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+
+# ALAB(build): codex-alab's switch (codex-rs/alab-core)
+[dependencies.codex-alab-core]
+path = "../alab-core"

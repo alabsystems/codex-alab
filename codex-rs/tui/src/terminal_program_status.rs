@@ -12,14 +12,20 @@ use std::io::stdout;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
+use codex_terminal_detection::TerminalBackend;
 use codex_terminal_detection::TerminalInfo;
 use codex_terminal_detection::TerminalName;
 use codex_terminal_detection::terminal_info;
 use crossterm::Command;
-use ratatui::crossterm::execute;
+
+#[path = "../../alab-tui/glue/program_status_batch.rs"]
+mod alab_batch; // ALAB(turns): cache and writer admission for a whole rest-to-turn edge.
 
 static SESSION_STATUS_STATE: SessionStatusState = SessionStatusState::new();
 static TERMINAL_PROGRAM_STATUS_SUPPORT: OnceLock<TerminalProgramStatusSupport> = OnceLock::new();
+
+// VTE 0.54 introduced a parser that safely ignores unknown OSC sequences.
+const MIN_VTE_VERSION_WITH_SAFE_OSC: u32 = 5400;
 
 struct SessionStatusState {
     last_emitted: Mutex<EmittedSessionStatus>,
@@ -53,16 +59,31 @@ impl SessionStatusState {
         detail: &str,
         emit: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<()> {
+        self.update_with_force(status, detail, false, emit)
+    }
+
+    fn update_with_force(
+        &self,
+        status: CachedStatus,
+        detail: &str,
+        force: bool,
+        emit: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
         // Keep the terminal write and cache mutation together so panic-hook cleanup cannot
         // interleave with a draw from another thread.
         let mut last_emitted = self
             .last_emitted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if last_emitted.status == status && last_emitted.detail == detail {
+        if !force && last_emitted.status == status && last_emitted.detail == detail {
             return Ok(());
         }
-        emit()?;
+        if let Err(error) = emit() {
+            // ALAB(turns): a partial batch may have reached the terminal; retry any word.
+            last_emitted.status = CachedStatus::Invalidated;
+            last_emitted.detail.clear();
+            return Err(error);
+        }
         last_emitted.status = status;
         detail.clone_into(&mut last_emitted.detail);
         Ok(())
@@ -133,6 +154,16 @@ pub(crate) fn set_terminal_program_status(
     status: ProgramStatus,
     detail: Option<&str>,
 ) -> io::Result<()> {
+    set_terminal_program_status_with_prefix(status, detail, "")
+}
+
+/// ALAB(turns): write a rest-to-turn edge under the same cache-then-writer order as a
+/// normal report or clear, forcing the final word when a prefix changed the terminal.
+pub(crate) fn set_terminal_program_status_with_prefix(
+    status: ProgramStatus,
+    detail: Option<&str>,
+    prefix: &str,
+) -> io::Result<()> {
     if cfg!(test) {
         return Ok(());
     }
@@ -147,16 +178,18 @@ pub(crate) fn set_terminal_program_status(
     } else {
         String::new()
     };
-    SESSION_STATUS_STATE.update(CachedStatus::Reported(status), &detail, || {
-        execute!(
-            stdout(),
-            SetTerminalProgramStatus {
-                status,
-                iterm_detail: &detail,
-                emit_iterm_status: support.osc_21337,
-            }
-        )
-    })
+    alab_batch::emit(
+        &SESSION_STATUS_STATE,
+        CachedStatus::Reported(status),
+        &detail,
+        prefix,
+        SetTerminalProgramStatus {
+            status,
+            iterm_detail: &detail,
+            emit_iterm_status: support.osc_21337,
+        },
+        || stdout().lock(),
+    )
 }
 
 pub(crate) fn clear_terminal_program_status() -> io::Result<()> {
@@ -170,14 +203,16 @@ pub(crate) fn clear_terminal_program_status() -> io::Result<()> {
         return Ok(());
     }
 
-    SESSION_STATUS_STATE.update(CachedStatus::Cleared, "", || {
-        execute!(
-            stdout(),
-            ClearTerminalProgramStatus {
-                emit_iterm_status: support.osc_21337,
-            }
-        )
-    })
+    alab_batch::emit(
+        &SESSION_STATUS_STATE,
+        CachedStatus::Cleared,
+        "",
+        "",
+        ClearTerminalProgramStatus {
+            emit_iterm_status: support.osc_21337,
+        },
+        || stdout().lock(),
+    )
 }
 
 /// Forgets the cached state after another process has owned the terminal.
@@ -218,12 +253,19 @@ fn terminal_program_status_support(
     stdout_is_terminal: bool,
     screen_active: bool,
 ) -> TerminalProgramStatusSupport {
-    let osc_21337 = stdout_is_terminal
+    let osc_7501 = stdout_is_terminal
+        && match terminal.backend {
+            Some(TerminalBackend::Vte { version }) => {
+                version.is_none_or(|version| version >= MIN_VTE_VERSION_WITH_SAFE_OSC)
+            }
+            None => true,
+        };
+    let osc_21337 = osc_7501
         && terminal.name == TerminalName::Iterm2
         && terminal.multiplexer.is_none()
         && !screen_active;
     TerminalProgramStatusSupport {
-        osc_7501: stdout_is_terminal,
+        osc_7501,
         osc_21337,
     }
 }

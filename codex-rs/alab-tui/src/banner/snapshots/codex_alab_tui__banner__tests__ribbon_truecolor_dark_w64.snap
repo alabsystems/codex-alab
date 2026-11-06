@@ -3,192 +3,99 @@ source: alab-tui/src/banner/tests.rs
 expression: review_text(&lines)
 ---
  0||
- 1|       ⋆         ✦         ∙          ▄▀▀▄        ▄▀▀▄    ✧|
- 2|  █▄▄▄▄▄▄▄█████████▄▄▄▄▄▄▄█████████▄▄▄██▀█▀▀▀▀▀▀▀▀█▀██|
- 3|  ███████████████████████████████████████▀▀██████▀▀███ ▄     ∙|
- 4|  ████████████████████████████████████▀▀███▀▀▀▀▀▀███▀▀█▄|
- 5|   ▀▀▀▀▀▀▀ ∙       ▀▀▀▀▀▀▀      ∙  ▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀▀       ⋆|
- 6|  codex-alab  rainbow kitty · ALab build of OpenAI Codex|
+ 1|            ▄▀▀▄        ▄▀▀▄     codex-alab  v0.164.0-dev.12814|
+ 2|  █▄▄▄▄▄▄▄████▀█▀▀▀▀▀▀▀▀█▀██     bloatware-free · nag-free|
+ 3|  █████████████▀▀██████▀▀███ ▄   optimized for aterm|
+ 4|  ██████████▀▀███▀▀▀▀▀▀███▀▀█▄   Defaults vs 0.164 · 2026-10-23|
+ 5|   ▀▀▀▀▀▀▀    ▀▀▀▀▀▀▀▀▀▀▀▀       6× less memory · no daemon|
 --
-r1 [7..8) fg=#6666FF
-r1 [17..18) fg=#FFFFFF
-r1 [27..28) fg=#FFFF00
-r1 [38..39) fg=#F4E6DD
-r1 [39..41) fg=#F4E6DD bg=#4B434D
-r1 [41..42) fg=#F4E6DD
-r1 [50..51) fg=#F4E6DD
-r1 [51..53) fg=#F4E6DD bg=#B96F4F
-r1 [53..54) fg=#F4E6DD
-r1 [58..59) fg=#FFE9A8
+r1 [12..13) fg=#F4E6DD
+r1 [13..15) fg=#F4E6DD bg=#4B434D
+r1 [15..16) fg=#F4E6DD
+r1 [24..25) fg=#F4E6DD
+r1 [25..27) fg=#F4E6DD bg=#B96F4F
+r1 [27..28) fg=#F4E6DD
+r1 [33..35) fg=#FF0000 bold
+r1 [35..36) fg=#FF7F00 bold
+r1 [36..38) fg=#FFFF00 bold
+r1 [38..39) fg=#00FF00 bold
+r1 [39..41) fg=#6C6CFF bold
+r1 [41..42) fg=#9A70B9 bold
+r1 [42..43) fg=#B550E1 bold
+r1 [43..63) dim
 r2 [2..3) fg=#300F51
-r2 [3..4) fg=#350D59
-r2 [4..5) fg=#340A5B
-r2 [5..6) fg=#310865
-r2 [6..7) fg=#2F0581
-r2 [7..8) fg=#2703A7
-r2 [8..9) fg=#1A00D5
-r2 [9..10) fg=#0600F5
-r2 [10..11) fg=#0027FF
-r2 [11..12) fg=#0053FF
-r2 [12..13) fg=#007AFF
-r2 [13..14) fg=#00A0FF
-r2 [14..15) fg=#00C4FF
-r2 [15..16) fg=#00E8FF
-r2 [16..17) fg=#00FFEE
-r2 [17..18) fg=#00FFC0
-r2 [18..19) fg=#00FF92
-r2 [19..20) fg=#00FF60
-r2 [20..21) fg=#00FF2B
-r2 [21..22) fg=#0BFF00
-r2 [22..23) fg=#32FF00
-r2 [23..24) fg=#58FF00
-r2 [24..25) fg=#7BFF00
-r2 [25..26) fg=#9DFF00
-r2 [26..27) fg=#BDFF00
-r2 [27..28) fg=#DEFF00
-r2 [28..29) fg=#FDFF00
-r2 [29..30) fg=#FFE700
-r2 [30..31) fg=#FFCE00
-r2 [31..32) fg=#FFB400
-r2 [32..33) fg=#FF9A00
-r2 [33..34) fg=#FF8000
-r2 [34..35) fg=#FF6300
-r2 [35..36) fg=#FF4600
-r2 [36..37) fg=#FF9280
-r2 [37..38) fg=#FFFFFF
-r2 [38..39) fg=#F4E6DD
-r2 [39..40) fg=#4B434D
-r2 [40..41) fg=#D98D9A bg=#4B434D
-r2 [41..42) fg=#4B434D
-r2 [42..44) fg=#F4E6DD bg=#4B434D
-r2 [44..48) fg=#F4E6DD bg=#FAF4E8
-r2 [48..50) fg=#F4E6DD bg=#B96F4F
-r2 [50..51) fg=#B96F4F
-r2 [51..52) fg=#D98D9A bg=#B96F4F
-r2 [52..53) fg=#B96F4F
-r2 [53..54) fg=#F4E6DD
+r2 [3..4) fg=#1F0D52
+r2 [4..5) fg=#081892
+r2 [5..6) fg=#067BAD
+r2 [6..7) fg=#04C486
+r2 [7..8) fg=#1BE205
+r2 [8..9) fg=#A8FF00
+r2 [9..10) fg=#FFE200
+r2 [10..11) fg=#FFBE80
+r2 [11..12) fg=#FFFFFF
+r2 [12..13) fg=#F4E6DD
+r2 [13..14) fg=#4B434D
+r2 [14..15) fg=#D98D9A bg=#4B434D
+r2 [15..16) fg=#4B434D
+r2 [16..18) fg=#F4E6DD bg=#4B434D
+r2 [18..22) fg=#F4E6DD bg=#FAF4E8
+r2 [22..24) fg=#F4E6DD bg=#B96F4F
+r2 [24..25) fg=#B96F4F
+r2 [25..26) fg=#D98D9A bg=#B96F4F
+r2 [26..27) fg=#B96F4F
+r2 [27..28) fg=#F4E6DD
+r2 [47..50) dim
 r3 [2..3) fg=#300F51
-r3 [3..4) fg=#350D59
-r3 [4..5) fg=#340A5B
-r3 [5..6) fg=#310865
-r3 [6..7) fg=#2F0581
-r3 [7..8) fg=#2703A7
-r3 [8..9) fg=#1A00D5
-r3 [9..10) fg=#0600F5
-r3 [10..11) fg=#0027FF
-r3 [11..12) fg=#0053FF
-r3 [12..13) fg=#007AFF
-r3 [13..14) fg=#00A0FF
-r3 [14..15) fg=#00C4FF
-r3 [15..16) fg=#00E8FF
-r3 [16..17) fg=#00FFEE
-r3 [17..18) fg=#00FFC0
-r3 [18..19) fg=#00FF92
-r3 [19..20) fg=#00FF60
-r3 [20..21) fg=#00FF2B
-r3 [21..22) fg=#0BFF00
-r3 [22..23) fg=#32FF00
-r3 [23..24) fg=#58FF00
-r3 [24..25) fg=#7BFF00
-r3 [25..26) fg=#9DFF00
-r3 [26..27) fg=#BDFF00
-r3 [27..28) fg=#DEFF00
-r3 [28..29) fg=#FDFF00
-r3 [29..30) fg=#FFE700
-r3 [30..31) fg=#FFCE00
-r3 [31..32) fg=#FFB400
-r3 [32..33) fg=#FF9A00
-r3 [33..34) fg=#FF8000
-r3 [34..35) fg=#FF6300
-r3 [35..36) fg=#FF4600
-r3 [36..37) fg=#FF9280
-r3 [37..38) fg=#FFFFFF
-r3 [38..39) fg=#F4E6DD
-r3 [39..41) fg=#4B434D
-r3 [41..42) fg=#FFFFFF bg=#181520
-r3 [42..43) fg=#5D7B78 bg=#181520
-r3 [43..44) fg=#4B434D
-r3 [44..48) fg=#FAF4E8
-r3 [48..49) fg=#B96F4F
-r3 [49..50) fg=#FFFFFF bg=#181520
-r3 [50..51) fg=#5D7B78 bg=#181520
-r3 [51..53) fg=#B96F4F
-r3 [53..54) fg=#F4E6DD
-r3 [55..56) fg=#F4E6DD
-r3 [61..62) fg=#FF0000
+r3 [3..4) fg=#1F0D52
+r3 [4..5) fg=#081892
+r3 [5..6) fg=#067BAD
+r3 [6..7) fg=#04C486
+r3 [7..8) fg=#1BE205
+r3 [8..9) fg=#A8FF00
+r3 [9..10) fg=#FFE200
+r3 [10..11) fg=#FFBE80
+r3 [11..12) fg=#FFFFFF
+r3 [12..13) fg=#F4E6DD
+r3 [13..15) fg=#4B434D
+r3 [15..16) fg=#FFFFFF bg=#181520
+r3 [16..17) fg=#5D7B78 bg=#181520
+r3 [17..18) fg=#4B434D
+r3 [18..22) fg=#FAF4E8
+r3 [22..23) fg=#B96F4F
+r3 [23..24) fg=#FFFFFF bg=#181520
+r3 [24..25) fg=#5D7B78 bg=#181520
+r3 [25..27) fg=#B96F4F
+r3 [27..28) fg=#F4E6DD
+r3 [29..30) fg=#F4E6DD
 r4 [2..3) fg=#300F51
-r4 [3..4) fg=#350D59
-r4 [4..5) fg=#340A5B
-r4 [5..6) fg=#310865
-r4 [6..7) fg=#2F0581
-r4 [7..8) fg=#2703A7
-r4 [8..9) fg=#1A00D5
-r4 [9..10) fg=#0600F5
-r4 [10..11) fg=#0027FF
-r4 [11..12) fg=#0053FF
-r4 [12..13) fg=#007AFF
-r4 [13..14) fg=#00A0FF
-r4 [14..15) fg=#00C4FF
-r4 [15..16) fg=#00E8FF
-r4 [16..17) fg=#00FFEE
-r4 [17..18) fg=#00FFC0
-r4 [18..19) fg=#00FF92
-r4 [19..20) fg=#00FF60
-r4 [20..21) fg=#00FF2B
-r4 [21..22) fg=#0BFF00
-r4 [22..23) fg=#32FF00
-r4 [23..24) fg=#58FF00
-r4 [24..25) fg=#7BFF00
-r4 [25..26) fg=#9DFF00
-r4 [26..27) fg=#BDFF00
-r4 [27..28) fg=#DEFF00
-r4 [28..29) fg=#FDFF00
-r4 [29..30) fg=#FFE700
-r4 [30..31) fg=#FFCE00
-r4 [31..32) fg=#FFB400
-r4 [32..33) fg=#FF9A00
-r4 [33..34) fg=#FF8000
-r4 [34..35) fg=#FF6300
-r4 [35..36) fg=#FF4600
-r4 [36..37) fg=#FF9280
-r4 [37..38) fg=#FFFFFF
-r4 [38..39) fg=#F4E6DD
-r4 [39..40) fg=#FAF4E8 bg=#F4E6DD
-r4 [40..43) fg=#FAF4E8
-r4 [43..45) fg=#FAF4E8 bg=#F1DDC9
-r4 [45..47) fg=#D98D9A bg=#F1DDC9
-r4 [47..49) fg=#FAF4E8 bg=#F1DDC9
-r4 [49..52) fg=#FAF4E8
-r4 [52..53) fg=#FAF4E8 bg=#F4E6DD
-r4 [53..56) fg=#F4E6DD
-r5 [3..4) fg=#350D59
-r5 [4..5) fg=#340A5B
-r5 [5..6) fg=#310865
-r5 [6..7) fg=#2F0581
-r5 [7..8) fg=#2703A7
-r5 [8..9) fg=#1A00D5
-r5 [9..10) fg=#0600F5
-r5 [11..12) fg=#0000FF
-r5 [19..20) fg=#00FF60
-r5 [20..21) fg=#00FF2B
-r5 [21..22) fg=#0BFF00
-r5 [22..23) fg=#32FF00
-r5 [23..24) fg=#58FF00
-r5 [24..25) fg=#7BFF00
-r5 [25..26) fg=#9DFF00
-r5 [32..33) fg=#FF7F00
-r5 [35..36) fg=#FF4600
-r5 [36..37) fg=#FF9280
-r5 [37..38) fg=#FFFFFF
-r5 [40..42) fg=#F4E6DD
-r5 [42..50) fg=#FAF4E8 bg=#F4E6DD
-r5 [50..52) fg=#F4E6DD
-r5 [59..60) fg=#FFFFFF
-r6 [2..4) fg=#FF0000 bold
-r6 [4..5) fg=#FF7F00 bold
-r6 [5..7) fg=#FFFF00 bold
-r6 [7..8) fg=#00FF00 bold
-r6 [8..10) fg=#6C6CFF bold
-r6 [10..11) fg=#9A70B9 bold
-r6 [11..12) fg=#B550E1 bold
-r6 [12..56) dim
+r4 [3..4) fg=#1F0D52
+r4 [4..5) fg=#081892
+r4 [5..6) fg=#067BAD
+r4 [6..7) fg=#04C486
+r4 [7..8) fg=#1BE205
+r4 [8..9) fg=#A8FF00
+r4 [9..10) fg=#FFE200
+r4 [10..11) fg=#FFBE80
+r4 [11..12) fg=#FFFFFF
+r4 [12..13) fg=#F4E6DD
+r4 [13..14) fg=#FAF4E8 bg=#F4E6DD
+r4 [14..17) fg=#FAF4E8
+r4 [17..19) fg=#FAF4E8 bg=#F1DDC9
+r4 [19..21) fg=#D98D9A bg=#F1DDC9
+r4 [21..23) fg=#FAF4E8 bg=#F1DDC9
+r4 [23..26) fg=#FAF4E8
+r4 [26..27) fg=#FAF4E8 bg=#F4E6DD
+r4 [27..30) fg=#F4E6DD
+r4 [33..63) dim
+r5 [3..4) fg=#1F0D52
+r5 [4..5) fg=#081892
+r5 [5..6) fg=#067BAD
+r5 [6..7) fg=#04C486
+r5 [7..8) fg=#1BE205
+r5 [8..9) fg=#A8FF00
+r5 [9..10) fg=#FFE200
+r5 [14..16) fg=#F4E6DD
+r5 [16..24) fg=#FAF4E8 bg=#F4E6DD
+r5 [24..26) fg=#F4E6DD
+r5 [33..35) fg=#4EE088 bold
+r5 [47..50) dim

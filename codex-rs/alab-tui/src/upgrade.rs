@@ -33,11 +33,649 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
+pub use codex_alab_core::session::UpgradeRequest;
+
+/// Any native App/server event can change a loaded thread, goal or background task.
+/// Invalidate an in-flight asynchronous scan before dispatching it.
+pub fn native_event() {
+    if crate::session::active() {
+        codex_alab_core::session::shared().invalidate_upgrade();
+    }
+}
+
+/// What the update monitor last established. Kept separately from activity and account
+/// status: a pending update never replaces "Working" or hides a connection failure.
+#[derive(Clone, Default)]
+struct UpdateStatus {
+    state: Option<String>,
+    pending: bool,
+    watch_error: Option<String>,
+}
+
+static UPDATE_STATUS: Mutex<UpdateStatus> = Mutex::new(UpdateStatus {
+    state: None,
+    pending: false,
+    watch_error: None,
+});
+
+/// Publish an observed update state; this reports no release or installation authority.
+pub fn update_state(message: impl Into<String>) {
+    publish_update(message.into(), false);
+}
+
+/// An available update waiting for a safe handoff. This is a cached fact for rendering.
+pub fn update_pending(message: impl Into<String>) {
+    publish_update(message.into(), true);
+}
+
+fn publish_update(message: String, pending: bool) {
+    let changed = {
+        let mut status = UPDATE_STATUS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let changed = status.pending != pending;
+        status.state = Some(message);
+        status.pending = pending;
+        changed
+    };
+    if changed && crate::session::active() {
+        codex_alab_core::session::shared().wake();
+    }
+}
+
+pub(crate) fn pending() -> bool {
+    UPDATE_STATUS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pending
+}
+
+/// Report degraded notification delivery while the independent minute check keeps running.
+pub fn update_watch_error(message: impl Into<String>) {
+    UPDATE_STATUS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .watch_error = Some(message.into());
+}
+
+/// Read-only details for `/alab update`, available with either presentation setting.
+/// The running version is compiled into this image; an installed package's version is
+/// reported separately and only when its manifest names the resolved executable.
+pub fn update_report(source: &str) -> String {
+    let status = UPDATE_STATUS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let target = codex_alab_core::session::shared()
+        .launch()
+        .and_then(launch_target);
+    let report = status_report(
+        crate::session::version(),
+        target.as_ref().map(|target| target.summary.as_str()),
+        target.as_ref().and_then(|target| target.source.as_deref()),
+        &status,
+    );
+    let local = target
+        .as_ref()
+        .and_then(|target| target.local_report.as_deref())
+        .unwrap_or("Local channel last report: unavailable");
+    format!(
+        "{report}\n{local}\n{}",
+        source_details(
+            source,
+            codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")),
+            codex_alab_core::version::upstream_release(),
+            codex_alab_core::version::upstream_commit(),
+        )
+    )
+}
+
+struct LaunchTarget {
+    summary: String,
+    source: Option<String>,
+    local_report: Option<String>,
+}
+
+fn launch_target(launch: &Launch) -> Option<LaunchTarget> {
+    launch.upgrade_path().map(|argv0| match named_build(argv0) {
+        Some(named) => {
+            let package = package_details(&named);
+            let version = package
+                .as_ref()
+                .map_or("version unavailable", |(_, version)| version.as_str());
+            let source = package
+                .as_ref()
+                .and_then(|(root, version)| build_source(root, version));
+            LaunchTarget {
+                summary: format!("{version} ({})", named.display()),
+                local_report: package.as_ref().and_then(|(root, version)| {
+                    local_channel_report(root, version, source.as_deref()?)
+                }),
+                source,
+            }
+        }
+        None => LaunchTarget {
+            summary: "unavailable; the current session keeps running".to_owned(),
+            source: None,
+            local_report: None,
+        },
+    })
+}
+
+const CHANNEL_STATUS: &str = ".alab-local-update-status.json";
+
+#[derive(serde::Deserialize)]
+struct ChannelStatus {
+    schema: u32,
+    when: String,
+    phase: String,
+    last_phase: String,
+    complete: bool,
+    exit: Option<u8>,
+    initial_package: String,
+    initial_source: String,
+    initial_version: String,
+    target_source: Option<String>,
+}
+
+fn source_id(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn report_text(value: &str, limit: usize) -> bool {
+    !value.is_empty() && value.len() <= limit && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+/// The producer writes UTC ISO timestamps, optionally with subsecond digits.
+/// Their age remains visible; no timestamp establishes current process activity.
+fn report_time(value: &str) -> bool {
+    let Some(utc) = value.strip_suffix("+00:00") else {
+        return false;
+    };
+    let (seconds, fraction) = utc
+        .split_once('.')
+        .map_or((utc, None), |(seconds, fraction)| (seconds, Some(fraction)));
+    seconds.len() == 19
+        && seconds
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| match index {
+                4 | 7 => byte == b'-',
+                10 => byte == b'T',
+                13 | 16 => byte == b':',
+                _ => byte.is_ascii_digit(),
+            })
+        && fraction.is_none_or(|digits| {
+            !digits.is_empty() && digits.len() <= 9 && digits.bytes().all(|b| b.is_ascii_digit())
+        })
+}
+
+fn work_phase(phase: &str) -> bool {
+    matches!(phase, "fetching" | "checking" | "building" | "selecting")
+}
+
+impl ChannelStatus {
+    fn valid(&self) -> bool {
+        let package = Path::new(&self.initial_package);
+        self.schema == 1
+            && report_time(&self.when)
+            && report_text(&self.initial_package, 255)
+            && !self.initial_package.starts_with('.')
+            && !self.initial_package.contains('/')
+            && !self.initial_package.contains('\\')
+            && matches!(
+                package.components().next(),
+                Some(std::path::Component::Normal(_))
+            )
+            && source_id(&self.initial_source)
+            && report_text(&self.initial_version, 128)
+            && self.target_source.as_deref().is_none_or(source_id)
+            && work_phase(&self.last_phase)
+            && if self.complete {
+                self.phase == "completed" && self.exit.is_some()
+            } else {
+                self.phase == self.last_phase && self.exit.is_none()
+            }
+    }
+}
+
+/// Source provenance beside a manifest that names the resolved executable. A channel
+/// journal's target never substitutes for an absent or mismatched build record.
+fn build_source(root: &Path, version: &str) -> Option<String> {
+    let build: serde_json::Value = serde_json::from_str(&crate::life::read_managed_text(
+        &root.join("alab-build.json"),
+    )?)
+    .ok()?;
+    let selected_source = build.get("source")?.as_str()?;
+    if !source_id(selected_source) || build.get("version")?.as_str()? != version {
+        return None;
+    }
+    Some(selected_source.to_owned())
+}
+
+/// One fixed optional file beside the already verified launch package. JSON never
+/// supplies a path to open, and this observation changes no update or handoff state.
+/// `selected_source` is the same validated build observation the launch report uses.
+fn local_channel_report(root: &Path, version: &str, selected_source: &str) -> Option<String> {
+    let channel = root.parent()?;
+    if channel.file_name()? != "codex" {
+        return None;
+    }
+    let unavailable = || Some("Local channel last report: unavailable".to_owned());
+    let Some(text) = crate::life::read_managed_text(&channel.join(CHANNEL_STATUS)) else {
+        return unavailable();
+    };
+    let Ok(record) = serde_json::from_str::<ChannelStatus>(&text) else {
+        return unavailable();
+    };
+    if !record.valid() {
+        return unavailable();
+    }
+    let same_selection = root.file_name().and_then(|name| name.to_str())
+        == Some(record.initial_package.as_str())
+        && selected_source == record.initial_source
+        && version == record.initial_version;
+    let context = if same_selection {
+        "initial selection still matches the launch target"
+    } else {
+        "historical channel attempt; selection has changed"
+    };
+    let phase = if let Some(exit) = record.exit {
+        format!("completed (exit {exit}; last phase {})", record.last_phase)
+    } else {
+        format!(
+            "{}; completion not recorded; current activity unverified",
+            record.phase
+        )
+    };
+    let target = record.target_source.as_deref().unwrap_or("not reported");
+    let target_context = match record.target_source.as_deref() {
+        Some(target) if target == selected_source => "Target matches current launch source",
+        Some(_) => "Target differs from current launch source",
+        None => "Target source was not reported",
+    };
+    Some(format!(
+        "Local channel last report: {phase}\nReported at: {}\nTarget source: {target}\n{context}\n{target_context}",
+        record.when
+    ))
+}
+
+/// The exact identities behind the readable running line: the ALab source, the client
+/// version upstream's code and OpenAI's servers are told (upstream's numbering, never
+/// codex-alab's own line: Decision 8), and the upstream base.
+fn source_details(
+    source: &str,
+    client_version: &str,
+    upstream_release: Option<&str>,
+    upstream_commit: Option<&str>,
+) -> String {
+    format!(
+        "Running ALab source: {source}\nCodex client version: {client_version}\nOpenAI Codex base: {}\nOpenAI source: {}",
+        upstream_release.unwrap_or("unreleased"),
+        upstream_commit.unwrap_or("unavailable"),
+    )
+}
+
+fn status_report(
+    running: &str,
+    target: Option<&str>,
+    source: Option<&str>,
+    status: &UpdateStatus,
+) -> String {
+    let mut running_line = format!("Running codex-alab {running}");
+    if running == "0.0.0" {
+        running_line.push_str(" (unversioned development build)");
+    }
+    let mut lines = vec![running_line];
+    if let Some(target) = target {
+        lines.push(format!("Launch target: {target}"));
+        lines.push(format!(
+            "Launch source: {}",
+            source.unwrap_or("unavailable")
+        ));
+    }
+    lines.push(format!(
+        "Last check: {}",
+        status
+            .state
+            .as_deref()
+            .unwrap_or("The aterm update monitor has not checked this session yet")
+    ));
+    if let Some(error) = &status.watch_error {
+        lines.push(format!(
+            "Notifications: {error}; checking the launch target every minute"
+        ));
+    }
+    lines.push("aterm installs package updates; this session resumes on the new build when its idle checks permit it.".into());
+    lines.join("\n")
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn version_details_keep_exact_source_identities_when_primary_labels_are_readable() {
+        let alab = "a180bdb0c2d3aa744d4d3d59d1de6b5879f7ce36";
+        let upstream = "e8aa7c1678caa9a368243d72bf0e9b7859d97f15";
+        let report = source_details(
+            alab,
+            "0.164.0-dev.12479+g07a25d86a",
+            Some("0.163.0"),
+            Some(upstream),
+        );
+        assert!(report.contains(&format!("Running ALab source: {alab}")));
+        assert!(report.contains("Codex client version: 0.164.0-dev.12479+g07a25d86a"));
+        assert!(report.contains("OpenAI Codex base: 0.163.0"));
+        assert!(report.contains(&format!("OpenAI source: {upstream}")));
+        let unknown = source_details("dev", "0.0.0", None, None);
+        assert!(unknown.contains("Running ALab source: dev"));
+        assert!(unknown.contains("OpenAI Codex base: unreleased"));
+        assert!(unknown.contains("OpenAI source: unavailable"));
+    }
+
+    /// A freshly installed package is not the image that runs this session. The report
+    /// keeps those versions distinct while exposing why the safe handoff remains pending.
+    #[test]
+    fn an_installed_update_does_not_change_the_reported_running_version() {
+        let status = UpdateStatus {
+            pending: false,
+            state: Some("Update pending: thread t1 has an active goal".into()),
+            watch_error: Some("the launch watcher stopped".into()),
+        };
+        let running = "0.164.0-dev.12479+g07a25d86a";
+        let installed = "0.164.0-dev.12521+g3d3eb12d8";
+        let report = status_report(
+            running,
+            Some("0.164.0-dev.12521+g3d3eb12d8 (/owned/package/bin/codex)"),
+            None,
+            &status,
+        );
+        let mut lines = report.lines();
+        assert!(
+            lines
+                .next()
+                .is_some_and(|line| line.contains(running) && !line.contains(installed))
+        );
+        assert!(
+            lines
+                .next()
+                .is_some_and(|line| line.contains(installed) && !line.contains(running))
+        );
+        assert!(report.contains("thread t1 has an active goal"));
+        assert!(report.contains("the launch watcher stopped"));
+        let development = status_report("0.0.0", Some(installed), None, &status);
+        assert!(
+            development
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("0.0.0")
+                    && line.contains("unversioned")
+                    && !line.contains(installed))
+        );
+
+        let dir = tempfile::tempdir().unwrap_or_else(|err| panic!("{err}"));
+        let a = dir.path().join("a/bin/codex");
+        let b = dir.path().join("b/bin/codex");
+        for (exe, version) in [(&a, running), (&b, installed)] {
+            let bin = exe.parent().unwrap_or_else(|| panic!("a bin directory"));
+            let root = bin
+                .parent()
+                .unwrap_or_else(|| panic!("a package directory"));
+            std::fs::create_dir_all(bin).unwrap_or_else(|err| panic!("{err}"));
+            std::fs::write(exe, "image identity; never executed")
+                .unwrap_or_else(|err| panic!("{err}"));
+            std::fs::write(
+                root.join("codex-package.json"),
+                format!(r#"{{"layoutVersion":1,"entrypoint":"bin/codex","version":"{version}"}}"#),
+            )
+            .unwrap_or_else(|err| panic!("{err}"));
+        }
+        let route = dir.path().join("managed-codex");
+        let launch = Launch {
+            argv0: Some(a.clone()),
+            current_exe: Some(a),
+            managed_argv0: Some(route.clone()),
+            ..Launch::default()
+        };
+        assert_eq!(
+            launch_target(&launch)
+                .as_ref()
+                .map(|target| target.summary.as_str()),
+            Some("unavailable; the current session keeps running")
+        );
+        std::os::unix::fs::symlink(&b, route).unwrap_or_else(|err| panic!("{err}"));
+        let target = launch_target(&launch).unwrap_or_else(|| panic!("a managed target"));
+        assert!(target.summary.starts_with(installed));
+        let report = status_report(
+            running,
+            Some(&target.summary),
+            target.source.as_deref(),
+            &status,
+        );
+        assert!(
+            report
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains(running) && !line.contains(installed))
+        );
+        assert!(report.contains(&format!("Launch target: {installed}")));
+
+        let c_root = dir.path().join("c");
+        std::fs::create_dir_all(c_root.join("bin")).unwrap_or_else(|err| panic!("{err}"));
+        let c_exe = c_root.join("bin/codex");
+        std::fs::write(&c_exe, "image identity").unwrap_or_else(|err| panic!("{err}"));
+        std::os::unix::fs::symlink(
+            dir.path().join("b/codex-package.json"),
+            c_root.join("codex-package.json"),
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(package_version(&c_exe), None);
+        std::fs::remove_file(c_root.join("codex-package.json"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        std::fs::write(
+            c_root.join("codex-package.json"),
+            format!(r#"{{"layoutVersion":1,"entrypoint":"bin/alias","version":"{installed}"}}"#),
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        std::os::unix::fs::symlink(&c_exe, c_root.join("bin/alias"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(package_version(&c_exe), None);
+        std::os::unix::fs::symlink(c_root.join("bin"), c_root.join("alias-dir"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        std::fs::write(
+            c_root.join("codex-package.json"),
+            format!(
+                r#"{{"layoutVersion":1,"entrypoint":"alias-dir/codex","version":"{installed}"}}"#
+            ),
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(package_version(&c_exe), None);
+    }
+
+    /// The channel report is optional historical data, not the running image, a
+    /// process probe, or permission to select or re-exec a package.
+    #[test]
+    fn local_channel_reports_keep_selection_context_and_reject_special_or_partial_files() {
+        let dir = tempfile::tempdir().unwrap_or_else(|err| panic!("{err}"));
+        let channel = dir.path().join("codex");
+        let a_source = "a".repeat(40);
+        let b_source = "b".repeat(40);
+        let a_version = "0.164.0-dev.1+gaaaaaaaaa";
+        let b_version = "0.164.0-dev.2+gbbbbbbbbb";
+        let package = |name: &str, source: &str, version: &str| {
+            let root = channel.join(name);
+            std::fs::create_dir_all(root.join("bin")).unwrap_or_else(|err| panic!("{err}"));
+            let exe = root.join("bin/codex");
+            std::fs::write(&exe, "private image identity; never executed")
+                .unwrap_or_else(|err| panic!("{err}"));
+            std::fs::write(
+                root.join("codex-package.json"),
+                serde_json::json!({"layoutVersion":1,"entrypoint":"bin/codex","version":version})
+                    .to_string(),
+            )
+            .unwrap_or_else(|err| panic!("{err}"));
+            std::fs::write(
+                root.join("alab-build.json"),
+                serde_json::json!({"source":source,"version":version}).to_string(),
+            )
+            .unwrap_or_else(|err| panic!("{err}"));
+            exe
+        };
+        let a = package("a", &a_source, a_version);
+        let b = package("b", &b_source, b_version);
+        let rebuilt = package("a-rebuilt", &a_source, a_version);
+        let route = dir.path().join("managed-codex");
+        std::os::unix::fs::symlink(&a, &route).unwrap_or_else(|err| panic!("{err}"));
+        let launch = Launch {
+            argv0: Some(a.clone()),
+            current_exe: Some(a),
+            managed_argv0: Some(route.clone()),
+            ..Launch::default()
+        };
+        let render = || {
+            let target = launch_target(&launch).unwrap_or_else(|| panic!("a managed target"));
+            format!(
+                "{}\n{}",
+                status_report(
+                    a_version,
+                    Some(&target.summary),
+                    target.source.as_deref(),
+                    &UpdateStatus::default()
+                ),
+                target.local_report.unwrap_or_default(),
+            )
+        };
+        let path = channel.join(CHANNEL_STATUS);
+        assert!(render().contains("Local channel last report: unavailable"));
+        assert!(render().contains(&format!("Launch source: {a_source}")));
+        let mut record = serde_json::json!({
+            "schema":1,"when":"2000-01-01T00:00:00+00:00",
+            "phase":"building","last_phase":"building","complete":false,"exit":null,
+            "initial_package":"a","initial_source":a_source,"initial_version":a_version,
+            "target_source":b_source,
+            "reason":"secret diagnostic must never be shown",
+            "log":"/not/a/path/to/open"
+        });
+        let write = |record: &serde_json::Value| {
+            std::fs::write(&path, record.to_string()).unwrap_or_else(|err| panic!("{err}"));
+        };
+        write(&record);
+        let incomplete = render();
+        assert!(incomplete.starts_with(&format!("Running codex-alab {a_version}")));
+        assert!(incomplete.contains("Launch target: 0.164.0-dev.1"));
+        assert!(
+            incomplete.contains("building; completion not recorded; current activity unverified")
+        );
+        assert!(incomplete.contains("2000-01-01T00:00:00+00:00"));
+        assert!(incomplete.contains(&b_source));
+        assert!(!incomplete.contains("secret"));
+        assert!(!incomplete.contains("historical channel attempt"));
+
+        record["phase"] = "completed".into();
+        record["complete"] = true.into();
+        record["exit"] = 1.into();
+        write(&record);
+        assert!(render().contains("completed (exit 1; last phase building)"));
+        std::fs::remove_file(&route).unwrap_or_else(|err| panic!("{err}"));
+        std::os::unix::fs::symlink(&b, &route).unwrap_or_else(|err| panic!("{err}"));
+        record["exit"] = 0.into();
+        record["last_phase"] = "selecting".into();
+        write(&record);
+        let changed = render();
+        assert!(changed.starts_with(&format!("Running codex-alab {a_version}")));
+        assert!(changed.contains(&format!("Launch target: {b_version}")));
+        assert!(changed.contains(&format!("Launch source: {b_source}")));
+        assert!(changed.contains("historical channel attempt; selection has changed"));
+        assert!(changed.contains("completed (exit 0; last phase selecting)"));
+        assert!(changed.contains("Target matches current launch source"));
+        std::fs::remove_file(&route).unwrap_or_else(|err| panic!("{err}"));
+        std::os::unix::fs::symlink(&rebuilt, &route).unwrap_or_else(|err| panic!("{err}"));
+        let rebuilt_report = render();
+        assert!(rebuilt_report.contains(&format!("Launch source: {a_source}")));
+        assert!(!rebuilt_report.contains(&format!("Launch source: {b_source}")));
+        assert!(rebuilt_report.contains("historical channel attempt; selection has changed"));
+        assert!(rebuilt_report.contains("Target differs from current launch source"));
+
+        for (field, value) in [
+            ("schema", serde_json::json!(2)),
+            (
+                "when",
+                serde_json::json!("2000-01-01T00:00:00+00:00\nforged"),
+            ),
+            ("initial_package", serde_json::json!("../a")),
+            ("initial_source", serde_json::json!("not a source")),
+            ("initial_version", serde_json::json!("version\u{1b}[0m")),
+            ("target_source", serde_json::json!("/not/a/path/to/open")),
+            ("last_phase", serde_json::json!("unknown")),
+            ("complete", serde_json::json!(false)),
+            ("exit", serde_json::Value::Null),
+        ] {
+            let mut bad = record.clone();
+            bad[field] = value;
+            write(&bad);
+            assert!(
+                render().contains("Local channel last report: unavailable"),
+                "{field}"
+            );
+        }
+        let mut oversized = record.clone();
+        oversized["padding"] = "x".repeat(64 * 1024).into();
+        for bytes in [b"{".to_vec(), oversized.to_string().into_bytes()] {
+            std::fs::write(&path, bytes).unwrap_or_else(|err| panic!("{err}"));
+            assert!(render().contains("Local channel last report: unavailable"));
+        }
+        std::fs::remove_file(&path).unwrap_or_else(|err| panic!("{err}"));
+        let outside = dir.path().join("outside-record");
+        std::fs::write(&outside, record.to_string()).unwrap_or_else(|err| panic!("{err}"));
+        std::os::unix::fs::symlink(&outside, &path).unwrap_or_else(|err| panic!("{err}"));
+        assert!(render().contains("Local channel last report: unavailable"));
+        std::fs::remove_file(&path).unwrap_or_else(|err| panic!("{err}"));
+        let fifo = CString::new(path.as_os_str().as_bytes()).unwrap_or_else(|err| panic!("{err}"));
+        // SAFETY: fifo is a live NUL-terminated private path; no writer is created.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(render().contains("Local channel last report: unavailable"));
+        std::fs::remove_file(&path).unwrap_or_else(|err| panic!("{err}"));
+        std::fs::create_dir(&path).unwrap_or_else(|err| panic!("{err}"));
+        assert!(render().contains("Local channel last report: unavailable"));
+        std::fs::remove_dir(&path).unwrap_or_else(|err| panic!("{err}"));
+        write(&record);
+        let build_path = channel.join("a-rebuilt/alab-build.json");
+        for bytes in [
+            "{".to_owned(),
+            serde_json::json!({"source":"wrong","version":a_version}).to_string(),
+            serde_json::json!({"source":a_source,"version":b_version}).to_string(),
+        ] {
+            std::fs::write(&build_path, bytes).unwrap_or_else(|err| panic!("{err}"));
+            let unknown = render();
+            assert!(unknown.contains(&format!("Launch target: {a_version}")));
+            assert!(unknown.contains("Launch source: unavailable"));
+            assert!(!unknown.contains("Target matches current launch source"));
+            assert!(launch_target(&launch).is_some_and(|target| target.local_report.is_none()));
+        }
+        std::fs::remove_file(&build_path).unwrap_or_else(|err| panic!("{err}"));
+        let missing = render();
+        assert!(missing.contains(&format!("Launch target: {a_version}")));
+        assert!(missing.contains("Launch source: unavailable"));
+        assert!(!missing.contains("Target matches current launch source"));
+        assert_eq!(
+            std::fs::read_to_string(&outside).ok(),
+            Some(record.to_string())
+        );
+    }
+}
+
 /// How long children (MCP servers, mostly) get to leave after the teardown.
 pub const CHILDREN_GRACE: Duration = Duration::from_secs(2);
+/// A stopped event loop must not retain an unacknowledged handoff indefinitely.
+const HANDOFF_ACK_BUDGET: Duration = Duration::from_secs(60);
 
 /// A build: the file a path finally names, by identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,26 +696,29 @@ pub fn build_id(path: &Path) -> Option<BuildId> {
 /// The binary an atpkg shim execs: the last line `exec '<absolute path>' "$@"` of a
 /// `#!/bin/sh` script. Anything else names nothing.
 pub fn shim_target(script: &str) -> Option<PathBuf> {
-    if !script.starts_with("#!/bin/sh") {
+    // Match atpkg's exact interpreter line, not a prefix naming another interpreter.
+    if !script.starts_with("#!/bin/sh\n") {
         return None;
     }
     let last = script.lines().rev().find(|line| !line.trim().is_empty())?;
-    let quoted = last
-        .trim()
-        .strip_prefix("exec '")?
-        .strip_suffix("' \"$@\"")?;
-    if quoted.contains('\'') || !quoted.starts_with('/') {
+    let quoted = last.trim().strip_prefix("exec ")?.strip_suffix(" \"$@\"")?;
+    let path = crate::life::shell_value(quoted)?;
+    if !path.starts_with('/') {
         return None;
     }
-    Some(PathBuf::from(quoted))
+    Some(PathBuf::from(path))
 }
 
 /// The build `launch` names now: the file it resolves to, or the binary it execs when that
 /// file is an atpkg shim.
 pub fn named_build(launch: &Path) -> Option<PathBuf> {
+    const LIMIT: u64 = 64 * 1024;
     let resolved = std::fs::canonicalize(launch).ok()?;
-    let head = read_head(&resolved, 64 * 1024)?;
+    let head = read_head(&resolved, LIMIT + 1)?;
     if head.starts_with(b"#!") {
+        if head.len() > LIMIT as usize {
+            return None;
+        }
         let target = shim_target(std::str::from_utf8(&head).ok()?)?;
         return std::fs::canonicalize(target).ok();
     }
@@ -86,10 +727,44 @@ pub fn named_build(launch: &Path) -> Option<PathBuf> {
 
 fn read_head(path: &Path, limit: u64) -> Option<Vec<u8>> {
     use std::io::Read;
-    let file = std::fs::File::open(path).ok()?;
+    use std::os::unix::fs::OpenOptionsExt;
+    // A changed launch path must not park the monitor (or `/alab update`) on a FIFO.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
     let mut head = Vec::new();
     file.take(limit).read_to_end(&mut head).ok()?;
     Some(head)
+}
+
+#[cfg(test)]
+pub(crate) fn package_version(exe: &Path) -> Option<String> {
+    package_details(exe).map(|(_, version)| version)
+}
+
+fn package_details(exe: &Path) -> Option<(PathBuf, String)> {
+    let exe = std::fs::canonicalize(exe).ok()?;
+    exe.ancestors().skip(1).take(2).find_map(|root| {
+        let text = crate::life::read_managed_text(&root.join("codex-package.json"))?;
+        let manifest: serde_json::Value = serde_json::from_str(&text).ok()?;
+        if manifest.get("layoutVersion")?.as_u64()? != 1 {
+            return None;
+        }
+        let entry = Path::new(manifest.get("entrypoint")?.as_str()?);
+        let entry_path = root.join(entry);
+        if !crate::life::regular_entry_under(root, entry)
+            || std::fs::canonicalize(entry_path).ok()? != exe
+        {
+            return None;
+        }
+        let version = manifest.get("version")?.as_str()?;
+        report_text(version, 128).then(|| (root.to_path_buf(), version.to_owned()))
+    })
 }
 
 /// Whether `launch` now names a build other than `current` (a file that exists and is
@@ -106,7 +781,7 @@ pub fn names_other_build(launch: &Path, current: BuildId) -> bool {
 
 /// The trigger, for this process: its launch path names another build than it runs.
 pub fn launch_names_other_build(launch: &Launch) -> bool {
-    match (launch.argv0.as_deref(), launch.exe_id) {
+    match (launch.upgrade_path(), launch.exe_id) {
         (Some(argv0), Some((dev, ino))) => names_other_build(argv0, BuildId { dev, ino }),
         _ => false,
     }
@@ -130,10 +805,7 @@ pub fn plan_for(
     command: fn() -> clap::Command,
     thread: &str,
 ) -> Result<ExecPlan, String> {
-    let argv0 = launch
-        .argv0
-        .as_deref()
-        .ok_or("the launch path is unknown")?;
+    let argv0 = launch.upgrade_path().ok_or("the launch path is unknown")?;
     let argv0_str = argv0.to_str().ok_or("the launch path is not UTF-8")?;
     let argv = resume_argv::rebuild(command(), &launch.args, argv0_str, thread)
         .ok_or("the launch command line cannot be rewritten to resume")?;
@@ -152,6 +824,7 @@ pub fn plan_for(
 /// thread, whose rollout must be on disk (a resume cannot find it otherwise).
 pub fn exec_plan(shared: &Shared) -> Result<ExecPlan, String> {
     let launch = shared.launch().ok_or("no launch snapshot")?;
+    check_launch_cwd(launch.cwd.as_deref())?;
     let command = resume_argv::command().ok_or("codex's command line was not captured")?;
     let view = shared.view();
     let thread = view.primary_thread.as_deref().ok_or("no primary thread")?;
@@ -165,6 +838,32 @@ pub fn exec_plan(shared: &Shared) -> Result<ExecPlan, String> {
     plan_for(launch, command, thread)
 }
 
+/// Check without changing this process's directory: an unavailable launch directory
+/// holds the update while the existing session can still run. Search permission is
+/// enough for chdir; a directory need not be readable to remain a valid working directory.
+fn check_launch_cwd(cwd: Option<&Path>) -> Result<(), String> {
+    let cwd = cwd.ok_or("the launch working directory is unknown")?;
+    let unavailable = |err| {
+        format!(
+            "the launch working directory {} is unavailable: {err}",
+            cwd.display()
+        )
+    };
+    let metadata = std::fs::metadata(cwd).map_err(unavailable)?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "the launch working directory {} is not a directory",
+            cwd.display()
+        ));
+    }
+    let path = cstring(cwd.as_os_str().as_bytes())?;
+    // SAFETY: path is a live NUL-terminated string; access does not mutate process state.
+    if unsafe { libc::access(path.as_ptr(), libc::X_OK) } != 0 {
+        return Err(unavailable(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
 /// Leave like `/exit` so the exit path execs. `false` (and nothing pending) when the TUI
 /// never said how to leave.
 pub fn request(shared: &Shared) -> bool {
@@ -175,6 +874,31 @@ pub fn request(shared: &Shared) -> bool {
         shared.set_exec_pending(false);
         false
     }
+}
+
+/// Queue the upgrade's conditional event and wait for the TUI to accept it using its
+/// current native state. A cancelled waiter withdraws the queued request; its caller
+/// also invalidates the native generation before restoring any suspended act.
+pub async fn request_checked(
+    shared: &Shared,
+    commit: impl FnOnce() -> bool + Send + 'static,
+) -> bool {
+    let (answer, accepted) = tokio::sync::oneshot::channel();
+    let (request, cancellation) =
+        codex_alab_core::session::UpgradeRequest::new(move |native_ready| {
+            let committed = native_ready && commit();
+            let _ = answer.send(committed);
+            committed
+        });
+    if !shared.queue_upgrade(request) {
+        return false;
+    }
+    let result = matches!(
+        tokio::time::timeout(HANDOFF_ACK_BUDGET, accepted).await,
+        Ok(Ok(true))
+    );
+    drop(cancellation);
+    result
 }
 
 /// The exit path of an upgrade: exec the plan, or `_exit(1)` with the record kept.
@@ -270,8 +994,10 @@ fn exec(plan: &ExecPlan) -> String {
     argv_ptrs.push(std::ptr::null());
     let mut env_ptrs: Vec<*const libc::c_char> = env.iter().map(|e| e.as_ptr()).collect();
     env_ptrs.push(std::ptr::null());
-    if let Some(cwd) = &plan.cwd {
-        let _ = std::env::set_current_dir(cwd);
+    if let Some(cwd) = &plan.cwd
+        && let Err(err) = std::env::set_current_dir(cwd)
+    {
+        return format!("chdir {}: {err}", cwd.display());
     }
     reset_signals();
     // SAFETY: every pointer is a NUL-terminated string kept alive above, and both arrays
@@ -282,6 +1008,37 @@ fn exec(plan: &ExecPlan) -> String {
         plan.path.display(),
         std::io::Error::last_os_error()
     )
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    use super::*;
+
+    /// A directory can disappear after the preflight, while the TUI tears down.
+    /// The failed chdir must stop before exec, preserving the current process directory.
+    #[test]
+    fn a_directory_lost_during_teardown_never_falls_back_to_another_working_directory() {
+        let dir = tempfile::tempdir().unwrap_or_else(|err| panic!("{err}"));
+        let cwd = dir.path().join("work");
+        std::fs::create_dir(&cwd).unwrap_or_else(|err| panic!("{err}"));
+        assert!(check_launch_cwd(Some(&cwd)).is_ok());
+        std::fs::remove_dir(&cwd).unwrap_or_else(|err| panic!("{err}"));
+        let before = std::env::current_dir().unwrap_or_else(|err| panic!("{err}"));
+        let why = exec(&ExecPlan {
+            path: dir.path().join("unreached-executable"),
+            argv: vec!["unreached-executable".into()],
+            env: Vec::new(),
+            cwd: Some(cwd.clone()),
+        });
+        assert!(
+            why.starts_with(&format!("chdir {}:", cwd.display())),
+            "{why}"
+        );
+        assert_eq!(
+            std::env::current_dir().ok().as_deref(),
+            Some(before.as_path())
+        );
+    }
 }
 
 /// The new image starts as a launched process does: no signal blocked, and the signals a

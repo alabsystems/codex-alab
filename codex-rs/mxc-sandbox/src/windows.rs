@@ -21,8 +21,6 @@ use windows_sys::Win32::UI::Shell::FOLDERID_ProgramData;
 use windows_sys::Win32::UI::Shell::FOLDERID_ProgramFiles;
 use windows_sys::Win32::UI::Shell::FOLDERID_ProgramFilesX86;
 use windows_sys::Win32::UI::Shell::SHGetKnownFolderPath;
-use wxc_common::filesystem_object::ExistingObjectComparison;
-use wxc_common::filesystem_object::compare_existing_filesystem_objects;
 
 struct ComUninitializeGuard;
 
@@ -92,8 +90,8 @@ pub(super) fn volume_roots(
     Ok(volumes)
 }
 
-// Omit only implicit network roots whose object identity MXC cannot inspect.
-// Keep healthy shares and cwd volumes; explicit grants follow the normal path.
+// Default reads cover local volumes and cwd shares, not unrelated network shares.
+// Explicit grants follow the normal policy path.
 pub(super) fn implicit_read_roots(
     volume_roots: &[PathBuf],
     policy_cwd: &Path,
@@ -111,7 +109,6 @@ pub(super) fn implicit_read_roots(
             drive_type != DRIVE_REMOTE
                 || policy_cwd.starts_with(root)
                 || command_cwd.starts_with(root)
-                || compare_existing_filesystem_objects(root, root) == ExistingObjectComparison::Same
         })
         .map(PathUri::from_host_native_path)
         .collect()

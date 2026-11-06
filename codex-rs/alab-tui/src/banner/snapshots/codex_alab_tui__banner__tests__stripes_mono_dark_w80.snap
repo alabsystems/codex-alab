@@ -3,12 +3,20 @@ source: alab-tui/src/banner/tests.rs
 expression: review_text(&lines)
 ---
  0||
- 1|         ⋆             ✦              ∙               ▄██▄        ▄██▄    ✧|
- 2|    ▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀██▄██████████▄██|
- 3|    ▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀███  ██████  ███ ▄     ∙|
- 4|    ▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▀██████▄▄██████▀█▄|
- 5|    ▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀  ▀▀████████▀▀       ⋆|
- 6|  codex-alab  rainbow kitty · ALab build of OpenAI Codex · gabc1234|
+ 1|           ▄██▄        ▄██▄     codex-alab  v0.164.0-dev.12814|
+ 2|    ▀▀▀▀▀▀▀██▄██████████▄██     bloatware-free · nag-free · optimized for aterm|
+ 3|    ▀▀▀▀▀▀▀███  ██████  ███ ▄   Measured defaults vs Codex 0.164 · 2026-10-23|
+ 4|    ▀▀▀▀▀▀▀▀██████▄▄██████▀█▄   6× less memory · no daemon · 1 idle socket vs 5|
+ 5|    ▀▀▀▀▀▀▀  ▀▀████████▀▀       based on OpenAI Codex 0.163.0|
 --
-r6 [2..12) bold
-r6 [12..67) dim
+r1 [32..42) bold
+r1 [42..62) dim
+r2 [46..49) dim
+r2 [57..60) dim
+r3 [32..77) dim
+r4 [32..34) bold
+r4 [46..49) dim
+r4 [58..61) dim
+r4 [61..62) bold
+r4 [78..79) bold
+r5 [32..61) dim

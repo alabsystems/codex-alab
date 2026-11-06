@@ -455,6 +455,7 @@ impl ExternalAgentSessionImporter {
         };
         let now = Utc::now();
         let create_params = CreateThreadParams {
+            attached_thread: false,
             creator_user_id: None,
             creator_account_id: None,
             session_id: thread_id.into(),
@@ -535,7 +536,7 @@ impl ExternalAgentSessionImporter {
             agent_role: Some(source.get_agent_role()),
             agent_path: Some(source.get_agent_path().map(Into::into)),
             cwd: Some(cwd),
-            cli_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            cli_version: Some(codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string()), // ALAB(version): running executable identity
             first_user_message,
             memory_mode: Some(memory_mode),
             ..Default::default()

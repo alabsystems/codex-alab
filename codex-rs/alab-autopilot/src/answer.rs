@@ -3,29 +3,50 @@
 
 //! The box answer (CONTRACT §5 rows "question overlay" and "plan box"): pure, a box the
 //! TUI's glue reported and the policy in, a [`BoxDecision`] out. Mirrors aterm's
-//! `supervise/policy/question.rs` (`answer_by_role`: Codex's question is answered by its
-//! `(Recommended)` answer, else the first; an unmarked one that names a destructive act by
-//! its one refusal, else a person; an answer kept for every later ask, never) and
-//! `approval.rs` `plan_pick` (`plan-approve@v2`: the yes that grants no standing mode).
+//! `supervise/policy/question.rs` (`choose_one`, `answer_by_role`, `unmarked_pick`: Codex's
+//! question is answered by its `(Recommended)` answer, else [`unmarked_pick`]; an unmarked one
+//! whose own header or question names a destructive act by its one refusal, else a person; a
+//! kept option 1 is passed over for the first clean option, and an answer kept for every later
+//! ask is never taken) and `approval.rs` `plan_pick` (`plan-approve@v2`: the yes that grants
+//! no standing mode).
 //!
 //! - `questions=recommended`: each question's option marked `(Recommended)` (the tool's own
-//!   convention, `request_user_input_spec.rs`), else option 1. A question with no options
+//!   convention, `request_user_input_spec.rs`), else [`unmarked_pick`] (option 1 unless it
+//!   does a destructive act, keeps its answer, or approves what it does not say beside an
+//!   option that names an act, or another option declines an act). A question with no options
 //!   gets `answer_text` in its notes, or [`words::REVERSIBLE_ANSWER`] when it names a
 //!   destructive act (as a prose question does).
-//! - `long-term`/`short-term`: no option is chosen; the word's text goes in the notes, so the
-//!   worker decides (aterm writes it into the question's free-text row).
-//! - Under every word, an UNMARKED question naming a destructive act ([`words::
-//!   DESTRUCTIVE_WORDS`]) takes its one refusing option, or is left to a person.
+//! - `long-term`/`short-term`: no option is chosen unless the question is unmarked and names a
+//!   destructive act in its question or options (which falls back to the recommended option
+//!   picker); otherwise the word's text goes in the notes, so the worker decides (aterm writes
+//!   it into the question's free-text row).
+//! - Under every word, an UNMARKED question whose own header or question text names a
+//!   destructive act ([`words::DESTRUCTIVE_WORDS`]) takes its one refusing option (opening
+//!   with `No` or declining the act), or is left to a person; an unmarked question where an
+//!   option names an act only to decline it takes the one option that refuses every such act,
+//!   or is left to a person.
 //! - Left to a person (attention): `ask`, `answer_questions` off, a secret question, a person
-//!   who began answering, an answer kept for every later ask.
+//!   who began answering, a `(Recommended)` answer kept for every later ask, or an unmarked
+//!   question whose every option names a destructive act, keeps its answer, or approves what
+//!   it does not say beside an act.
 //! - The plan box: under `approve=all` only, its `Yes, implement this plan` row while
 //!   enabled; never `clear context`.
+//! - The goal box ("Resume paused goal?", which a resume opens over a goal that is not
+//!   active; left open, it held every act back for good, every root thread's), by why the
+//!   goal stopped, under every word: over a paused or a usage-limited goal its `Leave
+//!   paused`, which changes nothing (a person's pause stands; a usage resume owed goes once the
+//!   box is gone, and where the point owes none the turn end's own look raises `goal:`
+//!   attention, `extension::goal_left_to_person`), never `Resume goal`. A blocked goal, and one the
+//!   TUI said nothing of, are a person's (`goal: left to a person (...)`), as a blocked goal
+//!   is at a turn's end (`extension::goal_left_to_person`). The answer is no act of the task
+//!   ([`records_act`]).
 
 use codex_alab_core::boxes::BoxAnswer;
 use codex_alab_core::boxes::BoxKind;
 use codex_alab_core::boxes::BoxOption;
 use codex_alab_core::boxes::BoxQuestion;
 use codex_alab_core::boxes::Choice;
+use codex_alab_core::boxes::GoalStop;
 use codex_alab_core::boxes::OpenBox;
 
 use crate::decide::Policy;
@@ -38,12 +59,34 @@ pub const RULE_ANSWER_LONG_TERM: &str = "answer-long-term@v1";
 pub const RULE_ANSWER_SHORT_TERM: &str = "answer-short-term@v1";
 /// The plan box's yes (`approval.rs` `RULE_PLAN`).
 pub const RULE_PLAN: &str = "plan-approve@v2";
+/// The goal box's `Leave paused` (codex-alab's own: aterm's Claude Code lane meets no such box).
+pub const RULE_GOAL_LEAVE: &str = "goal-leave@v1";
+
+/// Whether an answer recorded under `rule` is an act of the task (`meta set harness_act`):
+/// every answer but the goal box's `Leave paused`, which types nothing and moves nothing,
+/// where aterm takes any act it does not know as work reopened (`self_claim_act_face`: a
+/// landed or `theirs` task would go back to open with nothing running). It is told and noted
+/// only.
+pub fn records_act(rule: &str) -> bool {
+    rule != RULE_GOAL_LEAVE
+}
 
 /// The plan box's row codex-alab accepts (`tui/src/chatwidget/plan_implementation.rs`).
 pub const PLAN_YES: &str = "Yes, implement this plan";
+/// The goal box's rows (`tui/src/chatwidget/goal_menu.rs`, pinned there by the chat glue's
+/// test): codex-alab answers only `Leave paused`.
+pub use codex_alab_tui::boxes::GOAL_LEAVE;
+pub use codex_alab_tui::boxes::GOAL_RESUME;
 
 /// The label suffix the `request_user_input` tool asks the model to mark its pick with.
 const RECOMMENDED: &str = "(recommended)";
+
+/// Ledger label when no option was marked and the first was taken (`question.rs` `CHOSE_UNMARKED`).
+pub const CHOSE_UNMARKED: &str = "no option is marked (Recommended): option 1";
+
+/// Ledger label when no option was marked and option 1 was passed over for the first option that
+/// names no destructive act and keeps no answer (`question.rs` `CHOSE_FIRST_SAFE`).
+pub const CHOSE_FIRST_SAFE: &str = "no option is marked (Recommended), and option 1 is passed over";
 
 /// The words of a standing answer, lowercased (aterm `aterm_phase::prompt::KEPT`).
 const KEPT: &[&str] = &[
@@ -57,6 +100,7 @@ const KEPT: &[&str] = &[
     "without asking",
     "never show",
     "from this project",
+    "persist to settings",
 ];
 
 /// What to do with an open box.
@@ -80,6 +124,7 @@ pub fn decide_box(open: &OpenBox, policy: &Policy) -> BoxDecision {
             questions, begun, ..
         } => question(&open.id, questions, begun.as_deref(), policy),
         BoxKind::Plan { rows } => plan(&open.id, rows, policy),
+        BoxKind::Goal { rows, stop } => goal(&open.id, rows, *stop),
         BoxKind::Approval { what, .. } => {
             // The contributor cleared this box against the owner's limits when it was asked;
             // the policy may have moved since.
@@ -176,35 +221,10 @@ fn one(q: &BoxQuestion, policy: &Policy) -> Result<(Choice, String), String> {
         };
         return Ok((Choice::Note(text), format!("{subject} → notes")));
     }
-    if marked.is_none()
-        && let Some(w) = destructive(q)
-    {
-        let refusing: Vec<usize> = q
-            .options
-            .iter()
-            .enumerate()
-            .filter(|(_, o)| {
-                refuses(&o.label) && words::destructive_word(&o.label.to_lowercase()).is_none()
-            })
-            .map(|(at, _)| at)
-            .collect();
-        return match refusing.as_slice() {
-            [at] => {
-                let o = &q.options[*at];
-                kept(o)?;
-                Ok((
-                    Choice::Option(*at),
-                    format!("{subject} → {} (it would {w}: its one refusal)", o.label),
-                ))
-            }
-            _ => Err(format!(
-                "a question ({subject}) with no recommended option that would {w}, and no \
-                 one option that refuses it: a person answers that"
-            )),
-        };
-    }
     match policy.questions {
-        Questions::LongTerm | Questions::ShortTerm => {
+        Questions::LongTerm | Questions::ShortTerm
+            if marked.is_some() || destructive(q).is_none() =>
+        {
             let text = if policy.questions == Questions::LongTerm {
                 words::LONG_TERM_TEXT
             } else {
@@ -215,21 +235,36 @@ fn one(q: &BoxQuestion, policy: &Policy) -> Result<(Choice, String), String> {
                 format!("{subject} → the policy text (the worker decides)"),
             ))
         }
-        Questions::Recommended | Questions::Ask => {
-            let at = marked.unwrap_or(0);
-            let o = &q.options[at];
-            kept(o)?;
-            let how = if marked.is_some() {
-                "its recommended option"
-            } else {
-                "no option is marked (Recommended): option 1"
-            };
-            Ok((
-                Choice::Option(at),
-                format!("{subject} → {} ({how})", o.label),
-            ))
+        Questions::LongTerm | Questions::ShortTerm | Questions::Recommended | Questions::Ask => {
+            choose_option(q, subject, marked)
         }
     }
+}
+
+fn choose_option(
+    q: &BoxQuestion,
+    subject: &str,
+    marked: Option<usize>,
+) -> Result<(Choice, String), String> {
+    if let Some(at) = marked {
+        let o = &q.options[at];
+        kept(o)?;
+        return Ok((
+            Choice::Option(at),
+            format!("{subject} → {} (its recommended option)", o.label),
+        ));
+    }
+    if let Some(w) = asks_to(q) {
+        return the_refusal(w, subject, &q.options);
+    }
+    unmarked_pick(subject, &q.options)
+}
+
+/// The destructive word the question's own header or question text names: an act every answer
+/// to it bears on (aterm `question.rs` `asks_to`, `answer_by_role`).
+fn asks_to(q: &BoxQuestion) -> Option<&'static str> {
+    let asked = format!("{}\n{}", q.header, q.question).to_lowercase();
+    words::destructive_word(&asked)
 }
 
 /// The destructive word a question names in its header, question, labels or descriptions.
@@ -244,9 +279,271 @@ fn destructive(q: &BoxQuestion) -> Option<&'static str> {
     words::destructive_word(&text)
 }
 
+/// How one option's own words bear on a destructive act ([`words::destructive_word`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Bears {
+    /// The first act its words name outside a negation: what taking it would do.
+    pub(crate) does: Option<&'static str>,
+    /// The acts its words name only under a negation (`Don't drop the staging table`, `Do not
+    /// delete any branch`, `nothing gets removed`): acts it declines, which the dialog's other
+    /// options may then do.
+    pub(crate) declines: Vec<&'static str>,
+}
+
+/// Where one clause of an option's words ends: a negation reaches no further.
+const CLAUSE_ENDS: &[char] = &[
+    '\n', ',', ';', ':', '.', '!', '?', '(', ')', '[', ']', '"', '—', '–',
+];
+
+/// Words that negate the act right after them (with any word ending `n't`).
+const NEGATORS: &[&str] = &[
+    "no", "not", "never", "without", "nothing", "none", "nor", "neither", "dont", "cannot",
+];
+
+/// Words a negation reaches across to its act (`do not ever delete`, `nothing gets removed`,
+/// `don't delete or drop`); any other word between them ends its reach.
+const NEGATION_REACHES: &[&str] = &[
+    "is", "are", "was", "were", "be", "been", "being", "will", "would", "should", "gets", "get",
+    "got", "to", "ever", "any", "anything", "or",
+];
+
+fn negates(word: &str) -> bool {
+    NEGATORS.contains(&word) || word.ends_with("n't")
+}
+
+/// The destructive act that starts at `words[k]`: the word itself, or it and the next where the
+/// act is two words (`rewrite history`, `push -f`).
+fn act_at(words: &[&str], k: usize) -> Option<&'static str> {
+    words::destructive_word(words[k]).or_else(|| {
+        let next = words.get(k + 1)?;
+        words::destructive_word(next)
+            .is_none()
+            .then(|| words::destructive_word(&format!("{} {next}", words[k])))
+            .flatten()
+    })
+}
+
+/// Whether the act at `words[k]` is negated: a negator before it, with only
+/// [`NEGATION_REACHES`] words and other acts between them.
+fn negated(words: &[&str], k: usize) -> bool {
+    (0..k)
+        .rev()
+        .find(|&i| !(NEGATION_REACHES.contains(&words[i]) || act_at(words, i).is_some()))
+        .is_some_and(|i| negates(words[i]))
+}
+
+/// What one option's own label and description do and decline ([`Bears`]).
+pub(crate) fn bears(label: &str, description: &str) -> Bears {
+    let text = format!("{label}\n{description}")
+        .to_lowercase()
+        .replace('\u{2019}', "'");
+    let mut read = Bears::default();
+    for clause in text.split(CLAUSE_ENDS) {
+        let words: Vec<&str> = clause
+            .split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '-'))
+            .map(|w| w.trim_matches('\''))
+            .filter(|w| !w.is_empty())
+            .collect();
+        for k in 0..words.len() {
+            let Some(act) = act_at(&words, k) else {
+                continue;
+            };
+            if negated(&words, k) {
+                if !read.declines.contains(&act) {
+                    read.declines.push(act);
+                }
+            } else if read.does.is_none() {
+                read.does = Some(act);
+            }
+        }
+    }
+    if read.does.is_none() && read.declines.is_empty() {
+        read.does = words::destructive_word(&text);
+    }
+    read
+}
+
+/// Label openings that approve without saying what: their act is whatever the rest of the dialog
+/// names (`Yes`, `Go ahead`, `As planned`, `Both of the above`).
+const ASSENTS: &[&str] = &[
+    "yes",
+    "ok",
+    "okay",
+    "sure",
+    "go ahead",
+    "proceed",
+    "continue",
+    "approve",
+    "confirm",
+    "accept",
+    "do it",
+    "sounds good",
+    "as planned",
+    "as proposed",
+    "as described",
+    "as above",
+    "both",
+    "all of",
+    "all the above",
+];
+
+/// Words anywhere in an option that point at an act named elsewhere.
+const POINTS_ELSEWHERE: &[&str] = &[
+    "as planned",
+    "as proposed",
+    "as described",
+    "described above",
+    "the above",
+    "go ahead",
+    "proceed with",
+    "the plan",
+];
+
+/// Whether one option approves what it does not say ([`ASSENTS`], [`POINTS_ELSEWHERE`]).
+fn approves_unsaid(label: &str, description: &str) -> bool {
+    let l = label.trim().to_lowercase().replace('\u{2019}', "'");
+    let opens = ASSENTS.iter().any(|a| {
+        l.strip_prefix(a)
+            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric()))
+    });
+    let text = format!(
+        "{l}\n{}",
+        description.to_lowercase().replace('\u{2019}', "'")
+    );
+    opens || POINTS_ELSEWHERE.iter().any(|p| text.contains(p))
+}
+
+struct OptionReading {
+    bears: Bears,
+    kept: bool,
+    refuses: bool,
+    unsaid: bool,
+}
+
+fn read_options(options: &[BoxOption]) -> Vec<OptionReading> {
+    options
+        .iter()
+        .map(|o| OptionReading {
+            bears: bears(&o.label, &o.description),
+            kept: kept(o).is_err(),
+            refuses: refuses(&o.label),
+            unsaid: approves_unsaid(&o.label, &o.description),
+        })
+        .collect()
+}
+
+pub(crate) fn declined(act: &str) -> String {
+    format!(
+        "no option is marked (Recommended), and an option names `{act}` only to decline it, so \
+         the others may {act}: its one refusal"
+    )
+}
+
+/// The one option that refuses `w`, the act the question's own header or question text names:
+/// it opens with `No` or names `w` only to decline it, and names no act it would do ([`Bears`]).
+fn the_refusal(
+    w: &'static str,
+    subject: &str,
+    options: &[BoxOption],
+) -> Result<(Choice, String), String> {
+    let reads = read_options(options);
+    let refusing: Vec<usize> = reads
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.bears.does.is_none() && (r.refuses || r.bears.declines.contains(&w)))
+        .map(|(at, _)| at)
+        .collect();
+    match refusing.as_slice() {
+        [at] => {
+            let o = &options[*at];
+            kept(o)?;
+            Ok((
+                Choice::Option(*at),
+                format!("{subject} → {} (it would {w}: its one refusal)", o.label),
+            ))
+        }
+        _ => Err(format!(
+            "a question ({subject}) with no recommended option that would {w}, and no \
+             one option that refuses it: a person answers that"
+        )),
+    }
+}
+
+/// The option an unmarked question is answered with, where its own header and question text
+/// name no destructive act ([`asks_to`]), and how it was chosen (aterm `question.rs`
+/// `unmarked_pick`).
+fn unmarked_pick(subject: &str, options: &[BoxOption]) -> Result<(Choice, String), String> {
+    let reads = read_options(options);
+    let Some(first) = reads.first() else {
+        return Err(format!("a question ({subject}) with no option to answer"));
+    };
+    let mut in_play: Vec<&'static str> = Vec::new();
+    for act in reads.iter().flat_map(|r| r.bears.declines.iter().copied()) {
+        if !in_play.contains(&act) {
+            in_play.push(act);
+        }
+    }
+    if let Some(&act) = in_play.first() {
+        let refusing: Vec<usize> = reads
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                r.bears.does.is_none()
+                    && !r.kept
+                    && (r.refuses || in_play.iter().all(|a| r.bears.declines.contains(a)))
+            })
+            .map(|(k, _)| k)
+            .collect();
+        return match refusing.as_slice() {
+            [k] => Ok((
+                Choice::Option(*k),
+                format!("{subject} → {} ({})", options[*k].label, declined(act)),
+            )),
+            _ => Err(format!(
+                "a question ({subject}) with no recommended option where an option names `{act}` \
+                 only to decline it, so the others may {act}, and no one option that refuses it: \
+                 a person answers that"
+            )),
+        };
+    }
+    let named = reads.iter().find_map(|r| r.bears.does);
+    let takes =
+        |r: &OptionReading| r.bears.does.is_none() && !r.kept && !(named.is_some() && r.unsaid);
+    if takes(first) {
+        return Ok((
+            Choice::Option(0),
+            format!("{subject} → {} ({CHOSE_UNMARKED})", options[0].label),
+        ));
+    }
+    let why = match (first.bears.does, named) {
+        (Some(w), _) => format!("would {w}"),
+        _ if first.kept => "keeps its answer for every later ask".to_string(),
+        (None, Some(w)) => {
+            format!("approves what it does not say, beside an option that would {w}")
+        }
+        (None, None) => "cannot be taken".to_string(),
+    };
+    let Some(k) = reads.iter().position(takes) else {
+        return Err(format!(
+            "a question ({subject}) with no recommended option whose every option names a \
+             destructive act, keeps its answer or approves what it does not say (option 1 \
+             {why}), and no one option that refuses it: a person answers that"
+        ));
+    };
+    let how = format!(
+        "{CHOSE_FIRST_SAFE}: option 1 {why}, so option {}, the first that names no destructive \
+         act and keeps no answer",
+        k + 1
+    );
+    Ok((
+        Choice::Option(k),
+        format!("{subject} → {} ({how})", options[k].label),
+    ))
+}
+
 /// aterm `question.rs` `refuses`: `No` itself, or `No` then a separator; never a word that
 /// starts with it (`None of these`, `Not now`, `Now`).
-fn refuses(label: &str) -> bool {
+pub(crate) fn refuses(label: &str) -> bool {
     let l = label.trim().to_lowercase();
     l.strip_prefix("no")
         .is_some_and(|rest| rest.chars().next().is_none_or(|c| !c.is_alphanumeric()))
@@ -284,5 +581,33 @@ fn plan(id: &str, rows: &[(String, Option<String>)], policy: &Policy) -> BoxDeci
         },
         rule: RULE_PLAN,
         words: format!("selected \"{PLAN_YES}\" (approve=all)"),
+    }
+}
+
+fn goal(id: &str, rows: &[String], stop: Option<GoalStop>) -> BoxDecision {
+    let stopped = match stop {
+        Some(GoalStop::Paused) => "paused",
+        Some(GoalStop::UsageLimited) => "usage-limited",
+        Some(GoalStop::Blocked) => {
+            return BoxDecision::Leave(
+                "the goal is blocked; a person decides how it goes on".to_string(),
+            );
+        }
+        None => {
+            return BoxDecision::Leave(
+                "the TUI did not say why the goal stopped; a person decides".to_string(),
+            );
+        }
+    };
+    let Some(row) = rows.iter().position(|label| label == GOAL_LEAVE) else {
+        return BoxDecision::Leave(format!("the goal box has no `{GOAL_LEAVE}`"));
+    };
+    BoxDecision::Answer {
+        answer: BoxAnswer::Goal {
+            id: id.to_string(),
+            row,
+        },
+        rule: RULE_GOAL_LEAVE,
+        words: format!("selected \"{GOAL_LEAVE}\" over a {stopped} goal: it stays as it was"),
     }
 }

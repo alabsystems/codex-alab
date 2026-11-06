@@ -25,7 +25,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SessionSource;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSource;
@@ -96,6 +96,8 @@ impl App {
         app_server_client: &AppServerSession,
         event: AppServerEvent,
     ) {
+        codex_alab_tui::upgrade::native_event(); // ALAB(upgrade): late goal, background-task and thread notifications invalidate the handoff.
+        super::alab_session::stream(self, app_server_client.backend_id(), &event); // ALAB(turns): a turn's end and a thread's close reach the seen book before any routing return; a lag or a disconnect lets only that backend's seen turns go.
         match event {
             AppServerEvent::Lagged { skipped } => {
                 tracing::warn!(
@@ -147,6 +149,12 @@ impl App {
                 self.repaint_agents_overview();
             }
             AppServerEvent::Disconnected { message } => {
+                // The request result distinguishes a refused start from a lost reply.
+                if self.pending_startup_thread_start
+                    && !matches!(self.app_server_target, crate::AppServerTarget::Embedded)
+                {
+                    return;
+                }
                 if self.begin_reconnect() {
                     return;
                 }
@@ -160,8 +168,18 @@ impl App {
     async fn handle_server_notification_event(
         &mut self,
         app_server_client: &AppServerSession,
-        notification: ServerNotification,
+        mut notification: ServerNotification,
     ) {
+        if let ServerNotification::TurnModerationMetadata(metadata) = &mut notification
+            && (!super::safety_recourse::supports_server(app_server_client)
+                || self
+                    .primary_thread_id
+                    .is_none_or(|id| id.to_string() != metadata.thread_id))
+            && let Some(metadata) = metadata.metadata.as_object_mut()
+        {
+            metadata.remove("safety_block");
+            metadata.remove("safety_recourse");
+        }
         // A picker can leave an old runtime's close notification queued while the same thread
         // is resumed. Thread IDs survive reloads, so confirm that the displayed thread is still
         // unloaded before routing a close that would exit the TUI or switch away from it.
@@ -368,6 +386,7 @@ impl App {
                 return;
             }
             ServerNotification::AccountUpdated(notification) => {
+                self.alab_cancel_account_email_read(); // ALAB(interface): abort the previous identity's retry before adopting a new account.
                 self.agents_overview.usage.clear();
                 self.agents_overview.pending_usage = None;
                 self.agents_overview.usage_disabled = false;
@@ -434,6 +453,7 @@ impl App {
                 let cwd = self.chat_widget.config_ref().cwd.to_path_buf();
                 self.chat_widget.refresh_plugin_mentions();
                 self.chat_widget.submit_op(AppCommand::reload_user_config());
+                if codex_alab_tui::reload_skills_after_import() { self.chat_widget.submit_op(AppCommand::list_skills(vec![cwd.clone()], /*force_reload*/ true)); } // ALAB(skills-watch): an import can create the ~/.agents/skills no watch follows, so the list reloads as a SkillsChanged would
                 self.fetch_plugins_list(app_server_client, cwd);
                 if should_report_completion {
                     self.chat_widget.add_plain_history_lines(
@@ -463,10 +483,10 @@ impl App {
             ServerNotificationThreadTarget::Thread(thread_id) => {
                 if self.current_displayed_thread_id() != Some(thread_id)
                     && let ServerNotification::ItemCompleted(item) = &notification
-                    && let ThreadItem::UserMessage {
+                    && let ThreadItemPayload::UserMessage {
                         client_id: Some(client_id),
                         ..
-                    } = &item.item
+                    } = &item.item.payload
                 {
                     // Acknowledge by ID before routing can discard the receipt. ID-less receipts
                     // cannot safely distinguish identical pending submissions.
@@ -507,6 +527,7 @@ impl App {
                 {
                     return;
                 }
+                super::alab_backend_bookkeeping::routed(self, app_server_client.backend_id(), &notification); // ALAB(turns): every routed thread's turn is booked for the OSC 7501 report, a sub-agent's and a remote server's too (alab-tui/src/turns.rs)
                 let result = if self.primary_thread_id.is_none() && !background_voice {
                     self.enqueue_primary_thread_notification(notification).await
                 } else {
@@ -614,9 +635,10 @@ impl App {
             return;
         }
         if let ServerRequest::DynamicToolCall { request_id, params } = &request {
+            let tui_tool = params.namespace.as_deref() == Some(crate::dynamic_tools::NAMESPACE);
+            // Another client may own this request on a shared server.
             if self.dynamic_tool_tasks.contains_key(request_id)
-                || (params.namespace.as_deref() != Some(crate::dynamic_tools::NAMESPACE)
-                    && !app_server_client.uses_embedded_app_server())
+                || (!tui_tool && !app_server_client.uses_embedded_app_server())
             {
                 return;
             }
@@ -627,7 +649,7 @@ impl App {
                     app_server_client.thread_tool_transport(),
                     crate::dynamic_tools_mcp::ThreadToolTransport::Mcp(_)
                 );
-            if app_server_client.uses_embedded_app_server()
+            if !tui_tool
                 || requires_mcp
                 || codex_protocol::ThreadId::from_string(&params.thread_id)
                     .is_ok_and(|thread_id| self.abandoned_side_threads.contains(&thread_id))
@@ -635,7 +657,7 @@ impl App {
                 let response = crate::dynamic_tools::failure_response(if requires_mcp {
                     "TUI task tools require the approval-gated MCP server"
                 } else {
-                    "TUI dynamic tools require an active external task"
+                    "TUI dynamic tools require an active task in the TUI namespace"
                 });
                 self.app_event_tx.send(AppEvent::DynamicToolCallCompleted {
                     request_id: request_id.clone(),

@@ -170,8 +170,8 @@ pub fn parse_frame(line: &str, local: &str) -> Option<Event> {
             let payload = parts.collect::<Vec<_>>().join(" ");
             let fields = wire::parse_fields(&payload);
             Some(Event::Mail {
-                id: fields.get("id").and_then(|v| v.parse().ok()),
-                off: fields.get("off").and_then(|v| v.parse().ok()),
+                id: fields.get("id").and_then(|v| wire::canonical_u64(v)),
+                off: fields.get("off").and_then(|v| wire::canonical_u64(v)),
                 from: wire::field(&fields, "from"),
                 kind: wire::field(&fields, "kind"),
             })
@@ -196,7 +196,7 @@ fn parse_event(kind: &str, payload: &str, line: &str) -> Event {
             None => Event::Other(line.to_string()),
         },
         "harness-policy" => Event::HarnessPolicy {
-            generation: fields.get("gen").and_then(|g| g.parse().ok()),
+            generation: fields.get("gen").and_then(|g| wire::canonical_u64(g)),
         },
         "human" => Event::Human,
         "agent" => Event::Agent {

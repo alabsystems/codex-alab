@@ -31,6 +31,7 @@ pub(super) fn should_delay_startup_composer_for_first_login(
             .is_some_and(|value| !value.trim().is_empty())
     }) || environment_variable(OPENAI_FEDERATION_RULE_ID_ENV_VAR).is_some()
         || environment_variable(OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR).is_some()
+        || codex_alab_core::home::has_auth_override_with(codex_alab_core::is_alab_binary(), &environment_variable) // ALAB(auth-path): existing per-account auth file keeps startup composer visible
     {
         return false;
     }

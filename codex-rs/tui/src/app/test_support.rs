@@ -48,6 +48,7 @@ pub(crate) async fn make_test_app() -> Box<App> {
         native_history: Default::default(),
         turn_tips: Default::default(),
         transcript_view: Default::default(),
+        conversation_frame: Default::default(),
         last_rendered_history_tail: None,
         last_thread_usage_status_cell: None,
         pending_thread_usage_history_refresh: false,
@@ -121,6 +122,8 @@ pub(crate) async fn make_test_app() -> Box<App> {
         startup_protected_input_boundary: false,
         startup_pending_protected_request: false,
         account_email_request_id: None,
+        alab_account_identity: Default::default(), // ALAB(interface): isolate identity recovery in native App fixtures.
+        alab_backend_bookkeeping: Default::default(), // ALAB(turns): start native App fixtures with no observed backend turns.
         rate_limit_hard_stop_generation: 0,
         rate_limit_refresh_state: Default::default(),
         pending_mcp_login_start: None,

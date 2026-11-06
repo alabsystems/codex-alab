@@ -15,6 +15,23 @@ use std::time::Duration;
 
 use crate::wire;
 
+/// THE TEXTS aterm's own loop would type for this session under FOREVER CRUISE / FOREVER
+/// LAND, each composed with the standing rules as aterm composes it (additive keys after
+/// `questions=`): the Cruise defend prompt without its per-point suffixes (its first angle's
+/// act), the land instruction, the land nudge, the land answer, the NEEDS YOU hint and its ack;
+/// then, bare, Cruise's six angles one to a line and the words that follow each (aterm's
+/// `ACT_TEXT_KEYS`; an older aterm sends neither). [`HarnessPolicy::text`] reads one.
+pub const TEXT_KEYS: [&str; 8] = [
+    "done_check_text",
+    "land_text",
+    "land_nudge_text",
+    "land_answer_text",
+    "needs_hint_text",
+    "needs_ack_text",
+    "done_check_angles",
+    "done_check_tail",
+];
+
 /// What `harness policy` answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyAnswer {
@@ -91,7 +108,7 @@ impl PolicyAnswer {
             return PolicyAnswer::Unsupported(line.to_string());
         };
         let mut fields = wire::parse_fields(rest);
-        let generation = fields.remove("gen").and_then(|g| g.parse::<u64>().ok());
+        let generation = fields.remove("gen").and_then(|g| wire::canonical_u64(&g));
         let effective = fields.remove("effective");
         let (Some(generation), Some(effective)) = (generation, effective) else {
             return PolicyAnswer::Unsupported(line.to_string());
@@ -141,6 +158,12 @@ impl HarnessPolicy {
         self.get("answer_text").filter(|t| !t.trim().is_empty())
     }
 
+    /// One of [`TEXT_KEYS`], as aterm composed it; `None` where it is missing or blank (an
+    /// aterm before the keys): the caller types its verbatim copy of aterm's words instead.
+    pub fn text(&self, key: &str) -> Option<&str> {
+        self.get(key).filter(|t| !t.trim().is_empty())
+    }
+
     /// `questions=`, resolved by aterm; unknown or missing reads [`Questions::Ask`].
     pub fn questions(&self) -> Questions {
         match self.get("questions").map(str::trim) {
@@ -185,11 +208,12 @@ impl HarnessPolicy {
     pub fn continue_per_hour(&self) -> Option<u32> {
         match self
             .get("continue_per_hour")
-            .map(|v| v.trim().parse::<u32>())
+            .and_then(|v| wire::canonical_u64(v.trim()))
+            .and_then(|n| u32::try_from(n).ok())
         {
-            Some(Ok(0)) => None,
-            Some(Ok(n)) => Some(n),
-            _ => Some(0),
+            Some(0) => None,
+            Some(n) => Some(n),
+            None => Some(0),
         }
     }
 
@@ -197,7 +221,7 @@ impl HarnessPolicy {
     pub fn human_grace(&self) -> Duration {
         let secs = self
             .get("human_grace_s")
-            .and_then(|v| v.trim().parse::<u64>().ok())
+            .and_then(|v| wire::canonical_u64(v.trim()))
             .unwrap_or(3600);
         Duration::from_secs(secs)
     }

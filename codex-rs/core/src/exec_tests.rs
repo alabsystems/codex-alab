@@ -1503,12 +1503,7 @@ async fn process_exec_tool_call_cancellation_allows_sigterm_cleanup() -> Result<
     let command = vec![
         "/bin/sh".to_string(),
         "-c".to_string(),
-        r#"(trap '' TERM; sleep 60) &
-printf '%s' "$!" > "$DESCENDANT_PID_MARKER"
-trap 'printf cleaned > "$CLEANUP_MARKER"; exit 0' TERM
-printf ready > "$READY_MARKER"
-while :; do sleep 1; done"#
-            .to_string(),
+        crate::alab_test_fixtures::SIGTERM_CLEANUP_SCRIPT.to_string(), // ALAB(core-test-fixtures): publish a resistant child before ready and interrupt the parent's builtin wait.
     ];
     let cwd = codex_utils_absolute_path::AbsolutePathBuf::current_dir()?;
     let mut env: HashMap<String, String> = std::env::vars().collect();
@@ -1526,11 +1521,25 @@ while :; do sleep 1; done"#
     );
     let cancel_token = CancellationToken::new();
     let cancel_tx = cancel_token.clone();
+    let clock_paused = std::cell::Cell::new(false);
     let cancel_when_ready = async {
         while !ready_marker.exists() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        // Exercise the TERM trap without requiring the OS to schedule the shell
+        // within the production grace period. Keep this future runnable so the
+        // paused clock cannot auto-advance while the real process handles TERM.
+        tokio::time::pause();
+        clock_paused.set(true);
         cancel_tx.cancel();
+        let cleanup_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !matches!(
+            std::fs::read_to_string(&cleanup_marker).as_deref(),
+            Ok("cleaned")
+        ) && std::time::Instant::now() < cleanup_deadline
+        {
+            tokio::task::yield_now().await;
+        }
     };
     let params = ExecParams {
         command,
@@ -1567,6 +1576,9 @@ while :; do sleep 1; done"#
         }
     })
     .await;
+    if clock_paused.get() {
+        tokio::time::resume();
+    }
     if result.is_err() {
         cancel_tx.cancel();
         let _ = execution.await;

@@ -1,0 +1,104 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+# Producer data, never executed: atpkg platform::twin_prelude for codex.
+# Captured Store primary SHA256 b696f5c449746a031fecaac56200a16f646269d7c17d368fbe87d399d8e056ee.
+# Only the quoted atpkg and prefix bindings are holes; comments are not authority.
+# atpkg: `codex update` is answered by `atpkg __selfupdate` — aterm updates this copy from its vendor and verifies every build here (aterm help pkg).
+case "$1" in
+  update)
+    __atpkg={{ATPKG}}
+    if [ -x "$__atpkg" ] && [ "${__ATPKG_SELFUPDATE_PID-}" != "$$" ]; then __ATPKG_SELFUPDATE_PID=$$ exec "$__atpkg" __selfupdate 'codex' {{PREFIX}} -- "$@"; fi
+    ;;
+esac
+# atpkg: yolo by default — this name runs codex with every approval and sandbox off ('--dangerously-bypass-approvals-and-sandbox'); `--yolo` ahead of a literal `--` spells the same, a launch that types its own posture runs as typed, and the command as run is printed on stderr (aterm help pkg).
+__atpkg_no_harness=0
+__atpkg_nh_stop=0
+__atpkg_n=$#
+while [ "$__atpkg_n" -gt 0 ]; do
+  __atpkg_n=$((__atpkg_n - 1))
+  if [ "$__atpkg_nh_stop" = 0 ] && { [ "$1" = "--no-harness" ] || [ "$1" = "--no-alab-harness" ]; }; then
+    __atpkg_no_harness=1
+    shift
+  else
+    if [ "$1" = "--" ]; then __atpkg_nh_stop=1; fi
+    set -- "$@" "$1"
+    shift
+  fi
+done
+if [ "$__atpkg_no_harness" = 1 ]; then ATERM_NO_HARNESS=1; export ATERM_NO_HARNESS; fi
+__atpkg_yolo=0
+__atpkg_posture=0
+__atpkg_have_word=0
+__atpkg_word=
+__atpkg_word_at=0
+__atpkg_word_ok=1
+__atpkg_p0=0
+for __atpkg_a in "$@"; do
+  case "$__atpkg_a" in
+    --) break ;;
+    --yolo) __atpkg_yolo=1 ;;
+    '--dangerously-bypass-approvals-and-sandbox') __atpkg_p0=1; __atpkg_posture=1 ;;
+    '--sandbox'|'--sandbox='*|'--sandbox='*|'-s'*|'--ask-for-approval'|'--ask-for-approval='*|'--ask-for-approval='*|'-a'*|'--approve-for-me'|'--approve-for-me='*|'--config'|'--config='*|'--config='*|'-c'*|'--profile'|'--profile='*|'--profile='*|'-p'*) __atpkg_posture=1 ;;
+  esac
+done
+__atpkg_at=0
+__atpkg_value=0
+for __atpkg_a in "$@"; do
+  __atpkg_at=$((__atpkg_at + 1))
+  if [ "$__atpkg_a" = "--" ]; then break; fi
+  if [ "$__atpkg_value" = 1 ]; then __atpkg_value=0; continue; fi
+  case "$__atpkg_a" in
+    '--yolo'|'--dangerously-bypass-approvals-and-sandbox'|'--oss'|'--worktree'|'--search'|'--no-alt-screen'|'--strict-config'|'--no-daemon') ;;
+    '--model'|'-m'|'--cd'|'-C'|'--add-dir'|'--local-provider') __atpkg_value=1 ;;
+    '--model'|'--model='*|'-m'*|'--cd'|'--cd='*|'-C'*|'--add-dir'|'--add-dir='*|'--local-provider'|'--local-provider='*) ;;
+    -*) __atpkg_word_ok=0; break ;;
+    *) __atpkg_have_word=1; __atpkg_word=$__atpkg_a; __atpkg_word_at=$__atpkg_at; break ;;
+  esac
+done
+if [ "$__atpkg_value" = 1 ]; then __atpkg_word_ok=0; fi
+__atpkg_say=
+if [ "$__atpkg_yolo" = 1 ]; then
+  __atpkg_say="aterm: --yolo: running 'codex'"
+  __atpkg_stop=0
+  __atpkg_at=0
+  __atpkg_n=$#
+  while [ "$__atpkg_n" -gt 0 ]; do
+    __atpkg_n=$((__atpkg_n - 1))
+    __atpkg_at=$((__atpkg_at + 1))
+    if [ "$__atpkg_stop" = 0 ] && [ "$1" = "--yolo" ]; then
+      shift
+      if [ "$__atpkg_p0" = 0 ]; then __atpkg_p0=1; set -- "$@" '--dangerously-bypass-approvals-and-sandbox'; fi
+    else
+      if [ "$1" = "--" ]; then __atpkg_stop=1; fi
+      set -- "$@" "$1"
+      shift
+    fi
+  done
+elif [ "$__atpkg_posture" = 0 ] && [ "$__atpkg_word_ok" = 1 ]; then
+  if [ "$__atpkg_have_word" = 1 ]; then
+    case "$__atpkg_word" in
+      'resume'|'fork'|'update') ;;
+      *) __atpkg_say="aterm: yolo (default): running 'codex'" ;;
+    esac
+  else
+    __atpkg_say="aterm: yolo (default): running 'codex'"
+  fi
+  if [ -n "$__atpkg_say" ]; then
+    set -- '--dangerously-bypass-approvals-and-sandbox' "$@"
+  fi
+fi
+if [ -n "$__atpkg_say" ]; then
+  printf '%s' "$__atpkg_say" 1>&2
+  for __atpkg_a in "$@"; do
+    printf " '" 1>&2
+    __atpkg_rest=$__atpkg_a
+    while case "$__atpkg_rest" in *"'"*) true ;; *) false ;; esac; do
+      printf '%s' "${__atpkg_rest%%"'"*}" 1>&2
+      printf '%s' "'\\''" 1>&2
+      __atpkg_rest=${__atpkg_rest#*"'"}
+    done
+    printf '%s' "$__atpkg_rest" 1>&2
+    printf "'" 1>&2
+  done
+  printf '\n' 1>&2
+fi

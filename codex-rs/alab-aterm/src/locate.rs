@@ -24,9 +24,10 @@ use std::path::Path;
 use std::path::PathBuf;
 
 /// The environment variable naming the aterm session hosting this terminal.
-pub const SELF_SID_ENV: &str = "ATERM_PARENT_SESSION_ID";
+pub const SELF_SID_ENV: &str = codex_alab_core::session::ATERM_SESSION_ENV;
 
 const MAX_TOKEN_FILE_BYTES: u64 = 256;
+const MAX_GRAPH_ENTRY_BYTES: u64 = 16 * 1024;
 
 /// Where one aterm session is served: the instance socket and the session id that
 /// `@self` stands for.
@@ -44,6 +45,16 @@ impl Endpoint {
     /// that session has no graph entry. Nothing is connected here.
     pub fn from_env() -> Option<Endpoint> {
         if !codex_alab_core::active() {
+            return None;
+        }
+        Self::managed_auth_from_env()
+    }
+
+    /// Credential custody is independent of the enhanced interface and Autopilot.
+    /// This locates the authenticated host only; the host must still validate the
+    /// native process, selected file and explicit machine-owned slot binding.
+    pub fn managed_auth_from_env() -> Option<Endpoint> {
+        if !codex_alab_core::is_alab_binary() {
             return None;
         }
         let sid = std::env::var(SELF_SID_ENV).ok()?;
@@ -76,8 +87,12 @@ pub fn control_socket_dir() -> Option<PathBuf> {
 /// Whether `sid` has the server's shape, `s-<hex>`: anything else could walk out of the
 /// graph directory.
 pub fn valid_sid(sid: &str) -> bool {
-    sid.strip_prefix("s-")
-        .is_some_and(|hex| !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+    sid.strip_prefix("s-").is_some_and(|hex| {
+        !hex.is_empty()
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 /// The endpoint of `sid` from its graph entry in `dir`, or `None`.
@@ -85,7 +100,8 @@ pub fn locate_in(dir: &Path, sid: &str) -> Option<Endpoint> {
     if !valid_sid(sid) {
         return None;
     }
-    let body = std::fs::read_to_string(dir.join("graph").join(sid)).ok()?;
+    let body =
+        read_regular_utf8(&dir.join("graph").join(sid), MAX_GRAPH_ENTRY_BYTES, "graph").ok()?;
     let sock = graph_entry_sock(&body)?;
     Some(Endpoint {
         sock: PathBuf::from(sock),
@@ -98,16 +114,15 @@ pub fn graph_entry_sock(body: &str) -> Option<String> {
     body.lines()
         .find_map(|l| l.strip_prefix("sock "))
         .map(|p| p.trim().to_string())
-        .filter(|p| !p.is_empty())
+        .filter(|p| !p.is_empty() && Path::new(p).is_absolute())
 }
 
 /// The pid in a per-instance name `aterm-<pid>.sock`, digits only.
 fn instance_sock_pid(name: &str) -> Option<u32> {
     let pid = name.strip_suffix(".sock")?.strip_prefix("aterm-")?;
-    if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    pid.parse().ok()
+    u32::try_from(crate::wire::canonical_u64(pid)?)
+        .ok()
+        .filter(|&pid| pid > 0)
 }
 
 /// Every token file name a client may read for the socket named `sock_name`, in order
@@ -156,7 +171,7 @@ pub fn read_token_beside(sock: &Path) -> std::io::Result<String> {
     Err(miss.unwrap_or_else(|| Error::new(ErrorKind::NotFound, "no token beside the socket")))
 }
 
-fn read_token_file(path: &Path) -> std::io::Result<String> {
+fn read_regular_utf8(path: &Path, max_bytes: u64, what: &str) -> std::io::Result<String> {
     use std::io::Error;
     use std::io::ErrorKind;
     use std::os::unix::fs::OpenOptionsExt;
@@ -166,7 +181,7 @@ fn read_token_file(path: &Path) -> std::io::Result<String> {
         .open(path)
         .map_err(|e| {
             if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-                Error::new(ErrorKind::InvalidData, "token path is a symlink")
+                Error::new(ErrorKind::InvalidData, format!("{what} path is a symlink"))
             } else {
                 e
             }
@@ -175,26 +190,52 @@ fn read_token_file(path: &Path) -> std::io::Result<String> {
     if !meta.is_file() {
         return Err(Error::new(
             ErrorKind::InvalidData,
-            "token path is not a regular file",
+            format!("{what} path is not a regular file"),
         ));
     }
-    let mut bytes = Vec::new();
-    file.take(MAX_TOKEN_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_TOKEN_FILE_BYTES {
+    if meta.len() > max_bytes {
         return Err(Error::new(
             ErrorKind::InvalidData,
-            "token file exceeds 256 bytes",
+            format!("{what} file exceeds {max_bytes} bytes"),
         ));
     }
-    let raw = String::from_utf8(bytes)
-        .map_err(|_| Error::new(ErrorKind::InvalidData, "token file is not UTF-8"))?;
+    let mut bytes = Vec::with_capacity(usize::try_from(meta.len().min(max_bytes)).unwrap_or(0));
+    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!("{what} file exceeds {max_bytes} bytes"),
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| Error::new(ErrorKind::InvalidData, format!("{what} file is not UTF-8")))
+}
+
+fn read_token_file(path: &Path) -> std::io::Result<String> {
+    use std::io::Error;
+    use std::io::ErrorKind;
+    let raw = read_regular_utf8(path, MAX_TOKEN_FILE_BYTES, "token")?;
     let token = raw.trim();
-    if token.is_empty() || token.contains(['\r', '\n', ' ']) {
+    if token.is_empty() || token.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(Error::new(
             ErrorKind::InvalidData,
             "token file is not one token",
         ));
     }
     Ok(token.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graph_entry_requires_absolute_socket_path() {
+        assert_eq!(
+            graph_entry_sock("pid 1\nsock /tmp/aterm-1.sock\n").as_deref(),
+            Some("/tmp/aterm-1.sock")
+        );
+        assert_eq!(graph_entry_sock("sock relative.sock\n"), None);
+        assert_eq!(graph_entry_sock("sock \n"), None);
+    }
 }

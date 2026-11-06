@@ -1121,6 +1121,7 @@ fn write_rollout(path: &std::path::Path, thread_id: ThreadId, message: &str) -> 
     fs::create_dir_all(parent)?;
     let session_meta_line = SessionMetaLine {
         meta: SessionMeta {
+            attached_thread: false,
             creator_user_id: None,
             creator_account_id: None,
             session_id: thread_id.into(),
@@ -1155,7 +1156,7 @@ fn write_rollout(path: &std::path::Path, thread_id: ThreadId, message: &str) -> 
         RolloutLine {
             timestamp: "2025-01-03T12:00:00Z".to_string(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(session_meta_line),
+            item: RolloutItem::SessionMeta(Box::new(session_meta_line)),
         },
         RolloutLine {
             timestamp: "2025-01-03T12:00:01Z".to_string(),

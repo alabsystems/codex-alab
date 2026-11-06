@@ -313,14 +313,39 @@ impl Survey {
     }
 }
 
+fn read_optional_regular(path: &Path) -> std::io::Result<Option<String>> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    const LIMIT: u64 = 64 * 1024;
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.len() > LIMIT {
+        return Err(std::io::Error::other("not a bounded regular file"));
+    }
+    let mut text = String::new();
+    file.take(LIMIT + 1).read_to_string(&mut text)?;
+    if text.len() > LIMIT as usize {
+        return Err(std::io::Error::other("not a bounded regular file"));
+    }
+    Ok(Some(text))
+}
+
 fn survey(root: &Path, releases: &Path) -> Result<Survey, KeptAll> {
     let Some(selected) = selected_release(root, releases) else {
         return Err(KeptAll::Doubt(NO_CURRENT.to_string()));
     };
     // The vendor's own pruning keeps its previous selection too (a rollback target).
-    let previous: Vec<OsString> = match std::fs::read_to_string(root.join("selection-history")) {
-        Ok(history) => history.lines().take(2).map(OsString::from).collect(),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+    let previous: Vec<OsString> = match read_optional_regular(&root.join("selection-history")) {
+        Ok(Some(history)) => history.lines().take(2).map(OsString::from).collect(),
+        Ok(None) => Vec::new(),
         Err(err) => return Err(KeptAll::Doubt(format!("selection-history: {err}"))),
     };
     let doubt = |err: std::io::Error| KeptAll::Doubt(format!("releases: {err}"));
@@ -389,9 +414,9 @@ fn daemon_may_run(
 ) -> Option<KeptAll> {
     for name in PID_FILES {
         let path = state_dir.join(name);
-        let contents = match std::fs::read_to_string(&path) {
-            Ok(contents) => contents,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+        let contents = match read_optional_regular(&path) {
+            Ok(Some(contents)) => contents,
+            Ok(None) => continue,
             Err(err) => return Some(KeptAll::Doubt(format!("{name}: {err}"))),
         };
         let Some(pid) = recorded_pid(&contents) else {
@@ -480,14 +505,17 @@ fn superseded_release(path: &Path, name: &str) -> Result<(), String> {
     if !is_plain_dir(path) {
         return Err("not a directory".to_string());
     }
-    let manifest = std::fs::read_to_string(path.join("codex-package.json"))
-        .map_err(|err| format!("codex-package.json: {err}"))?;
+    let manifest = crate::life::read_managed_text(&path.join("codex-package.json"))
+        .ok_or_else(|| "codex-package.json: unreadable".to_string())?;
     let manifest: Manifest =
         serde_json::from_str(&manifest).map_err(|err| format!("codex-package.json: {err}"))?;
-    let local = name
-        .strip_prefix("local-")
-        .and_then(|rest| rest.strip_suffix(&format!("-{}", manifest.target)))
-        .is_some_and(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()));
+    let local = !manifest.target.is_empty()
+        && name
+            .strip_prefix("local-")
+            .and_then(|rest| rest.strip_suffix(&format!("-{}", manifest.target)))
+            .is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+            });
     let versioned = !manifest.version.is_empty()
         && !manifest.target.is_empty()
         && name == format!("{}-{}", manifest.version, manifest.target);
@@ -545,16 +573,50 @@ fn measure(
     Ok(bytes)
 }
 
-/// An exclusive `flock` on `path` without waiting: `None` when another holds it.
-fn try_flock(path: &Path) -> std::io::Result<Option<File>> {
+/// A lock the tidy holds, let go of on drop before its descriptor closes.
+///
+/// A `flock` belongs to the open file description, and a copy of the descriptor table keeps
+/// that alive: a process spawned or forked on another thread while the tidy holds the lock
+/// shares it until its exec, or for its whole life if it never execs. Closing the descriptor
+/// alone would leave the daemon's lock held after the tidy ended, so the vendor daemon (or the
+/// next tidy) would find it taken. `LOCK_UN` releases it on the description itself.
+struct Held {
+    file: File,
+    unlock: fn(&File),
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        (self.unlock)(&self.file);
+    }
+}
+
+fn open_lock_file(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
         .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular lock file"));
+    }
+    Ok(file)
+}
+
+/// An exclusive `flock` on `path` without waiting: `None` when another holds it.
+fn try_flock(path: &Path) -> std::io::Result<Option<Held>> {
+    let file = open_lock_file(path)?;
     // SAFETY: a plain flock(2) on a descriptor this function owns.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-        return Ok(Some(file));
+        return Ok(Some(Held {
+            file,
+            // SAFETY: a plain flock(2) on the descriptor `Held` owns.
+            unlock: |file| unsafe {
+                libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+            },
+        }));
     }
     let err = std::io::Error::last_os_error();
     if err.kind() == std::io::ErrorKind::WouldBlock {
@@ -566,17 +628,20 @@ fn try_flock(path: &Path) -> std::io::Result<Option<File>> {
 
 /// The installer's lock on `install.lock`, as the daemon takes it: `lockf` on macOS (the shell
 /// installer's `lockf`), `flock` elsewhere.
-fn try_install_lock(path: &Path) -> std::io::Result<Option<File>> {
+fn try_install_lock(path: &Path) -> std::io::Result<Option<Held>> {
     #[cfg(target_os = "macos")]
     {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path)?;
+        let file = open_lock_file(path)?;
         // SAFETY: a plain lockf(3) on a descriptor this function owns.
         if unsafe { libc::lockf(file.as_raw_fd(), libc::F_TLOCK, 0) } == 0 {
-            return Ok(Some(file));
+            return Ok(Some(Held {
+                file,
+                // SAFETY: a plain lockf(3) on the descriptor `Held` owns, from offset 0 as
+                // taken (nothing reads or writes it).
+                unlock: |file| unsafe {
+                    libc::lockf(file.as_raw_fd(), libc::F_ULOCK, 0);
+                },
+            }));
         }
         let err = std::io::Error::last_os_error();
         if matches!(err.raw_os_error(), Some(libc::EAGAIN) | Some(libc::EACCES)) {
@@ -671,7 +736,7 @@ pub fn running_executables() -> std::io::Result<Vec<PathBuf>> {
                 continue;
             }
             let err = std::io::Error::last_os_error();
-            if err.raw_os_error() != Some(libc::ESRCH) {
+            if !ignorable_pidpath_errno(err.raw_os_error()) {
                 return Err(std::io::Error::other(format!("pid {pid}: {err}")));
             }
         }
@@ -707,6 +772,17 @@ pub fn running_executables() -> std::io::Result<Vec<PathBuf>> {
     {
         Err(std::io::Error::other("no process table on this platform"))
     }
+}
+
+/// Whether a macOS `proc_pidpath` failure says the process has no live path in `releases/`
+/// (matching Linux's `/proc/<pid>/exe` `NotFound | PermissionDenied` rule): gone (`ESRCH`), a
+/// kernel thread or unlinked executable (`ENOENT`), or another user's process (`EPERM`/`EACCES`).
+#[cfg(any(target_os = "macos", test))]
+fn ignorable_pidpath_errno(errno: Option<i32>) -> bool {
+    matches!(
+        errno,
+        Some(libc::ESRCH | libc::ENOENT | libc::EPERM | libc::EACCES)
+    )
 }
 
 #[cfg(test)]

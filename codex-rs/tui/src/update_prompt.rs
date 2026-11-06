@@ -126,7 +126,7 @@ impl UpdatePromptScreen {
         Self {
             request_frame,
             latest_version,
-            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            current_version: codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string(), // ALAB(version): running executable identity
             update_action,
             highlighted: UpdateSelection::UpdateNow,
             selection: None,

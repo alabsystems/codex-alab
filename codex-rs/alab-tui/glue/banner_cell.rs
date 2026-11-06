@@ -22,7 +22,8 @@
 //! does push the transcript down, so `codex_alab_tui::banner::blossom_stage` (a second hook, in
 //! `empty_state_animation.rs`) moves the blossom into the space left. Once per process: the first
 //! session header takes the launch slot whether or not it draws, so a later one never does.
-//! Never under upstream's own unit tests.
+//! Only in codex-alab (`codex_alab_tui::banner::active`), and never under upstream's own unit
+//! tests.
 
 use crate::history_cell::HistoryCell;
 use crate::local_settings::LocalSettings;
@@ -32,10 +33,14 @@ use crate::terminal_palette;
 use crate::terminal_palette::StdoutColorLevel;
 use codex_alab_tui::banner::Banner;
 use codex_alab_tui::banner::Depth;
+use codex_alab_tui::banner::Harness;
 use codex_alab_tui::banner::Theme;
 use ratatui::text::Line;
 use std::sync::Mutex;
 use std::sync::PoisonError;
+
+/// The width and harness the art was last drawn for, with what was drawn.
+type ArtCache = Option<(u16, Option<Harness>, Vec<Line<'static>>)>;
 
 /// The banner over upstream's session header, as one history cell. The art is drawn for each
 /// width it is asked for (cached for the last one, since owned mode lays out again on every
@@ -44,12 +49,15 @@ use std::sync::PoisonError;
 #[derive(Debug)]
 struct BannerCell {
     banner: Banner,
-    cache: Mutex<Option<(u16, Option<bool>, Vec<Line<'static>>)>>,
+    cache: Mutex<ArtCache>,
     header: Box<dyn HistoryCell>,
 }
 
 impl BannerCell {
     fn art(&self, width: u16) -> Vec<Line<'static>> {
+        if codex_alab_tui::interface::is_vanilla() {
+            return Vec::new();
+        }
         let state = codex_alab_tui::banner::harness_state();
         let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((cached, cached_state, lines)) = cache.as_ref()
@@ -58,11 +66,9 @@ impl BannerCell {
         {
             return lines.clone();
         }
-        let lines = match state {
-            Some(false) => Vec::new(),
-            Some(true) => self.banner.lines_with_harness(width, true),
-            None => self.banner.lines(width),
-        };
+        // With aterm's harness on, the harness row names its Autopilot word (the moonbow
+        // under Off); unsupervised or outside aterm, the plain banner.
+        let lines = self.banner.lines_with_harness(width, state);
         *cache = Some((width, state, lines.clone()));
         lines
     }
@@ -120,6 +126,10 @@ impl HistoryCell for BannerCell {
     fn live_raw_lines(&self) -> Vec<Line<'static>> {
         self.header.live_raw_lines()
     }
+
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        codex_alab_tui::banner::harness_tick()
+    }
 }
 
 /// Puts the banner over the header in part 0 of the launch session card's `parts`, if this is
@@ -130,6 +140,7 @@ pub(super) fn prepend(parts: &mut Vec<Box<dyn HistoryCell>>, settings: &LocalSet
     prepend_when(
         parts,
         settings.tui.animations && settings.tui.effects.welcome,
+        codex_alab_tui::banner::stamped_upstream(),
     );
     if let Some(notice) = codex_alab_tui::trust::take_notice() {
         parts.push(Box::new(crate::history_cell::new_info_event(
@@ -140,8 +151,8 @@ pub(super) fn prepend(parts: &mut Vec<Box<dyn HistoryCell>>, settings: &LocalSet
 }
 
 /// [`prepend`] with upstream's welcome predicate (`tui.animations && tui.effects.welcome`)
-/// already evaluated.
-fn prepend_when(parts: &mut Vec<Box<dyn HistoryCell>>, welcome: bool) {
+/// already evaluated, and the upstream source the banner names.
+fn prepend_when(parts: &mut Vec<Box<dyn HistoryCell>>, welcome: bool, upstream: Option<String>) {
     let (suppressed, env) = switch();
     // The slot goes to the first header whatever the switch says, so a later one (after `/new`
     // with animations newly on) cannot draw a launch banner mid-session.
@@ -162,7 +173,9 @@ fn prepend_when(parts: &mut Vec<Box<dyn HistoryCell>>, welcome: bool) {
         StdoutColorLevel::Unknown => Depth::Mono,
     };
     let theme = Theme::from_bg(terminal_palette::default_bg());
-    let banner = Banner::new(style, depth, theme, &build_commit());
+    let banner = Banner::new(style, depth, theme, &build_version())
+        .with_upstream(upstream)
+        .with_claims(codex_alab_tui::banner::claims::CLAIMS);
     let header = parts.remove(0);
     parts.insert(
         0,
@@ -175,11 +188,14 @@ fn prepend_when(parts: &mut Vec<Box<dyn HistoryCell>>, welcome: bool) {
     note_drawn();
 }
 
-/// `(suppressed, ALAB_BANNER)`. The name sits outside the `CODEX_*` prefix aterm strips from
-/// the shells it spawns.
+/// `(suppressed, ALAB_BANNER)`: suppressed outside codex-alab. The name sits outside the
+/// `CODEX_*` prefix aterm strips from the shells it spawns.
 #[cfg(not(test))]
 fn switch() -> (bool, Option<String>) {
-    (false, std::env::var("ALAB_BANNER").ok())
+    (
+        !codex_alab_tui::banner::active(),
+        std::env::var("ALAB_BANNER").ok(),
+    )
 }
 
 /// Under codex-tui's unit tests the banner is off unless a test here forces it, so upstream's
@@ -214,13 +230,13 @@ fn note_drawn() {
 fn note_drawn() {}
 
 #[cfg(not(test))]
-fn build_commit() -> String {
-    codex_build_info::BuildInfo::get().build_commit().to_owned()
+fn build_version() -> String {
+    codex_alab_tui::session::version().to_owned()
 }
 
 #[cfg(test)]
-fn build_commit() -> String {
-    "0123456789abcdef".to_owned()
+fn build_version() -> String {
+    "0.164.0-dev.12814+ga180bdb0c".to_owned()
 }
 
 #[cfg(test)]
@@ -269,10 +285,15 @@ mod tests {
         )
     }
 
+    /// The upstream source of a packaged build.
+    fn upstream() -> Option<String> {
+        Some("0.163.0+ge8aa7c1678ca".to_owned())
+    }
+
     /// The parts `new_session_info` starts from, with the hook applied.
     fn launch_parts(welcome: bool) -> Vec<Box<dyn HistoryCell>> {
         let mut parts: Vec<Box<dyn HistoryCell>> = vec![Box::new(header())];
-        prepend_when(&mut parts, welcome);
+        prepend_when(&mut parts, welcome, upstream());
         parts
     }
 
@@ -286,6 +307,50 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    #[test]
+    fn enhanced_headers_agree_and_vanilla_restores_the_native_header() {
+        let header = header();
+        let native = header.raw_lines();
+        assert_eq!(native[0].to_string(), "OpenAI Codex (v0.0.0)");
+        {
+            let state = Box::leak(Box::new(codex_alab_tui::interface::State::new()));
+            let _scope = codex_alab_tui::interface::scoped(state);
+            for enabled in [true, false] {
+                codex_alab_tui::interface::set_enabled(enabled);
+                let raw = header.display_lines_for_mode(160, HistoryRenderMode::Raw);
+                if !enabled {
+                    assert_eq!(raw, native);
+                    continue;
+                }
+                let title = raw[0].to_string();
+                assert!(title.contains("codex-alab"));
+                let alab_version = match env!("CARGO_PKG_VERSION") {
+                    "0.0.0" => "dev",
+                    version => version
+                        .split_once('+')
+                        .map_or(version, |(version, _)| version),
+                };
+                assert!(title.contains(alab_version));
+                assert!(title.contains("OpenAI Codex"));
+                assert!(title.contains("based on"));
+                assert!(!title.contains("+g"));
+                assert!(
+                    title.contains(
+                        option_env!("CODEX_ALAB_UPSTREAM_VERSION").unwrap_or("unreleased")
+                    )
+                );
+                assert!(
+                    text(&header.display_lines(160))
+                        .iter()
+                        .any(|line| line.trim() == title),
+                    "raw and rendered headers must identify the same running sources",
+                );
+                assert_eq!(raw[1..], native[1..]);
+            }
+        }
+        assert_eq!(header.raw_lines(), native);
     }
 
     #[test]
@@ -318,8 +383,8 @@ mod tests {
     fn once_per_process() {
         force(None, || {
             let mut parts: Vec<Box<dyn HistoryCell>> = vec![Box::new(header())];
-            prepend_when(&mut parts, /*welcome*/ true);
-            prepend_when(&mut parts, /*welcome*/ true);
+            prepend_when(&mut parts, /*welcome*/ true, upstream());
+            prepend_when(&mut parts, /*welcome*/ true, upstream());
             let later = launch_parts(/*welcome*/ true);
             let first = banner(&parts).unwrap_or_else(|| panic!("no banner in {parts:?}"));
             assert!(first.header.as_any().is::<SessionHeaderHistoryCell>());
@@ -385,8 +450,9 @@ mod tests {
         }
     }
 
-    /// The launch card as a truecolor dark terminal draws it at 80 columns: banner, one blank
-    /// row (the header's own), then upstream's header unchanged.
+    /// The launch card as a truecolor dark terminal draws it at 80 columns: banner (the wordmark,
+    /// the tagline, the claims and the upstream source beside the kitty), one blank row (the
+    /// header's own), then upstream's header unchanged.
     #[test]
     #[cfg_attr(
         target_os = "windows",
@@ -408,14 +474,34 @@ mod tests {
             .iter()
             .position(|row| row.contains(">_ OpenAI Codex"))
             .unwrap_or_else(|| panic!("no header in {rows:?}"));
-        assert!(rows[title - 2].contains("codex-alab"), "{rows:?}");
+        assert!(
+            rows[..title].iter().any(|row| row.contains("codex-alab")),
+            "{rows:?}"
+        );
+        assert!(
+            rows[title - 2].contains("based on OpenAI Codex 0.163.0"),
+            "{rows:?}"
+        );
+        assert!(
+            rows[..title]
+                .iter()
+                .any(|row| row.contains("0.164.0-dev.12814"))
+        );
+        assert!(rows[..title].iter().all(|row| !row.contains("+g")
+            && !row.contains("a180bdb0c")
+            && !row.contains("e8aa7c1678ca")));
         assert!(rows[title - 1].is_empty(), "{rows:?}");
         insta::assert_snapshot!(codex_alab_tui::banner::review_text(&lines));
     }
 
+    /// The owner's ruling of 2026-10-24: "on" is the whole harness, not Autopilot alone. With
+    /// the harness on the banner stays and its row names the real Autopilot word, Off
+    /// included; unsupervised, the plain banner draws (as outside aterm), never an empty one.
+    /// Every change wakes the TUI and moves the tick, so the cached layout redraws.
     #[test]
-    fn harness_toggle_switches_banner_and_wakes_tui_seamlessly() {
+    fn the_harness_row_names_its_word_and_wakes_tui_seamlessly() {
         use codex_alab_tui::session::Autopilot;
+        use codex_alab_tui::session::HarnessWord;
         use codex_alab_tui::session::Shared;
         use std::sync::Arc;
         use std::sync::atomic::AtomicUsize;
@@ -430,32 +516,56 @@ mod tests {
         let _scope = codex_alab_tui::boxes::scoped(shared);
 
         let parts = force(None, || launch_parts(/*welcome*/ true));
-        let cell = banner(&parts).expect("banner cell");
+        let info = SessionInfoCell(CompositeHistoryCell::new(parts));
+        let cell = banner(&info.0.parts).expect("banner cell");
+        assert_eq!(info.transcript_animation_tick(), None);
+        let plain = text(&cell.display_lines(80));
+        assert!(plain.iter().any(|r| r.contains("codex-alab")), "{plain:?}");
+        assert!(!plain.iter().any(|r| r.contains("harness v")), "{plain:?}");
 
-        // Enable harness (Active): banner includes codex-alab harness line and wakes TUI.
-        shared.set_autopilot(Autopilot::Active);
-        assert_eq!(wakes.load(Ordering::SeqCst), 1);
-        let active_rows = text(&cell.display_lines(80));
-        assert!(
-            active_rows
-                .iter()
-                .any(|r| r.contains("enhanced by aterm · codex-alab harness · autopilot ∞ cruise")),
-            "active banner: {active_rows:?}"
-        );
-
-        // Toggle OFF during running session (Passive): banner art and harness line disappear.
-        shared.set_autopilot(Autopilot::Passive);
-        assert_eq!(wakes.load(Ordering::SeqCst), 2);
-        let passive_rows = text(&cell.display_lines(80));
-        assert!(
-            !passive_rows.iter().any(|r| r.contains("codex-alab")),
-            "toggled-off banner: {passive_rows:?}"
-        );
-
-        // Toggle back ON during running session (Active): banner and harness line return seamlessly.
-        shared.set_autopilot(Autopilot::Active);
-        assert_eq!(wakes.load(Ordering::SeqCst), 3);
-        let reenabled_rows = text(&cell.display_lines(80));
-        assert_eq!(reenabled_rows, active_rows);
+        let row = |word: &str| format!("Autopilot {word}");
+        let mut cruise = None;
+        for (word, autopilot, tick, expected) in [
+            (
+                HarnessWord::Cruise,
+                Autopilot::Active,
+                2,
+                Some(row("∞ cruise")),
+            ),
+            (HarnessWord::Land, Autopilot::Active, 3, Some(row("⤓ land"))),
+            // Autopilot off with the harness on: the claim is given back, the harness row stays.
+            (HarnessWord::Off, Autopilot::Passive, 4, Some(row("○ off"))),
+            // Unsupervised (the claim not proven, the harness itself off): the plain banner.
+            (HarnessWord::Unknown, Autopilot::Passive, 1, None),
+            (
+                HarnessWord::Cruise,
+                Autopilot::Active,
+                2,
+                Some(row("∞ cruise")),
+            ),
+        ] {
+            let before = wakes.load(Ordering::SeqCst);
+            shared.set_harness_word(word);
+            shared.set_autopilot(autopilot);
+            assert!(
+                wakes.load(Ordering::SeqCst) > before,
+                "{word:?}: wakes the TUI"
+            );
+            assert_eq!(info.transcript_animation_tick(), Some(tick), "{word:?}");
+            let rows = text(&cell.display_lines(80));
+            match expected {
+                Some(expected) => {
+                    assert!(
+                        rows.iter().any(|r| r.trim() == format!("✦ {expected}")),
+                        "{word:?}: {rows:?}"
+                    );
+                    assert_eq!(rows.len(), plain.len() + 1, "{word:?}: {rows:?}");
+                    if word == HarnessWord::Cruise {
+                        assert_eq!(cruise.get_or_insert_with(|| rows.clone()), &rows);
+                    }
+                }
+                None => assert_eq!(rows, plain, "{word:?}"),
+            }
+        }
     }
 }

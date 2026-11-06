@@ -28,7 +28,7 @@ impl Drop for ModelsRefreshWorker {
 }
 
 pub(crate) fn spawn(model_catalog: &Arc<ModelCatalog>) -> ModelsRefreshWorker {
-    if codex_alab_core::active() { return spawn_with_interval(model_catalog, codex_alab_core::MODELS_REFRESH_INTERVAL); } // ALAB(model-poll): hourly, not every 4.5 min per tab
+    if codex_alab_core::is_alab_binary() { return alab_live::spawn(model_catalog); } // ALAB(model-poll): follow the live experience, including a worker already asleep
     spawn_with_interval(model_catalog, MODELS_REFRESH_INTERVAL)
 }
 
@@ -36,6 +36,11 @@ fn spawn_with_interval(
     model_catalog: &Arc<ModelCatalog>,
     refresh_interval: Duration,
 ) -> ModelsRefreshWorker {
+    spawn_polling(model_catalog, refresh_interval, codex_alab_core::active()) // ALAB(model-poll): each poll downloads only a stale catalog (the launch's still beside the session's account check), so the tabs share one download an hour
+}
+
+// ALAB(model-poll): upstream's worker, the caller choosing whether a poll reads a fresh cache
+fn spawn_polling(model_catalog: &Arc<ModelCatalog>, refresh_interval: Duration, reads_fresh_cache: bool) -> ModelsRefreshWorker {
     let model_catalog = Arc::downgrade(model_catalog);
     let shutdown = CancellationToken::new();
     let worker_shutdown = shutdown.clone();
@@ -47,7 +52,7 @@ fn spawn_with_interval(
             let Some(model_catalog) = model_catalog.upgrade() else {
                 break;
             };
-            if let Err(err) = model_catalog.list_models(RefreshStrategy::Online).await {
+            if let Err(err) = model_catalog.list_models(if reads_fresh_cache { RefreshStrategy::OnlineIfUncached } else { RefreshStrategy::Online }).await { // ALAB(model-poll): a fresh cache, whichever tab downloaded it, serves the poll
                 // Parser diagnostics can include provider credentials from the source TOML.
                 tracing::warn!(error_kind = ?err.kind(), "model catalog refresh blocked by provider requirements");
             }
@@ -68,3 +73,5 @@ fn spawn_with_interval(
 #[cfg(test)]
 #[path = "models_refresh_worker_tests.rs"]
 mod tests;
+#[cfg(test)] #[path = "../../alab-core/glue/models_refresh_worker_tests.rs"] mod alab_tests; // ALAB(model-poll): the poll's two arms
+#[path = "../../alab-core/glue/models_refresh_live.rs"] mod alab_live; // ALAB(model-poll): mode-aware worker owned by ALab

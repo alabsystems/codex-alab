@@ -42,3 +42,7 @@ pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid = { workspace = true }
+
+# ALAB(version): a low-level immutable running identity; no Codex dependency cycle.
+[dependencies.codex-alab-core]
+path = "../alab-core"

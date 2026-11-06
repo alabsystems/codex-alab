@@ -4,7 +4,9 @@ use super::*;
 
 impl ChatWidget {
     pub(crate) fn new_with_app_event(common: ChatWidgetInit) -> Self {
-        Self::new_with_op_target(common, CodexOpTarget::AppEvent)
+        let mut widget = Self::new_with_op_target(common, CodexOpTarget::AppEvent);
+        widget.bottom_pane.enable_agents_navigation();
+        widget
     }
 
     pub(super) fn new_with_op_target(
@@ -128,6 +130,7 @@ impl ChatWidget {
             has_codex_backend_auth,
             model_catalog,
             model_popup_request_id: None,
+            permission_popup_pending: false,
             permission_popup_request_id: None,
             permission_discovery: None,
             inline_permission_profile_selection: None,
@@ -150,6 +153,7 @@ impl ChatWidget {
             token_info: None,
             token_usage_pending: false,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
+            alab_allowance: Default::default(), // ALAB(interface): account-scoped quota presentation starts empty.
             refreshing_status_outputs: Vec::new(),
             next_status_refresh_request_id: 0,
             pending_rate_limit_reset_request_id: None,
@@ -175,6 +179,7 @@ impl ChatWidget {
             backend_banner_notice_model: None,
             luna_reserve_notice_account_id: None,
             warning_display_state: WarningDisplayState::default(),
+            composer_images: None,
             rendered_selection: Default::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             add_credits_nudge_email_in_flight: None,
@@ -192,6 +197,7 @@ impl ChatWidget {
             last_unified_wait: None,
             unified_exec_wait_streak: None,
             turn_lifecycle: TurnLifecycleState::new(prevent_idle_sleep),
+            safety_recourse: None,
             realtime_conversation: RealtimeConversationUiState::default(),
             realtime_conversation_available_for_thread: false,
             safety_buffering: SafetyBufferingState::default(),
@@ -237,6 +243,7 @@ impl ChatWidget {
             active_side_conversation: false,
             blocks_direct_input: false,
             external_writer_view: false,
+            provider_error: None,
             fork_in_progress: false,
             misalignment_policy_violation: None,
             normal_placeholder_text: placeholder,
@@ -298,6 +305,10 @@ impl ChatWidget {
             test_codex_home: None,
         };
 
+        widget.bottom_pane.set_mention_usage_home(
+            widget.local_settings.codex_home.as_path(),
+            widget.local_settings.history.persistence,
+        );
         widget.prefetch_rate_limits();
         if let Some(keymap) = runtime_keymap {
             widget.bottom_pane.set_keymap_bindings(&keymap);

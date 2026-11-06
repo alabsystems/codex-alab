@@ -20,6 +20,7 @@ use codex_exec_server::ExecutorCapabilityDiscoveryV2Snapshot;
 use codex_exec_server::ExecutorSkill;
 use codex_exec_server::FileSystemEnvironmentAccessor;
 use codex_exec_server::LOCAL_FS;
+use codex_exec_server::SkillDiscoveryRoot;
 use codex_extension_api::ConversationHistory;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
@@ -30,6 +31,7 @@ use codex_extension_api::FunctionCallError;
 use codex_extension_api::NoopTurnItemEmitter;
 use codex_extension_api::PreviousWorldStateSection;
 use codex_extension_api::RenderedWorldStateFragment;
+use codex_extension_api::SelectedPluginSnapshot;
 use codex_extension_api::SkillInvocationInput;
 use codex_extension_api::SkillInvocationKind;
 use codex_extension_api::ThreadStartInput;
@@ -101,6 +103,9 @@ mod shadow_task_context_tests;
 #[path = "skills_extension/presentation_dedup_tests.rs"]
 mod presentation_dedup_tests;
 
+#[path = "skills_extension/catalog_delta_tests.rs"]
+mod catalog_delta_tests;
+
 static NEXT_CODEX_HOME_ID: AtomicUsize = AtomicUsize::new(0);
 const SKILLS_INTRO_WITH_ABSOLUTE_PATHS: &str = "A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that can be used. Each entry includes a name, description, and source locator. `file` locators are on the host filesystem, `executor package` locators are owned by their execution environment, `cloud package` locators are opaque package identifiers, and `custom resource` locators use their provider's access mechanism.";
 const DEMO_SKILL_CONTENTS: &str =
@@ -125,6 +130,104 @@ fn world_state_section<'a>(
         .unwrap_or_else(|| panic!("world-state section {id} should exist"))
 }
 
+async fn prepare_step(
+    registry: &codex_extension_api::ExtensionRegistry<TestConfig>,
+    input: codex_extension_api::StepPreparationInput<'_>,
+) {
+    for contributor in registry.tool_contributors() {
+        contributor.prepare_for_step(input).await;
+    }
+}
+
+async fn prepared_world_state(
+    registry: &codex_extension_api::ExtensionRegistry<TestConfig>,
+    ready_selected_capability_roots: &[SelectedCapabilityRoot],
+    input: WorldStateContributionInput<'_>,
+) -> Vec<WorldStateSectionContribution> {
+    let discovery = input
+        .step_store
+        .get::<codex_exec_server::ExecutorCapabilityDiscoverySnapshot>();
+    let snapshots = input
+        .step_store
+        .get::<Vec<codex_exec_server::ExecutorCapabilityDiscoveryV2Snapshot>>();
+    let selected_plugins = input
+        .step_store
+        .get::<SelectedPluginSnapshot>()
+        .unwrap_or_default();
+    prepare_step(
+        registry,
+        codex_extension_api::StepPreparationInput {
+            turn_id: input.turn_id,
+            ready_selected_capability_roots,
+            executor_capability_discovery: discovery.as_deref(),
+            executor_capability_discovery_v2: snapshots.as_deref().map(Vec::as_slice),
+            selected_plugins: &selected_plugins,
+            session_store: input.session_store,
+            thread_store: input.thread_store,
+            turn_store: input.turn_store,
+            step_store: input.step_store,
+        },
+    )
+    .await;
+    registry.context_contributors()[0]
+        .contribute_world_state(input)
+        .await
+}
+
+async fn prepared_turn_input(
+    registry: &codex_extension_api::ExtensionRegistry<TestConfig>,
+    input: TurnInputContext<'_>,
+    extension_metrics: Option<Arc<dyn codex_extension_api::ExtensionMetrics>>,
+    session_store: &ExtensionData,
+    thread_store: &ExtensionData,
+    turn_store: &ExtensionData,
+) -> Vec<Box<dyn codex_extension_api::ContextualUserFragment + Send>> {
+    let roots = input
+        .step_store
+        .get::<Vec<codex_exec_server::ResolvedSelectedCapabilityRoot>>()
+        .map(|roots| {
+            roots
+                .iter()
+                .map(|root| root.selected_root().clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let discovery = input
+        .step_store
+        .get::<codex_exec_server::ExecutorCapabilityDiscoverySnapshot>();
+    let snapshots = input
+        .step_store
+        .get::<Vec<codex_exec_server::ExecutorCapabilityDiscoveryV2Snapshot>>();
+    let selected_plugins = input
+        .step_store
+        .get::<SelectedPluginSnapshot>()
+        .unwrap_or_default();
+    prepare_step(
+        registry,
+        codex_extension_api::StepPreparationInput {
+            selected_plugins: &selected_plugins,
+            turn_id: &input.turn_id,
+            ready_selected_capability_roots: &roots,
+            executor_capability_discovery: discovery.as_deref(),
+            executor_capability_discovery_v2: snapshots.as_deref().map(Vec::as_slice),
+            session_store,
+            thread_store,
+            turn_store,
+            step_store: input.step_store,
+        },
+    )
+    .await;
+    registry.turn_input_contributors()[0]
+        .contribute(
+            input,
+            extension_metrics,
+            session_store,
+            thread_store,
+            turn_store,
+        )
+        .await
+}
+
 async fn skill_world_state_fragments(
     registry: &codex_extension_api::ExtensionRegistry<TestConfig>,
     session_store: &ExtensionData,
@@ -139,23 +242,23 @@ async fn skill_world_state_fragments(
             path: PathUri::parse("file:///skills")?,
         },
     }];
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        registry,
+        &selected_roots,
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id,
             environments: &[],
-            ready_selected_capability_roots: &selected_roots,
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store,
             thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
 
     let executor = world_state_section(&sections, "skills")
         .render_diff(PreviousWorldStateSection::Absent)
@@ -249,23 +352,23 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
     let turn_store = ExtensionData::new("turn-1");
     turn_store.insert(HostSkillsSnapshot::new(Arc::clone(&loaded_skills)));
 
-    let fragments = registry.turn_input_contributors()[0]
-        .contribute(
-            TurnInputContext {
-                step_store: &ExtensionData::new("step"),
-                turn_id: "turn-1".to_string(),
-                user_input: vec![UserInput::Text {
-                    text: "$demo".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                environments: Vec::new(),
-            },
-            /*extension_metrics*/ None,
-            &session_store,
-            &thread_store,
-            &turn_store,
-        )
-        .await;
+    let fragments = prepared_turn_input(
+        &registry,
+        TurnInputContext {
+            step_store: &ExtensionData::new("step"),
+            turn_id: "turn-1".to_string(),
+            user_input: vec![UserInput::Text {
+                text: "$demo".to_string(),
+                text_elements: Vec::new(),
+            }],
+            environments: Vec::new(),
+        },
+        /*extension_metrics*/ None,
+        &session_store,
+        &thread_store,
+        &turn_store,
+    )
+    .await;
 
     let expected_catalog = format!(
         "{SKILLS_INSTRUCTIONS_OPEN_TAG}\n## Skills\n{SKILLS_INTRO_WITH_ABSOLUTE_PATHS}\n### Available skills\n- demo: Demo skill. (file: {skill_prompt_path})\n{SKILLS_INSTRUCTIONS_CLOSE_TAG}"
@@ -329,23 +432,23 @@ async fn host_world_state_records_catalog_metrics_on_publish_and_change() -> Tes
     let turn_store = ExtensionData::new("turn-1");
     turn_store.insert(HostSkillsSnapshot::new(Arc::new(outcome.clone())));
 
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        &registry,
+        &[],
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &[],
-            executor_capability_discovery: None,
             extension_metrics: Some(turn_metrics.clone()),
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
 
     assert_eq!(sections.len(), 2);
     let host_section = world_state_section(&sections, "host_skills");
@@ -354,33 +457,36 @@ async fn host_world_state_records_catalog_metrics_on_publish_and_change() -> Tes
     let published_snapshot = published_snapshot.unwrap();
     assert!(fragment.is_some());
     let mut expected = expected_catalog_metric_samples("host_world_state", /*count*/ 1);
-    assert!(startup_metrics.samples().is_empty());
+    let expected_discovery = vec![expected_catalog_entries(
+        "executor", "complete", /*count*/ 0,
+    )];
+    assert_eq!(startup_metrics.samples(), expected_discovery);
     assert_eq!(turn_metrics.samples(), expected);
 
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        &registry,
+        &[],
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &[],
-            executor_capability_discovery: None,
             extension_metrics: Some(turn_metrics.clone()),
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
     assert!(
         world_state_section(&sections, "host_skills")
             .render_diff(PreviousWorldStateSection::Known(&published_snapshot))
             .1
             .is_none()
     );
-    assert!(startup_metrics.samples().is_empty());
+    assert_eq!(startup_metrics.samples(), expected_discovery);
     assert_eq!(turn_metrics.samples(), expected);
 
     let second_skill_path =
@@ -398,23 +504,23 @@ async fn host_world_state_records_catalog_metrics_on_publish_and_change() -> Tes
         remote_plugin_id: None,
     });
     turn_store.insert(HostSkillsSnapshot::new(Arc::new(outcome)));
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        &registry,
+        &[],
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &[],
-            executor_capability_discovery: None,
             extension_metrics: Some(turn_metrics.clone()),
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
     assert!(
         world_state_section(&sections, "host_skills")
             .render_diff(PreviousWorldStateSection::Known(&published_snapshot))
@@ -425,7 +531,7 @@ async fn host_world_state_records_catalog_metrics_on_publish_and_change() -> Tes
         "host_world_state",
         /*count*/ 2,
     ));
-    assert!(startup_metrics.samples().is_empty());
+    assert_eq!(startup_metrics.samples(), expected_discovery);
     assert_eq!(turn_metrics.samples(), expected);
 
     Ok(())
@@ -473,23 +579,23 @@ async fn persisted_host_snapshot_deduplicates_warning_after_reinitialization() -
     model_info.context_window = Some(50);
     let turn_store = ExtensionData::new("turn-1");
     turn_store.insert(host_snapshot.clone());
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        &registry,
+        &[],
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &model_info,
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &[],
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
     let host_section = world_state_section(&sections, "host_skills");
     let (published_snapshot, fragment) =
         host_section.render_diff(PreviousWorldStateSection::Absent);
@@ -515,23 +621,23 @@ async fn persisted_host_snapshot_deduplicates_warning_after_reinitialization() -
     model_info.context_window = Some(50);
     let resumed_turn_store = ExtensionData::new("turn-2");
     resumed_turn_store.insert(host_snapshot);
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        &registry,
+        &[],
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &model_info,
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-2",
             environments: &[],
-            ready_selected_capability_roots: &[],
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &resumed_thread_store,
             turn_store: &resumed_turn_store,
-            step_store: &resumed_turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
     assert!(
         world_state_section(&sections, "host_skills")
             .render_diff(PreviousWorldStateSection::Known(&published_snapshot))
@@ -621,23 +727,23 @@ async fn executor_cloud_and_host_share_catalog_world_state_flow() -> TestResult 
         SkillLoadOutcome::default(),
     )));
     let metrics = Arc::new(RecordingMetrics::default());
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        &registry,
+        &selected_roots,
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &selected_roots,
-            executor_capability_discovery: None,
             extension_metrics: Some(metrics.clone()),
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
 
     assert_eq!(
         sections
@@ -735,23 +841,23 @@ async fn nonempty_executor_empty_host_records_catalog_metrics() -> TestResult {
         SkillLoadOutcome::default(),
     )));
 
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        &registry,
+        &selected_roots,
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &selected_roots,
-            executor_capability_discovery: None,
             extension_metrics: Some(metrics.clone()),
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
 
     assert_eq!(sections.len(), 2);
     assert!(
@@ -819,23 +925,23 @@ async fn host_world_state_uses_provider_catalog_with_core_compatible_rendering()
         SkillLoadOutcome::default(),
     )));
 
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        &registry,
+        &[],
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &[],
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
     let host_fragment = world_state_section(&sections, "host_skills")
         .render_diff(PreviousWorldStateSection::Absent)
         .1
@@ -901,44 +1007,45 @@ async fn shadow_selection_uses_host_catalog_when_instructions_are_disabled() -> 
         })
         .await;
     let turn_store = ExtensionData::new("turn-1");
+    let step_store = ExtensionData::new("step");
     turn_store.insert(HostSkillsSnapshot::new(Arc::new(
         SkillLoadOutcome::default(),
     )));
 
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        &registry,
+        &[],
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &step_store,
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &[],
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
-    let fragments = registry.turn_input_contributors()[0]
-        .contribute(
-            TurnInputContext {
-                step_store: &ExtensionData::new("step"),
-                turn_id: "turn-1".to_string(),
-                user_input: vec![UserInput::Text {
-                    text: "Fix lint errors.".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                environments: Vec::new(),
-            },
-            /*extension_metrics*/ None,
-            &session_store,
-            &thread_store,
-            &turn_store,
-        )
-        .await;
+        },
+    )
+    .await;
+    let fragments = prepared_turn_input(
+        &registry,
+        TurnInputContext {
+            step_store: &step_store,
+            turn_id: "turn-1".to_string(),
+            user_input: vec![UserInput::Text {
+                text: "Fix lint errors.".to_string(),
+                text_elements: Vec::new(),
+            }],
+            environments: Vec::new(),
+        },
+        /*extension_metrics*/ None,
+        &session_store,
+        &thread_store,
+        &turn_store,
+    )
+    .await;
 
     assert!(
         world_state_section(&sections, "host_skills")
@@ -1028,31 +1135,29 @@ async fn shadow_lru_selector_recovers_a_skill_invoked_on_an_earlier_turn() -> Te
 
     for (turn_id, text) in [("turn-1", "Fix lint errors."), ("turn-2", "continue")] {
         let turn_store = ExtensionData::new(turn_id);
-        let fragments = registry.turn_input_contributors()[0]
-            .contribute(
-                TurnInputContext {
-                    step_store: &ExtensionData::new("step"),
-                    turn_id: turn_id.to_string(),
-                    user_input: vec![UserInput::Text {
-                        text: text.to_string(),
-                        text_elements: Vec::new(),
-                    }],
-                    environments: vec![codex_extension_api::TurnInputEnvironment {
-                        environment_id: "test".to_string(),
-                        cwd: PathUri::from_host_native_path(
-                            std::env::current_dir().expect("test cwd"),
-                        )
+        let fragments = prepared_turn_input(
+            &registry,
+            TurnInputContext {
+                step_store: &ExtensionData::new("step"),
+                turn_id: turn_id.to_string(),
+                user_input: vec![UserInput::Text {
+                    text: text.to_string(),
+                    text_elements: Vec::new(),
+                }],
+                environments: vec![codex_extension_api::TurnInputEnvironment {
+                    environment_id: "test".to_string(),
+                    cwd: PathUri::from_host_native_path(std::env::current_dir().expect("test cwd"))
                         .expect("absolute cwd"),
-                        is_primary: true,
-                        fs: &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
-                    }],
-                },
-                /*extension_metrics*/ None,
-                &session_store,
-                &thread_store,
-                &turn_store,
-            )
-            .await;
+                    is_primary: true,
+                    fs: &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+                }],
+            },
+            /*extension_metrics*/ None,
+            &session_store,
+            &thread_store,
+            &turn_store,
+        )
+        .await;
         assert!(fragments.is_empty());
         registry.skill_invocation_contributors()[0]
             .on_skill_invocation(SkillInvocationInput {
@@ -1206,23 +1311,23 @@ async fn selected_executor_catalog_caches_root_selections_per_turn_and_reuses_di
         workspace_roots: Vec::new(),
         config: EnvironmentConfigState::FromThread,
     };
-    let available_sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let available_sections = prepared_world_state(
+        &registry,
+        &selected_roots,
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &step_store,
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: std::slice::from_ref(&turn_environment),
-            ready_selected_capability_roots: &selected_roots,
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &step_store,
-        })
-        .await;
+        },
+    )
+    .await;
     assert_eq!(1, available_sections.len());
     let (available_snapshot, available_fragment) =
         available_sections[0].render_diff(PreviousWorldStateSection::Absent);
@@ -1232,28 +1337,28 @@ async fn selected_executor_catalog_caches_root_selections_per_turn_and_reuses_di
     assert!(available_body.contains("lint-fix"));
     assert!(available_body.contains("(executor package: executor/lint-fix)"));
 
-    let fragments = registry.turn_input_contributors()[0]
-        .contribute(
-            TurnInputContext {
-                step_store: &step_store,
-                turn_id: "turn-1".to_string(),
-                user_input: vec![UserInput::Text {
-                    text: "$lint-fix please".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                environments: vec![codex_extension_api::TurnInputEnvironment {
-                    environment_id: turn_environment.environment_id.clone(),
-                    cwd: turn_environment.cwd.clone(),
-                    is_primary: true,
-                    fs: &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
-                }],
-            },
-            /*extension_metrics*/ None,
-            &session_store,
-            &thread_store,
-            &turn_store,
-        )
-        .await;
+    let fragments = prepared_turn_input(
+        &registry,
+        TurnInputContext {
+            step_store: &step_store,
+            turn_id: "turn-1".to_string(),
+            user_input: vec![UserInput::Text {
+                text: "$lint-fix please".to_string(),
+                text_elements: Vec::new(),
+            }],
+            environments: vec![codex_extension_api::TurnInputEnvironment {
+                environment_id: turn_environment.environment_id.clone(),
+                cwd: turn_environment.cwd.clone(),
+                is_primary: true,
+                fs: &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+            }],
+        },
+        /*extension_metrics*/ None,
+        &session_store,
+        &thread_store,
+        &turn_store,
+    )
+    .await;
 
     assert_eq!(1, fragments.len());
     assert_eq!("user", fragments[0].role());
@@ -1271,23 +1376,23 @@ async fn selected_executor_catalog_caches_root_selections_per_turn_and_reuses_di
     let available_world_state =
         serde_json::Map::from_iter([("skills".to_string(), available_snapshot.clone())]);
     let unavailable_turn_store = ExtensionData::new("turn-2");
-    let unavailable_sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let unavailable_sections = prepared_world_state(
+        &registry,
+        &[],
+        WorldStateContributionInput {
             previous_world_state: Some(&available_world_state),
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-2",
             environments: &[],
-            ready_selected_capability_roots: &[],
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &unavailable_turn_store,
-            step_store: &unavailable_turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
     let (unavailable_snapshot, unavailable_fragment) =
         unavailable_sections[0].render_diff(PreviousWorldStateSection::Known(&available_snapshot));
     let unavailable_snapshot = unavailable_snapshot.unwrap();
@@ -1308,23 +1413,23 @@ async fn selected_executor_catalog_caches_root_selections_per_turn_and_reuses_di
     let unavailable_world_state =
         serde_json::Map::from_iter([("skills".to_string(), unavailable_snapshot.clone())]);
     let restored_turn_store = ExtensionData::new("turn-3");
-    let restored_sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let restored_sections = prepared_world_state(
+        &registry,
+        &selected_roots,
+        WorldStateContributionInput {
             previous_world_state: Some(&unavailable_world_state),
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-3",
             environments: &[turn_environment],
-            ready_selected_capability_roots: &selected_roots,
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &restored_turn_store,
-            step_store: &restored_turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
     let (restored_snapshot, restored_fragment) =
         restored_sections[0].render_diff(PreviousWorldStateSection::Known(&unavailable_snapshot));
     let restored_snapshot = restored_snapshot.unwrap();
@@ -1348,13 +1453,10 @@ async fn selected_executor_catalog_caches_root_selections_per_turn_and_reuses_di
         .contribute_world_state(WorldStateContributionInput {
             previous_world_state: None,
             step_store: &step_store,
-            executor_capability_discovery_v2: None,
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &[],
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
@@ -1393,23 +1495,25 @@ async fn selected_executor_catalog_caches_root_selections_per_turn_and_reuses_di
         ("recovered-discovery", &recovered_discovery, 4),
         ("cached-discovery", &recovered_discovery, 4),
     ] {
-        registry.context_contributors()[0]
-            .contribute_world_state(WorldStateContributionInput {
+        let step_store = ExtensionData::new("step");
+        step_store.insert(discovery.clone());
+        prepared_world_state(
+            &registry,
+            &selected_roots,
+            WorldStateContributionInput {
                 previous_world_state: None,
-                executor_capability_discovery_v2: None,
+                step_store: &step_store,
                 model_info: &catalog_model_info(),
                 thread_id: codex_protocol::ThreadId::new(),
                 turn_id,
                 environments: &[],
-                ready_selected_capability_roots: &selected_roots,
-                executor_capability_discovery: Some(discovery),
                 extension_metrics: None,
                 session_store: &session_store,
                 thread_store: &thread_store,
                 turn_store: &ExtensionData::new(turn_id),
-                step_store: &ExtensionData::new(turn_id),
-            })
-            .await;
+            },
+        )
+        .await;
         assert_eq!(expected_list_calls, list_calls.load(Ordering::Relaxed));
     }
 
@@ -1422,23 +1526,23 @@ async fn selected_executor_catalog_caches_root_selections_per_turn_and_reuses_di
         &listing_disabled_config,
     );
     let listing_disabled_turn_store = ExtensionData::new("turn-4");
-    let listing_disabled_sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let listing_disabled_sections = prepared_world_state(
+        &registry,
+        &selected_roots,
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-4",
             environments: &[],
-            ready_selected_capability_roots: &selected_roots,
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &listing_disabled_turn_store,
-            step_store: &listing_disabled_turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
     let (listing_disabled_snapshot, listing_disabled_fragment) = listing_disabled_sections[0]
         .render_diff(PreviousWorldStateSection::Known(&restored_snapshot));
     let listing_disabled_fragment =
@@ -1511,23 +1615,23 @@ async fn selected_executor_catalog_caches_root_selections_per_turn_and_reuses_di
                 .resolve_selected_capability_roots(&roots, &captured)
                 .await,
         );
-        registry.context_contributors()[0]
-            .contribute_world_state(WorldStateContributionInput {
+        prepared_world_state(
+            &registry,
+            &roots,
+            WorldStateContributionInput {
                 previous_world_state: None,
                 step_store: &cache_step,
-                executor_capability_discovery_v2: None,
                 model_info: &catalog_model_info(),
                 thread_id: codex_protocol::ThreadId::new(),
                 turn_id,
                 environments: &[],
-                ready_selected_capability_roots: &roots,
-                executor_capability_discovery: None,
                 extension_metrics: None,
                 session_store: &session_store,
                 thread_store: &thread_store,
                 turn_store: &ExtensionData::new(turn_id),
-            })
-            .await;
+            },
+        )
+        .await;
         assert_eq!(
             previous_list_calls + expected_new_calls,
             list_calls.load(Ordering::Relaxed)
@@ -1620,23 +1724,24 @@ async fn overlapping_executor_catalogs_render_their_own_roots() -> TestResult {
         let thread_store = Arc::clone(&thread_store);
         async move {
             let step_store = ExtensionData::new(&root.id);
-            let sections = registry.context_contributors()[0]
-                .contribute_world_state(WorldStateContributionInput {
+            let sections = prepared_world_state(
+                &registry,
+                &[root],
+                WorldStateContributionInput {
                     model_info: &catalog_model_info(),
                     thread_id,
                     turn_id: "turn",
                     environments: &[],
-                    ready_selected_capability_roots: &[root],
-                    executor_capability_discovery: None,
-                    executor_capability_discovery_v2: None,
+
                     extension_metrics: None,
                     session_store: &session_store,
                     thread_store: &thread_store,
                     turn_store: &step_store,
                     step_store: &step_store,
                     previous_world_state: None,
-                })
-                .await;
+                },
+            )
+            .await;
             world_state_section(&sections, "skills")
                 .render_diff(PreviousWorldStateSection::Absent)
                 .1
@@ -1902,23 +2007,24 @@ async fn catalog_rebalances_only_to_avoid_omissions_and_retains_the_allocation()
                 let turn_id = format!("turn-{step}");
                 let turn_store = ExtensionData::new(&turn_id);
                 start_registered_turn(&registry, &session_store, &thread_store, &turn_id).await;
-                let sections = registry.context_contributors()[0]
-                    .contribute_world_state(WorldStateContributionInput {
+                let sections = prepared_world_state(
+                    &registry,
+                    if ready { &selected_roots } else { &[] },
+                    WorldStateContributionInput {
                         previous_world_state: Some(&previous),
                         model_info: &model,
                         thread_id: codex_protocol::ThreadId::new(),
                         turn_id: &turn_id,
                         environments: &[],
-                        ready_selected_capability_roots: if ready { &selected_roots } else { &[] },
-                        executor_capability_discovery: None,
-                        executor_capability_discovery_v2: None,
+
                         extension_metrics: None,
                         session_store: &session_store,
                         thread_store: &thread_store,
                         turn_store: &turn_store,
                         step_store: &turn_store,
-                    })
-                    .await;
+                    },
+                )
+                .await;
                 let rendered = sections
                     .iter()
                     .map(|section| {
@@ -2200,23 +2306,23 @@ async fn skills_list_only_returns_model_visible_bounded_metadata() -> TestResult
     start_registered_turn(&registry, &session_store, &thread_store, "turn-1").await;
 
     let step_store = ExtensionData::new("step");
-    registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    prepared_world_state(
+        &registry,
+        &[],
+        WorldStateContributionInput {
             previous_world_state: None,
             step_store: &step_store,
-            executor_capability_discovery_v2: None,
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &[],
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &ExtensionData::new("turn-1"),
-        })
-        .await;
+        },
+    )
+    .await;
     let tools =
         registry.tool_contributors()[0].tools_for_step(&session_store, &thread_store, &step_store);
     let list_tool = tools
@@ -2483,23 +2589,29 @@ async fn cloud_discovery_is_gated_and_reports_failures() -> TestResult {
             usize::from(cloud_available)
         );
         for discovery_v2 in [None, Some([].as_slice())] {
-            let sections = registry.context_contributors()[0]
-                .contribute_world_state(WorldStateContributionInput {
+            let step_store = ExtensionData::new("step");
+            if let Some(snapshots) = discovery_v2 {
+                step_store.insert(Vec::<
+                    codex_exec_server::ExecutorCapabilityDiscoveryV2Snapshot,
+                >::from(snapshots));
+            }
+            let sections = prepared_world_state(
+                &registry,
+                &[],
+                WorldStateContributionInput {
                     previous_world_state: None,
-                    step_store: &ExtensionData::new("step"),
-                    executor_capability_discovery_v2: discovery_v2,
+                    step_store: &step_store,
                     model_info: &catalog_model_info(),
                     thread_id: codex_protocol::ThreadId::new(),
                     turn_id: "turn-1",
                     environments: &[],
-                    ready_selected_capability_roots: &[],
-                    executor_capability_discovery: None,
                     extension_metrics: None,
                     session_store: &session_store,
                     thread_store: &thread_store,
                     turn_store: &ExtensionData::new("turn-1"),
-                })
-                .await;
+                },
+            )
+            .await;
             if has_cloud_provider {
                 // Resume may retain a catalog even when the new Cloud discovery fails.
                 let previous = serde_json::json!({
@@ -2542,9 +2654,11 @@ async fn cloud_discovery_is_gated_and_reports_failures() -> TestResult {
 }
 
 #[tokio::test]
-async fn v2_read_cache_is_scoped_to_the_captured_environment() -> TestResult {
+async fn v2_root_aliases_and_read_cache_use_the_captured_environment() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let path = directory.path().join("SKILL.md");
+    let root = directory.path().join("skills");
+    let path = root.join("nested/demo/SKILL.md");
+    std::fs::create_dir_all(path.parent().ok_or("skill directory")?)?;
     std::fs::write(&path, "original\n".repeat(2_000))?;
     let manager = Arc::new(EnvironmentManager::default_for_tests());
     let environment = manager
@@ -2578,21 +2692,31 @@ async fn v2_read_cache_is_scoped_to_the_captured_environment() -> TestResult {
     let snapshots = vec![ExecutorCapabilityDiscoveryV2Snapshot {
         environment_id: "captured".to_string(),
         result: Ok(Arc::new(DiscoverV2CapabilitiesResponse {
-            skills: vec![ExecutorSkill {
-                name: "demo".to_string(),
-                description: "Demo".to_string(),
-                short_description: None,
-                path: PathUri::from_host_native_path(&path)?,
-                discovery_root: None,
-                dependencies: None,
-                policy: None,
-            }],
+            skills: ["demo", "build", "check", "deploy", "review", "test"]
+                .into_iter()
+                .map(|name| {
+                    Ok(ExecutorSkill {
+                        name: name.to_string(),
+                        description: "Demo".to_string(),
+                        short_description: None,
+                        path: PathUri::from_host_native_path(
+                            root.join(format!("nested/{name}/SKILL.md")),
+                        )?,
+                        discovery_root: Some(SkillDiscoveryRoot {
+                            id: "codex-home-skills".to_string(),
+                            path: PathUri::from_host_native_path(&root)?,
+                        }),
+                        dependencies: None,
+                        policy: None,
+                    })
+                })
+                .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?,
             ..Default::default()
         })),
     }];
     let package = format!(
-        "skill://skills/{}",
-        PathUri::from_host_native_path(directory.path())?
+        "skill://codex-home-skills/{}",
+        PathUri::from_host_native_path(path.parent().ok_or("skill directory")?)?
             .inferred_native_path_string()
             .replace('\\', "/")
             .trim_start_matches('/')
@@ -2623,23 +2747,30 @@ async fn v2_read_cache_is_scoped_to_the_captured_environment() -> TestResult {
                 .into_iter()
                 .collect::<HashMap<_, _>>(),
         );
-        registry.context_contributors()[0]
-            .contribute_world_state(WorldStateContributionInput {
+        let sections = prepared_world_state(
+            &registry,
+            &[],
+            WorldStateContributionInput {
                 previous_world_state: None,
                 step_store: &step_store,
-                executor_capability_discovery_v2: Some(&snapshots),
                 model_info: &catalog_model_info(),
                 thread_id: codex_protocol::ThreadId::new(),
                 turn_id: "turn-1",
                 environments: &[],
-                ready_selected_capability_roots: &[],
-                executor_capability_discovery: None,
                 extension_metrics: None,
                 session_store: &session_store,
                 thread_store: &thread_store,
                 turn_store: &turn_store,
-            })
-            .await;
+            },
+        )
+        .await;
+        let rendered = sections
+            .iter()
+            .filter_map(|section| section.render_diff(PreviousWorldStateSection::Absent).1)
+            .map(|fragment| fragment.body().clone().expect_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("e0/nested/demo"), "{rendered}");
         let tools = registry.tool_contributors()[0].tools_for_step(
             &session_store,
             &thread_store,
@@ -2650,7 +2781,8 @@ async fn v2_read_cache_is_scoped_to_the_captured_environment() -> TestResult {
             .find(|tool| tool.tool_name().name == "read")
             .ok_or("skills.read")?;
         let payload = ToolPayload::Function {
-            arguments: serde_json::json!({"package": package, "cursor": cursor}).to_string(),
+            arguments: serde_json::json!({"package": "e0/nested/demo", "cursor": cursor})
+                .to_string(),
         };
         let result = read
             .handle(ToolCall {
@@ -2686,6 +2818,15 @@ async fn v2_read_cache_is_scoped_to_the_captured_environment() -> TestResult {
             let response = result?
                 .post_tool_use_response("read", &payload)
                 .ok_or("read output")?;
+            assert_eq!(response["resource"], format!("{package}/SKILL.md"));
+            assert_eq!(
+                response["installations"],
+                serde_json::json!([{
+                    "environment_id": "captured",
+                    "skill_root": PathUri::from_host_native_path(path.parent().ok_or("skill directory")?)?
+                        .inferred_native_path_string(),
+                }])
+            );
             assert!(
                 response["contents"]
                     .as_str()
@@ -2766,10 +2907,12 @@ async fn root_qualified_locator_selects_only_the_matching_executor_skill() -> Te
         .await;
 
     let turn_store = ExtensionData::new("turn-1");
-    registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    prepared_world_state(
+        &registry,
+        &selected_roots,
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &step_store,
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
@@ -2780,37 +2923,35 @@ async fn root_qualified_locator_selects_only_the_matching_executor_skill() -> Te
                 workspace_roots: Vec::new(),
                 config: EnvironmentConfigState::FromThread,
             }],
-            ready_selected_capability_roots: &selected_roots,
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
+        },
+    )
+    .await;
+    let fragments = prepared_turn_input(
+        &registry,
+        TurnInputContext {
             step_store: &step_store,
-        })
-        .await;
-    let fragments = registry.turn_input_contributors()[0]
-        .contribute(
-            TurnInputContext {
-                step_store: &step_store,
-                turn_id: "turn-1".to_string(),
-                user_input: vec![UserInput::Mention {
-                    name: "lint-fix".to_string(),
-                    path: root_b_locator.to_string(),
-                }],
-                environments: vec![codex_extension_api::TurnInputEnvironment {
-                    environment_id: "env-1".to_string(),
-                    cwd: PathUri::parse("file:///workspace")?,
-                    is_primary: true,
-                    fs: &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
-                }],
-            },
-            /*extension_metrics*/ None,
-            &session_store,
-            &thread_store,
-            &turn_store,
-        )
-        .await;
+            turn_id: "turn-1".to_string(),
+            user_input: vec![UserInput::Mention {
+                name: "lint-fix".to_string(),
+                path: root_b_locator.to_string(),
+            }],
+            environments: vec![codex_extension_api::TurnInputEnvironment {
+                environment_id: "env-1".to_string(),
+                cwd: PathUri::parse("file:///workspace")?,
+                is_primary: true,
+                fs: &FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS),
+            }],
+        },
+        /*extension_metrics*/ None,
+        &session_store,
+        &thread_store,
+        &turn_store,
+    )
+    .await;
 
     assert_eq!(1, fragments.len());
     assert!(fragments[0].render().expect_text().contains(root_b_locator));
@@ -2907,41 +3048,41 @@ async fn model_context_window_scales_executor_and_cloud_catalogs() -> TestResult
         },
     }];
     let turn_store = ExtensionData::new("turn-1");
-    let sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let sections = prepared_world_state(
+        &registry,
+        &selected_roots,
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &model_info,
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &selected_roots,
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
     // Core rebuilds world state before each sampling step.
-    let _repeated_sections = registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    let _repeated_sections = prepared_world_state(
+        &registry,
+        &selected_roots,
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &ExtensionData::new("step"),
             model_info: &model_info,
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &selected_roots,
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
-            step_store: &turn_store,
-        })
-        .await;
+        },
+    )
+    .await;
     assert!(event_rx.try_recv().is_err());
     let executor_section = world_state_section(&sections, "skills");
     let (snapshot, executor_fragment) =
@@ -3040,37 +3181,37 @@ async fn executor_catalog_emits_at_most_four_warnings() -> TestResult {
     }];
     let turn_store = ExtensionData::new("turn-1");
 
-    registry.context_contributors()[0]
-        .contribute_world_state(WorldStateContributionInput {
+    prepared_world_state(
+        &registry,
+        &selected_roots,
+        WorldStateContributionInput {
             previous_world_state: None,
-            executor_capability_discovery_v2: None,
+            step_store: &step_store,
             model_info: &catalog_model_info(),
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "turn-1",
             environments: &[],
-            ready_selected_capability_roots: &selected_roots,
-            executor_capability_discovery: None,
             extension_metrics: None,
             session_store: &session_store,
             thread_store: &thread_store,
             turn_store: &turn_store,
+        },
+    )
+    .await;
+    prepared_turn_input(
+        &registry,
+        TurnInputContext {
             step_store: &step_store,
-        })
-        .await;
-    registry.turn_input_contributors()[0]
-        .contribute(
-            TurnInputContext {
-                step_store: &step_store,
-                turn_id: "turn-1".to_string(),
-                user_input: Vec::new(),
-                environments: Vec::new(),
-            },
-            /*extension_metrics*/ None,
-            &session_store,
-            &thread_store,
-            &turn_store,
-        )
-        .await;
+            turn_id: "turn-1".to_string(),
+            user_input: Vec::new(),
+            environments: Vec::new(),
+        },
+        /*extension_metrics*/ None,
+        &session_store,
+        &thread_store,
+        &turn_store,
+    )
+    .await;
 
     let messages = event_rx
         .try_iter()
@@ -3164,23 +3305,23 @@ async fn host_catalog_compacts_shared_paths_under_budget_pressure() -> TestResul
     let turn_store = ExtensionData::new("turn-1");
     turn_store.insert(snapshot);
 
-    let fragments = registry.turn_input_contributors()[0]
-        .contribute(
-            TurnInputContext {
-                step_store: &ExtensionData::new("step"),
-                turn_id: "turn-1".to_string(),
-                user_input: vec![UserInput::Text {
-                    text: "hello".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                environments: Vec::new(),
-            },
-            /*extension_metrics*/ None,
-            &session_store,
-            &thread_store,
-            &turn_store,
-        )
-        .await;
+    let fragments = prepared_turn_input(
+        &registry,
+        TurnInputContext {
+            step_store: &ExtensionData::new("step"),
+            turn_id: "turn-1".to_string(),
+            user_input: vec![UserInput::Text {
+                text: "hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            environments: Vec::new(),
+        },
+        /*extension_metrics*/ None,
+        &session_store,
+        &thread_store,
+        &turn_store,
+    )
+    .await;
     let catalog = fragments
         .iter()
         .find(|fragment| fragment.role() == "developer")
@@ -3250,23 +3391,23 @@ async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
         })
         .await;
 
-    let fragments = registry.turn_input_contributors()[0]
-        .contribute(
-            TurnInputContext {
-                step_store: &ExtensionData::new("step"),
-                turn_id: "turn-1".to_string(),
-                user_input: vec![UserInput::Text {
-                    text: "$hidden-skill".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                environments: Vec::new(),
-            },
-            /*extension_metrics*/ None,
-            &session_store,
-            &thread_store,
-            &ExtensionData::new("turn-1"),
-        )
-        .await;
+    let fragments = prepared_turn_input(
+        &registry,
+        TurnInputContext {
+            step_store: &ExtensionData::new("step"),
+            turn_id: "turn-1".to_string(),
+            user_input: vec![UserInput::Text {
+                text: "$hidden-skill".to_string(),
+                text_elements: Vec::new(),
+            }],
+            environments: Vec::new(),
+        },
+        /*extension_metrics*/ None,
+        &session_store,
+        &thread_store,
+        &ExtensionData::new("turn-1"),
+    )
+    .await;
 
     assert_eq!(2, fragments.len());
     let visible = fragments[0].render().expect_text();
@@ -3372,6 +3513,17 @@ impl ExtensionMetrics for RecordingMetrics {
     }
 }
 
+fn expected_catalog_entries(stage: &str, status: &str, count: i64) -> RecordedHistogram {
+    RecordedHistogram {
+        name: "codex.skills.catalog.entries".to_string(),
+        value: count,
+        tags: vec![
+            ("stage".to_string(), stage.to_string()),
+            ("status".to_string(), status.to_string()),
+        ],
+    }
+}
+
 fn expected_catalog_metric_samples(catalog_surface: &str, count: i64) -> Vec<RecordedHistogram> {
     let tags = vec![("catalog_surface".to_string(), catalog_surface.to_string())];
     vec![
@@ -3461,6 +3613,8 @@ fn test_entry(
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TestConfig {
     include_instructions: bool,
+    catalog_deltas_enabled: bool,
+    omit_descriptions: bool,
     bundled_skills_enabled: bool,
     cloud_skill_enabled: bool,
     shadow_selection_enabled: bool,
@@ -3469,6 +3623,8 @@ struct TestConfig {
 fn default_config() -> TestConfig {
     TestConfig {
         include_instructions: true,
+        catalog_deltas_enabled: false,
+        omit_descriptions: false,
         bundled_skills_enabled: true,
         cloud_skill_enabled: true,
         shadow_selection_enabled: false,
@@ -3478,6 +3634,8 @@ fn default_config() -> TestConfig {
 fn skills_extension_config(config: &TestConfig) -> SkillsExtensionConfig {
     SkillsExtensionConfig {
         include_instructions: config.include_instructions,
+        catalog_deltas_enabled: config.catalog_deltas_enabled,
+        omit_descriptions: config.omit_descriptions,
         max_context_tokens: None,
         bundled_skills_enabled: config.bundled_skills_enabled,
         cloud_skill_enabled: config.cloud_skill_enabled,
@@ -3588,23 +3746,23 @@ async fn shared_catalog_keeps_captured_executor_and_separates_bindings_in_one_tu
         }
         let step_store = ExtensionData::new(format!("step-{index}"));
         step_store.insert(resolved);
-        let sections = registry.context_contributors()[0]
-            .contribute_world_state(WorldStateContributionInput {
+        let sections = prepared_world_state(
+            &registry,
+            &roots,
+            WorldStateContributionInput {
                 previous_world_state: None,
-                executor_capability_discovery_v2: None,
                 model_info: &catalog_model_info(),
                 thread_id: codex_protocol::ThreadId::new(),
                 turn_id: "same-turn",
                 environments: &[],
-                ready_selected_capability_roots: &roots,
-                executor_capability_discovery: None,
                 extension_metrics: None,
                 session_store: &session_store,
                 thread_store: &thread_store,
                 turn_store: &turn_store,
                 step_store: &step_store,
-            })
-            .await;
+            },
+        )
+        .await;
         let rendered = sections
             .iter()
             .filter_map(|section| section.render_diff(PreviousWorldStateSection::Absent).1)
@@ -3619,3 +3777,5 @@ async fn shared_catalog_keeps_captured_executor_and_separates_bindings_in_one_tu
     }
     Ok(())
 }
+#[path = "skills_extension/preparation_tests.rs"]
+mod preparation_tests;

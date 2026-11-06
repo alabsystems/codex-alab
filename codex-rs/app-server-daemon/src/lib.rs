@@ -26,6 +26,7 @@ mod thread_recovery;
 mod update_loop;
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -49,10 +50,11 @@ use tokio::time::sleep;
 
 const START_POLL_INTERVAL: Duration = Duration::from_millis(50);
 // An older updater can pass background policy to a replacement daemon, so retain
-// the longer readiness allowance during upgrades on macOS.
-#[cfg(target_os = "macos")]
+// the longer readiness allowance during upgrades on macOS. On Linux, a cold
+// start from a rotational disk can take more than ten seconds.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const START_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 // Leave room for the longest graceful stop, forced-exit check, and restart.
 const OPERATION_LOCK_TIMEOUT: Duration =
@@ -296,6 +298,20 @@ pub async fn run_pid_update_loop(
     #[cfg(windows)]
     backend::windows::ensure_not_elevated()?;
     update_loop::run(http_client_factory, restore_release).await
+}
+
+pub use backend::stderr_log::stderr_writer;
+
+/// Routes managed app-server logs through a bounded queue to a dedicated file worker.
+/// Full queues and oversized records are dropped; shutdown never waits for disk I/O.
+/// Native and other-process stderr writes remain best effort during pruning.
+pub fn maintain_stderr_log() -> Result<()> {
+    backend::stderr_log::start(
+        Daemon::from_environment()?
+            .pid_file
+            .with_extension("stderr.log"),
+    );
+    Ok(())
 }
 
 pub async fn update(
@@ -575,9 +591,9 @@ impl Daemon {
                     #[cfg(windows)]
                     backend::windows::ensure_detached_launch(managed_codex_bin)?;
                     if let Err(err) = thread_recovery::discard_pending(self) {
-                        eprintln!(
-                            "warning: failed to clear stale daemon recovery before update: {err}"
-                        );
+                        let _ = stderr_writer().write_all(format!(
+                            "warning: failed to clear stale daemon recovery before update: {err}\n"
+                        ).as_bytes());
                     }
                     diagnostics::event(
                         "restart_requested",
@@ -686,20 +702,22 @@ impl Daemon {
     }
 
     async fn wait_until_ready(&self) -> Result<client::ProbeInfo> {
+        let exited = backend::wait_for_process_exit(&self.pid_file);
+        tokio::pin!(exited);
         let deadline = tokio::time::Instant::now() + START_TIMEOUT;
-        loop {
+        let err = loop {
             match client::probe(&self.socket_path).await {
                 Ok(info) => return Ok(info),
                 Err(err) if tokio::time::Instant::now() < deadline => {
-                    let _ = err;
-                    sleep(START_POLL_INTERVAL).await;
+                    tokio::select! {
+                        () = &mut exited => break err,
+                        () = sleep(START_POLL_INTERVAL) => {}
+                    }
                 }
-                Err(err) => {
-                    let context = self.app_server_not_ready_context().await;
-                    return Err(err).context(context);
-                }
+                Err(err) => break err,
             }
-        }
+        };
+        Err(err).context(self.app_server_not_ready_context().await)
     }
 
     async fn app_server_not_ready_context(&self) -> String {
@@ -933,7 +951,7 @@ impl Daemon {
             managed_codex_path: managed.managed_codex_bin,
             managed_codex_version,
             socket_path: self.socket_path.clone(),
-            cli_version: env!("CARGO_PKG_VERSION").to_string(),
+            cli_version: codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string(), // ALAB(version): running executable identity
             app_server_version: info.app_server_version,
         })
     }
@@ -1162,7 +1180,7 @@ impl Daemon {
             managed_codex_path: self.managed_codex_bin.clone(),
             managed_codex_version,
             socket_path: self.socket_path.clone(),
-            cli_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            cli_version: Some(codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string()), // ALAB(version): running executable identity
             app_server_version,
         }
     }
@@ -1179,7 +1197,7 @@ impl Daemon {
             backend,
             remote_control_enabled,
             socket_path: self.socket_path.clone(),
-            cli_version: env!("CARGO_PKG_VERSION").to_string(),
+            cli_version: codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string(), // ALAB(version): running executable identity
             app_server_version,
         }
     }
@@ -1508,7 +1526,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn not_ready_context_reports_daemon_app_server_before_stderr() {
+    async fn readiness_reports_stderr_promptly_when_daemon_is_gone() {
         let temp_dir = TempDir::new().expect("temp dir");
         let daemon = Daemon {
             log_diagnostics: false,
@@ -1524,8 +1542,25 @@ mod tests {
             .await
             .expect("write stderr log");
 
+        // A daemon that exits during startup leaves its published PID record behind.
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--help")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        std::fs::write(
+            &daemon.pid_file,
+            serde_json::json!({ "pid": child.id(), "processStartTime": "exited" }).to_string(),
+        )
+        .unwrap();
+        let error =
+            tokio::time::timeout(std::time::Duration::from_secs(5), daemon.wait_until_ready())
+                .await
+                .expect("an exited daemon should not exhaust the readiness timeout")
+                .expect_err("daemon is gone");
         assert_eq!(
-            daemon.app_server_not_ready_context().await,
+            error.to_string(),
             format!(
                 "app server did not become ready on {}\n\n\
                  Daemon used app-server:\n  path: {}\n  version: unknown\n\n\

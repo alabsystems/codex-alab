@@ -185,6 +185,9 @@ async fn the_description_goes_with_the_claim() {
 async fn an_unanswered_description_read_never_costs_the_claim() {
     // An unanswered exchange closes the connection it ran on: never the claim's.
     let (fake, sup, _dir) = held().await;
+    // Settle the claim's initial metadata cleanup before stalling metadata reads;
+    // otherwise the stall can also close the claim's own connection.
+    sup.show_needs().await;
     let claim_conn = fake.claim().and_then(|c| c.conn);
     fake.stall("meta");
     sup.describe(describe(Some("ship the inbox"), None)).await;

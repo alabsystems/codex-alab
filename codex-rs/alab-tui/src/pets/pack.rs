@@ -11,20 +11,9 @@
 //! violet at the tail, a white-hot glint at the front end (aterm's
 //! meteor), and a 2-pixel pale halo keeps the dark outline legible on dark terminals.
 //!
-//! The sheet is codex's built-in layout (`tui/src/pets/model.rs`, `default_animations`): 8
-//! columns × 9 rows of 192×208 frames, one row per animation:
-//!
-//! | row | codex animation | frames | here |
-//! | --- | --- | --- | --- |
-//! | 0 | `idle` | 6 | a slow drift of the spectrum, one blink |
-//! | 1 | `running-right` | 8 | the ribbon's wave travels, stars stream past |
-//! | 2 | `running-left` | 8 | row 1 mirrored |
-//! | 3 | `waving` | 4 | a bob, happy eyes, a pink heart rising |
-//! | 4 | `jumping` | 5 | a hop off the ribbon |
-//! | 5 | `failed` | 8 | the ribbon drains of colour, the head droops, eyes shut |
-//! | 6 | `waiting` ("Needs input") | 6 | a gold `?` pulsing over the head |
-//! | 7 | `running` ("Thinking") | 6 | the ribbon cycles through the spectrum |
-//! | 8 | `review` ("Ready") | 6 | gold and white-hot sparkles, happy eyes |
+//! The sheet uses 24 columns × 9 rows of 192×208 frames. Each semantic animation has
+//! its own row, sampled evenly around a complete cycle. The loader supplies matching frame
+//! geometry and timing instead of inheriting the stock pets' long, uneven keyframe holds.
 //!
 //! Generated, never fetched: upstream's built-ins download from OpenAI's CDN on first use;
 //! this one is drawn by [`spritesheet_rgba`] from code in the binary. Every step is integer or
@@ -45,24 +34,28 @@ pub const KITTY_NAME: &str = "Rainbow Kitty";
 pub const KITTY_DESCRIPTION: &str = "aterm's codex calico riding the spectrum";
 /// The cached sheet's file name (codex keys its built-in cache by file name). Bump the
 /// version whenever the art changes, or an install keeps the old sheet.
-pub const KITTY_FILE: &str = "alab-kitty-spritesheet-v1.png";
+pub const KITTY_FILE: &str = "alab-kitty-spritesheet-v2.png";
 
 /// One frame's width, codex's `DEFAULT_FRAME_WIDTH`.
 pub const FRAME_W: usize = 192;
 /// One frame's height, codex's `DEFAULT_FRAME_HEIGHT`.
 pub const FRAME_H: usize = 208;
-/// Frames per row, codex's `DEFAULT_FRAME_COLUMNS`.
-pub const COLUMNS: usize = 8;
+/// Smooth samples per animation, within Codex's 256-frame limit.
+pub const COLUMNS: usize = 24;
+/// Older Codex builds require a 1536×1872 sheet even for custom pets.
+pub const LEGACY_COLUMNS: usize = 8;
 /// Rows, codex's `DEFAULT_FRAME_ROWS`.
 pub const ROWS: usize = 9;
-/// The sheet's width in pixels (1536).
+/// The sheet's width in pixels (4608).
 pub const SHEET_W: usize = FRAME_W * COLUMNS;
 /// The sheet's height in pixels (1872).
 pub const SHEET_H: usize = FRAME_H * ROWS;
 
-/// How many frames each row's animation plays (codex's `default_animations`); the rest of
-/// the row stays transparent.
-pub const ROW_FRAMES: [usize; ROWS] = [6, 8, 8, 4, 5, 8, 6, 6, 6];
+/// Every sample in each row is played.
+pub const ROW_FRAMES: [usize; ROWS] = [COLUMNS; ROWS];
+
+/// Even frame times: a gentle idle/attention cycle and faster movement while working.
+pub const ROW_FRAME_MS: [u64; ROWS] = [80, 50, 50, 80, 50, 80, 80, 50, 80];
 
 /// codex's animation name for each row.
 pub const ROW_NAMES: [&str; ROWS] = [
@@ -100,12 +93,22 @@ const HALO: i32 = 2;
 
 /// The whole sheet, `SHEET_W × SHEET_H` straight-alpha RGBA, rows top to bottom.
 pub fn spritesheet_rgba() -> Vec<u8> {
-    let mut sheet = vec![0u8; SHEET_W * SHEET_H * 4];
-    for (row, &frames) in ROW_FRAMES.iter().enumerate() {
-        for k in 0..frames {
-            let frame = frame(row, k);
+    sheet(COLUMNS)
+}
+
+/// Sample the same art into the fixed eight-column layout required by codex-old.
+pub fn legacy_spritesheet_rgba() -> Vec<u8> {
+    sheet(LEGACY_COLUMNS)
+}
+
+fn sheet(columns: usize) -> Vec<u8> {
+    let width = FRAME_W * columns;
+    let mut sheet = vec![0u8; width * SHEET_H * 4];
+    for row in 0..ROWS {
+        for column in 0..columns {
+            let frame = frame(row, column * COLUMNS / columns);
             for y in 0..FRAME_H {
-                let at = ((row * FRAME_H + y) * SHEET_W + k * FRAME_W) * 4;
+                let at = ((row * FRAME_H + y) * width + column * FRAME_W) * 4;
                 let from = y * FRAME_W * 4;
                 sheet[at..at + FRAME_W * 4].copy_from_slice(&frame.px[from..from + FRAME_W * 4]);
             }
@@ -185,97 +188,100 @@ const HEART: &[&[u8]] = &[
     b".##.##.", b"#######", b"#######", b".#####.", b"..###..", b"...#...",
 ];
 
+/// Periodic eased motion, with zero velocity at both ends and across the loop seam.
+fn pulse(phase: f32) -> f32 {
+    let t = pingpong(phase * 2.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 fn look(row: usize, k: usize) -> Look {
-    let gold = palette::GOLD;
+    let gold = palette::spectrum_stop(2);
     let hot = palette::WHITE_HOT;
-    let k_i = k as i32;
+    let phase = k as f32 / COLUMNS as f32;
+    let bob = pulse(phase);
+    let lift = |height: f32| -(height * bob).round() as i32;
+    let shimmer = |rgb| palette::mix(rgb, hot, bob * 0.5);
     match row {
-        // idle: a slow drift and one blink.
         0 => Look {
-            lift: [0, 0, -1, -2, -1, 0][k],
-            eyes: if k == 3 { Eyes::Blink } else { Eyes::Open },
-            phase: k as f32 / 24.0,
+            lift: lift(2.0),
+            eyes: if k == COLUMNS / 2 {
+                Eyes::Blink
+            } else {
+                Eyes::Open
+            },
+            phase: bob * 0.2,
             stars: vec![
-                star(10, 14, if k.is_multiple_of(2) { 3 } else { 2 }, hot),
-                star(178, 190, if k % 3 == 1 { 3 } else { 2 }, gold),
+                star(10, 14, 2, shimmer(hot)),
+                star(178, 190, 2, shimmer(gold)),
             ],
             ..Look::default()
         },
-        // running-right and running-left: the wave travels, stars stream back along it.
         1 | 2 => Look {
-            lift: [0, -2, -3, -2, 0, -2, -3, -2][k],
-            wave: k_i * (WAVE_PERIOD / 8),
-            phase: k as f32 / 16.0,
+            lift: lift(3.0),
+            wave: k as i32 * WAVE_PERIOD / COLUMNS as i32,
+            phase: phase * 2.0,
             stars: (0..3)
                 .map(|i| {
-                    let x = (170 - i * 60 - k_i * 12).rem_euclid(FRAME_W as i32);
-                    let rgb = palette::spectrum_stop(((i + k_i) % 7) as usize);
-                    star(x, 176 + i * 10, 2 + (k_i + i) % 2, rgb)
+                    let x =
+                        (170 - i * 64 - (k * FRAME_W / COLUMNS) as i32).rem_euclid(FRAME_W as i32);
+                    star(x, 176 + i * 10, 2, palette::spectrum_stop(i as usize * 2))
                 })
                 .collect(),
             mirrored: row == 2,
             ..Look::default()
         },
-        // waving: a bob, happy eyes, a heart rising.
         3 => Look {
-            lift: [0, -4, 0, -4][k],
-            eyes: if k % 2 == 1 { Eyes::Happy } else { Eyes::Open },
+            lift: lift(4.0),
+            eyes: if bob > 0.75 { Eyes::Happy } else { Eyes::Open },
             glyph: Some(Glyph {
                 bits: HEART,
                 x: 4,
-                y: 22 - k_i * 6,
+                y: 22 - (18.0 * bob).round() as i32,
                 scale: 3,
-                rgb: palette::INNER_EAR,
+                rgb: shimmer(palette::INNER_EAR),
             }),
             ..Look::default()
         },
-        // jumping: a hop off the ribbon.
         4 => Look {
-            lift: [0, -14, -24, -14, 0][k],
-            eyes: if k == 2 { Eyes::Happy } else { Eyes::Open },
-            phase: k as f32 / 20.0,
-            stars: if k == 2 {
-                vec![star(10, 10, 3, gold), star(182, 12, 2, hot)]
-            } else {
-                Vec::new()
-            },
+            lift: lift(24.0),
+            eyes: if bob > 0.8 { Eyes::Happy } else { Eyes::Open },
+            phase: bob * 0.2,
+            stars: vec![
+                star(10, 10, 2, shimmer(gold)),
+                star(182, 12, 2, shimmer(hot)),
+            ],
             ..Look::default()
         },
-        // failed: the colour drains, the head droops, the eyes shut.
-        5 => Look {
-            lift: [2, 4, 6, 8, 8, 8, 8, 8][k],
-            eyes: Eyes::Blink,
-            amp: 1,
-            drain: 120 + 16 * k as u32,
-            ..Look::default()
-        },
-        // waiting ("Needs input"): a gold question mark pulses over the head.
+        5 => {
+            let progress = k as f32 / (COLUMNS - 1) as f32;
+            Look {
+                lift: (8.0 * progress).round() as i32,
+                eyes: Eyes::Blink,
+                amp: 1,
+                drain: 120 + (112.0 * progress).round() as u32,
+                ..Look::default()
+            }
+        }
         6 => Look {
-            lift: [0, 0, -1, -1, 0, 0][k],
+            lift: lift(1.0),
             glyph: Some(Glyph {
                 bits: QUESTION,
                 x: 166,
-                y: if k.is_multiple_of(2) { 4 } else { 7 },
+                y: 4 + (3.0 * bob).round() as i32,
                 scale: 4,
-                rgb: if k.is_multiple_of(2) {
-                    gold
-                } else {
-                    palette::mix(gold, hot, 0.5)
-                },
+                rgb: shimmer(gold),
             }),
             ..Look::default()
         },
-        // running ("Thinking"): the spectrum cycles along the ribbon.
         7 => Look {
-            lift: [0, -1, -2, -2, -1, 0][k],
-            phase: k as f32 / 6.0 * 2.0,
-            wave: k_i * (WAVE_PERIOD / 6),
-            stars: vec![star(12 + k_i * 4, 18, 2, palette::spectrum_stop(k % 7))],
+            lift: lift(2.0),
+            phase: phase * 2.0,
+            wave: k as i32 * WAVE_PERIOD / COLUMNS as i32,
+            stars: vec![star(12, 18, 2, shimmer(gold))],
             ..Look::default()
         },
-        // review ("Ready"): sparkles and happy eyes.
         8 => Look {
-            lift: [0, -2, -3, -2, 0, 0][k],
+            lift: lift(3.0),
             eyes: Eyes::Happy,
             stars: [
                 (12, 14, gold),
@@ -284,9 +290,7 @@ fn look(row: usize, k: usize) -> Look {
                 (172, 192, gold),
             ]
             .into_iter()
-            .enumerate()
-            .filter(|(i, _)| (i + k) % 3 != 2)
-            .map(|(i, (x, y, rgb))| star(x, y, 2 + ((i + k) % 2) as i32 * 2, rgb))
+            .map(|(x, y, rgb)| star(x, y, 2, shimmer(rgb)))
             .collect(),
             ..Look::default()
         },

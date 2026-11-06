@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::config::Constrained;
+use crate::thread_manager::alab_exec_review; // ALAB(exec-review): register exec-owned review sessions without changing their IO.
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::ForkPersistence;
 use crate::session::GitEnrichmentPolicy;
@@ -78,6 +79,7 @@ pub(crate) async fn run_codex_thread_interactive(
         .services
         .model_client
         .responses_websocket_enabled();
+    let exec_review = alab_exec_review::prepare(&parent_session, &parent_ctx, &subagent_source).await?; // ALAB(exec-review): fence private review startup with the rest of the exec tree.
 
     let conversation_history = initial_history.unwrap_or(InitialHistory::New);
     let forked_from_thread_id = conversation_history.forked_from_id();
@@ -103,8 +105,13 @@ pub(crate) async fn run_codex_thread_interactive(
     let mut thread_extension_init = codex_extension_api::ExtensionDataInit::default();
     thread_extension_init.insert(isolation);
     let spawn_result = Session::spawn(SessionSpawnArgs {
+        attached_thread: false,
         startup: Some(Arc::clone(&startup)),
         config,
+        prompt_cache_key: parent_session
+            .services
+            .model_client
+            .prompt_cache_key_policy(),
         allow_provider_model_fallback: false,
         instructions,
         installation_id: parent_session.installation_id.clone(),
@@ -178,6 +185,7 @@ pub(crate) async fn run_codex_thread_interactive(
             return Err(error.into());
         }
     };
+    let io = alab_exec_review::finish(exec_review, Arc::clone(&session), io).await?; // ALAB(exec-review): register before publishing or submitting input.
     let thread_config = session.thread_config_snapshot().await;
     let client_metadata = parent_session.app_server_client_metadata().await;
     emit_subagent_session_started(
@@ -295,6 +303,7 @@ pub(crate) async fn run_codex_thread_one_shot(
             let should_shutdown = matches!(
                 event.msg,
                 EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+                    | EventMsg::ShutdownComplete // ALAB(exec-review): a stopped delegate closes its forwarding bridge even when its original turn is suspended.
             );
             let _ = tx_bridge.send(event).await;
             if should_shutdown {
@@ -307,6 +316,7 @@ pub(crate) async fn run_codex_thread_one_shot(
                         parent_turn_id: None,
                         root_turn_id: None,
                         residency_guard: None,
+                        message_delivery: None,
                     })
                     .await;
                 child_cancel.cancel();
@@ -361,7 +371,9 @@ async fn forward_events(
                             | EventMsg::McpStartupComplete(_),
                     } => {}
                     other => {
+                        let stopped = matches!(other.msg, EventMsg::ShutdownComplete); // ALAB(exec-review): close restored delegate streams after their final lifecycle event.
                         if !forward_event_or_shutdown(&io, &tx_sub, &cancel_token, other).await
+                            || stopped // ALAB(exec-review): stopped sessions cannot produce more review events.
                         {
                             break;
                         }

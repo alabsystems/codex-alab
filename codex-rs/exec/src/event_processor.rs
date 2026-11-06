@@ -11,6 +11,8 @@ pub enum CodexStatus {
 }
 
 pub(crate) trait EventProcessor {
+    fn alab_handoff_snapshot(&self) -> Result<serde_json::Value, String>; // ALAB(exec-recovery): preserve presentation state before replacing this runtime.
+    fn alab_restore_handoff(&mut self, state: serde_json::Value) -> Result<(), String>; // ALAB(exec-recovery): resume the same output stream before emitting any item.
     /// Print summary of effective configuration and user prompt.
     fn print_config_summary(
         &mut self,

@@ -6,14 +6,39 @@
 //! in `ChatWidget`'s private input queue, and this turn's plan in its private transcript
 //! state, which only a child of `chatwidget` can read. The session observe glue
 //! (`session_observe.rs`) asks these questions each frame.
+//!
+//! The OSC 7501 report's two hooks live here too (`ALAB(turns)`, `codex_alab_tui::turns`):
+//! one in `refresh_terminal_program_status` (each frame's report, MCP startup left out) and
+//! one in the live `TurnStarted` arm of `chatwidget/protocol.rs` (a turn's rest-to-turn edge),
+//! both reading state only a child of `chatwidget` can.
 
 use super::ChatWidget;
 use crate::terminal_program_status::ProgramStatus;
 use crate::terminal_program_status::ProgramStatusKind;
 use codex_alab_tui::session::BlockedKind;
 use codex_alab_tui::session::ProgramState;
+use codex_alab_tui::turns;
+
+#[cfg(test)]
+#[path = "daybreak_recovery_tests.rs"]
+mod daybreak_recovery_tests;
+#[cfg(test)]
+#[path = "turns_session_tests.rs"]
+mod turns_session_tests;
 
 impl ChatWidget {
+    /// Keep an automatic access offer informational under the proven active harness.
+    /// The refusal remains in history, and /daybreak still opens the person's picker.
+    pub(super) fn alab_keep_policy_offer_non_modal(&self) -> bool {
+        codex_alab_tui::boxes::tick_shared().is_some_and(|shared| {
+            shared.autopilot() == codex_alab_tui::session::Autopilot::Active
+                && shared.claim().is_some()
+                && self
+                    .thread_id
+                    .is_some_and(|id| shared.is_root_thread(&id.to_string()))
+        })
+    }
+
     /// Queued messages, steers waiting for the running turn, rejected steers, or the startup
     /// draft's submission: a person's input the TUI will still send.
     pub(crate) fn alab_queued_input(&self) -> bool {
@@ -32,19 +57,126 @@ impl ChatWidget {
         self.input_queue.user_turn_pending_start || self.pending_image_submission.is_some()
     }
 
-    /// The displayed thread's state, as the OSC 7501 report `pre_draw_tick` wrote says it.
+    /// The displayed thread's state, as upstream's OSC 7501 report says it: MCP startup is
+    /// `working` here (the session record and the autopilot wait it out), where the report
+    /// codex-alab writes inside aterm leaves it out ([`Self::alab_report_frame`]).
     pub(crate) fn alab_program_state(&self) -> ProgramState {
-        match self.desired_program_status() {
-            ProgramStatus::Idle => ProgramState::Idle,
-            ProgramStatus::Working => ProgramState::Working,
-            ProgramStatus::Blocked(kind) => ProgramState::Blocked(match kind {
-                ProgramStatusKind::Permission => BlockedKind::Permission,
-                ProgramStatusKind::Question => BlockedKind::Question,
-                ProgramStatusKind::Auth => BlockedKind::Auth,
-            }),
-            ProgramStatus::Done => ProgramState::Done,
-            ProgramStatus::Error => ProgramState::Error,
+        program_state_of(self.desired_program_status())
+    }
+
+    /// ALAB(session): the displayed thread's active goal objective when Goals are enabled.
+    pub(crate) fn alab_goal(&self) -> Option<&str> {
+        self.config
+            .features
+            .enabled(crate::Feature::Goals)
+            .then(|| {
+                self.current_goal_status
+                    .as_ref()
+                    .and_then(super::GoalStatusState::active_objective)
+            })
+            .flatten()
+    }
+
+    /// ALAB(turns): this frame's facts for the OSC 7501 report: upstream's state, whether it
+    /// says `working` only because MCP servers start (no turn running or submitted, no review,
+    /// no image being readied, no background terminal, no active goal between turns: every
+    /// other reason `desired_program_status` has), where the thread stands at rest, whether a
+    /// submitted turn waits for the server, and whether a turn of a thread this widget does not
+    /// show runs (a thread switch away from it and back begins none).
+    pub(crate) fn alab_report_frame(&self, status: ProgramStatus) -> turns::Frame {
+        let goal_between_turns = self.status_state.program_status_after_turn == ProgramStatus::Done
+            && self
+                .current_goal_status
+                .as_ref()
+                .is_some_and(super::GoalStatusState::is_active);
+        turns::Frame {
+            state: program_state_of(status),
+            startup_only: status == ProgramStatus::Working
+                && self.mcp_startup_status.is_some()
+                && !self.is_user_turn_pending_or_running()
+                && self.unified_exec_processes.is_empty()
+                && !goal_between_turns,
+            rest: program_state_of(self.status_state.program_status_after_turn),
+            submitted: self.alab_pending_user_turn(),
+            elsewhere: turns::running_elsewhere(self.thread_id.map(|id| id.to_string()).as_deref()),
+            held: turns::seen_elsewhere(self.thread_id.map(|id| id.to_string()).as_deref()),
         }
+    }
+
+    /// ALAB(turns) hook, first thing in `refresh_terminal_program_status` (each frame, and the
+    /// overlay's draw): where codex-alab writes the report (its binary, inside aterm), this
+    /// frame's report goes through upstream's writer with MCP startup left out, and upstream's
+    /// own write is skipped. Whether it was.
+    pub(crate) fn alab_report_program_status(&self, status: ProgramStatus) -> bool {
+        let frame = self.alab_report_frame(status);
+        let Some(result) = turns::frame(frame, |words| self.alab_write_program_states(words))
+        else {
+            return false;
+        };
+        if let Err(err) = result {
+            tracing::debug!(error = %err, "failed to set terminal program status");
+        }
+        true
+    }
+
+    /// ALAB(turns) hook in the live `TurnStarted` arm (`chatwidget/protocol.rs`), before
+    /// `on_task_started` clears the submission that started it: the turn's rest-to-turn edge,
+    /// where codex-alab writes the report. The TUI submitted the turn when
+    /// `user_turn_pending_start` stands (a person's prompt, a driver's typed turn, a queued
+    /// message, `/compact`, a review, a shell command); a turn it did not (a goal's
+    /// continuation, an autopilot act through the app-server) begins none under standing work.
+    pub(crate) fn alab_turn_starting(&self) {
+        let asked = self.input_queue.user_turn_pending_start;
+        if let Some(Err(err)) =
+            turns::starting(asked, |words| self.alab_write_program_states(words))
+        {
+            tracing::debug!(error = %err, "failed to set terminal program status");
+        }
+    }
+
+    /// ALAB(turns) hook in the `TurnCompleted` arm (`chatwidget/protocol.rs`): this widget took
+    /// the end of `turn` of `thread`, live or replayed, after its `turn/started` and any edge
+    /// that wrote; booked so codex-alab records a landing on it only after them
+    /// (`Shared::turn_handled_end`).
+    pub(crate) fn alab_turn_ended(&self, thread: &str, turn: &str) {
+        turns::handled_end(thread, turn);
+    }
+
+    /// ALAB(turns): pass the report's whole edge to upstream's writer/cache owner. It takes
+    /// the cache before stdout, as a report or panic-hook clear does, and holds the writer
+    /// across the prefix, final word and flush. Where upstream writes nothing (a test build,
+    /// stdout no terminal), only the last word goes to it.
+    fn alab_write_program_states(&self, words: &[ProgramState]) -> std::io::Result<()> {
+        use std::io::IsTerminal;
+        let Some((&last, before)) = words.split_last() else {
+            return Ok(());
+        };
+        if before.is_empty() || cfg!(test) || !std::io::stdout().is_terminal() {
+            return self.alab_write_program_state(last);
+        }
+        let rest: String = before
+            .iter()
+            .filter_map(|word| turns::sequence(*word))
+            .collect();
+        let Some(status) = program_status_of(last) else {
+            return Ok(());
+        };
+        crate::terminal_program_status::set_terminal_program_status_with_prefix(
+            status,
+            self.iterm_session_detail(status),
+            &rest,
+        )
+    }
+
+    /// One report word through upstream's writer (its cache, its OSC 21337 detail in iTerm2).
+    fn alab_write_program_state(&self, state: ProgramState) -> std::io::Result<()> {
+        let Some(status) = program_status_of(state) else {
+            return Ok(());
+        };
+        crate::terminal_program_status::set_terminal_program_status(
+            status,
+            self.iterm_session_detail(status),
+        )
     }
 
     /// This turn's `update_plan` checklist as (completed, total) steps, the counts the title's
@@ -65,6 +197,37 @@ impl ChatWidget {
     }
 }
 
+/// Upstream's status word as codex-alab's.
+fn program_state_of(status: ProgramStatus) -> ProgramState {
+    match status {
+        ProgramStatus::Idle => ProgramState::Idle,
+        ProgramStatus::Working => ProgramState::Working,
+        ProgramStatus::Blocked(kind) => ProgramState::Blocked(match kind {
+            ProgramStatusKind::Permission => BlockedKind::Permission,
+            ProgramStatusKind::Question => BlockedKind::Question,
+            ProgramStatusKind::Auth => BlockedKind::Auth,
+        }),
+        ProgramStatus::Done => ProgramState::Done,
+        ProgramStatus::Error => ProgramState::Error,
+    }
+}
+
+/// codex-alab's state word as upstream's; `None` for `Unknown`, which is never written.
+fn program_status_of(state: ProgramState) -> Option<ProgramStatus> {
+    Some(match state {
+        ProgramState::Unknown => return None,
+        ProgramState::Idle => ProgramStatus::Idle,
+        ProgramState::Working => ProgramStatus::Working,
+        ProgramState::Blocked(kind) => ProgramStatus::Blocked(match kind {
+            BlockedKind::Permission => ProgramStatusKind::Permission,
+            BlockedKind::Question => ProgramStatusKind::Question,
+            BlockedKind::Auth => ProgramStatusKind::Auth,
+        }),
+        ProgramState::Done => ProgramStatus::Done,
+        ProgramState::Error => ProgramStatus::Error,
+    })
+}
+
 /// The box glue (`ALAB(answer)`) through the chat widget's real view stack: the hooks in the
 /// overlay's and the selection view's `pre_draw_tick` are reached by the widget's own
 /// `pre_draw_tick`, the answer leaves as a person's would, and the box closes.
@@ -80,6 +243,7 @@ mod tests {
     use codex_alab_tui::boxes::BoxAnswer;
     use codex_alab_tui::boxes::BoxKind;
     use codex_alab_tui::boxes::Choice;
+    use codex_alab_tui::boxes::GoalStop;
     use codex_alab_tui::boxes::Shared;
     use codex_alab_tui::progress::Bar;
     use codex_alab_tui::session::ProgramState;
@@ -163,6 +327,143 @@ mod tests {
         assert_eq!(shared.open_box(), None, "an accepted box is shut at once");
     }
 
+    /// "Resume paused goal?" (`goal_menu.rs`'s own view, opened as a resume opens it) is the goal
+    /// box exactly, so an upstream move of its rows stops the report here; it carries why the
+    /// goal stopped (the App's hook says it before the view opens); only `Leave paused` is
+    /// taken, which sends nothing and leaves a history line.
+    #[tokio::test]
+    async fn the_goal_boxs_leave_paused_is_taken_through_the_view_stack_and_never_resume() {
+        let shared = state();
+        let _scope = boxes::scoped(shared);
+        let (mut chat, _tx, mut rx, _op_rx) = make_chatwidget_manual_with_sender().await;
+        shared.set_goal_prompt(GoalStop::Paused);
+        chat.show_resume_paused_goal_prompt(
+            codex_protocol::ThreadId::new(),
+            "Finish the paused goal.".to_owned(),
+        );
+        while rx.try_recv().is_ok() {}
+        chat.pre_draw_tick();
+        let open = shared
+            .open_box()
+            .unwrap_or_else(|| panic!("the goal box is reported"));
+        let BoxKind::Goal { rows, stop } = &open.kind else {
+            panic!("a goal box: {open:?}");
+        };
+        assert_eq!(
+            rows,
+            &vec![boxes::GOAL_RESUME.to_owned(), boxes::GOAL_LEAVE.to_owned()]
+        );
+        assert_eq!(*stop, Some(GoalStop::Paused));
+
+        assert!(shared.post_box_answer(BoxAnswer::Goal {
+            id: open.id.clone(),
+            row: 0,
+        }));
+        chat.pre_draw_tick();
+        let refused = shared.take_box_outcome().map(|o| o.applied);
+        assert!(matches!(refused, Some(Err(_))), "{refused:?}");
+        assert!(chat.has_active_view(), "the goal is never resumed");
+        assert!(rx.try_recv().is_err());
+
+        assert!(shared.post_box_answer(BoxAnswer::Goal {
+            id: open.id.clone(),
+            row: 1,
+        }));
+        chat.pre_draw_tick();
+        assert_eq!(shared.take_box_outcome().map(|o| o.applied), Some(Ok(())));
+        assert!(!chat.has_active_view(), "the goal box closed");
+        let event = rx
+            .try_recv()
+            .unwrap_or_else(|_| panic!("a history line says so"));
+        let AppEvent::InsertHistoryCell(cell) = event else {
+            panic!("expected InsertHistoryCell, got {event:?}");
+        };
+        let text: String = cell
+            .display_lines(200)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(text.contains(boxes::GOAL_LEFT), "{text}");
+        assert!(text.contains(boxes::GOAL_LEFT_HINT), "{text}");
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing else is sent: the goal stays as it was"
+        );
+        assert_eq!(shared.open_box(), None, "an accepted box is shut at once");
+    }
+
+    /// An answer pops only the box it answered, as a person's Enter does: a box under it (here
+    /// the plan box, opened first) stays standing and is reported next as a box of its own.
+    /// Upstream clears the whole view stack when a view completes in its own tick.
+    #[tokio::test]
+    async fn an_answered_box_leaves_the_box_under_it_standing() {
+        let shared = state();
+        let _scope = boxes::scoped(shared);
+        let (mut chat, _tx, mut rx, _op_rx) = make_chatwidget_manual_with_sender().await;
+        chat.open_plan_implementation_prompt();
+        shared.set_goal_prompt(GoalStop::Paused);
+        chat.show_resume_paused_goal_prompt(
+            codex_protocol::ThreadId::new(),
+            "Finish the paused goal.".to_owned(),
+        );
+        while rx.try_recv().is_ok() {}
+        chat.pre_draw_tick();
+        let goal = shared
+            .open_box()
+            .unwrap_or_else(|| panic!("the goal box on top is reported"));
+        assert!(matches!(goal.kind, BoxKind::Goal { .. }), "{goal:?}");
+        assert!(shared.post_box_answer(BoxAnswer::Goal {
+            id: goal.id.clone(),
+            row: 1,
+        }));
+        chat.pre_draw_tick();
+        assert_eq!(shared.take_box_outcome().map(|o| o.applied), Some(Ok(())));
+        assert!(chat.has_active_view(), "the plan box under it stands");
+        while rx.try_recv().is_ok() {}
+        chat.pre_draw_tick();
+        let plan = shared
+            .open_box()
+            .unwrap_or_else(|| panic!("the plan box is reported next"));
+        assert!(matches!(plan.kind, BoxKind::Plan { .. }), "{plan:?}");
+        // A box of its own: the next number in this state's count, never the goal box's.
+        assert_eq!(goal.id, "goal-1");
+        assert_eq!(plan.id, "plan-2");
+    }
+
+    /// NEGATIVE CONTROL: a selection view with the goal box's rows in another order, or with one
+    /// more, is no goal box; it is never reported, so no answer reaches it.
+    #[tokio::test]
+    async fn a_view_that_is_not_the_goal_box_exactly_is_not_reported() {
+        use crate::bottom_pane::SelectionItem;
+        use crate::bottom_pane::SelectionViewParams;
+        let rows_of = |names: &[&str]| SelectionViewParams {
+            title: Some("Resume paused goal?".to_owned()),
+            items: names
+                .iter()
+                .map(|name| SelectionItem {
+                    name: (*name).to_owned(),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        for names in [
+            vec![boxes::GOAL_LEAVE, boxes::GOAL_RESUME],
+            vec![boxes::GOAL_RESUME, boxes::GOAL_LEAVE, "Delete goal"],
+        ] {
+            let shared = state();
+            let _scope = boxes::scoped(shared);
+            let (mut chat, _tx, mut rx, _op_rx) = make_chatwidget_manual_with_sender().await;
+            shared.set_goal_prompt(GoalStop::Paused);
+            chat.show_selection_view(rows_of(&names));
+            while rx.try_recv().is_ok() {}
+            chat.pre_draw_tick();
+            assert_eq!(shared.open_box(), None, "{names:?}");
+            assert!(chat.has_active_view());
+        }
+    }
+
     #[tokio::test]
     async fn a_question_overlay_answered_through_the_view_stack_closes() {
         let shared = state();
@@ -228,7 +529,11 @@ mod tests {
     }
 
     /// One turn notification for the widget's thread.
-    fn turn(chat: &mut super::ChatWidget, id: &str, status: codex_app_server_protocol::TurnStatus) {
+    pub(super) fn turn(
+        chat: &mut super::ChatWidget,
+        id: &str,
+        status: codex_app_server_protocol::TurnStatus,
+    ) {
         let thread_id = chat
             .thread_id()
             .map(|id| id.to_string())

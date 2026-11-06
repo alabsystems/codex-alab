@@ -198,6 +198,7 @@ impl AmbientPet {
     }
 
     pub(crate) fn schedule_next_frame(&self) {
+        if !codex_alab_tui::motion::decorating() { return; } // ALAB(pet-perf): while the terminal's focus is out the pet holds its frame
         if let Some(delay) = self.next_frame_delay() {
             self.frame_requester.schedule_frame_in(delay);
         }

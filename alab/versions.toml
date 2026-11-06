@@ -1,0 +1,35 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+#
+# codex-alab's version ledger (alab/README.md, Decision 8): one row per codex-alab version
+# recorded for release, mapping it to the upstream Codex baseline it is built on, the newest
+# upstream stable rust-vX.Y.Z whose branch point the release's source has merged. Several
+# codex-alab versions may share one baseline; one version never has two.
+#
+# APPEND-ONLY. A row once recorded never changes and is never removed, rows run in strictly
+# increasing version order, and a baseline never moves backward: alab/package.sh
+# --release-check (which publish/pre-promote runs before any release goes public) refuses a
+# release otherwise, reading every version of this file in the history of the release and of
+# origin/main (alab/versions.py). A release of a version with no row appends it in the commit
+# released, as alab/package.sh prints it:
+#
+#   alab/package.sh --ledger-row >> alab/versions.toml
+#
+# Each row is exactly these four lines after its header, in this order (alab/versions.py reads
+# them by a strict grammar; comments and blank lines go between rows only):
+#
+#   [[release]]
+#   version = "MAJOR.MINOR.0"          codex-alab's own VERSION
+#   baseline = "X.Y.Z"                 the upstream Codex stable it is built on
+#   baseline_commit = "<40 hex>"       the commit rust-vX.Y.Z names
+#   date = "YYYY-MM-DD"                the UTC day the row was recorded
+#
+# No release of codex-alab's own line (0.1.0 on) had been published when this ledger began
+# (2026-10-24). The public v0.164.0 of 2026-10-16 was numbered on upstream's line, before
+# codex-alab had a line of its own, and has no row (Decision 8).
+
+[[release]]
+version = "0.1.0"
+baseline = "0.167.0"
+baseline_commit = "086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a"
+date = "2026-11-06"

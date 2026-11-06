@@ -201,10 +201,12 @@ async fn a_dead_request_connection_is_replaced_and_the_claim_taken_again() {
     );
 }
 
-/// Integrations f1: codex-alab's acts, waits and escalations reach aterm's presence band as
-/// `story` points on the claim's connection, as `aterm drive watch`'s decisions do.
+/// Integrations f1: of codex-alab's acts, waits and escalations only a question box's answer is
+/// told (`story chose <policy word>` on the claim's connection, as aterm's own approval loop
+/// tells a dialog's answer): aterm takes no other story word, and its loop tells no prose
+/// answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn acts_waits_and_escalations_are_told_to_the_band() {
+async fn only_an_answer_is_told_to_aterms_session_log() {
     let h = harness(ClientOptions::default().timeout).await;
     assert!(h.fake.wait_for(proven).await, "{:?}", h.sup.journal());
     // The supervisor marks the claim held after aterm shows it proven (a hang detector).
@@ -219,6 +221,18 @@ async fn acts_waits_and_escalations_are_told_to_the_band() {
     }
     h.sup
         .record_act("approve-all@v1", "approved exec once (approve=all)")
+        .await;
+    h.sup
+        .record_act(
+            "answer-recommended@v1",
+            "selected \"Fast (Recommended)\" (questions=recommended)",
+        )
+        .await;
+    h.sup
+        .record_act(
+            "prose-long-term@v1",
+            "answered a prose question (long-term)",
+        )
         .await;
     h.sup
         .record_act("continue@v1", "typed \"keep going\"")
@@ -238,28 +252,33 @@ async fn acts_waits_and_escalations_are_told_to_the_band() {
             Some("question: names an irreversible act".to_string()),
         )
         .await;
-    // The finished task tells nothing of its own.
+    // Land's instruction and its landing tell nothing either.
     h.sup
-        .record_act("finished@v1", "the worker said the task is done")
+        .record_act("land@v1", "typed the land instruction")
+        .await;
+    h.sup
+        .record_act(
+            "landed@v1",
+            "landed: a clean defense, and the repository holds nothing no remote main has",
+        )
         .await;
     let told: Vec<(String, String)> = h.fake.stories();
     let pair = |v: &str, t: &str| (v.to_string(), t.to_string());
     assert_eq!(
         told,
-        vec![
-            pair("approved", ""),
-            pair("chose", "continue"),
-            pair("compacted", ""),
-            pair("reconnected", "usage reset"),
-            pair("warned", "waiting for the usage reset at 14:05"),
-            pair("warned", "needs you: question: names an irreversible act"),
-        ],
+        vec![pair("chose", "recommended")],
         "{:?}",
         h.sup.journal()
     );
-    // Never the command: the approval's words stay in the message log.
-    assert!(told.iter().all(|(_, text)| !text.contains("exec")));
-    assert_eq!(h.fake.acts().len(), 5);
+    // No story verb aterm refuses was sent: every story request was the answer's.
+    let sent: Vec<String> = h
+        .fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.contains(" story "))
+        .collect();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(h.fake.acts().len(), 8);
 }
 
 /// Integrations a: `/ide` inside aterm reads this session's terminal context from aterm while
@@ -558,6 +577,158 @@ async fn a_quiet_off_and_its_lift_are_seen_at_the_meta_or_hold_event_that_tells_
     h.fake.emit("hold 0 reason=owner origin=cli");
     assert!(h.fake.wait_for(proven).await, "{:?}", h.sup.journal());
     wait_go(&h.sup).await;
+}
+
+/// The owner's ruling of 2026-10-24: the harness's "on" is the whole harness, not Autopilot
+/// alone. The word the TUI's chrome reads beside the record's Autopilot follows the session:
+/// the acting mode while codex-alab holds the proven claim (a hold keeps it), `Off` while the
+/// harness is on and only Autopilot is off (`why=autopilot-off`, the claim given back all the
+/// same), whether the session started so or went so, and under a person's hold over that Off
+/// (aterm names the hold first; `status` says off), claimed, unclaimed or the claim lost
+/// under it; the harness held off by one of aterm's Settings switches (`disabled`,
+/// `agent-off`) or with no host (`unhosted`) names its own (`⊘ off`; amended 2026-10-29 after
+/// the review of gap 12, finding 3). Negative controls: a suspension, the other release
+/// (`headless`) and an unclaimed hold over Land name no word.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_chrome_word_tells_autopilot_off_from_the_harness_off() {
+    use codex_alab_core::session::Autopilot;
+    use codex_alab_core::session::HarnessWord;
+    let state = |h: &Harness| (h.shared.autopilot(), h.shared.harness_word());
+    let h = harness(ClientOptions::default().timeout).await;
+    assert!(h.fake.wait_for(proven).await, "{:?}", h.sup.journal());
+    wait_until("acting under cruise", || {
+        state(&h) == (Autopilot::Active, HarnessWord::Cruise)
+    })
+    .await;
+    h.fake.set_effective(false, "suspended");
+    wait_until("a suspension names no word", || {
+        state(&h) == (Autopilot::Passive, HarnessWord::Unknown)
+    })
+    .await;
+    h.fake.set_status("autopilot", "land");
+    h.fake.set_effective(true, "enabled");
+    wait_until("acting again, under land", || {
+        state(&h) == (Autopilot::Active, HarnessWord::Land)
+    })
+    .await;
+    for why in RELEASING {
+        h.fake.set_effective(false, why);
+        assert!(
+            h.fake.wait_for(|f| f.claim().is_none()).await,
+            "{why}: given back: {:?}",
+            h.sup.journal()
+        );
+        // aterm's Settings switches wear `⊘ off` (review of gap 12, finding 3).
+        let word = match why {
+            "autopilot-off" => HarnessWord::Off,
+            "disabled" => HarnessWord::HarnessOff,
+            "agent-off" => HarnessWord::AgentOff,
+            "unhosted" => HarnessWord::Unhosted,
+            _ => HarnessWord::Unknown,
+        };
+        wait_until(why, || state(&h) == (Autopilot::Passive, word)).await;
+        h.fake.set_effective(true, "enabled");
+        assert!(
+            h.fake.wait_for(proven).await,
+            "{why}: {:?}",
+            h.sup.journal()
+        );
+        wait_until("claimed again under land", || {
+            state(&h) == (Autopilot::Active, HarnessWord::Land)
+        })
+        .await;
+    }
+    h.fake.set_status("hold", "1");
+    h.fake.set_effective(false, "hold");
+    wait_until("the hold is read", || {
+        h.sup
+            .journal()
+            .iter()
+            .any(|line| line.contains("why=hold: the claim is kept"))
+    })
+    .await;
+    assert_eq!(state(&h), (Autopilot::Active, HarnessWord::Land));
+    // The person turns Autopilot off under the hold: aterm names the hold first and `status`
+    // says off. The claim and the landing's mode are kept; the chrome names the Off.
+    h.fake.set_status("autopilot", "off");
+    h.fake.emit("meta field=autopilot value=off");
+    wait_until("a hold over Off names off", || {
+        state(&h) == (Autopilot::Active, HarnessWord::Off)
+    })
+    .await;
+    assert!(h.fake.claim().is_some(), "{:?}", h.sup.journal());
+    // The hold lifts over the Off: the claim goes, and the Off stays named.
+    h.fake.set_status("hold", "0");
+    h.fake.set_effective(false, "autopilot-off");
+    assert!(
+        h.fake.wait_for(|f| f.claim().is_none()).await,
+        "{:?}",
+        h.sup.journal()
+    );
+    wait_until("released under Off", || {
+        state(&h) == (Autopilot::Passive, HarnessWord::Off)
+    })
+    .await;
+    // A hold placed over that Off, unclaimed, still names it.
+    let passive_holds = |h: &Harness| {
+        h.sup
+            .journal()
+            .iter()
+            .filter(|line| line.contains("why=hold: passive"))
+            .count()
+    };
+    let before = passive_holds(&h);
+    h.fake.set_status("hold", "1");
+    h.fake.set_effective(false, "hold");
+    wait_until("the unclaimed hold is read", || passive_holds(&h) > before).await;
+    assert_eq!(state(&h), (Autopilot::Passive, HarnessWord::Off));
+    // Negative control: a hold over Land, unclaimed, names no word.
+    h.fake.set_status("autopilot", "land");
+    h.fake.set_effective(false, "hold");
+    wait_until("an unclaimed hold over land names none", || {
+        state(&h) == (Autopilot::Passive, HarnessWord::Unknown)
+    })
+    .await;
+    h.fake.set_status("hold", "0");
+    h.fake.set_effective(true, "enabled");
+    wait_go(&h.sup).await;
+    wait_until("claimed again under land", || {
+        state(&h) == (Autopilot::Active, HarnessWord::Land)
+    })
+    .await;
+    // A claim lost under a person's hold over Off keeps the Off named, though nothing reads
+    // the policy again until it moves.
+    h.fake.set_status("hold", "1");
+    h.fake.set_effective(false, "hold");
+    h.fake.set_status("autopilot", "off");
+    h.fake.emit("meta field=autopilot value=off");
+    wait_until("held over Off again", || {
+        state(&h) == (Autopilot::Active, HarnessWord::Off)
+    })
+    .await;
+    h.fake.clear_claim();
+    wait_until("the claim is lost", || !h.sup.held()).await;
+    wait_until("a loss under the hold over Off keeps it named", || {
+        state(&h) == (Autopilot::Passive, HarnessWord::Off)
+    })
+    .await;
+
+    // aterm's Settings switches and its missing host wear `⊘ off` (review of gap 12, finding
+    // 3); a headless instance, which draws no window, names no word (NEGATIVE CONTROL).
+    for (why, word) in [
+        ("autopilot-off", HarnessWord::Off),
+        ("disabled", HarnessWord::HarnessOff),
+        ("agent-off", HarnessWord::AgentOff),
+        ("unhosted", HarnessWord::Unhosted),
+        ("headless", HarnessWord::Unknown),
+    ] {
+        let h = harness_with(ClientOptions::default().timeout, None, |f| {
+            f.set_effective(false, why);
+        })
+        .await;
+        wait_until(why, || state(&h) == (Autopilot::Passive, word)).await;
+        assert!(h.fake.claim().is_none(), "{why}: {:?}", h.sup.journal());
+    }
 }
 
 fn policy_reads(f: &FakeAterm) -> usize {
@@ -919,9 +1090,15 @@ async fn an_orderly_exit_while_passive_still_releases_the_claim() {
 
 /// Review of 4cdc96090, finding 6: a sign-in screen that never reached its clear left
 /// codex-alab's `login:` attention standing; this start is past the sign-in (its primary
-/// thread is registered), so its first connection clears it, once. Negative controls: a
-/// codex-alab attention that is not the sign-in's stands, and so do the autopilot's own
-/// `login: …` attentions, still true (review of fea034d20, finding 4).
+/// thread is registered), so its first connection clears it, once, before it claims.
+/// The other startup screens' attentions (a folder trust, a model migration, a hooks review)
+/// are cleared alike. Negative controls: the look leaves a codex-alab attention that is no
+/// startup screen's, a `trust: …` one among them, and the autopilot's own `login: …`
+/// attentions, still true (review of fea034d20, finding 4).
+/// What the look did is read from the requests before the claim: since 3f850ea70 the proven
+/// claim then reconciles codex-alab's own entry (`sync_attention`), so an entry the look left
+/// may go moments after the claim, and reading the fake's entries there raced that
+/// reconcile (it failed about half its runs alone, as a7c2ff6a3 found for the test below).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_start_past_the_sign_in_clears_a_standing_login_attention() {
     for (text, cleared) in [
@@ -938,18 +1115,53 @@ async fn a_start_past_the_sign_in_clears_a_standing_login_attention() {
             false,
         ),
         ("login: Codex asks for a sign-in", false),
+        (
+            "trust: /work/repo is not trusted yet; codex's folder-trust screen waits for a person (approve=none: every folder is a person's)",
+            true,
+        ),
+        (
+            "migration: gpt-5.4 is retired and codex moves to gpt-6.1-sol; codex's model-migration screen waits for a person",
+            true,
+        ),
+        (
+            "hooks: 2 hooks for /work/repo need review; codex's hooks-review screen waits for a person",
+            true,
+        ),
+        ("trust: a folder codex-alab was told to leave alone", false),
     ] {
         let h = harness_with(ClientOptions::default().timeout, None, |f| {
             f.set_attention_as("codex-alab", text);
         })
         .await;
         assert!(h.fake.wait_for(proven).await, "{:?}", h.sup.journal());
+        let requests = h.fake.requests();
+        let claim = requests
+            .iter()
+            .position(|r| r.contains("meta set supervisor"))
+            .unwrap_or_else(|| panic!("{text}: no claim: {requests:?}"));
         assert_eq!(
-            h.fake.attention().contains_key("codex-alab"),
-            !cleared,
+            requests[..claim]
+                .iter()
+                .any(|r| r.contains("meta unset attention owner=codex-alab")),
+            cleared,
+            "{text}: the look before the claim: {requests:?}"
+        );
+        assert_eq!(
+            h.sup
+                .journal()
+                .iter()
+                .any(|l| l.contains("cleared a startup screen's attention an earlier start left")),
+            cleared,
             "{text}: {:?}",
             h.sup.journal()
         );
+        if cleared {
+            assert!(
+                !h.fake.attention().contains_key("codex-alab"),
+                "{text}: {:?}",
+                h.sup.journal()
+            );
+        }
     }
 }
 
@@ -970,16 +1182,335 @@ async fn the_stale_sign_in_attention_is_looked_for_once_a_process() {
         h.sup
             .journal()
             .iter()
-            .any(|l| l.contains("a stale sign-in attention was not looked for"))
+            .any(|l| l.contains("a stale startup screen's attention was not looked for"))
     })
     .await;
     h.fake.unstall("meta");
     assert!(h.fake.wait_for(proven).await, "{:?}", h.sup.journal());
-    assert_eq!(
-        h.fake.attention().get("codex-alab").map(String::as_str),
-        Some(text),
+    // The reconnect's session met an answering aterm, and the entry still read exactly the
+    // sign-in screen's text: a second look would have cleared it as that screen's own. That
+    // a proven claim then settles an entry an earlier image left is the attention
+    // reconcile's (sync_attention), which runs or not by whether the claim is held.
+    assert!(
+        !h.sup
+            .journal()
+            .iter()
+            .any(|l| l.contains("cleared a startup screen's attention an earlier start left")),
         "{:?}",
         h.sup.journal()
+    );
+}
+
+/// Retain the old screen entry while the first cleanup command is refused. No policy
+/// timer or proven claim may supply its recovery: these starts stay deliberately passive.
+async fn refused_startup_attention(mode: &str, clear: bool) -> Harness {
+    let mut h = harness_with(
+        Duration::from_millis(300),
+        Some(Duration::from_secs(3600)),
+        |fake| {
+            fake.set_attention_as(
+                "codex-alab",
+                "login: signed out; codex's sign-in screen waits for a person",
+            );
+            match mode {
+                "off" => fake.set_effective(false, "autopilot-off"),
+                "unproven" => fake.set_foreground_leader(None),
+                "unsupported" => fake.answer_policy_with(Some("ERR unknown verb (try: help)")),
+                _ => panic!("unknown startup fixture mode"),
+            }
+            let command = if clear {
+                format!("@{} meta unset attention owner=codex-alab", fake.sid())
+            } else {
+                format!("@{} meta", fake.sid())
+            };
+            fake.reply_once(&command, "ERR internal: the metadata cell is busy\n");
+        },
+    )
+    .await;
+    h._dir.disable_cleanup(true);
+    eprintln!(
+        "retained startup attention fixture: {}",
+        h._dir.path().display()
+    );
+    wait_until("the first startup cleanup failed", || {
+        h.sup
+            .journal()
+            .iter()
+            .any(|line| line.contains("a stale startup screen's attention was not looked for"))
+    })
+    .await;
+    wait_until("the initial passive policy answered", || {
+        policy_reads(&h.fake) > 0
+    })
+    .await;
+    assert!(!h.sup.held() && !h.sup.acting());
+    h
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_attention_retry_survives_an_initial_read_refusal_without_a_claim() {
+    for mode in ["off", "unproven", "unsupported"] {
+        let h = refused_startup_attention(mode, false).await;
+        wait_until(
+            "startup attention clears after the silent read recovery",
+            || !h.fake.attention().contains_key("codex-alab"),
+        )
+        .await;
+        assert!(
+            !h.sup.held() && !h.sup.acting(),
+            "{mode}: {:?}",
+            h.sup.journal()
+        );
+        assert!(h.fake.acts().is_empty());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_attention_retry_survives_an_initial_clear_refusal_without_a_claim() {
+    for mode in ["off", "unproven", "unsupported"] {
+        let h = refused_startup_attention(mode, true).await;
+        wait_until(
+            "startup attention clears after the silent clear recovery",
+            || !h.fake.attention().contains_key("codex-alab"),
+        )
+        .await;
+        assert!(
+            !h.sup.held() && !h.sup.acting(),
+            "{mode}: {:?}",
+            h.sup.journal()
+        );
+        assert!(h.fake.acts().is_empty());
+    }
+}
+
+fn startup_meta_reads(fake: &FakeAterm) -> usize {
+    fake.requests()
+        .iter()
+        .filter(|line| line.ends_with(" meta"))
+        .count()
+}
+
+async fn startup_unknown_metadata(reply: &str) -> Harness {
+    let mut h = harness_with(
+        Duration::from_millis(300),
+        Some(Duration::from_secs(3600)),
+        |fake| {
+            fake.set_effective(false, "autopilot-off");
+            fake.set_attention_as(
+                "codex-alab",
+                "login: signed out; codex's sign-in screen waits for a person",
+            );
+            fake.reply_once(&format!("@{} meta", fake.sid()), reply);
+        },
+    )
+    .await;
+    h._dir.disable_cleanup(true);
+    eprintln!(
+        "retained incomplete startup metadata fixture: {}",
+        h._dir.path().display()
+    );
+    wait_until("the initial Off policy has answered", || {
+        policy_reads(&h.fake) > 0
+    })
+    .await;
+    h
+}
+
+/// An empty decoded value is not evidence that a new own reason replaced the startup
+/// key. The fake still holds the old entry; a later canonical read must recover it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_empty_attention_metadata_retries_while_off() {
+    for value in ["", " \t"] {
+        let reply = format!(
+            "OK attention={} attention_owner=codex-alab supervisor=-\n",
+            codex_alab_aterm::wire::pct_encode(value)
+        );
+        let h = startup_unknown_metadata(&reply).await;
+        wait_until(
+            "startup cleanup recovers after an empty attention token",
+            || !h.fake.attention().contains_key("codex-alab"),
+        )
+        .await;
+        assert!(!h.sup.held() && h.fake.acts().is_empty());
+    }
+}
+
+/// An absent or empty holder is unknown: a canonical read must precede any clear.
+/// The explicit `-` already says there is no holder and permits the initial clear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_supervisor_metadata_distinguishes_unknown_from_known_empty() {
+    let old = codex_alab_aterm::wire::pct_encode(
+        "login: signed out; codex's sign-in screen waits for a person",
+    );
+    for holder in [None, Some(""), Some(" \t"), Some("-")] {
+        let field = holder
+            .map(|holder| format!(" supervisor={}", codex_alab_aterm::wire::pct_encode(holder)))
+            .unwrap_or_default();
+        let reply = format!("OK attention={old} attention_owner=codex-alab{field}\n");
+        let h = startup_unknown_metadata(&reply).await;
+        wait_until("startup cleanup recovers once the holder is known", || {
+            !h.fake.attention().contains_key("codex-alab")
+        })
+        .await;
+        let requests = h.fake.requests();
+        let clear = requests
+            .iter()
+            .position(|line| line.ends_with(" meta unset attention owner=codex-alab"))
+            .expect("the startup clear was recorded");
+        let reads = requests[..clear]
+            .iter()
+            .filter(|line| line.ends_with(" meta"))
+            .count();
+        if holder == Some("-") {
+            assert_eq!(reads, 1, "a known empty holder: {requests:?}");
+        } else {
+            assert!(
+                reads >= 2,
+                "{holder:?}: unknown holder metadata cannot authorize a clear: {requests:?}"
+            );
+        }
+        assert!(!h.sup.held() && h.fake.acts().is_empty());
+    }
+}
+
+/// The independent retry reads current metadata: a wall reported since startup is never
+/// cleared just because the first attempt saw a screen. The publication lane is the barrier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_attention_retry_leaves_a_fresh_nonstartup_replacement() {
+    let h = refused_startup_attention("off", true).await;
+    let fresh = "question: a fresh wall belongs to the current session";
+    h.fake.set_attention_as("codex-alab", fresh);
+    wait_until("the retry has read current metadata", || {
+        startup_meta_reads(&h.fake) >= 2
+    })
+    .await;
+    h.sup.attention("barrier", None).await;
+    assert_eq!(
+        h.fake.attention().get("codex-alab").map(String::as_str),
+        Some(fresh)
+    );
+    assert_eq!(
+        h.fake
+            .requests()
+            .iter()
+            .filter(|line| line.ends_with(" meta unset attention owner=codex-alab"))
+            .count(),
+        1,
+        "only the initially refused clear was sent"
+    );
+    assert!(!h.sup.held() && h.fake.acts().is_empty());
+}
+
+/// Another visible owner can hide the old startup key. Its unchanged entry is no reason
+/// to clear it or to retire cleanup; when visibility returns silently, the clock finishes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_attention_retry_recovers_when_other_owner_visibility_returns() {
+    let old = "login: signed out; codex's sign-in screen waits for a person";
+    let mut h = harness_with(
+        Duration::from_millis(300),
+        Some(Duration::from_secs(3600)),
+        |fake| {
+            fake.set_effective(false, "autopilot-off");
+            fake.set_attention_as("codex-alab", old);
+            fake.set_attention_as("reviewer", "a reviewer is looking");
+        },
+    )
+    .await;
+    h._dir.disable_cleanup(true);
+    eprintln!(
+        "retained hidden startup attention fixture: {}",
+        h._dir.path().display()
+    );
+    wait_until(
+        "the hidden key is read again without policy activity",
+        || startup_meta_reads(&h.fake) >= 2,
+    )
+    .await;
+    h.sup.attention("barrier", None).await;
+    assert_eq!(
+        h.fake.attention().get("reviewer").map(String::as_str),
+        Some("a reviewer is looking")
+    );
+    assert_eq!(
+        h.fake.attention().get("codex-alab").map(String::as_str),
+        Some(old)
+    );
+    assert!(
+        !h.fake
+            .requests()
+            .iter()
+            .any(|line| line.ends_with(" meta unset attention owner=codex-alab"))
+    );
+    h.fake.clear_attention_quietly("reviewer");
+    wait_until("the now-visible startup key clears", || {
+        !h.fake.attention().contains_key("codex-alab")
+    })
+    .await;
+    assert!(!h.sup.held() && h.fake.acts().is_empty());
+}
+
+/// An unanswered first read closes its socket. The next connection carries the same
+/// pending cleanup without relying on a policy timer or a proven claim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_attention_retry_survives_a_closed_first_connection_while_off() {
+    let mut h = harness_with(
+        Duration::from_millis(100),
+        Some(Duration::from_secs(3600)),
+        |fake| {
+            fake.set_effective(false, "autopilot-off");
+            fake.set_attention_as(
+                "codex-alab",
+                "login: signed out; codex's sign-in screen waits for a person",
+            );
+            fake.stall("meta");
+        },
+    )
+    .await;
+    h._dir.disable_cleanup(true);
+    eprintln!(
+        "retained closed startup attention fixture: {}",
+        h._dir.path().display()
+    );
+    wait_until("the first startup read timed out", || {
+        h.sup
+            .journal()
+            .iter()
+            .any(|line| line.contains("a stale startup screen's attention was not looked for"))
+    })
+    .await;
+    let connections = h.fake.connections();
+    h.fake.unstall("meta");
+    wait_until("the reconnected startup cleanup clears", || {
+        !h.fake.attention().contains_key("codex-alab")
+    })
+    .await;
+    assert!(h.fake.connections() > connections);
+    assert!(!h.sup.held() && h.fake.acts().is_empty());
+}
+
+/// Once a proven claim reconciles the old entry, a same-word current reason belongs to
+/// that claim. Neither the pending startup timer nor a later reconnect can erase it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_attention_retry_retires_at_a_claim_and_keeps_current_same_words() {
+    let h = refused_startup_attention("off", true).await;
+    h.fake.set_effective(true, "enabled");
+    wait_until("the first claim acts", || h.sup.acting()).await;
+    let fresh = "login: signed out; codex's sign-in screen waits for a person";
+    h.sup.attention("current", Some(fresh.into())).await;
+    assert_eq!(
+        h.fake.attention().get("codex-alab").map(String::as_str),
+        Some(fresh)
+    );
+    let sent = claims_sent(&h.fake);
+    h.fake.end_subscriptions();
+    wait_until("the claim reconnects", || {
+        claims_sent(&h.fake) > sent && h.sup.acting()
+    })
+    .await;
+    h.sup.attention("barrier", None).await;
+    assert_eq!(
+        h.fake.attention().get("codex-alab").map(String::as_str),
+        Some(fresh)
     );
 }
 
@@ -1098,4 +1629,68 @@ async fn an_unreachable_aterm_leaves_no_launch_witness() {
             .unwrap_or_else(|err| panic!("probe: {err}"));
     assert!(probed, "{:?}", sup.journal());
     assert_eq!(shared.launch_witness(), None);
+}
+
+/// THE RECORD IS WRITTEN THROUGH BEFORE THE CLAIM (CX-B B1): aterm reads codex-alab's record
+/// at the claim and relaunches a crash only on the line its copy names, and the next start
+/// takes the act the record on disk carries. The launch probe answers before any claim, so the
+/// claim waits for the record's write-through: what the probe settled (the line, the act its
+/// proof lets the record carry) is on disk before aterm reads it. Seen live in parity-3's
+/// land8: a SIGKILL 2 ms after the claim beat the coalesced write that would have carried the
+/// owed act. NEGATIVE CONTROL (run as a mutant without the write): no write-through comes
+/// between the probe and the claim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_record_is_written_through_before_the_claim() {
+    codex_alab_core::activate();
+    let dir = tempfile::tempdir().unwrap_or_else(|err| panic!("scratch dir: {err}"));
+    let fake: &'static FakeAterm = Box::leak(Box::new(
+        FakeAterm::start(dir.path(), Mode::Current)
+            .await
+            .unwrap_or_else(|err| panic!("fake aterm: {err}")),
+    ));
+    fake.set_policy_key("human_grace_s", "1");
+    let shared: &'static Shared = Box::leak(Box::new(Shared::new()));
+    // Each write-through: whether the probe had answered, and the claims aterm had been sent.
+    let writes: Arc<std::sync::Mutex<Vec<(bool, usize)>>> = Arc::default();
+    let seen = Arc::clone(&writes);
+    assert!(shared.set_flush(Box::new(move || {
+        seen.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((shared.launch_probed(), claims_sent(fake)));
+        true
+    })));
+    let endpoint = fake.endpoint();
+    let sup = Supervisor::new(SupervisorOptions {
+        shared,
+        endpoint: Arc::new(move || Some(endpoint.clone())),
+        client: ClientOptions::default(),
+    });
+    sup.start();
+    shared.observe(
+        &Frame {
+            primary_thread: Some("019a0000-0000-7000-8000-0000000000aa"),
+            displayed_thread: Some("019a0000-0000-7000-8000-0000000000aa"),
+            rollout_path: None,
+            cwd: std::path::Path::new("/work"),
+            model: "gpt-5",
+            codex_home: dir.path(),
+            embedded: true,
+            state: ProgramState::Idle,
+            draft_empty: true,
+            queued_input: false,
+            popup_open: false,
+            editor_open: false,
+            pending_user_turn: false,
+        },
+        now_ms(),
+    );
+    assert!(fake.wait_for(proven).await, "{:?}", sup.journal());
+    let writes = writes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(
+        writes.contains(&(true, 0)),
+        "written after the probe, before the claim: {writes:?}"
+    );
 }

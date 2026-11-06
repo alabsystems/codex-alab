@@ -7,13 +7,18 @@ as its aterm session. Never a real aterm, never ~/.codex.
 
 1. Two copies of one codex build (`cp -c`: two inodes), a twin symlink naming copy A, and
    codex launched as `codex` through PATH (its launch path is the twin).
-2. The fake proves codex-alab's claim; a person's first turn asks a `request_user_input`
-   question; the TUI's overlay is answered by codex-alab with its recommended option, and
-   the model's next request carries that answer (it reached core); the reply's
-   ATERM-TASK-DONE ends the task.
+2. The session's Autopilot word is Land (FOREVER LAND, aterm owner direction 2026-10-19:
+   "if landing LAND EVERYTHING INTO REMOTE MAIN NO EXCEPTIONS"; under Cruise the task never
+   ends, so nothing would leave the re-exec quiet). The fake proves codex-alab's claim; a
+   person's first turn asks a `request_user_input` question; the TUI's overlay is answered
+   by codex-alab with its recommended option, and the model's next request carries that
+   answer (it reached core); codex-alab then types the land instruction (2 min after the
+   person's turn, which worked under min_work: the short streak's back-off), the reply defends
+   `Nothing left:` with no need, the repository probe finds nothing (the work folder is no
+   repository), and the task is landed (`landed@v1`, never typed).
 3. The twin is re-pointed at copy B: codex-alab leaves like /exit and re-execs onto the
    twin, KEEPING ITS PID; the new image's record says execGeneration 1; its claim is proven
-   again; nothing more is typed.
+   again; nothing more is typed (the landing crossed the re-exec in the record's `owed`).
 
 usage: native.py --codex target/debug/codex --fake target/debug/examples/fake_aterm
 """
@@ -35,6 +40,12 @@ import termios
 import fcntl
 import threading
 import time
+
+# Words only the land instruction and its nudge carry (alab-autopilot `words::LAND`,
+# `words::LAND_NUDGE`).
+LAND_WORDS = ("Autopilot is Land", "Still landing")
+# Words any act codex-alab types carries: the continuation, Cruise's defend prompt, Land's.
+TYPED_WORDS = ("keep going", "Autopilot is", "Still landing", "Nobody is here to choose")
 
 QUESTION = {
     "questions": [
@@ -103,7 +114,8 @@ def function_call(call_id, name, arguments):
 
 
 class Mock:
-    """The model: the person's turn asks the question; its answer gets ATERM-TASK-DONE."""
+    """The model: the person's turn asks the question; its answer reports the work; the land
+    instruction gets a clean `Nothing left:` defense."""
 
     def __init__(self):
         self.requests = []
@@ -115,6 +127,7 @@ class Mock:
         """By what the request carries, not by its number (codex also sends side requests,
         such as a thread title's)."""
         items = body.get("input", []) if isinstance(body, dict) else []
+        landing = any(word in json.dumps(items[-1:]) for word in LAND_WORDS)
         answered = any(
             i.get("type") == "function_call_output" and i.get("call_id") == "call_q1"
             for i in items
@@ -129,10 +142,19 @@ class Mock:
             n = len(self.requests)
             if answered:
                 self.answers.append(body)
+        if landing:
+            # A clean defense (alab-autopilot's words_tests read this one as clean).
+            return sse([
+                created("r%d" % n),
+                message("m%d" % n, "The cache lives in memory now.\nNothing left: the cache "
+                        "work is verified, and there is no repository here to push.\n"
+                        "NEEDS YOU: nothing"),
+                completed("r%d" % n),
+            ])
         if answered:
             return sse([
                 created("r%d" % n),
-                message("m%d" % n, "The cache lives in memory now.\nATERM-TASK-DONE"),
+                message("m%d" % n, "The cache lives in memory now."),
                 completed("r%d" % n),
             ])
         if asked and not self.asked:
@@ -335,6 +357,7 @@ def main():
     fake = Fake(args.fake, os.path.join(xdg, "aterm"))
     print("fake aterm sid:", fake.sid)
     assert fake.cmd("policy human_grace_s 1") == "OK"
+    assert fake.cmd("status autopilot land") == "OK"
 
     env = {
         "PATH": twin_dir + ":/usr/bin:/bin",
@@ -367,10 +390,15 @@ def main():
         ]
         print("2. the question's answer reached core and the model:", outputs[0].get("output"))
         assert "In memory (Recommended)" in json.dumps(outputs[0]), outputs[0]
-        wait("the done token is recorded", lambda: "finished@v1" in fake.state()["acts"])
+        # The person's turn worked under codex-alab's min_work (2 min), so the land instruction
+        # that answers it is paced by the short streak, as aterm paces every act: it goes 2 min
+        # after that turn ends (decide_tests a_persons_short_turn_backs_the_continue_off). The
+        # clean defense it gets then lands at once. A hang detector, so room past the 2 min.
+        wait("the task is landed", lambda: "landed@v1" in fake.state()["acts"], timeout=300)
         acts = fake.state()["acts"]
         print("   acts:", acts)
         assert "answer-recommended@v1" in acts, acts
+        assert "land@v1" in acts, acts
 
         record_path = os.path.join(home, "alab", "sessions", "%d.json" % pid)
         wait("the record has a resumeArgv", lambda: os.path.exists(record_path)
@@ -397,9 +425,9 @@ def main():
         time.sleep(3)
         typed = [
             r for r in mock.requests[before_requests:]
-            if "keep going" in json.dumps(r.get("input", [])[-1:])
+            if any(word in json.dumps(r.get("input", [])[-1:]) for word in TYPED_WORDS)
         ]
-        assert not typed, "nothing is typed after the re-exec (a done task)"
+        assert not typed, "nothing is typed after the re-exec (a landed task)"
         print("   nothing typed after the re-exec;", len(mock.requests) - before_requests, "side request(s)")
         print("SMOKE OK")
     finally:

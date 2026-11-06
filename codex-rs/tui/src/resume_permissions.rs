@@ -55,3 +55,6 @@ impl ResumePermissions {
 #[cfg(test)]
 #[path = "resume_permissions_tests.rs"]
 mod tests;
+
+#[path = "../../alab-tui/glue/resume_permission_defaults.rs"]
+mod alab_defaults; // ALAB(defaults): local resume carry stays separate from explicit permission choices

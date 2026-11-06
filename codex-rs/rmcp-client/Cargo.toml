@@ -106,3 +106,7 @@ ignored-paths = [
 
 [lib]
 doctest = false
+
+# ALAB(version): a low-level immutable running identity; no Codex dependency cycle.
+[dependencies.codex-alab-core]
+path = "../alab-core"

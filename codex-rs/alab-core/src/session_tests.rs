@@ -9,6 +9,7 @@ use crate::session::Shared;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use std::time::Duration;
+use std::time::Instant;
 
 fn frame<'a>(primary: Option<&'a str>, state: ProgramState) -> Frame<'a> {
     Frame {
@@ -40,6 +41,252 @@ fn an_unchanged_frame_is_not_a_change() {
 }
 
 #[test]
+fn in_flight_provider_pacing_tracks_only_the_current_primary_native_turn() {
+    use crate::session::Autopilot;
+    use crate::session::InFlightRetry;
+    let shared = Shared::new();
+    shared.observe(&frame(Some("t1"), ProgramState::Working), 10);
+    let retry = InFlightRetry {
+        thread: "t1".into(),
+        turn_id: "waiting".into(),
+        not_before_ms: 500,
+    };
+    assert!(!shared.publish_in_flight_retry(retry.clone()));
+    shared.turn_started("t1", "waiting");
+    assert!(shared.publish_in_flight_retry(retry.clone()));
+    assert_eq!(shared.autopilot(), Autopilot::Off);
+    for mode in [
+        Autopilot::Active,
+        Autopilot::Passive,
+        Autopilot::Off,
+        Autopilot::Active,
+    ] {
+        shared.set_autopilot(mode);
+        assert_eq!(shared.in_flight_retry(), Some(retry.clone()));
+    }
+    let side = InFlightRetry {
+        thread: "side".into(),
+        ..retry.clone()
+    };
+    shared.turn_started("side", "waiting");
+    assert!(!shared.publish_in_flight_retry(side));
+    assert!(!shared.clear_in_flight_retry("side", "waiting"));
+    shared.turn_started("t1", "newer");
+    assert_eq!(shared.in_flight_retry(), None);
+    assert!(
+        !shared.publish_in_flight_retry(retry.clone()),
+        "an old running callback cannot cross newer native acceptance"
+    );
+    let newer = InFlightRetry {
+        turn_id: "newer".into(),
+        ..retry
+    };
+    assert!(shared.publish_in_flight_retry(newer.clone()));
+    shared.turn_ended("t1", "waiting");
+    assert_eq!(shared.in_flight_retry(), Some(newer));
+    shared.turn_ended("t1", "newer");
+    assert_eq!(shared.in_flight_retry(), None);
+}
+
+#[test]
+fn in_flight_waits_end_at_manual_stops_and_survive_only_relaunchable_signal_teardown() {
+    use crate::session::InFlightRetry;
+    for (signal, kept) in [
+        (None, false),
+        (Some(2), false),
+        (Some(1), true),
+        (Some(15), true),
+    ] {
+        let shared = Shared::new();
+        shared.observe(&frame(Some("t1"), ProgramState::Working), 10);
+        shared.turn_started("t1", "waiting");
+        let retry = InFlightRetry {
+            thread: "t1".into(),
+            turn_id: "waiting".into(),
+            not_before_ms: 500,
+        };
+        assert!(shared.publish_in_flight_retry(retry.clone()));
+        if let Some(signal) = signal {
+            shared.set_signal(signal);
+            if signal == 2 {
+                assert!(
+                    !shared.publish_in_flight_retry(retry.clone()),
+                    "a late native response cannot republish after SIGINT"
+                );
+            }
+        }
+        shared.clear_in_flight_retry("t1", "waiting");
+        shared.turn_ended("t1", "waiting");
+        shared.thread_ended("t1");
+        assert_eq!(
+            shared.in_flight_retry(),
+            kept.then_some(retry),
+            "signal={signal:?}"
+        );
+    }
+    let shared = Shared::new();
+    shared.observe(&frame(Some("t1"), ProgramState::Working), 10);
+    shared.turn_started("t1", "waiting");
+    assert!(shared.publish_in_flight_retry(InFlightRetry {
+        thread: "t1".into(),
+        turn_id: "waiting".into(),
+        not_before_ms: 500
+    }));
+    shared.clear_in_flight_retry("t1", "waiting");
+    shared.set_signal(15);
+    assert_eq!(
+        shared.in_flight_retry(),
+        None,
+        "a later TERM cannot resurrect a manually cancelled wait"
+    );
+}
+
+#[test]
+fn provider_intent_survives_passivity_and_ends_at_off_or_a_new_target_turn() {
+    use crate::session::Autopilot;
+    use crate::session::Recovery;
+    use crate::session::RecoveryWall;
+
+    let shared = Shared::new();
+    shared.set_autopilot(Autopilot::Active);
+    let recovery = Recovery {
+        thread: "t1".into(),
+        turn_id: "failed".into(),
+        point_at_ms: 10,
+        not_before_ms: 500,
+        by_autopilot: true,
+        by_person: false,
+        wall: RecoveryWall::Usage {
+            quota: None,
+            reset_at_ms: Some(500),
+            reset_label: None,
+        },
+    };
+    assert!(shared.publish_recovery(shared.upgrade_generation(), recovery.clone(), || true));
+    shared.set_autopilot(Autopilot::Passive);
+    assert_eq!(shared.recovery(), Some(recovery.clone()));
+    shared.set_autopilot(Autopilot::Off);
+    assert_eq!(shared.recovery(), None);
+
+    shared.set_autopilot(Autopilot::Active);
+    assert!(shared.publish_recovery(shared.upgrade_generation(), recovery.clone(), || true));
+    let owed = crate::session::OwedAct {
+        thread: "t1".into(),
+        ..Default::default()
+    };
+    shared.set_owed_act(Some(owed.clone()));
+    shared.turn_started("other-thread", "unrelated");
+    assert_eq!(shared.recovery(), Some(recovery.clone()));
+    assert_eq!(shared.owed_act(), Some(owed.clone()));
+    shared.turn_started("t1", "superseding");
+    assert_eq!(shared.recovery(), None);
+    assert_eq!(shared.owed_act(), None);
+    shared.set_owed_act(Some(owed.clone()));
+    assert_eq!(
+        shared.owed_act(),
+        None,
+        "a late record sync cannot restore it"
+    );
+    assert!(!shared.publish_recovery(shared.upgrade_generation(), recovery, || true));
+    shared.turn_ended("t1", "superseding");
+    shared.set_owed_act(Some(owed.clone()));
+    assert_eq!(shared.owed_act(), Some(owed));
+}
+
+#[test]
+fn an_upgrade_commits_only_the_native_state_it_actually_checked() {
+    use crate::session::Autopilot;
+    let mutations: &[fn(&Shared)] = &[
+        |s| s.human_input(100),
+        |s| {
+            let mut f = frame(Some("t1"), ProgramState::Idle);
+            f.draft_empty = false;
+            s.observe(&f, 20);
+        },
+        |s| {
+            let mut f = frame(Some("t1"), ProgramState::Idle);
+            f.queued_input = true;
+            s.observe(&f, 20);
+        },
+        |s| {
+            let mut f = frame(Some("t1"), ProgramState::Idle);
+            f.popup_open = true;
+            s.observe(&f, 20);
+        },
+        |s| {
+            let mut f = frame(Some("t1"), ProgramState::Idle);
+            f.pending_user_turn = true;
+            s.observe(&f, 20);
+        },
+        |s| {
+            s.turn_started("background-thread", "new-turn");
+        },
+        |s| s.note_root_thread("new-thread"),
+        |s| s.set_overlay_open(true),
+        |s| {
+            s.set_signal(15);
+        },
+        |s| s.set_autopilot(Autopilot::Off),
+        |s| s.invalidate_upgrade(),
+    ];
+    for change in mutations {
+        let shared = Shared::new();
+        shared.set_autopilot(Autopilot::Active);
+        shared.observe(&frame(Some("t1"), ProgramState::Idle), 10);
+        let checked = shared.upgrade_generation();
+        change(&shared);
+        assert!(!shared.commit_upgrade(checked));
+        assert!(!shared.exec_pending());
+    }
+    let shared = Shared::new();
+    shared.set_autopilot(Autopilot::Active);
+    shared.observe(&frame(Some("t1"), ProgramState::Idle), 10);
+    let checked = shared.upgrade_generation();
+    // Record-only state is deliberately outside the native fence.
+    shared.set_owed_act(Some(crate::session::OwedAct::default()));
+    assert!(shared.commit_upgrade(checked));
+    assert!(shared.exec_pending());
+    assert!(!shared.cancel_upgrade(|| panic!("a committed leave cannot restore its timer")));
+}
+
+#[test]
+fn cancelling_a_request_after_dispatch_begins_invalidates_its_uncommitted_leave() {
+    use crate::session::Autopilot;
+    use crate::session::UpgradeRequest;
+    use std::sync::Arc;
+    use std::sync::mpsc;
+
+    let shared = Arc::new(Shared::new());
+    shared.set_autopilot(Autopilot::Active);
+    shared.observe(&frame(Some("t1"), ProgramState::Idle), 10);
+    let checked = shared.upgrade_generation();
+    let (entered, entering) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let committing = Arc::clone(&shared);
+    let (request, cancellation) = UpgradeRequest::new(move |ready| {
+        entered.send(()).unwrap_or_else(|err| panic!("{err}"));
+        released
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap_or_else(|err| panic!("{err}"));
+        ready && committing.commit_upgrade(checked)
+    });
+    let dispatcher = std::thread::spawn(move || request.decide(true));
+    entering
+        .recv_timeout(Duration::from_secs(60))
+        .unwrap_or_else(|err| panic!("{err}"));
+    // This must not wait on a callback invoked under the request's decision lock.
+    drop(cancellation);
+    assert!(shared.cancel_upgrade(|| {}));
+    release.send(()).unwrap_or_else(|err| panic!("{err}"));
+    assert!(
+        !dispatcher
+            .join()
+            .unwrap_or_else(|_| panic!("dispatcher panicked"))
+    );
+    assert!(!shared.exec_pending());
+}
+
+#[test]
 fn each_fact_moves_the_view() {
     let shared = Shared::new();
     shared.observe(&frame(Some("t1"), ProgramState::Idle), 10);
@@ -60,6 +307,21 @@ fn each_fact_moves_the_view() {
         30,
         "only a state change moves it"
     );
+}
+
+/// A thread once registered stays registered for the startup screens' gate
+/// (`Shared::any_thread_registered`), though the primary goes back to none (the agents
+/// overview detaches it, a reconnect resets it). NEGATIVE CONTROL: before any frame names a
+/// thread, none is.
+#[test]
+fn a_registered_thread_outlives_the_primary_going_back_to_none() {
+    let shared = Shared::new();
+    shared.observe(&frame(None, ProgramState::Idle), 10);
+    assert!(!shared.any_thread_registered(), "nothing registered yet");
+    shared.observe(&frame(Some("t1"), ProgramState::Idle), 20);
+    shared.observe(&frame(None, ProgramState::Idle), 30);
+    assert_eq!(shared.view().primary_thread, None);
+    assert!(shared.any_thread_registered());
 }
 
 #[test]
@@ -88,7 +350,7 @@ fn a_last_turn_is_kept_only_for_registered_threads() {
     let turn = LastTurn {
         turn_id: Some("u1".into()),
         ended_at_ms: 5,
-        last_agent_message: Some("ATERM-TASK-DONE".into()),
+        last_agent_message: Some("The cache lives in memory now.".into()),
         by_autopilot: false,
     };
     assert!(!shared.set_last_turn("t1", turn.clone()));
@@ -147,10 +409,11 @@ fn a_swept_predecessor_is_found_by_its_session() {
             pid,
             session_id: "s1".to_string(),
             exit: exit.map(str::to_string),
+            updated_at_ms: u64::from(pid),
             ..Default::default()
         });
     }
-    // The last one noted (the sweep's order) stands for the session.
+    // The uniquely newest write stands for the session, independent of sweep order.
     assert_eq!(shared.predecessor("s1").map(|p| p.pid), Some(2));
     assert_eq!(shared.predecessor("s2"), None);
 }
@@ -238,11 +501,85 @@ fn an_act_that_queues_its_turn_stays_busy_until_the_turn_starts() {
     assert!(!shared.expire_awaited(crate::session::now_ms()));
 }
 
+/// The footer's count is unknown until a frame hands one, then follows each frame both ways:
+/// a moved count marks the record changed, the same count again does not.
+#[test]
+fn background_terminals_are_unknown_until_a_frame_hands_a_count_and_move_both_ways() {
+    let shared = Shared::new();
+    let now = Instant::now();
+    assert_eq!(shared.background_terminals(), None);
+    let generation = shared.generation();
+    shared.set_background_terminals(2, now);
+    assert_eq!(shared.background_terminals(), Some(2));
+    assert_ne!(shared.generation(), generation, "a moved count moves");
+    let generation = shared.generation();
+    shared.set_background_terminals(2, now);
+    assert_eq!(shared.generation(), generation, "the same count is unmoved");
+    shared.set_background_terminals(0, now);
+    assert_eq!(shared.background_terminals(), Some(0), "the count falls");
+    assert_ne!(shared.generation(), generation, "a fall moves");
+    shared.set_background_terminals(u32::MAX, now);
+    assert_eq!(shared.background_terminals(), Some(u32::MAX));
+}
+
+/// A moved count is held until it has stood the hold (the record writer's interval) or its
+/// hold is ended: the same count again restarts nothing, a move restarts it, and its end is a
+/// change the writer writes. So a command that ends within the hold costs the record no write.
+#[test]
+fn a_moved_count_is_held_until_it_has_stood_the_hold() {
+    let shared = Shared::new();
+    let hold = Duration::from_secs(1);
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    assert!(!shared.background_terminals_held(t0, hold), "nothing moved");
+    assert_eq!(shared.background_terminals_hold_deadline(hold), None);
+
+    shared.set_background_terminals(1, t0);
+    assert!(shared.background_terminals_held(at(999), hold));
+    assert!(
+        !shared.background_terminals_held(at(1000), hold),
+        "it has stood the hold"
+    );
+    shared.set_background_terminals(1, at(500));
+    assert_eq!(
+        shared.background_terminals_hold_deadline(hold),
+        Some(at(1000)),
+        "the same count restarts nothing"
+    );
+    shared.set_background_terminals(0, at(600));
+    assert_eq!(
+        shared.background_terminals_hold_deadline(hold),
+        Some(at(1600)),
+        "a move restarts the hold"
+    );
+
+    let generation = shared.generation();
+    assert!(!shared.expire_background_terminals_hold(at(1599), hold));
+    assert_eq!(
+        shared.generation(),
+        generation,
+        "a hold that stands is no change"
+    );
+    assert!(shared.expire_background_terminals_hold(at(1600), hold));
+    assert_ne!(shared.generation(), generation, "its end is a change");
+    assert_eq!(shared.background_terminals_hold_deadline(hold), None);
+    assert!(
+        !shared.background_terminals_held(at(1000), hold),
+        "an ended hold holds nothing"
+    );
+    assert!(
+        !shared.expire_background_terminals_hold(at(9999), hold),
+        "it ends once"
+    );
+    assert_eq!(shared.background_terminals(), Some(0));
+}
+
 mod boxes {
     use crate::boxes::BoxAnswer;
     use crate::boxes::BoxKind;
     use crate::boxes::BoxOutcome;
     use crate::boxes::Choice;
+    use crate::boxes::GoalStop;
     use crate::boxes::OpenBox;
     use crate::session::Shared;
     use pretty_assertions::assert_eq;
@@ -287,6 +624,47 @@ mod boxes {
         assert_eq!(shared.open_box(), None);
     }
 
+    /// A selection view (the plan box, the goal box) has no id of its own: it keeps the one its
+    /// place gives it while its box stays open; once that box closed (answered, or a frame went
+    /// without it), a later view in the same place is a new box, and each `Shared` counts its
+    /// own (parallel tests share no counter).
+    #[test]
+    fn a_views_box_id_lasts_while_its_box_is_open_and_belongs_to_its_state() {
+        let shared = Shared::new();
+        let first = shared.view_box_id("goal", 0x1000);
+        assert_eq!(shared.view_box_id("goal", 0x1000), first, "the same view");
+        shared.report_box(plan(&first, 1));
+        shared.close_box(&first);
+        let second = shared.view_box_id("goal", 0x1000);
+        assert_ne!(second, first, "an answered box forgets its place");
+        shared.report_box(plan(&second, 2));
+        let _ = shared.end_frame_boxes();
+        assert!(shared.end_frame_boxes());
+        let third = shared.view_box_id("goal", 0x1000);
+        assert_ne!(third, second, "a box no frame reported forgets its place");
+        assert_eq!(third, "goal-3");
+        assert_eq!(
+            shared.view_box_id("goal", 0x2000),
+            "goal-4",
+            "another view of the same kind is a new box"
+        );
+        assert_eq!(
+            Shared::new().view_box_id("goal", 0x1000),
+            first,
+            "each state counts its own"
+        );
+    }
+
+    #[test]
+    fn the_goal_prompt_says_why_the_goal_stopped_once_told() {
+        let shared = Shared::new();
+        assert_eq!(shared.goal_prompt(), None);
+        shared.set_goal_prompt(GoalStop::Blocked);
+        assert_eq!(shared.goal_prompt(), Some(GoalStop::Blocked));
+        shared.set_goal_prompt(GoalStop::Paused);
+        assert_eq!(shared.goal_prompt(), Some(GoalStop::Paused));
+    }
+
     #[test]
     fn a_person_beginning_to_answer_is_a_change_the_touch_does_not_hide() {
         let shared = Shared::new();
@@ -325,6 +703,35 @@ mod boxes {
             applied: Ok(()),
         });
         assert_eq!(shared.take_box_outcome().map(|o| o.applied), Some(Ok(())));
+        assert_eq!(shared.take_box_outcome(), None);
+    }
+
+    /// A box opened over the one an answer waits for: the answer was never applied, and the
+    /// poster hears so, or the covered box coming back under its own id would wait for this
+    /// answer's outcome for good. The box that covers it has nothing pending.
+    #[test]
+    fn a_box_that_covers_the_answered_one_says_its_answer_was_not_applied() {
+        let shared = Shared::new();
+        shared.report_box(question("q-1", None));
+        assert!(shared.post_box_answer(BoxAnswer::Question {
+            id: "q-1".to_owned(),
+            answers: vec![("a".to_owned(), Choice::Option(0))],
+        }));
+        shared.report_box(plan("plan-2", 1));
+        assert!(!shared.box_answer_pending());
+        let outcome = shared
+            .take_box_outcome()
+            .unwrap_or_else(|| panic!("an outcome says why"));
+        assert_eq!(outcome.id, "q-1");
+        assert!(outcome.applied.is_err(), "{outcome:?}");
+        // NEGATIVE CONTROL: the same box reported again keeps its answer.
+        shared.report_box(question("q-3", None));
+        assert!(shared.post_box_answer(BoxAnswer::Question {
+            id: "q-3".to_owned(),
+            answers: vec![("a".to_owned(), Choice::Option(0))],
+        }));
+        shared.report_box(question("q-3", Some("a person typed notes")));
+        assert!(shared.box_answer_pending());
         assert_eq!(shared.take_box_outcome(), None);
     }
 
@@ -398,6 +805,128 @@ mod boxes {
         assert!(shared.set_leave(Box::new(|| {})));
         assert!(shared.leave());
     }
+}
+
+/// A turn newly running, or no longer running, wakes the TUI: its OSC 7501 report reads a turn
+/// of a thread it does not show, whose events draw no frame of their own. A turn already
+/// booked, or one already ended, wakes nothing.
+#[test]
+fn a_turn_starting_or_ending_wakes_the_tui_and_reads_beside_the_displayed_thread() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+    let shared = Shared::new();
+    let woke = Arc::new(AtomicU32::new(0));
+    let count = Arc::clone(&woke);
+    assert!(shared.set_waker(Box::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    })));
+    let woken = || woke.load(Ordering::SeqCst);
+    assert!(!shared.turn_running_besides(None));
+    assert!(shared.turn_started("a", "t1"));
+    assert_eq!(woken(), 1, "a start wakes");
+    assert!(!shared.turn_started("a", "t1"));
+    assert_eq!(woken(), 1, "booked already");
+    assert!(shared.turn_running_besides(Some("b")));
+    assert!(shared.turn_running_besides(None));
+    assert!(
+        !shared.turn_running_besides(Some("a")),
+        "the displayed thread's own"
+    );
+    shared.turn_ended("a", "t1");
+    assert_eq!(woken(), 2, "an end wakes");
+    assert!(!shared.turn_running_besides(Some("b")));
+    shared.turn_ended("a", "t1");
+    assert_eq!(woken(), 2, "ended already");
+    assert!(
+        !shared.turn_started("a", "t1"),
+        "an ended turn is not booked again"
+    );
+    assert_eq!(woken(), 2);
+    assert!(shared.turn_started("a", "t2"));
+    assert_eq!(woken(), 3);
+    shared.thread_ended("a");
+    assert_eq!(woken(), 4, "a stopped thread's turn ends");
+    assert!(!shared.turn_running_besides(Some("b")));
+    shared.thread_ended("a");
+    assert_eq!(woken(), 4);
+}
+
+/// A TURN THE TUI SAW (`Shared::turn_seen`: a sub-agent's, one under a remote app-server)
+/// reads beside the displayed thread in its own book (`turn_seen_besides`, which only holds a
+/// report's turn), and wakes the TUI as it starts and ends, but never reaches the autopilot's
+/// book, the record, the acts or the upgrade (`turn_running_besides`, `turn_running`, `unrest`,
+/// `turn_running_on`). Let go where its end may not come (`turns_seen_keep`). NEGATIVE
+/// CONTROLS: a start or end seen again, and a keep that drops nothing, wake nothing.
+#[test]
+fn a_turn_the_tui_saw_reads_beside_the_displayed_thread_only() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+    let shared = Shared::new();
+    let woke = Arc::new(AtomicU32::new(0));
+    let count = Arc::clone(&woke);
+    assert!(shared.set_waker(Box::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    })));
+    let woken = || woke.load(Ordering::SeqCst);
+    shared.turn_seen("sub", "s1", true);
+    assert_eq!(woken(), 1, "a seen start wakes");
+    shared.turn_seen("sub", "s1", true);
+    assert_eq!(woken(), 1, "seen already");
+    assert!(shared.turn_seen_besides(Some("root")));
+    assert!(shared.turn_seen_besides(None));
+    assert!(!shared.turn_seen_besides(Some("sub")), "its own frame");
+    assert!(
+        !shared.turn_running_besides(Some("root")),
+        "never the autopilot's book"
+    );
+    assert!(!shared.turn_running());
+    assert!(!shared.turn_running_on("sub"));
+    assert_eq!(shared.unrest(), None, "the record is unmoved");
+    shared.turn_seen("sub", "s1", false);
+    assert_eq!(woken(), 2, "a seen end wakes");
+    shared.turn_seen("sub", "s1", false);
+    assert_eq!(woken(), 2, "ended already");
+    assert!(!shared.turn_seen_besides(Some("root")));
+    shared.turn_seen("sub", "s2", true);
+    shared.turn_seen("other", "o1", true);
+    assert_eq!(woken(), 4);
+    shared.turns_seen_keep(|_| true);
+    assert_eq!(woken(), 4, "nothing let go");
+    shared.turns_seen_keep(|thread| thread != "sub");
+    assert_eq!(woken(), 5, "a let go wakes");
+    assert!(!shared.turn_seen_besides(Some("other")));
+    assert!(shared.turn_seen_besides(Some("root")));
+    shared.turns_seen_keep(|_| false);
+    assert!(!shared.turn_seen_besides(None));
+}
+
+/// The ends the TUI's chat widget took are read by thread and turn, the newest 64 of them,
+/// and a turn's start leaves its latest turn to read beside them.
+#[test]
+fn the_ends_the_tui_took_are_kept_by_thread_and_turn() {
+    let shared = Shared::new();
+    assert!(!shared.tui_handled_end("root", "t0"));
+    assert_eq!(shared.latest_turn("root"), None);
+    assert!(shared.turn_started("root", "t0"));
+    assert_eq!(shared.latest_turn("root").as_deref(), Some("t0"));
+    shared.turn_handled_end("root", "t0");
+    assert!(shared.tui_handled_end("root", "t0"));
+    assert!(!shared.tui_handled_end("other", "t0"), "another thread's");
+    shared.turn_handled_end("root", "t1");
+    shared.turn_handled_end("root", "t0");
+    for n in 2..64 {
+        shared.turn_handled_end("root", &format!("t{n}"));
+    }
+    assert!(shared.tui_handled_end("root", "t0"), "64 kept");
+    shared.turn_handled_end("root", "t64");
+    assert!(
+        !shared.tui_handled_end("root", "t0"),
+        "the oldest goes, its repeat taking no place of its own"
+    );
+    assert!(shared.tui_handled_end("root", "t1"));
+    assert!(shared.tui_handled_end("root", "t64"));
 }
 
 #[test]
@@ -546,7 +1075,8 @@ fn a_key_reads_as_a_draft_until_the_next_frame_draws_it() {
         !shared.record_draft_empty(),
         "a person's first key is a draft to the record before its echo"
     );
-    // The before-act checks read the composer itself (the human grace holds them).
+    // The last frame's composer is still empty; the conservative before-act
+    // guard also sees the pending key until the next frame.
     assert!(shared.draft_empty());
     // The next frame shows the composer still empty (an arrow key): rest again.
     assert!(shared.observe(&frame(Some("t1"), ProgramState::Idle), 6));
@@ -576,4 +1106,227 @@ fn the_write_through_is_the_writers_or_nothing() {
     );
     assert!(!shared.flush_record(), "a failed write is told");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// The harness word is the TUI's chrome alone: a change wakes a frame, an unchanged word wakes
+/// nothing, and neither moves the record's or the upgrade's generation nor the record's
+/// Autopilot.
+#[test]
+fn the_harness_word_wakes_the_tui_and_leaves_the_record_alone() {
+    use crate::session::Autopilot;
+    use crate::session::HarnessWord;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+    let shared = Shared::new();
+    let woke = Arc::new(AtomicU32::new(0));
+    let count = Arc::clone(&woke);
+    assert!(shared.set_waker(Box::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    })));
+    shared.set_autopilot(Autopilot::Passive);
+    let woken_before = woke.load(Ordering::SeqCst);
+    let (generation, upgrade) = (shared.generation(), shared.upgrade_generation());
+    assert_eq!(shared.harness_word(), HarnessWord::Unknown);
+    for (word, woken) in [
+        (HarnessWord::Off, 1),
+        (HarnessWord::Off, 1),
+        (HarnessWord::Cruise, 2),
+        (HarnessWord::Land, 3),
+        (HarnessWord::Land, 3),
+        (HarnessWord::Unknown, 4),
+    ] {
+        shared.set_harness_word(word);
+        assert_eq!(shared.harness_word(), word);
+        assert_eq!(
+            woke.load(Ordering::SeqCst) - woken_before,
+            woken,
+            "{word:?}"
+        );
+    }
+    assert_eq!(shared.generation(), generation);
+    assert_eq!(shared.upgrade_generation(), upgrade);
+    assert_eq!(shared.autopilot(), Autopilot::Passive);
+}
+
+/// The Autopilot and its word are one cell: published together they are read together
+/// ([`Shared::harness`]), the Autopilot alone keeps the word, and the word alone keeps the
+/// Autopilot. Only the Autopilot moves the generations. [`Shared::set_acting_word`] moves the
+/// word under an Active Autopilot only, deciding in the same store.
+#[test]
+fn the_autopilot_and_its_word_publish_as_one() {
+    use crate::session::Autopilot;
+    use crate::session::HarnessWord;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+    let shared = Shared::new();
+    assert_eq!(shared.harness(), (Autopilot::Off, HarnessWord::Unknown));
+    let woke = Arc::new(AtomicU32::new(0));
+    let count = Arc::clone(&woke);
+    assert!(shared.set_waker(Box::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    })));
+    let woken = || woke.load(Ordering::SeqCst);
+
+    let generation = shared.generation();
+    shared.set_autopilot_with_word(Autopilot::Active, HarnessWord::Land);
+    assert_eq!(shared.harness(), (Autopilot::Active, HarnessWord::Land));
+    assert_eq!(shared.generation(), generation.wrapping_add(1));
+    assert_eq!(woken(), 1);
+    // The word alone: a frame, no generation.
+    shared.set_autopilot_with_word(Autopilot::Active, HarnessWord::Cruise);
+    assert_eq!(shared.harness(), (Autopilot::Active, HarnessWord::Cruise));
+    assert_eq!(shared.generation(), generation.wrapping_add(1));
+    assert_eq!(woken(), 2);
+    // Nothing moved: nothing asked.
+    shared.set_autopilot_with_word(Autopilot::Active, HarnessWord::Cruise);
+    assert_eq!(woken(), 2);
+    // The Autopilot alone keeps the word; the word alone keeps the Autopilot.
+    shared.set_autopilot(Autopilot::Passive);
+    assert_eq!(shared.harness(), (Autopilot::Passive, HarnessWord::Cruise));
+    shared.set_harness_word(HarnessWord::Off);
+    assert_eq!(shared.harness(), (Autopilot::Passive, HarnessWord::Off));
+    assert_eq!(shared.generation(), generation.wrapping_add(2));
+
+    // A mode moved under the acting claim never relabels a passive session.
+    let before = woken();
+    shared.set_acting_word(HarnessWord::Land);
+    assert_eq!(shared.harness(), (Autopilot::Passive, HarnessWord::Off));
+    assert_eq!(woken(), before);
+    shared.set_autopilot_with_word(Autopilot::Active, HarnessWord::Off);
+    shared.set_acting_word(HarnessWord::Land);
+    assert_eq!(shared.harness(), (Autopilot::Active, HarnessWord::Land));
+    assert_eq!(woken(), before + 2);
+    shared.set_acting_word(HarnessWord::Land);
+    assert_eq!(woken(), before + 2);
+
+    // Every pair round-trips through the one cell.
+    for autopilot in [Autopilot::Off, Autopilot::Passive, Autopilot::Active] {
+        for word in [
+            HarnessWord::Unknown,
+            HarnessWord::Cruise,
+            HarnessWord::Land,
+            HarnessWord::Off,
+            HarnessWord::HarnessOff,
+            HarnessWord::AgentOff,
+            HarnessWord::Unhosted,
+        ] {
+            shared.set_autopilot_with_word(autopilot, word);
+            assert_eq!(shared.harness(), (autopilot, word));
+            assert_eq!(shared.autopilot(), autopilot);
+            assert_eq!(shared.harness_word(), word);
+        }
+    }
+}
+
+/// A waker that counts the frames asked for.
+fn counting_waker(shared: &Shared) -> std::sync::Arc<std::sync::atomic::AtomicU32> {
+    use std::sync::atomic::Ordering;
+    let woke = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let count = std::sync::Arc::clone(&woke);
+    assert!(shared.set_waker(Box::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    })));
+    woke
+}
+
+/// THE LINE'S TASK FACE IS THE PRIMARY THREAD'S (gap 12 of the parity sweep, 2026-10-29): each
+/// thread's face is kept, and the line reads the one the TUI's primary is, following the frame
+/// that moves it. NEGATIVE CONTROL: a face of another thread is never the primary's.
+#[test]
+fn the_lines_task_face_is_the_primary_threads() {
+    use crate::session::TaskFace;
+    let shared = Shared::new();
+    assert_eq!(shared.task_face(), TaskFace::Open, "no primary yet");
+    shared.set_task_face("t1", TaskFace::Landed);
+    shared.set_task_face("t2", TaskFace::Theirs);
+    assert_eq!(shared.task_face(), TaskFace::Open, "no primary yet");
+    shared.observe(&frame(Some("t2"), ProgramState::Idle), 10);
+    assert_eq!(shared.task_face(), TaskFace::Theirs);
+    shared.observe(&frame(Some("t1"), ProgramState::Idle), 20);
+    assert_eq!(shared.task_face(), TaskFace::Landed);
+    shared.observe(&frame(Some("t3"), ProgramState::Idle), 30);
+    assert_eq!(shared.task_face(), TaskFace::Open, "t3 holds none");
+}
+
+/// AN OPEN FACE LEAVES NO ENTRY, AND ONLY A CHANGE ASKS FOR A FRAME: the TUI's chrome alone reads
+/// the face, so a move wakes it and a repeat does not, and neither moves the record's or the
+/// upgrade's generation. NEGATIVE CONTROL: an Open over none is no change (an entry kept for
+/// Open would be one).
+#[test]
+fn an_open_face_leaves_no_entry_and_wakes_only_on_change() {
+    use crate::session::TaskFace;
+    use std::sync::atomic::Ordering;
+    let shared = Shared::new();
+    shared.observe(&frame(Some("t1"), ProgramState::Idle), 10);
+    let woke = counting_waker(&shared);
+    let (generation, upgrade) = (shared.generation(), shared.upgrade_generation());
+    for (face, woken) in [
+        (TaskFace::Open, 0),
+        (TaskFace::Landed, 1),
+        (TaskFace::Landed, 1),
+        (TaskFace::Theirs, 2),
+        (TaskFace::Open, 3),
+        (TaskFace::Open, 3),
+    ] {
+        shared.set_task_face("t1", face);
+        assert_eq!(shared.task_face(), face);
+        assert_eq!(woke.load(Ordering::SeqCst), woken, "{face:?}");
+    }
+    assert_eq!(shared.generation(), generation);
+    assert_eq!(shared.upgrade_generation(), upgrade);
+}
+
+/// THE LAND TIMER ROUND-TRIPS, NONE BEING 0, AND ONLY A CHANGE ASKS FOR A FRAME. NEGATIVE
+/// CONTROL: the same timer again asks for nothing.
+#[test]
+fn land_at_round_trips_and_none_is_zero() {
+    use std::sync::atomic::Ordering;
+    let shared = Shared::new();
+    let woke = counting_waker(&shared);
+    assert_eq!(shared.land_at(), None);
+    for (at, woken) in [
+        (None, 0),
+        (Some(1_767_000_000), 1),
+        (Some(1_767_000_000), 1),
+        (Some(1_767_003_600), 2),
+        (None, 3),
+        (Some(0), 3),
+    ] {
+        shared.set_land_at(at);
+        assert_eq!(shared.land_at(), at.filter(|&at| at > 0));
+        assert_eq!(woke.load(Ordering::SeqCst), woken, "{at:?}");
+    }
+}
+
+#[test]
+fn renewal_custody_survives_its_accepted_turn_but_not_new_native_work() {
+    use crate::session::{NativeOrigin, NativePhase, OwedAct, AccountHandoff};
+    let marker = OwedAct {
+        thread: "thread".into(),
+        native_origin: Some(NativeOrigin { turn_id: "wall".into(), phase: NativePhase::Complete }),
+        renewal: Some(AccountHandoff { purpose: crate::account_handoff::Purpose::Login, destination: None, openai_scope: true, local: false, account: "a".repeat(64), user: "b".repeat(64),
+            receipt: Some("c".repeat(32)), turn: Some("wall".into()), accepted: false, starts: 1, goal_id: None }),
+        ..Default::default()
+    };
+    let shared = Shared::new();
+    assert!(shared.turn_started("thread", "wall"));
+    shared.turn_ended("thread", "wall");
+    assert!(shared.publish_renewal(shared.upgrade_generation(), marker.clone()));
+    assert!(shared.admit_recovered_turn("thread", "wall"));
+    assert!(shared.turn_started("thread", "wall"));
+    assert!(!shared.turn_started("thread", "wall"), "duplicate notification is inert");
+    shared.set_owed_act(None);
+    assert!(shared.owed_act().and_then(|owed| owed.renewal).is_some_and(|r| r.accepted));
+    assert!(!shared.clear_renewal(&"d".repeat(32)));
+    assert!(shared.clear_renewal(&"c".repeat(32)));
+    assert!(shared.owed_act().is_none());
+
+    let shared = Shared::new();
+    let generation = shared.upgrade_generation();
+    assert!(shared.publish_renewal(generation, marker.clone()));
+    shared.turn_started("thread", "a-new-human-turn");
+    assert!(shared.owed_act().is_none());
+    assert!(!shared.publish_renewal(generation, marker));
 }

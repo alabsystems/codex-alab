@@ -63,8 +63,14 @@ impl Host for FakeHost {
     }
 }
 
-/// The longest TMPDIR [`home`] uses: the gate's `/private/tmp/alab.XXXXXX` is 22 bytes.
-const SHORT_TMPDIR: usize = 32;
+const HOME_PREFIX: &str = "alab-dp";
+const HOME_RANDOM_BYTES: usize = 6;
+const CONTROL_SOCKET: &str = "app-server-control/app-server-control.sock";
+/// Reserve the generated leaf, two separators and the full control socket name.
+/// The gate nests a short check scratch inside its containment scratch; that
+/// admitted TMPDIR is longer than the old arbitrary 32-byte cutoff.
+const SHORT_TMPDIR: usize =
+    103 - 1 - HOME_PREFIX.len() - HOME_RANDOM_BYTES - 1 - CONTROL_SOCKET.len();
 
 fn busy(reason: &str) -> Option<KeptAll> {
     Some(KeptAll::Busy(reason.to_string()))
@@ -86,9 +92,14 @@ fn home() -> tempfile::TempDir {
         PathBuf::from("/tmp")
     };
     let home = tempfile::Builder::new()
-        .prefix("alab-dp")
+        .prefix(HOME_PREFIX)
+        .rand_bytes(HOME_RANDOM_BYTES)
         .tempdir_in(&root)
         .unwrap_or_else(|err| panic!("scratch CODEX_HOME under {}: {err}", root.display()));
+    assert!(
+        home.path().join(CONTROL_SOCKET).as_os_str().len() < 104,
+        "scratch CODEX_HOME must preserve the Unix socket path bound"
+    );
     std::fs::create_dir_all(home.path().join("app-server-daemon")).unwrap();
     std::fs::create_dir_all(package_root(home.path()).join("releases")).unwrap();
     std::fs::write(package_root(home.path()).join("install.lock"), "").unwrap();
@@ -540,33 +551,20 @@ fn a_held_daemon_lock_keeps_everything() {
     let home = home();
     vendor_layout(home.path());
 
-    // The daemon's lifecycle lock, held by another open of the file.
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(home.path().join("app-server-daemon/daemon.lock"))
-        .unwrap();
-    // SAFETY: a plain flock(2) on a descriptor the test owns.
-    assert_eq!(
-        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-        0
-    );
+    // The daemon's lifecycle lock, held by another open of the file (let go of with
+    // `LOCK_UN`, so a test spawning on another thread cannot keep it held: see `Held`).
+    let lock = try_flock(&home.path().join("app-server-daemon/daemon.lock"))
+        .unwrap()
+        .unwrap_or_else(|| panic!("the operation lock is free"));
     let report = prune(home.path(), &FakeHost::quiet());
     assert_eq!(report.kept_all, busy(OPERATION_LOCK_HELD));
     drop(lock);
 
     // The installer's lock on `install.lock`, held as the shell installer holds it (`lockf(1)`
     // and `flock(1)` both take a flock(2) lock).
-    let install = std::fs::OpenOptions::new()
-        .write(true)
-        .open(package_root(home.path()).join("install.lock"))
-        .unwrap();
-    // SAFETY: a plain flock(2) on a descriptor the test owns.
-    assert_eq!(
-        unsafe { libc::flock(install.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-        0
-    );
+    let install = try_flock(&package_root(home.path()).join("install.lock"))
+        .unwrap()
+        .unwrap_or_else(|| panic!("the installer's lock is free"));
     let report = prune(home.path(), &FakeHost::quiet());
     assert_eq!(report.kept_all, busy(INSTALLER_LOCK_HELD));
     assert_eq!(names(home.path()), all_vendor_names());
@@ -676,6 +674,35 @@ fn the_live_mount_table_has_the_root() {
     assert!(mount_points().unwrap().contains(&PathBuf::from("/")));
 }
 
+/// A lock the tidy let go of is free at once, even while a copy of its descriptor lives on (a
+/// child spawned or forked on another thread before its exec shares the open file description,
+/// which is what a `flock` belongs to). The copy is `dup`'s, which shares the description as a
+/// child's does.
+#[test]
+fn a_lock_let_go_is_free_while_a_copy_of_its_descriptor_lives() {
+    let home = home();
+    let path = home.path().join("daemon.lock");
+    let held = try_flock(&path)
+        .unwrap()
+        .unwrap_or_else(|| panic!("a fresh lock is free"));
+    // SAFETY: dup(2) of a descriptor `held` owns; the copy is closed below.
+    let copy = unsafe { libc::dup(held.file.as_raw_fd()) };
+    assert!(copy >= 0, "dup: {}", std::io::Error::last_os_error());
+    assert!(
+        try_flock(&path).unwrap().is_none(),
+        "held, another open of it is refused"
+    );
+
+    drop(held);
+    let again = try_flock(&path).unwrap();
+    // SAFETY: closes the copy made above, which nothing else owns.
+    unsafe { libc::close(copy) };
+    assert!(
+        again.is_some(),
+        "let go of, the lock is free though a copy of its descriptor lives"
+    );
+}
+
 #[test]
 fn an_unfinished_retirement_is_finished() {
     let home = home();
@@ -741,6 +768,17 @@ fn the_process_table_lists_this_test() {
 }
 
 #[test]
+fn pidpath_skips_gone_unlinked_and_inaccessible_processes_only() {
+    for ignorable in [libc::ESRCH, libc::ENOENT, libc::EPERM, libc::EACCES] {
+        assert!(ignorable_pidpath_errno(Some(ignorable)));
+    }
+    for doubt in [libc::ENOMEM, libc::ENOSPC, libc::EINVAL, libc::EIO] {
+        assert!(!ignorable_pidpath_errno(Some(doubt)));
+    }
+    assert!(!ignorable_pidpath_errno(None));
+}
+
+#[test]
 fn tidy_removes_off_thread_in_codex_alab() {
     codex_alab_core::activate();
     let home = home();
@@ -756,4 +794,47 @@ fn tidy_removes_off_thread_in_codex_alab() {
         tidy(home.path(), /*daemon_auto_start*/ true).is_none(),
         "the daemon on: no tidy"
     );
+}
+
+#[test]
+fn symlinks_fifos_and_oversized_state_files_keep_every_release_without_blocking() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let home = home();
+    vendor_layout(home.path());
+    let outside = home.path().join("outside");
+    std::fs::write(&outside, "").unwrap();
+
+    for target in [
+        package_root(home.path()).join("selection-history"),
+        home.path().join("app-server-daemon/daemon.pid"),
+        home.path().join("app-server-daemon/daemon.lock"),
+        package_root(home.path()).join("install.lock"),
+    ] {
+        let _ = std::fs::remove_file(&target);
+        std::os::unix::fs::symlink(&outside, &target).unwrap();
+        let report = prune(home.path(), &FakeHost::quiet());
+        assert!(
+            matches!(report.kept_all, Some(KeptAll::Doubt(_))),
+            "{target:?}"
+        );
+        assert_eq!(names(home.path()), all_vendor_names());
+        std::fs::remove_file(&target).unwrap();
+
+        let fifo = std::ffi::CString::new(target.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `fifo` is a valid NUL-terminated path in our private test directory.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let report = prune(home.path(), &FakeHost::quiet());
+        assert!(
+            matches!(report.kept_all, Some(KeptAll::Doubt(_))),
+            "{target:?}"
+        );
+        assert_eq!(names(home.path()), all_vendor_names());
+        std::fs::remove_file(&target).unwrap();
+    }
+
+    let history = package_root(home.path()).join("selection-history");
+    std::fs::write(&history, vec![b'x'; 64 * 1024 + 1]).unwrap();
+    let report = prune(home.path(), &FakeHost::quiet());
+    assert!(matches!(report.kept_all, Some(KeptAll::Doubt(_))));
+    assert_eq!(names(home.path()), all_vendor_names());
 }

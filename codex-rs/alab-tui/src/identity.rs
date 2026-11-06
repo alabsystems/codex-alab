@@ -45,6 +45,22 @@ pub fn proc_start(identity: &ProcessIdentity) -> Option<String> {
     lstart(i64::try_from(seconds).ok()?)
 }
 
+/// Native account snapshots use the kernel birth in UTC, with canonical whitespace.
+pub fn proc_start_utc(identity: &ProcessIdentity) -> Option<String> {
+    let seconds = match identity {
+        ProcessIdentity::MacOs { start_seconds, .. } => *start_seconds,
+        ProcessIdentity::Linux { start_ticks, .. } => linux_start_seconds(*start_ticks)?,
+    };
+    let time = chrono::DateTime::from_timestamp(i64::try_from(seconds).ok()?, 0)?;
+    Some(
+        time.format("%a %b %e %H:%M:%S %Y")
+            .to_string()
+            .split_ascii_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 fn lstart(seconds: i64) -> Option<String> {
     let time = libc::time_t::try_from(seconds).ok()?;
     let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
@@ -68,6 +84,21 @@ fn lstart(seconds: i64) -> Option<String> {
         tm.tm_sec,
         i64::from(tm.tm_year) + 1900
     ))
+}
+
+#[cfg(test)]
+#[test]
+fn account_birth_uses_canonical_utc_single_digit_day() {
+    let identity = ProcessIdentity::MacOs {
+        boot_id: String::new(),
+        unique_id: 1,
+        start_seconds: 0,
+        start_microseconds: 0,
+    };
+    assert_eq!(
+        proc_start_utc(&identity).as_deref(),
+        Some("Thu Jan 1 00:00:00 1970")
+    );
 }
 
 #[cfg(target_os = "macos")]

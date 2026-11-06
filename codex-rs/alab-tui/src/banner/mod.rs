@@ -7,18 +7,21 @@
 //! This module only renders: it knows nothing of codex-tui. `codex-rs/alab-tui/glue/
 //! banner_cell.rs`, compiled into codex-tui with `#[path]` (codex's `HistoryCell` is
 //! `pub(crate)`), wraps a [`Banner`] and upstream's session header in one history cell, part 0
-//! of the launch `SessionInfoCell`. [`blossom_stage`] is the second hook's: it keeps codex's
-//! empty-state blossom on screen under the longer transcript. [`render_composer_border`] is the
-//! third's, through `glue/composer_border.rs`: the border along the composer's top row while
-//! the codex-alab harness is on.
+//! of the launch `SessionInfoCell`. [`blossom_stage`] keeps codex's empty-state blossom on
+//! screen under the longer transcript. The composer's top border is rendered separately by
+//! [`crate::interface::render`] through `glue/composer_border.rs`.
 //!
-//! The art is a pixel canvas, two pixels per cell row (`▀`/`▄`/`█`, top pixel in the
-//! foreground, bottom in the background), redrawn for every width so it never wraps: each line
-//! is at most `width - 1` columns, and narrow widths step down a ladder to the wordmark alone,
-//! then nothing. Transparent pixels set no colour, so the terminal's own background shows
-//! through (aterm's "sky, never a slab"). Every row opens with two spaces and the banner holds
-//! none of the marks or phrases aterm's codex screen reader keys on.
+//! One block: the kitty on a short ribbon, with the text beside it in the same five rows: the
+//! wordmark and build, the owner's tagline, what [`claims::CLAIMS`] measured against upstream
+//! codex, and the upstream source the build is based on. The art is a pixel canvas, two pixels
+//! per cell row (`▀`/`▄`/`█`, top pixel in the foreground, bottom in the background), redrawn
+//! for every width so it never wraps: each line is at most `width - 1` columns. Narrower, the
+//! ribbon goes first, then the claims shorten and the upstream line goes, then the text stands
+//! alone without the kitty, down to the wordmark alone, then nothing. Transparent pixels set no
+//! colour, so the terminal's own background shows through (aterm's "sky, never a slab"). Every
+//! row opens with two spaces, in line with upstream's `>_ OpenAI Codex` header.
 
+pub mod claims;
 pub mod palette;
 mod render;
 pub(crate) mod sprite;
@@ -29,6 +32,19 @@ use ratatui::text::Line;
 use std::fmt::Write as _;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+
+/// Whether the banner may draw: only in the codex-alab binary (for the glue; codex-tui does not
+/// depend on alab-core).
+pub use codex_alab_core::active;
+
+/// The upstream source this build includes, as `codex_alab_core::version::upstream()` spells
+/// it, when the packager stamped it; an unstamped source build names none rather than its
+/// `unreleased`.
+pub fn stamped_upstream() -> Option<String> {
+    use codex_alab_core::version;
+    (version::upstream_release().is_some() || version::upstream_commit().is_some())
+        .then(version::upstream)
+}
 
 /// Which trail the kitty rides.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -84,23 +100,43 @@ pub struct Banner {
     style: Style,
     depth: Depth,
     theme: Theme,
-    sha7: Option<String>,
+    version: Option<String>,
+    upstream: Option<String>,
+    claims: &'static [claims::Claim],
 }
 
 impl Banner {
-    /// A banner for `build_commit` (codex's `BuildInfo::build_commit()`): the label names its
-    /// first seven hex digits as `g<sha7>`, aterm's build-metadata convention, and names no
-    /// commit for `dev`, `unknown` or anything else that is not a hex sha.
-    pub fn new(style: Style, depth: Depth, theme: Theme, build_commit: &str) -> Self {
-        let sha = build_commit.trim();
-        let sha7 = (sha.len() >= 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
-            .then(|| sha[..7].to_ascii_lowercase());
+    /// A banner for the running ALab package version. The primary wordmark keeps its
+    /// readable release/build number; `/alab version` carries exact source identities.
+    pub fn new(style: Style, depth: Depth, theme: Theme, build_version: &str) -> Self {
+        let version = crate::interface::readable_version(build_version.trim());
+        let version = match version {
+            "" | "unknown" => None,
+            "0.0.0" => Some("dev".to_owned()),
+            version => Some(version.to_owned()),
+        };
         Self {
             style,
             depth,
             theme,
-            sha7,
+            version,
+            upstream: None,
+            claims: &[],
         }
+    }
+
+    /// The same banner naming the upstream source it was built from, as
+    /// `codex_alab_core::version::upstream()` spells it (`<release>+g<commit>`). Its readable
+    /// baseline is drawn; `None`, for an unstamped build, draws no upstream line.
+    pub fn with_upstream(mut self, upstream: Option<String>) -> Self {
+        self.upstream = upstream.filter(|upstream| !upstream.trim().is_empty());
+        self
+    }
+
+    /// The same banner advertising `claims` ([`claims::CLAIMS`]), as many as fit.
+    pub fn with_claims(mut self, claims: &'static [claims::Claim]) -> Self {
+        self.claims = claims;
+        self
     }
 
     /// The banner's lines at `width` columns; each is at most `width - 1` columns wide. Below 13
@@ -109,33 +145,104 @@ impl Banner {
         render::render(self, usize::from(width))
     }
 
-    /// The banner's lines at `width` columns, appending the ALab harness status banner row when
-    /// `harness_active` is `true`.
-    pub fn lines_with_harness(&self, width: u16, harness_active: bool) -> Vec<Line<'static>> {
-        render::render_with_harness(self, usize::from(width), harness_active)
+    /// The banner's lines at `width` columns as `harness` shows it ([`harness_state`]): with the
+    /// harness on, in its Autopilot word's palette (the moonbow under Off) and with the harness
+    /// row under the text; otherwise the plain banner, as [`Banner::lines`].
+    pub fn lines_with_harness(&self, width: u16, harness: Option<Harness>) -> Vec<Line<'static>> {
+        let mode = match harness {
+            Some(Harness::On(mode)) => Some(mode),
+            Some(Harness::Unsupervised) | None => None,
+        };
+        render::render_with_harness(self, usize::from(width), mode)
     }
 }
 
-/// The running session's harness state (`Some(true)` when Autopilot is `Active`, `Some(false)`
-/// when toggled off to `Passive`, `None` when unclaimed or under unit tests).
-pub fn harness_state() -> Option<bool> {
-    match crate::boxes::tick_shared()?.autopilot() {
-        codex_alab_core::session::Autopilot::Active => Some(true),
-        codex_alab_core::session::Autopilot::Passive => Some(false),
-        codex_alab_core::session::Autopilot::Off => None,
+/// The session's Autopilot word under aterm's harness, as its glass names it: the harness row
+/// ends with it, and the banner wears its palette (the spectrum, and aterm's white moonbow
+/// under Off).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Mode {
+    /// `∞ cruise`.
+    Cruise,
+    /// `⤓ land`.
+    Land,
+    /// `○ off`: the harness on, Autopilot off.
+    Off,
+}
+
+impl Mode {
+    /// The word and its glyph, as aterm's glass spells them.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Cruise => "∞ cruise",
+            Mode::Land => "⤓ land",
+            Mode::Off => "○ off",
+        }
     }
 }
 
-/// Draws the ALab rainbow kitty border and `codex-alab harness ● on` badge along the top row of
-/// the composer block. The caller decides when: `glue/composer_border.rs` draws it while
-/// [`harness_state`] is `Some(true)`.
-pub fn render_composer_border(
-    composer_rect: Rect,
+/// aterm's harness, as this session's chrome shows it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Harness {
+    /// The whole harness is on: aterm hosts the session and its policy supports codex-alab,
+    /// under this Autopilot word. With [`Mode::Cruise`] or [`Mode::Land`] codex-alab holds
+    /// the proven claim and acts (a person's hold pauses it, the claim kept); with
+    /// [`Mode::Off`] it acts on nothing, and the harness is on all the same, a person's hold
+    /// over that Off included (the owner's ruling of 2026-10-24: "on" is the entire harness,
+    /// not Autopilot alone).
+    On(Mode),
+    /// A supervisor runs, but the harness does not supervise this session now: aterm's policy
+    /// is off for a reason other than Autopilot (the harness disabled or off for this agent,
+    /// unhosted, headless, a suspension, a hold over Cruise or Land codex-alab keeps no claim
+    /// through, or an unreadable policy), or aterm did not prove codex-alab's claim, or
+    /// another holds the session. Nothing says "on".
+    Unsupervised,
+}
+
+/// The running session's harness ([`Harness`]); `None` with no supervisor at all (outside
+/// aterm, an aterm with no harness policy, or under unit tests).
+pub fn harness_state() -> Option<Harness> {
+    use codex_alab_core::session::Autopilot;
+    use codex_alab_core::session::HarnessWord;
+    let shared = crate::boxes::tick_shared()?;
+    // One load: the supervisor publishes the Autopilot and its word in one store, so a frame
+    // never pairs a new state with the word it replaced.
+    Some(match shared.harness() {
+        (Autopilot::Off, _) => return None,
+        (_, HarnessWord::Off) => Harness::On(Mode::Off),
+        (Autopilot::Active, HarnessWord::Land) => Harness::On(Mode::Land),
+        (Autopilot::Active, _) => Harness::On(Mode::Cruise),
+        (Autopilot::Passive, _) => Harness::Unsupervised,
+    })
+}
+
+/// A value that moves whenever what the banner draws for the harness does: the banner cell's
+/// `transcript_animation_tick`, so a change redraws it at once. `None` with no supervisor.
+pub fn harness_tick() -> Option<u64> {
+    harness_state().map(|harness| match harness {
+        Harness::Unsupervised => 1,
+        Harness::On(Mode::Cruise) => 2,
+        Harness::On(Mode::Land) => 3,
+        Harness::On(Mode::Off) => 4,
+    })
+}
+
+/// Tint the complete composer overline, including its labels, with a readable spectrum.
+pub(crate) fn tint_composer_rule(
+    area: ratatui::layout::Rect,
     buf: &mut ratatui::buffer::Buffer,
     depth: Depth,
     theme: Theme,
 ) {
-    render::render_composer_border(composer_rect, buf, depth, theme);
+    render::tint_composer_rule(area, buf, depth, theme);
+}
+
+/// `rgb` as text on the composer overline at `depth` on `theme`'s ground: moved away from the
+/// ground until it clears [`palette::TEXT_CONTRAST_FLOOR`], as the spectrum through the
+/// overline's labels is (toward white, else black, where the theme's own ink cannot clear it
+/// on a middle gray); `ansi16` where the terminal draws named colours, and in mono.
+pub(crate) fn readable_text(rgb: palette::Rgb, ansi16: Color, depth: Depth, theme: Theme) -> Color {
+    render::readable_text(rgb, ansi16, depth, theme)
 }
 
 /// Whether to draw the banner, and in which style. First match wins:

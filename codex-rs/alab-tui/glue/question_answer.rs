@@ -43,7 +43,7 @@ pub(super) fn tick(overlay: &mut RequestUserInputOverlay) -> bool {
     let applied = apply(overlay, answer);
     let taken = applied.is_ok();
     if taken {
-        state.close_box(&id);
+        codex_alab_tui::boxes::close_answered(state, &id, std::ptr::from_ref(overlay).addr());
     }
     state.set_box_outcome(BoxOutcome { id, applied });
     taken

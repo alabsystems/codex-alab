@@ -24,6 +24,7 @@ mod model;
 mod picker;
 mod preview;
 mod sixel;
+#[path = "../../../alab-tui/glue/pet_kitty.rs"] mod alab_kitty; // ALAB(pet-perf): inside aterm each frame of the pet is sent once, then placed by id
 
 use anyhow::Context;
 use anyhow::Result;
@@ -130,6 +131,7 @@ pub(crate) fn render_ambient_pet_image(
     state: &mut PetImageRenderState,
     request: Option<AmbientPetDraw>,
 ) -> std::result::Result<(), PetImageRenderError> {
+    let Some(request) = alab_kitty::render(writer, state, request)? else { return Ok(()); }; // ALAB(pet-perf): inside aterm a frame is sent once, then only placed
     render_pet_image(writer, state, /*image_id*/ 0xC0DE, request)
 }
 
@@ -145,6 +147,7 @@ pub(crate) fn render_pet_picker_preview_image(
 pub(crate) struct PetImageRenderState {
     last_sixel_clear_area: Option<SixelClearArea>,
     last_protocol: Option<image_protocol::ImageProtocol>,
+    alab: alab_kitty::Stored, // ALAB(pet-perf): the frames aterm holds for the ambient pet
 }
 
 fn render_pet_image(
@@ -350,7 +353,7 @@ mod tests {
     #[test]
     fn kitty_local_file_pet_image_uses_file_reference_without_inline_payload() {
         let dir = tempfile::tempdir().unwrap();
-        let frame = dir.path().join("frame.png");
+        let frame = alab_kitty::local_file_frame_for_test(dir.path()); // ALAB(pet-tests): a filename can contain the image-byte base64 substring
         std::fs::write(&frame, b"png").unwrap();
         let request = AmbientPetDraw {
             frame,
@@ -372,7 +375,7 @@ mod tests {
         assert!(output.contains("a=d,d=I,i=49374,q=2;"));
         assert!(output.contains("\x1b[4;3H"));
         assert!(output.contains("a=T,t=f,f=100,c=4,r=2,q=2,i=49374,C=1;"));
-        assert!(!output.contains("cG5n"));
+        alab_kitty::assert_local_file_reference_for_test(&output, dir.path()); // ALAB(pet-tests): decode the filename instead of rejecting a valid base64 substring
         assert!(output.contains("\x1b8"));
     }
 

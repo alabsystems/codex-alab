@@ -20,6 +20,7 @@ use crate::trust::Grant;
 use crate::trust::Verdict;
 use crate::trust::abs_components;
 use crate::trust::decide;
+use crate::trust::judge_settled_with;
 use crate::trust::judge_with;
 use crate::trust::read_policy;
 use crate::trust::real_components;
@@ -432,4 +433,164 @@ fn the_notice_is_taken_once() {
     crate::trust::note_trusted(&grant);
     assert_eq!(crate::trust::take_notice(), Some(grant.notice()));
     assert_eq!(crate::trust::take_notice(), None);
+}
+
+/// How many times `aterm` was asked for its harness policy.
+fn policy_reads(aterm: &FakeAterm) -> usize {
+    aterm
+        .requests()
+        .iter()
+        .filter(|r| r.contains("harness policy"))
+        .count()
+}
+
+/// A one-minute hang detector around a judgement, never a latency budget.
+async fn bounded<F: std::future::Future>(run: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(60), run)
+        .await
+        .expect("the judgement hung")
+}
+
+/// A seamless update's commit suspends aterm's host for seconds: the policy is read again
+/// until the host resumes, and the launch folder is trusted then, with no screen. NEGATIVE
+/// CONTROLS: a person's hold and an older aterm's refusal are read once and show the screen
+/// at once.
+#[tokio::test]
+async fn a_suspended_host_is_read_again_until_it_resumes() {
+    let launch = gate("/Users/_owner/Developer/app", "/Users/_owner/Developer/app");
+    let (_dir, aterm) = fake(Mode::Current).await;
+    aterm.set_policy_key("trust_roots", "~/Developer");
+    aterm.set_effective(false, "suspended");
+    let (verdict, ()) = bounded(async {
+        tokio::join!(
+            judge_settled_with(
+                &launch,
+                Some(aterm.endpoint()),
+                Some(Path::new(HOME)),
+                UID,
+                Duration::from_secs(50),
+            ),
+            async {
+                while policy_reads(&aterm) < 2 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                aterm.set_effective(true, "enabled");
+            },
+        )
+    })
+    .await;
+    assert_eq!(trusted(verdict).root.as_deref(), Some("~/Developer"));
+    assert!(policy_reads(&aterm) >= 3, "{:?}", aterm.requests());
+
+    aterm.set_effective(false, "hold");
+    let before = policy_reads(&aterm);
+    let why = shown(
+        bounded(judge_settled_with(
+            &launch,
+            Some(aterm.endpoint()),
+            Some(Path::new(HOME)),
+            UID,
+            Duration::from_secs(50),
+        ))
+        .await,
+    );
+    assert!(why.contains("why=hold"), "{why}");
+    assert_eq!(policy_reads(&aterm), before + 1, "CONTROL: a hold is read once");
+
+    let (_old_dir, old) = fake(Mode::Old).await;
+    let why = shown(
+        bounded(judge_settled_with(
+            &launch,
+            Some(old.endpoint()),
+            Some(Path::new(HOME)),
+            UID,
+            Duration::from_secs(50),
+        ))
+        .await,
+    );
+    assert!(why.contains("no harness policy"), "{why}");
+    assert_eq!(policy_reads(&old), 1, "CONTROL: an older aterm is read once");
+}
+
+/// A policy read aterm does not answer is made again, and trusts once aterm answers; one that
+/// stays unanswered shows the screen when the settle bound has gone, its reason the stall's.
+#[tokio::test]
+async fn an_unanswered_read_is_made_again_within_the_bound() {
+    let launch = gate("/Users/_owner/Developer/app", "/Users/_owner/Developer/app");
+    let (_dir, aterm) = fake(Mode::Current).await;
+    aterm.set_policy_key("trust_roots", "~/Developer");
+    aterm.stall("harness");
+    let (verdict, ()) = bounded(async {
+        tokio::join!(
+            judge_settled_with(
+                &launch,
+                Some(aterm.endpoint()),
+                Some(Path::new(HOME)),
+                UID,
+                Duration::from_secs(50),
+            ),
+            async {
+                while policy_reads(&aterm) < 1 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                aterm.unstall("harness");
+            },
+        )
+    })
+    .await;
+    assert_eq!(trusted(verdict).root.as_deref(), Some("~/Developer"));
+
+    aterm.stall("harness");
+    let why = shown(
+        bounded(judge_settled_with(
+            &launch,
+            Some(aterm.endpoint()),
+            Some(Path::new(HOME)),
+            UID,
+            Duration::from_millis(100),
+        ))
+        .await,
+    );
+    assert!(why.contains("did not answer"), "{why}");
+}
+
+/// aterm's admission refusal `ERR control server busy; retry` (every request lane taken, a
+/// busy machine's many launches) is waited out, its `retry_ms=` the pause, and the launch
+/// folder is trusted once aterm admits the read (review of d5e2fc5abf, finding 3). NEGATIVE
+/// CONTROL: with no settle bound, the one read's refusal shows the screen, naming it.
+#[tokio::test]
+async fn a_busy_aterm_is_read_again_until_it_admits_the_read() {
+    let launch = gate("/Users/_owner/Developer/app", "/Users/_owner/Developer/app");
+    let (_dir, aterm) = fake(Mode::Current).await;
+    aterm.set_policy_key("trust_roots", "~/Developer");
+    aterm.busy_next(2);
+    let grant = trusted(
+        bounded(judge_settled_with(
+            &launch,
+            Some(aterm.endpoint()),
+            Some(Path::new(HOME)),
+            UID,
+            Duration::from_secs(50),
+        ))
+        .await,
+    );
+    assert_eq!(grant.root.as_deref(), Some("~/Developer"));
+    assert_eq!(
+        (aterm.connections(), policy_reads(&aterm)),
+        (3, 1),
+        "two refused at admission, then one read"
+    );
+
+    aterm.busy_next(1);
+    let why = shown(
+        bounded(judge_settled_with(
+            &launch,
+            Some(aterm.endpoint()),
+            Some(Path::new(HOME)),
+            UID,
+            Duration::ZERO,
+        ))
+        .await,
+    );
+    assert!(why.contains("busy"), "{why}");
 }

@@ -28,16 +28,17 @@ where
         .map(Layer::boxed);
     let (logger_layer, logger_handle) = reload::Layer::new(logger_export_layer);
 
-    let mut layers: Vec<Box<dyn Layer<S> + Send + Sync + 'static>> = vec![
+    let layers: Vec<Box<dyn Layer<S> + Send + Sync + 'static>> = vec![
         logger_layer
             .with_filter(tracing_subscriber::filter::filter_fn(
                 OtelProvider::log_export_filter,
             ))
             .boxed(),
+        // The subscriber graph is fixed after startup. Keep the global tracer
+        // bridge installed even when tracing starts disabled so an account
+        // switch can install a trace exporter later.
+        OtelProvider::reloadable_tracing_layer(OTEL_SERVICE_NAME).boxed(),
     ];
-    if provider.is_some_and(|provider| provider.tracer.is_some()) {
-        layers.push(OtelProvider::reloadable_tracing_layer(OTEL_SERVICE_NAME).boxed());
-    }
     (layers, logger_handle)
 }
 
@@ -75,7 +76,7 @@ where
                     };
                     let next_provider = match codex_core::otel_init::build_provider(
                         &config,
-                        env!("CARGO_PKG_VERSION"),
+                        codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")), // ALAB(version): running executable identity
                         Some(OTEL_SERVICE_NAME),
                         default_analytics_enabled,
                     ) {

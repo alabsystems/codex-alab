@@ -5,7 +5,9 @@
 
 use super::Banner;
 use super::Depth;
+use super::Mode;
 use super::Style;
+use super::claims::Run;
 use super::palette;
 use super::palette::Rgb;
 use super::sprite::KITTY;
@@ -16,11 +18,26 @@ use ratatui::style::Modifier;
 use ratatui::style::Style as CellStyle;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use std::cell::RefCell;
 
-/// Every row opens with this many blank columns: no row starts with a codex reader mark.
+/// Every row opens with this many blank columns, in line with upstream's `>_ OpenAI Codex`.
 const INDENT: usize = 2;
 /// The wordmark, one snapped spectrum stop per letter.
 const WORDMARK: &str = "codex-alab";
+/// The owner's tagline, in his words: one line where it fits, else a part a line.
+const TAGLINE: [&str; 3] = ["bloatware-free", "nag-free", "optimized for aterm"];
+/// What joins the tagline's parts, and the claims, on one line.
+const JOIN: &str = " · ";
+/// Text rows: one beside each art row, and no more without the art.
+const TEXT_ROWS: usize = KITTY_H / 2;
+/// Blank columns between the kitty and the text.
+const GAP: usize = 3;
+/// The shortest ribbon beside the text; with less room the kitty goes without one.
+const TRAIL_MIN: usize = 8;
+/// The longest ribbon beside the text.
+const TRAIL_MAX: usize = 28;
+/// The green of a measured figure: the harness row's.
+const FIGURE_GREEN: Rgb = 0x4EE088;
 /// The trail columns that fade into the sky (the release is the art).
 const TAIL_FADE: usize = 6;
 /// Below this alpha a pixel is cut where it cannot be blended.
@@ -76,65 +93,79 @@ impl Cell {
     };
 }
 
-/// The art for one width: the trail length, how many sky stars, and whether stars fly ahead.
-struct Layout {
-    trail: usize,
-    sky: usize,
-    ahead: bool,
-}
-
-/// The width ladder. Every art row ends by `INDENT + trail + KITTY_W` (plus the ahead stars at
-/// 64 and up), which keeps it inside `width - 1`.
-fn layout(width: usize) -> Option<Layout> {
-    if width >= 64 {
-        Some(Layout {
-            trail: (width - 2 - KITTY_W - 8).min(56),
-            sky: 3,
-            ahead: true,
-        })
-    } else if width >= 44 {
-        Some(Layout {
-            trail: width - 2 - KITTY_W - 2,
-            sky: 2,
-            ahead: false,
-        })
-    } else if width >= 28 {
-        Some(Layout {
-            trail: (width - 2 - KITTY_W - 2).max(4),
-            sky: 0,
-            ahead: false,
-        })
-    } else {
-        None
-    }
-}
-
 pub(super) fn render(banner: &Banner, width: usize) -> Vec<Line<'static>> {
-    render_with_harness(banner, width, false)
+    render_with_harness(banner, width, None)
 }
 
+/// The banner at `width`; with `harness` (the harness on, under that Autopilot word) in the
+/// word's palette and with the harness row under the text.
 pub(super) fn render_with_harness(
     banner: &Banner,
     width: usize,
-    harness_active: bool,
+    harness: Option<Mode>,
 ) -> Vec<Line<'static>> {
     if width < INDENT + WORDMARK.len() + 1 {
         return Vec::new();
     }
-    let painter = Painter::new(banner);
+    let ramp = match harness {
+        Some(Mode::Off) => Ramp::Moonbow,
+        Some(Mode::Cruise | Mode::Land) | None => Ramp::Spectrum,
+    };
+    let painter = Painter::new(banner, ramp);
     let mut lines = vec![Line::default()];
-    if let Some(layout) = layout(width) {
-        lines.extend(painter.art(&layout).into_iter().map(into_line));
+    // The room right of the kitty alone. The text column takes what it needs of it, and the
+    // ribbon what is left, so every art row ends by `INDENT + trail + KITTY_W` and every text
+    // row by `width - 1`.
+    let room = width.saturating_sub(1 + INDENT + KITTY_W + GAP);
+    // Beside the kitty only with the whole tagline in two lines at most; otherwise the text
+    // stands alone, where it may take more.
+    let text = painter.text(room, 2);
+    if text.len() > 1 {
+        let widest = text.iter().map(Line::width).max().unwrap_or(0);
+        let trail = room.saturating_sub(widest).min(TRAIL_MAX);
+        let trail = if trail >= TRAIL_MIN { trail } else { 0 };
+        let sky = match trail {
+            24.. => 3,
+            16.. => 2,
+            _ => 0,
+        };
+        let at = INDENT + trail + KITTY_W + GAP;
+        let top = (TEXT_ROWS - text.len()) / 2;
+        let mut text = text.into_iter();
+        for (row, cells) in painter.art(trail, sky).into_iter().enumerate() {
+            let beside = if row >= top { text.next() } else { None };
+            lines.push(beside_art(cells, at, beside));
+        }
+    } else {
+        let indent = || Span::raw(" ".repeat(INDENT));
+        lines.extend(
+            painter
+                .text(width - 1 - INDENT, TEXT_ROWS - 1)
+                .into_iter()
+                .map(|line| merge([vec![indent()], line.spans].concat())),
+        );
     }
-    lines.push(painter.label(width));
-    if harness_active && let Some(harness) = painter.harness_line(width) {
+    if let Some(mode) = harness
+        && let Some(harness) = painter.autopilot_line(width, mode)
+    {
         lines.push(harness);
     }
     lines
 }
 
+/// The colours the trail, its stars and the lettering run through.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Ramp {
+    /// aterm's spectrum, red to violet.
+    Spectrum,
+    /// aterm's moonbow, worn under Autopilot off: white to steel on a dark ground, pearl to
+    /// graphite on a light one.
+    Moonbow,
+}
+
 struct Painter<'a> {
     banner: &'a Banner,
+    ramp: Ramp,
     light: bool,
     ground: Rgb,
     /// White-hot on a dark ground, aterm's ink on a light one.
@@ -142,10 +173,11 @@ struct Painter<'a> {
 }
 
 impl<'a> Painter<'a> {
-    fn new(banner: &'a Banner) -> Self {
+    fn new(banner: &'a Banner, ramp: Ramp) -> Self {
         let light = banner.theme.is_light();
         Self {
             banner,
+            ramp,
             light,
             ground: banner.theme.ground(),
             hot: if light {
@@ -156,9 +188,58 @@ impl<'a> Painter<'a> {
         }
     }
 
-    /// The five art rows: a 10-pixel canvas folded into half blocks, then the stars.
-    fn art(&self, layout: &Layout) -> Vec<Vec<Cell>> {
-        let trail = layout.trail;
+    /// The ramp's colour at trail position `t` (0 at the kitty).
+    fn ramp_at(&self, t: f32) -> Rgb {
+        match self.ramp {
+            Ramp::Spectrum => palette::spectrum(t),
+            Ramp::Moonbow => palette::moonbow(t, self.light),
+        }
+    }
+
+    /// Named stop `k` (0..[`palette::SPECTRUM_STOPS`]) of the ramp: the spectrum's anchors, or
+    /// the moonbow at even steps.
+    fn stop(&self, k: usize) -> Rgb {
+        let k = k.min(palette::SPECTRUM_STOPS - 1);
+        match self.ramp {
+            Ramp::Spectrum => palette::SPECTRUM_ANCHORS[k],
+            Ramp::Moonbow => {
+                palette::moonbow(k as f32 / (palette::SPECTRUM_STOPS - 1) as f32, self.light)
+            }
+        }
+    }
+
+    /// Named stop `k` of the ramp as an ANSI name: the spectrum's colours, or the moonbow's
+    /// greys (bright white to grey on a dark ground, dark grey to black on a light one).
+    fn stop16(&self, k: usize) -> Color {
+        let k = k.min(palette::SPECTRUM_STOPS - 1);
+        match (self.ramp, self.light, k < palette::SPECTRUM_STOPS / 2) {
+            (Ramp::Spectrum, ..) => STOP16[k],
+            (Ramp::Moonbow, false, true) => Color::White,
+            (Ramp::Moonbow, false, false) => Color::Gray,
+            (Ramp::Moonbow, true, true) => Color::DarkGray,
+            (Ramp::Moonbow, true, false) => Color::Black,
+        }
+    }
+
+    /// The gold star, or under the moonbow aterm's pearl glint.
+    fn gold(&self) -> Star {
+        match self.ramp {
+            Ramp::Spectrum => Star {
+                glyph: '✧',
+                rgb: palette::GOLD,
+                ansi16: Color::LightYellow,
+            },
+            Ramp::Moonbow => Star {
+                glyph: '✧',
+                rgb: palette::moonbow(1.0 / 3.0, self.light),
+                ansi16: self.stop16(0),
+            },
+        }
+    }
+
+    /// The five art rows: a 10-pixel canvas folded into half blocks, then `sky` stars on the
+    /// ribbon's `trail` columns.
+    fn art(&self, trail: usize, sky: usize) -> Vec<Vec<Cell>> {
         let width = INDENT + trail + KITTY_W;
         let mut px: Vec<Vec<Option<Px>>> = vec![vec![None; width]; KITTY_H];
         for c in 0..trail {
@@ -172,11 +253,11 @@ impl<'a> Painter<'a> {
             match self.banner.style {
                 Style::Stripes => {
                     let off = ((dist - 1) / 8) % 2;
-                    for (k, &stop) in palette::SPECTRUM_ANCHORS.iter().enumerate() {
+                    for k in 0..palette::SPECTRUM_STOPS {
                         let y = 2 + k + off;
                         if y < KITTY_H {
                             px[y][x] = Some(Px {
-                                rgb: stop,
+                                rgb: self.stop(k),
                                 alpha,
                                 role: Role::Band(k),
                             });
@@ -187,7 +268,7 @@ impl<'a> Painter<'a> {
                     let wave = (c as f64 * 2.0 * std::f64::consts::PI / 16.0).sin() > 0.3;
                     let off = usize::from(wave);
                     let t = column_t(c, trail);
-                    let mut rgb = palette::spectrum(t);
+                    let mut rgb = self.ramp_at(t);
                     if dist <= 2 {
                         // aterm's meteor: a white-hot shoulder where the ribbon meets the head.
                         rgb = palette::mix(self.hot, rgb, (dist - 1) as f32 / 2.0);
@@ -221,7 +302,7 @@ impl<'a> Painter<'a> {
 
         // Stars: few and bright, in the sky, never on a stroke (RAINBOW-KITTY-V2 §5.1).
         let at = |f: f64| (f * trail as f64) as usize;
-        for (k, f) in [0.14, 0.42, 0.71].into_iter().take(layout.sky).enumerate() {
+        for (k, f) in [0.14, 0.42, 0.71].into_iter().take(sky).enumerate() {
             let c = at(f);
             let stop = palette::spectrum_snap_index(column_t(c, trail));
             let star = match k {
@@ -232,30 +313,15 @@ impl<'a> Painter<'a> {
             self.put(&mut rows[0], INDENT + c, INDENT + trail, star);
         }
         if self.banner.style == Style::Ribbon {
-            for (k, f) in [0.27, 0.58, 0.86].into_iter().take(layout.sky).enumerate() {
+            for (k, f) in [0.27, 0.58, 0.86].into_iter().take(sky).enumerate() {
                 let c = at(f);
                 let star = if k == 1 {
-                    gold()
+                    self.gold()
                 } else {
                     self.m3(palette::spectrum_snap_index(column_t(c, trail)))
                 };
                 self.put(&mut rows[4], INDENT + c, INDENT + trail, star);
             }
-        }
-        if layout.ahead {
-            let a0 = width + 1;
-            self.put(&mut rows[0], a0 + 1, a0 + 2, gold());
-            self.put(&mut rows[2], a0 + 4, a0 + 5, self.m3(0));
-            self.put(
-                &mut rows[4],
-                a0 + 2,
-                a0 + 3,
-                Star {
-                    glyph: '⋆',
-                    rgb: self.hot,
-                    ansi16: self.hot16(),
-                },
-            );
         }
         rows
     }
@@ -332,7 +398,7 @@ impl<'a> Painter<'a> {
             }
         }
         let ansi16 = match px.role {
-            Role::Ribbon(stop) | Role::Band(stop) => STOP16[stop],
+            Role::Ribbon(stop) | Role::Band(stop) => self.stop16(stop),
             Role::Kitty(letter) => self.kitty16(letter),
         };
         Some(self.colour(rgb, ansi16))
@@ -394,6 +460,15 @@ impl<'a> Painter<'a> {
         } else {
             palette::WHITE_HOT
         };
+        // Luma's light/dark classification can select an endpoint below the text floor
+        // on middle-gray backgrounds. White or black always reaches the 4.5:1 floor.
+        let toward = if palette::contrast(toward, self.ground) >= floor {
+            toward
+        } else if palette::contrast(palette::WHITE_HOT, self.ground) >= floor {
+            palette::WHITE_HOT
+        } else {
+            0x00_0000
+        };
         let rgb = palette::rescue(rgb, self.ground, toward, floor);
         match self.banner.depth {
             Depth::TrueColor => rgb_color(palette::channels(rgb)),
@@ -425,13 +500,9 @@ impl<'a> Painter<'a> {
     fn m2(&self, stop: usize) -> Star {
         Star {
             glyph: '⋆',
-            rgb: palette::mix(
-                self.hot,
-                palette::spectrum_stop(stop),
-                palette::M2_BODY_TINT,
-            ),
+            rgb: palette::mix(self.hot, self.stop(stop), palette::M2_BODY_TINT),
             ansi16: if self.light {
-                STOP16[stop]
+                self.stop16(stop)
             } else {
                 Color::White
             },
@@ -442,8 +513,8 @@ impl<'a> Painter<'a> {
     fn m3(&self, stop: usize) -> Star {
         Star {
             glyph: '∙',
-            rgb: palette::spectrum_stop(stop),
-            ansi16: STOP16[stop],
+            rgb: self.stop(stop),
+            ansi16: self.stop16(stop),
         }
     }
 
@@ -477,174 +548,252 @@ impl<'a> Painter<'a> {
         };
     }
 
-    /// The label: the wordmark in snapped stops, bold, then dim provenance, shortened to fit.
-    fn label(&self, width: usize) -> Line<'static> {
-        let mut spans = vec![Span::raw(" ".repeat(INDENT))];
+    /// The text for `room` columns, at most [`TEXT_ROWS`] lines no wider than the tagline on one
+    /// line: the wordmark and build, the tagline (whole in at most `tagline_rows` lines, or not at
+    /// all), the claims (as many as fit, in the table's order), and the upstream source while a
+    /// row is left. Without room for the wordmark, nothing.
+    fn text(&self, room: usize, tagline_rows: usize) -> Vec<Line<'static>> {
+        let column = room.min(width(&TAGLINE.join(JOIN)));
+        let Some(head) = self.wordmark(column) else {
+            return Vec::new();
+        };
+        let mut rows = vec![head];
+        let tagline: Vec<_> = TAGLINE.iter().map(|part| vec![Span::raw(*part)]).collect();
+        let (lines, packed) = pack(&tagline, column, tagline_rows);
+        if packed < tagline.len() {
+            return rows;
+        }
+        rows.extend(lines);
+        let upstream = self.upstream(column);
+        let remaining = TEXT_ROWS - rows.len();
+        // Keep source attribution beside a complete two-row measurement block where
+        // all three fit; with less room the qualified measurements retain priority.
+        let claim_rows = if upstream.is_some() && remaining >= 3 {
+            remaining - 1
+        } else {
+            remaining
+        };
+        rows.extend(self.claims(column, claim_rows));
+        if rows.len() < TEXT_ROWS
+            && let Some(upstream) = upstream
+        {
+            rows.push(upstream);
+        }
+        rows
+    }
+
+    /// The wordmark in snapped stops, bold, then the readable ALab version where it fits.
+    fn wordmark(&self, column: usize) -> Option<Line<'static>> {
         let letters = WORDMARK.chars().count();
+        if column < letters {
+            return None;
+        }
+        let mut spans = Vec::with_capacity(letters + 1);
         for (i, ch) in WORDMARK.chars().enumerate() {
             let stop = (i * palette::SPECTRUM_STOPS / letters).min(palette::SPECTRUM_STOPS - 1);
             let mut style = CellStyle::new().add_modifier(Modifier::BOLD);
             if self.banner.depth != Depth::Mono {
-                style = style.fg(self.text_colour(palette::SPECTRUM_ANCHORS[stop], STOP16[stop]));
+                style = style.fg(self.text_colour(self.stop(stop), self.stop16(stop)));
             }
             spans.push(Span::styled(ch.to_string(), style));
         }
-        let provenance = "  rainbow kitty · ALab build of OpenAI Codex";
-        let mut tails = Vec::with_capacity(3);
-        if let Some(sha7) = &self.banner.sha7 {
-            tails.push(format!("{provenance} · g{sha7}"));
+        if let Some(version) = &self.banner.version {
+            let build = format!("  v{version}");
+            if letters + width(&build) <= column {
+                spans.push(Span::styled(build, dim()));
+            }
         }
-        tails.push(provenance.to_string());
-        tails.push("  rainbow kitty".to_string());
-        let used = INDENT + letters;
-        if let Some(tail) = tails
-            .into_iter()
-            .find(|tail| used + unicode_width::UnicodeWidthStr::width(tail.as_str()) < width)
-        {
-            spans.push(Span::styled(
-                tail,
-                CellStyle::new().add_modifier(Modifier::DIM),
-            ));
-        }
-        merge(spans)
+        Some(merge(spans))
     }
 
-    /// The harness banner line under the wordmark when codex-alab's autopilot is active.
-    fn harness_line(&self, width: usize) -> Option<Line<'static>> {
-        let candidates = [
-            (
-                "✦ ",
-                "enhanced by aterm · ",
-                "codex-alab harness",
-                " · autopilot ∞ cruise",
-            ),
-            ("✦ ", "enhanced by aterm · ", "codex-alab harness", ""),
-            ("✦ ", "", "codex-alab harness", " ● on"),
-        ];
-        let (star, lead, brand, tail) = candidates.into_iter().find(|(s, l, b, t)| {
-            INDENT
-                + unicode_width::UnicodeWidthStr::width(*s)
-                + unicode_width::UnicodeWidthStr::width(*l)
-                + unicode_width::UnicodeWidthStr::width(*b)
-                + unicode_width::UnicodeWidthStr::width(*t)
-                < width
-        })?;
-        let mut spans = vec![Span::raw(" ".repeat(INDENT))];
-        let star_style = if self.banner.depth == Depth::Mono {
-            CellStyle::new().add_modifier(Modifier::BOLD)
-        } else {
-            CellStyle::new()
-                .fg(self.colour(palette::GOLD, Color::LightYellow))
-                .add_modifier(Modifier::BOLD)
+    /// A dated comparison of default configurations, then the claims in the remaining rows.
+    /// The qualification stays with every figure: these are measurements, not live facts
+    /// about a session whose configuration may enable the daemon or other services again.
+    fn claims(&self, column: usize, rows: usize) -> Vec<Line<'static>> {
+        let forms: Vec<_> = self
+            .banner
+            .claims
+            .iter()
+            .filter_map(|claim| {
+                let forms = claim.forms();
+                (!forms.is_empty()).then_some((claim, forms))
+            })
+            .collect();
+        let Some((comparison, _)) = forms.first() else {
+            return Vec::new();
         };
-        spans.push(Span::styled(star.to_string(), star_style));
-        if !lead.is_empty() {
-            spans.push(Span::styled(
-                lead.to_string(),
-                CellStyle::new().add_modifier(Modifier::DIM),
-            ));
+        if rows < 2
+            || forms.iter().any(|(claim, _)| {
+                claim.against != comparison.against || claim.measured != comparison.measured
+            })
+        {
+            return Vec::new();
         }
+        let Some(qualification) = [
+            format!(
+                "Measured defaults vs Codex {} · {}",
+                comparison.against, comparison.measured
+            ),
+            format!(
+                "Defaults vs {} · {}",
+                comparison.against, comparison.measured
+            ),
+        ]
+        .into_iter()
+        .find(|line| width(line) <= column) else {
+            return Vec::new();
+        };
+        let longest = forms
+            .iter()
+            .map(|(_, forms)| forms.len())
+            .max()
+            .unwrap_or(0);
+        let mut lines = Vec::new();
+        for form in 0..longest {
+            let items: Vec<_> = forms
+                .iter()
+                .map(|(_, forms)| self.claim(&forms[form.min(forms.len() - 1)]))
+                .collect();
+            let (fitted, packed) = pack(&items, column, rows - 1);
+            lines = fitted;
+            if packed == items.len() {
+                break;
+            }
+        }
+        if !lines.is_empty() {
+            lines.insert(0, Line::from(Span::styled(qualification, dim())));
+        }
+        lines
+    }
+
+    /// One claim's words: its figures bold, in the harness green where there is colour.
+    fn claim(&self, runs: &[Run]) -> Vec<Span<'static>> {
+        let figure = match self.banner.depth {
+            Depth::Mono => CellStyle::new(),
+            _ => CellStyle::new().fg(self.text_colour(FIGURE_GREEN, Color::Green)),
+        }
+        .add_modifier(Modifier::BOLD);
+        runs.iter()
+            .map(|run| match run {
+                Run::Figure(text) => Span::styled(text.clone(), figure),
+                Run::Words(text) => Span::raw(text.clone()),
+            })
+            .collect()
+    }
+
+    /// The upstream release baseline, dim, with exact source metadata left in version details.
+    fn upstream(&self, column: usize) -> Option<Line<'static>> {
+        let release = crate::interface::readable_version(self.banner.upstream.as_deref()?);
+        [
+            format!("based on OpenAI Codex {release}"),
+            format!("based on Codex {release}"),
+        ]
+        .into_iter()
+        .find(|line| width(line) <= column)
+        .map(|line| Line::from(Span::styled(line, dim())))
+    }
+
+    /// The native Autopilot status under the launch banner. The product version lives
+    /// in the title; there is no second harness identity or version.
+    fn autopilot_line(&self, width: usize, mode: Mode) -> Option<Line<'static>> {
+        const STAR: &str = "✦ ";
+        let brand = "Autopilot";
+        let word = format!(" {}", mode.label());
+        if INDENT + self::width(STAR) + self::width(brand) + self::width(&word) >= width {
+            return None;
+        }
+        let mono = self.banner.depth == Depth::Mono;
+        let bold = CellStyle::new().add_modifier(Modifier::BOLD);
+        let mut spans = vec![Span::raw(" ".repeat(INDENT))];
+        let star = match (mono, self.ramp) {
+            (true, _) => bold,
+            (false, Ramp::Spectrum) => bold.fg(self.colour(palette::GOLD, Color::LightYellow)),
+            (false, Ramp::Moonbow) => bold.fg(self.colour(self.hot, self.hot16())),
+        };
+        spans.push(Span::styled(STAR, star));
         let brand_chars = brand.chars().count().max(1);
         for (i, ch) in brand.chars().enumerate() {
             let stop = (i * palette::SPECTRUM_STOPS / brand_chars).min(palette::SPECTRUM_STOPS - 1);
-            let mut style = CellStyle::new().add_modifier(Modifier::BOLD);
-            if self.banner.depth != Depth::Mono {
-                style = style.fg(self.text_colour(palette::SPECTRUM_ANCHORS[stop], STOP16[stop]));
+            let mut style = bold;
+            if !mono {
+                style = style.fg(self.text_colour(self.stop(stop), self.stop16(stop)));
             }
             spans.push(Span::styled(ch.to_string(), style));
         }
-        if !tail.is_empty() {
-            let tail_style = if self.banner.depth == Depth::Mono {
-                CellStyle::new().add_modifier(Modifier::BOLD)
-            } else {
-                CellStyle::new()
-                    .fg(self.text_colour(0x4EE088, Color::Green))
-                    .add_modifier(Modifier::BOLD)
-            };
-            spans.push(Span::styled(tail.to_string(), tail_style));
-        }
+        let tail_style = match (mono, mode) {
+            (true, _) => bold,
+            // Pearl on a dark ground, graphite on a light one.
+            (false, Mode::Off) if self.light => {
+                bold.fg(self.text_colour(palette::moonbow(1.0, true), Color::Black))
+            }
+            (false, Mode::Off) => {
+                bold.fg(self.text_colour(palette::moonbow(1.0 / 3.0, false), Color::White))
+            }
+            (false, Mode::Cruise | Mode::Land) => {
+                bold.fg(self.text_colour(FIGURE_GREEN, Color::Green))
+            }
+        };
+        spans.push(Span::styled(word, tail_style));
         Some(merge(spans))
     }
 }
 
-pub(super) fn render_composer_border(
-    composer_rect: ratatui::layout::Rect,
+/// One palette per render thread: animation ticks reuse color quantization while a width,
+/// depth or background change replaces the entry. Old resize palettes do not accumulate.
+struct ComposerColors {
+    key: (u16, Depth, super::Theme),
+    values: Vec<Color>,
+}
+
+impl ComposerColors {
+    fn new(key: (u16, Depth, super::Theme)) -> Self {
+        let (width, depth, theme) = key;
+        let banner = Banner::new(Style::Ribbon, depth, theme, "");
+        let painter = Painter::new(&banner, Ramp::Spectrum);
+        let denom = f32::from(width.max(2) - 1);
+        let values = (0..width)
+            .map(|column| {
+                let t = f32::from(column) / denom;
+                let stop = palette::spectrum_snap_index(t);
+                painter.text_colour(palette::spectrum(t), STOP16[stop])
+            })
+            .collect();
+        Self { key, values }
+    }
+}
+
+thread_local! {
+    static COMPOSER_COLORS: RefCell<Option<ComposerColors>> = const { RefCell::new(None) };
+}
+
+pub(super) fn tint_composer_rule(
+    area: ratatui::layout::Rect,
     buf: &mut ratatui::buffer::Buffer,
     depth: Depth,
     theme: super::Theme,
 ) {
-    if composer_rect.height < 3 || composer_rect.width < 34 {
+    let area = area.intersection(buf.area);
+    if area.is_empty() || depth == Depth::Mono {
         return;
     }
+    let key = (area.width, depth, theme);
+    COMPOSER_COLORS.with_borrow_mut(|cached| {
+        let colors = cached.get_or_insert_with(|| ComposerColors::new(key));
+        if colors.key != key {
+            *colors = ComposerColors::new(key);
+        }
+        for (x, color) in (area.x..area.right()).zip(&colors.values) {
+            buf[(x, area.y)].set_fg(*color);
+        }
+    });
+}
+
+/// `rgb` as overline text at `depth` on `theme`'s ground, floored as the spectrum through the
+/// overline's labels is ([`Painter::clearing`] at [`palette::TEXT_CONTRAST_FLOOR`]); `ansi16`
+/// where the terminal draws named colours.
+pub(super) fn readable_text(rgb: Rgb, ansi16: Color, depth: Depth, theme: super::Theme) -> Color {
     let banner = Banner::new(Style::Ribbon, depth, theme, "");
-    let painter = Painter::new(&banner);
-    let y = composer_rect.y;
-    let x_start = composer_rect.x.saturating_add(INDENT as u16);
-    let x_end = composer_rect.right().saturating_sub(2);
-    if x_end <= x_start {
-        return;
-    }
-    let span_w = usize::from(x_end - x_start);
-    let full_badge = " ✦ alab kitty · codex-alab harness ● on ";
-    let short_badge = " ✦ codex-alab harness ● on ";
-    let badge = if span_w >= unicode_width::UnicodeWidthStr::width(full_badge) + 4 {
-        full_badge
-    } else if span_w >= unicode_width::UnicodeWidthStr::width(short_badge) + 2 {
-        short_badge
-    } else {
-        return;
-    };
-    let badge_cols = unicode_width::UnicodeWidthStr::width(badge) as u16;
-    let badge_start = x_end.saturating_sub(badge_cols);
-
-    // Draw the ALab rainbow spectrum border rule across the top of the composer.
-    let denom = (span_w.max(2) - 1) as f32;
-    for i in 0..span_w {
-        let x = x_start + i as u16;
-        if x >= badge_start && x < x_end {
-            continue;
-        }
-        let t = i as f32 / denom;
-        let stop = palette::spectrum_snap_index(t);
-        let rgb = palette::mix(painter.ground, palette::spectrum(t), 0.62);
-        let cell = &mut buf[(x, y)];
-        cell.set_symbol("─");
-        if depth != Depth::Mono {
-            cell.set_fg(painter.colour(rgb, STOP16[stop]));
-        }
-    }
-
-    // Draw the right-aligned ALab rainbow kitty harness badge on the top border.
-    let mut cx = badge_start;
-    let badge_chars: Vec<char> = badge.chars().collect();
-    let total_chars = badge_chars.len().max(1);
-    for (idx, ch) in badge_chars.into_iter().enumerate() {
-        if cx >= x_end {
-            break;
-        }
-        let cell = &mut buf[(cx, y)];
-        let mut sym = [0u8; 4];
-        cell.set_symbol(ch.encode_utf8(&mut sym));
-        if depth != Depth::Mono {
-            if ch == '✦' {
-                cell.set_fg(painter.colour(palette::GOLD, Color::LightYellow));
-                cell.modifier.insert(Modifier::BOLD);
-            } else if ch == '●' || idx + 4 >= total_chars {
-                cell.set_fg(painter.text_colour(0x4EE088, Color::Green));
-                cell.modifier.insert(Modifier::BOLD);
-            } else if (3..13).contains(&idx) && badge == full_badge {
-                let stop =
-                    ((idx - 3) * palette::SPECTRUM_STOPS / 10).min(palette::SPECTRUM_STOPS - 1);
-                cell.set_fg(painter.text_colour(palette::SPECTRUM_ANCHORS[stop], STOP16[stop]));
-                cell.modifier.insert(Modifier::BOLD);
-            } else {
-                cell.set_fg(painter.text_colour(painter.hot, painter.hot16()));
-            }
-        } else if ch == '✦' || ch == '●' {
-            cell.modifier.insert(Modifier::BOLD);
-        }
-        cx += 1;
-    }
+    Painter::new(&banner, Ramp::Spectrum).clearing(rgb, ansi16, palette::TEXT_CONTRAST_FLOOR)
 }
 
 /// The trail position of column `c` (0 at the tail): 0 red where it touches the kitty, 1 violet
@@ -681,12 +830,54 @@ fn light16(c: Color) -> Color {
     }
 }
 
-fn gold() -> Star {
-    Star {
-        glyph: '✧',
-        rgb: palette::GOLD,
-        ansi16: Color::LightYellow,
+/// `items` in order, in at most `rows` lines of `column`, joined by a dim [`JOIN`] where two
+/// share a line; it stops before the first item that does not fit. Returns the lines and how
+/// many items they hold.
+fn pack(items: &[Vec<Span<'static>>], column: usize, rows: usize) -> (Vec<Line<'static>>, usize) {
+    let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut used = 0;
+    let mut packed = 0;
+    for item in items {
+        let w: usize = item.iter().map(Span::width).sum();
+        let row_left = lines.len() < rows;
+        match lines.last_mut() {
+            Some(line) if used + width(JOIN) + w <= column => {
+                line.push(Span::styled(JOIN, dim()));
+                line.extend(item.iter().cloned());
+                used += width(JOIN) + w;
+            }
+            _ if w <= column && row_left => {
+                lines.push(item.clone());
+                used = w;
+            }
+            _ => break,
+        }
+        packed += 1;
     }
+    (lines.into_iter().map(merge).collect(), packed)
+}
+
+fn width(text: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(text)
+}
+
+fn dim() -> CellStyle {
+    CellStyle::new().add_modifier(Modifier::DIM)
+}
+
+/// An art row with `text` beside it from column `at`, which the art never reaches; with no text,
+/// the art row alone.
+fn beside_art(mut cells: Vec<Cell>, at: usize, text: Option<Line<'static>>) -> Line<'static> {
+    let Some(text) = text else {
+        return into_line(cells);
+    };
+    cells.resize(at, Cell::BLANK);
+    let mut spans: Vec<Span<'static>> = cells
+        .into_iter()
+        .map(|cell| Span::styled(cell.glyph.to_string(), cell.style))
+        .collect();
+    spans.extend(text.spans);
+    merge(spans)
 }
 
 /// One row of cells as a line: trailing sky trimmed, equal styles merged into one span.
@@ -725,4 +916,47 @@ fn rgb_color((r, g, b): (u8, u8, u8)) -> Color {
 #[allow(clippy::disallowed_methods)]
 fn indexed_color(index: u8) -> Color {
     Color::Indexed(index)
+}
+
+#[cfg(test)]
+mod composer_tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn cached_composer_colors_match_fresh_paints_after_terminal_changes() {
+        let dark = super::super::Theme::from_bg(Some((16, 20, 24)));
+        let light = super::super::Theme::from_bg(Some((255, 255, 255)));
+        let gray = super::super::Theme::from_bg(Some((120, 120, 120)));
+        let area = Rect::new(3, 1, 80, 1);
+        COMPOSER_COLORS.with_borrow_mut(|cached| *cached = None);
+        for (depth, theme, area) in [
+            (Depth::TrueColor, dark, area),
+            (Depth::TrueColor, dark, Rect::new(12, 3, 80, 1)),
+            (Depth::TrueColor, dark, Rect::new(3, 1, 32, 1)),
+            (Depth::TrueColor, dark, area),
+            (Depth::Ansi256, dark, area),
+            (Depth::Ansi16, dark, area),
+            (Depth::TrueColor, dark, area),
+            (Depth::TrueColor, light, area),
+            (Depth::TrueColor, gray, area),
+            (Depth::TrueColor, super::super::Theme::default(), area),
+            (Depth::TrueColor, dark, area),
+            (Depth::Mono, dark, area),
+            (Depth::TrueColor, dark, Rect::new(3, 1, 0, 1)),
+            (Depth::TrueColor, dark, Rect::new(3, 1, 80, 0)),
+            (Depth::TrueColor, dark, Rect::new(60, 2, 80, 1)),
+        ] {
+            let mut original = Buffer::empty(Rect::new(0, 0, 100, 5));
+            for cell in &mut original.content {
+                cell.set_symbol("x").set_fg(Color::Green);
+            }
+            let mut cached = original.clone();
+            tint_composer_rule(area, &mut cached, depth, theme);
+            COMPOSER_COLORS.with_borrow_mut(|cached| *cached = None);
+            tint_composer_rule(area, &mut original, depth, theme);
+            assert_eq!(cached, original, "{depth:?}/{theme:?}/{area:?}");
+        }
+    }
 }

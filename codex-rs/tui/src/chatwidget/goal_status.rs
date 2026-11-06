@@ -23,6 +23,8 @@ impl GoalStatusState {
         self.goal.status == AppThreadGoalStatus::Active
     }
 
+    pub(crate) fn active_objective(&self) -> Option<&str> { self.is_active().then_some(self.goal.objective.as_str()) } // ALAB(session): active thread goal for the session record
+
     pub(super) fn indicator(
         &self,
         now: Instant,

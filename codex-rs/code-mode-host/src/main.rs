@@ -17,7 +17,15 @@ use tracing_subscriber::util::SubscriberInitExt;
 const OTEL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 5);
 
 #[derive(Debug, Parser)]
+#[command(name = "codex-code-mode-host", version = codex_alab_core::version::product_version(env!("CARGO_PKG_VERSION")))] // ALAB(version): exits before telemetry or transport; codex-alab's own version
 struct Cli {
+    #[arg(
+        long,
+        hide = true,
+        conflicts_with_all = ["listen", "otel_trace_listen", "otel_trace_exporter"]
+    )]
+    codex_ui_plugin_process: bool,
+
     /// Transport endpoint: `stdio`, `stdio://`, `grpc+stdio://`, or `grpc://IP:PORT`.
     #[arg(
         long,
@@ -37,8 +45,7 @@ struct Cli {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+async fn run(cli: Cli) -> anyhow::Result<()> {
     let mut trace_transport = if let Some(trace_listen) = cli.otel_trace_listen.as_deref() {
         Some(TraceWebSocket::start(trace_listen).await?)
     } else {
@@ -88,6 +95,15 @@ async fn main() -> anyhow::Result<()> {
     result
 }
 
+fn main() -> anyhow::Result<()> {
+    codex_alab_core::initialize_running_build!()?; // ALAB(version): stamp this helper without activating ALab behavior
+    let cli = Cli::parse();
+    if cli.codex_ui_plugin_process {
+        return codex_code_mode_runtime::run_ui_sandbox().map_err(Into::into);
+    }
+    run(cli)
+}
+
 fn build_trace_provider(endpoint: &str) -> anyhow::Result<OtelProvider> {
     OtelProvider::try_new(&OtelSettings {
         http_client_factory: codex_http_client::HttpClientFactory::new(
@@ -95,7 +111,7 @@ fn build_trace_provider(endpoint: &str) -> anyhow::Result<OtelProvider> {
         ),
         environment: "code-mode-host".to_string(),
         service_name: "codex-code-mode-host".to_string(),
-        service_version: env!("CARGO_PKG_VERSION").to_string(),
+        service_version: codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string(), // ALAB(version): running executable identity
         codex_home: PathBuf::from("/tmp"),
         exporter: OtelExporter::None,
         trace_exporter: OtelExporter::OtlpHttp {
@@ -106,7 +122,7 @@ fn build_trace_provider(endpoint: &str) -> anyhow::Result<OtelProvider> {
         },
         metrics_exporter: OtelExporter::None,
         runtime_metrics: false,
-        span_attributes: BTreeMap::new(),
+        span_attributes: HashMap::new(),
         tracestate: BTreeMap::new(),
     })
     .map_err(|error| anyhow::anyhow!("failed to build code-mode host OTEL provider: {error}"))?

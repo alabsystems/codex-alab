@@ -22,15 +22,18 @@ workspace = true
 test-support = []
 
 [dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = { workspace = true }
 codex-alab-core = { path = "../alab-core" }
 libc = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 
 # The fake aterm as a process of its own, for a real codex binary (alab/smoke/native.py).
 [[example]]

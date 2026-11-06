@@ -312,6 +312,7 @@ impl Renderable for StatusIndicator<'_> {
             } else {
                 1_000
             };
+            let interval_ms = codex_alab_tui::motion::pace_ms(interval_ms); // ALAB(pet-perf): while the terminal's focus is out the shimmer ticks with the 1 s clock
             self.row
                 .frame_requester
                 .schedule_frame_in(Duration::from_millis(interval_ms));

@@ -3,12 +3,15 @@ source: alab-tui/src/banner/tests.rs
 expression: review_text(&lines)
 ---
  0||
- 1|       ⋆         ✦         ∙          ▄██▄        ▄██▄    ✧|
- 2|    ▄▄▄▄▄▄█████████▄▄▄▄▄▄▄█████████▄▄▄██▄██████████▄██|
- 3|    █████████████████████████████████████  ██████  ███ ▄     ∙|
- 4|    ██████████████████████████████████▀██████▄▄██████▀█▄|
- 5|    ▀▀▀▀▀▀ ∙       ▀▀▀▀▀▀▀      ∙  ▀▀▀  ▀▀████████▀▀       ⋆|
- 6|  codex-alab  rainbow kitty · ALab build of OpenAI Codex|
+ 1|            ▄██▄        ▄██▄     codex-alab  v0.164.0-dev.12814|
+ 2|    ▄▄▄▄▄▄████▄██████████▄██     bloatware-free · nag-free|
+ 3|    ███████████  ██████  ███ ▄   optimized for aterm|
+ 4|    ████████▀██████▄▄██████▀█▄   Defaults vs 0.164 · 2026-10-23|
+ 5|    ▀▀▀▀▀▀    ▀▀████████▀▀       6× less memory · no daemon|
 --
-r6 [2..12) bold
-r6 [12..56) dim
+r1 [33..43) bold
+r1 [43..63) dim
+r2 [47..50) dim
+r4 [33..63) dim
+r5 [33..35) bold
+r5 [47..50) dim

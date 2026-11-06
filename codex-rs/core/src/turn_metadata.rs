@@ -312,7 +312,7 @@ impl TurnMetadataState {
         metadata.remove(ROOT_TURN_ID_KEY);
         metadata.insert(
             CODEX_VERSION_KEY.to_string(),
-            Value::String(env!("CARGO_PKG_VERSION").to_string()),
+            Value::String(codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string()), // ALAB(version): running executable identity
         );
         if self
             .user_input_requested_during_turn

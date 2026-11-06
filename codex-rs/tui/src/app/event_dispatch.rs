@@ -11,6 +11,7 @@ use super::*;
 use crate::app_event::RecapTrigger;
 use crate::app_event::ThreadTitleDestination;
 use crate::app_server_session::ForkGoalContinuation;
+use crate::app_server_session::ThreadSettingsOwner;
 use crate::app_server_session::UnsupportedLegacyPermissionProfile;
 use crate::app_server_session::turn_permissions_overrides;
 use crate::config_update::format_config_error;
@@ -20,18 +21,22 @@ use crate::session_resume::cwds_differ;
 use crate::status::StatusAccountDisplay;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ThreadGoalStatus;
+use codex_app_server_protocol::ThreadStatus;
 #[cfg(target_os = "windows")]
 use codex_app_server_protocol::WindowsSandboxSetupMode;
 
 pub(super) const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
 impl App {
+    // Keep the existing dispatcher layout until it can be formatted separately.
+    #[rustfmt::skip]
     pub(crate) async fn handle_event(
         &mut self,
         tui: &mut tui::Tui,
         app_server: &mut AppServerSession,
         event: AppEvent,
     ) -> Result<AppRunControl> {
+        if !matches!(&event, AppEvent::AlabUpgrade(_)) { codex_alab_tui::upgrade::native_event(); } // ALAB(upgrade): mutations after a scan invalidate its queued handoff.
         let from_agents_overview = matches!(event, AppEvent::ForkAgentsOverviewThreadReady { .. });
         let event = if let AppEvent::ForkAgentsOverviewThreadReady { thread_id } = event {
             if self.current_displayed_thread_id() != Some(thread_id)
@@ -49,11 +54,16 @@ impl App {
         if matches!(event, AppEvent::ForkCurrentSession { .. }) {
             self.chat_widget.fork_in_progress = false;
         }
+        if self.reconnect.offline && matches!(event, AppEvent::Exit(ExitMode::ShutdownFirst)) {
+            return Ok(AppRunControl::Exit(ExitReason::UserRequested));
+        }
         if self.reconnect.offline
             && !matches!(
                 &event,
                 AppEvent::OpenDaemonMenu
                     | AppEvent::OpenWarnings
+                    | AppEvent::AlabModeChanged | AppEvent::OpenAlabAutopilotTimer | AppEvent::OpenAlabTasks | AppEvent::AlabTasksBack { .. } | AppEvent::AlabTaskDetails { .. } | AppEvent::AlabTasksRefresh { .. } // ALAB(tasks): disconnected inspection and refresh stay local; agent navigation remains blocked.
+                    | AppEvent::AlabEnrollment { .. } | AppEvent::AlabAccountsRefresh { .. } | AppEvent::AlabAccountsReady { .. } // ALAB(accounts): native inspection remains independent of the model connection.
                     | AppEvent::StatusLineSetup { .. }
                     | AppEvent::StatusLineSetupCancelled
                     | AppEvent::TerminalTitleSetup { .. }
@@ -212,6 +222,43 @@ impl App {
                     self.chat_widget.show_misalignment_policy_precaution();
                 }
             }
+            AppEvent::ContinueProviderChat { thread_id } => {
+                // A queued shortcut must still refer to the locked chat on screen.
+                if self.chat_widget.thread_id() == Some(thread_id)
+                    && self.chat_widget.has_provider_error()
+                    && let Some(path) = self.chat_widget.rollout_path()
+                {
+                    let name = self
+                        .chat_widget
+                        .thread_name()
+                        .filter(|name| !name.trim().is_empty())
+                        .map_or_else(
+                            || "our previous conversation".to_string(),
+                            |name| format!("“{name}”"),
+                        );
+                    let message = format!(
+                        "Read {name} and let’s continue where we left off.\n\nSaved conversation: {}",
+                        path.display(),
+                    );
+                    codex_alab_tui::session::continues_work(Some(thread_id)); // ALAB(session): the new chat carries on this one's work, past its session's opening
+                    self.start_fresh_session(
+                        tui,
+                        app_server,
+                        /*session_start_source*/ None,
+                        /*initial_user_message*/ None,
+                        /*new_thread_name*/ None,
+                    )
+                    .await;
+                    if self
+                        .chat_widget
+                        .thread_id()
+                        .is_some_and(|new_id| new_id != thread_id)
+                    {
+                        self.chat_widget
+                            .restore_user_message_to_composer(message.into());
+                    }
+                }
+            }
             AppEvent::StartManagedWorktree { mode, name } => {
                 if self.pending_start_managed_worktree.is_some() {
                     self.chat_widget
@@ -319,9 +366,13 @@ impl App {
                     }
                 }
             }
-            AppEvent::StartupThreadStarted { result } => {
+            AppEvent::StartupThreadStarted { result, .. } => {
+                #[cfg(test)]
+                let started_thread = result.as_ref().ok().map(|started| started.session.thread_id); // ALAB(startup-test-fixture): failed starts cannot satisfy attachment.
                 self.handle_startup_thread_started(app_server, result)
                     .await?;
+                #[cfg(test)]
+                super::alab_startup_fixture::completed(self, started_thread); // ALAB(startup-test-fixture): acknowledge only after the real handler returns.
             }
             AppEvent::DynamicToolThreadStarted {
                 thread,
@@ -436,8 +487,7 @@ impl App {
                 self.chat_widget.maybe_send_next_queued_input();
             }
             AppEvent::SelectTranscriptCopy { guard } => {
-                let size = tui.prepare_draw_size()?;
-                self.render_owned_transcript(tui, size)?;
+                self.refresh_owned_transcript(tui)?;
                 if !self.transcript_view.begin_copy_mode(&self.transcript_cells, Some(guard)) {
                     self.chat_widget.add_info_message("Nothing to copy".into(), /*hint*/ None);
                 }
@@ -474,6 +524,7 @@ impl App {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
+                codex_alab_tui::session::continues_work(self.chat_widget.thread_id()); // ALAB(session): the plan's implementation carries on this thread's work, past its session's opening
                 self.start_fresh_session(
                     tui,
                     app_server,
@@ -527,6 +578,7 @@ impl App {
             }
             AppEvent::ResumeSessionByIdOrName(id_or_name) => {
                 match crate::lookup_session_target_with_app_server(
+                    crate::resume_picker::SessionPickerAction::Resume,
                     app_server,
                     &self.config,
                     &id_or_name,
@@ -552,6 +604,9 @@ impl App {
                     }
                     Err(err) => return Err(err),
                 }
+            }
+            AppEvent::ResumeBackendSession(_) => {
+                unreachable!("backend selection is handled by the session manager")
             }
             AppEvent::ArchiveCurrentThread => {
                 return self.archive_current_thread(tui, app_server).await;
@@ -631,16 +686,7 @@ impl App {
                             } else {
                                 None
                             };
-                            if !app_server.uses_embedded_app_server() {
-                                // Daemon tasks can start while the fork RPC is pending.
-                                for id in self.thread_event_channels.keys().copied()
-                                    .chain(self.agent_navigation.tracked_thread_ids())
-                                    .filter(|id| !self.side_threads.contains_key(id))
-                                {
-                                    self.agents_overview.dispatched_requests.entry(id).or_default();
-                                }
-                            }
-                            self.detach_current_thread_for_navigation(app_server, Some(forked.session.thread_id)).await;
+                            self.retain_subscriptions_for_fork();
                             match self
                                 .replace_chat_widget_with_app_server_thread(
                                     tui,
@@ -997,11 +1043,47 @@ impl App {
             AppEvent::StopCommitAnimation => {
                 self.commit_animation = None;
             }
-            AppEvent::Exit(mode) => {
+            AppEvent::Exit(mode)
+                if matches!(self.app_server_target, AppServerTarget::Embedded)
+                    && (self.agents_overview.threads.iter().any(|(id, thread)| {
+                        (mode == ExitMode::Immediate
+                            || Some(*id) != self.current_displayed_thread_id()
+                            || self.chat_widget.active_view_is(AGENTS_OVERVIEW_VIEW_ID))
+                            && matches!(thread.as_ref().map(|t| &t.status), Some(ThreadStatus::Active { .. }))
+                    }) || self.running_side_thread_id().await.is_some()) =>
+            {
+                self.chat_widget.show_selection_view(SelectionViewParams {
+                    title: Some("Quit and stop running sessions?".into()),
+                    subtitle: Some("Quitting this TUI will stop its running sessions.".into()),
+                    items: vec![
+                        SelectionItem {
+                            name: "Stay in Codex".into(),
+                            dismiss_on_select: true,
+                            ..Default::default()
+                        },
+                        SelectionItem {
+                            name: "Stop sessions and quit".into(),
+                            actions: vec![Box::new(move |tx| {
+                                tx.send(AppEvent::ConfirmedEmbeddedExit(mode))
+                            })],
+                            dismiss_on_select: true,
+                            ..Default::default()
+                        },
+                    ],
+                    ..SelectionViewParams::confirmation()
+                });
+            }
+            AppEvent::Exit(mode) | AppEvent::ConfirmedEmbeddedExit(mode) => {
                 if matches!(mode, ExitMode::ShutdownFirst | ExitMode::ShutdownAfterInterrupt) {
                     self.show_shutdown_feedback(tui)?;
                 }
                 return Ok(self.handle_exit_mode(app_server, mode).await);
+            }
+            AppEvent::AlabUpgrade(request) => { // ALAB(upgrade): a new draft or turn can reject an already queued handoff.
+                if super::alab_session::accept_upgrade(self, request) {
+                    self.show_shutdown_feedback(tui)?;
+                    return Ok(self.handle_exit_mode(app_server, ExitMode::ShutdownFirst).await);
+                }
             }
             AppEvent::RunningTaskExit { action, thread_id } => match action {
                 RunningTaskExitAction::RunInBackground => {
@@ -1246,6 +1328,16 @@ impl App {
                 )
                 .await;
             }
+            AppEvent::ContinueSafetyRecourse {
+                thread_id,
+                turn_id,
+                prompt,
+            } => {
+                super::safety_recourse::continue_with_rewrite(
+                    self, tui, app_server, thread_id, turn_id, prompt,
+                )
+                .await;
+            }
             AppEvent::AppendMessageHistoryEntry { thread_id, text } => {
                 self.append_message_history_entry(thread_id, text);
             }
@@ -1331,15 +1423,22 @@ impl App {
                         elicitation_target: None,
                     });
             }
-            AppEvent::AccountEmailLoaded { request_id, email } => {
+            AppEvent::AccountEmailLoaded { request_id, email, workspace } => {
                 if self.account_email_request_id == Some(request_id) {
                     self.account_email_request_id = None;
-                    self.chat_widget.on_account_email_loaded(email);
+                    self.chat_widget.on_account_email_loaded(email, workspace);
                 }
             }
             AppEvent::SecuritySetupLoaded { request_id, identity, notice } => {
                 tracing::debug!(current = request_id == self.chat_widget.security_setup_request_id, "handling security setup notice");
-                if request_id == self.chat_widget.security_setup_request_id {
+                if request_id == self.chat_widget.security_setup_request_id
+                    && let Some((identity, notice)) = crate::security_setup::alab_notices::accept(
+                        &self.config,
+                        identity,
+                        notice,
+                    )
+                    .await
+                { // ALAB(notices): serialize filing and settlement after request and current-identity admission
                     self.chat_widget.show_security_setup(identity, notice);
                 }
             }
@@ -1408,8 +1507,8 @@ impl App {
             AppEvent::FetchPluginsList { cwd } => {
                 self.fetch_plugins_list(app_server, cwd);
             }
-            AppEvent::FetchHooksList { cwd } => {
-                self.fetch_hooks_list(app_server, cwd);
+            AppEvent::FetchHooksList { target } => {
+                self.fetch_hooks_list(app_server, target);
             }
             AppEvent::OpenMarketplaceAddPrompt => {
                 self.chat_widget.open_marketplace_add_prompt();
@@ -1471,8 +1570,8 @@ impl App {
                     section_errors,
                 );
             }
-            AppEvent::HooksLoaded { cwd, result } => {
-                self.chat_widget.on_hooks_loaded(cwd, result);
+            AppEvent::HooksLoaded { target, result } => {
+                self.chat_widget.on_hooks_loaded(target, result);
             }
             AppEvent::FetchMarketplaceAdd { cwd, source } => {
                 self.fetch_marketplace_add(app_server, cwd, source);
@@ -1860,6 +1959,8 @@ impl App {
                     {
                         self.chat_widget.apply_usage_notice_read(request_id);
                         self.chat_widget.update_backend_banner(&response);
+                        self.chat_widget.alab_account_usage_read(&response, origin); // ALAB(interface): retain details only after native account/generation and origin acceptance.
+                        self.chat_widget.alab_quota_read_accepted(request_id, &response, origin); // ALAB(quota): only accepted full reads can wake usage recovery.
                         self.apply_backend_banner_fallback(app_server).await;
                         app_server_rate_limit_snapshots(response)
                     } else {
@@ -2134,6 +2235,22 @@ impl App {
                         .await;
                 }
             }
+            AppEvent::ApplyModelSelection { model, effort } => {
+                if app_server.thread_params_mode().settings_owner()
+                    == ThreadSettingsOwner::Server
+                {
+                    self.select_session_model(
+                        app_server,
+                        model,
+                        effort,
+                        /*service_tier*/ None,
+                    )
+                    .await;
+                } else {
+                    self.apply_default_model_selection(app_server, model, effort)
+                        .await;
+                }
+            }
             AppEvent::AstraSelectedFromModelPicker { .. } => unreachable!("picker event unwrapped"),
             AppEvent::BackgroundVoiceError { thread_id, message } => {
                 if self.chat_widget.thread_id() == Some(thread_id) {
@@ -2204,7 +2321,8 @@ impl App {
                 self.app_event_tx.send(AppEvent::SettingsSelectionSettled);
             }
             AppEvent::SettingsSelectionSettled => {
-                if self.chat_widget.no_modal_or_popup_active()
+                if !self.chat_widget.permission_popup_pending
+                    && self.chat_widget.no_modal_or_popup_active()
                     && !self
                         .chat_widget
                         .inline_permission_profile_selection_pending()
@@ -2290,8 +2408,10 @@ impl App {
             }
             AppEvent::ModelsLoaded { request_id, result }
             | AppEvent::ApiKeyCompatModelsLoaded { request_id, result } => {
-                if self.chat_widget.on_models_loaded(request_id, result) {
-                    self.model_catalog = self.chat_widget.model_catalog();
+                self.chat_widget.on_models_loaded(request_id, result);
+                let catalog = self.chat_widget.model_catalog();
+                if !Arc::ptr_eq(&self.model_catalog, &catalog) {
+                    self.model_catalog = catalog;
                     app_server.set_available_models(self.model_catalog.try_list_models()?);
                     self.sync_active_thread_service_tier_to_cached_session().await;
                 }
@@ -2304,6 +2424,22 @@ impl App {
             }
             AppEvent::ApplyAdvancedReasoning { model, effort } => {
                 self.app_event_tx.send(AppEvent::FollowTranscript);
+                if app_server.thread_params_mode().settings_owner()
+                    == ThreadSettingsOwner::Server
+                {
+                    self.select_session_model(
+                        app_server,
+                        model,
+                        Some(effort),
+                        /*service_tier*/ None,
+                    )
+                    .await;
+                    if let Some(model) = sparkle_model.as_ref() {
+                        self.chat_widget
+                            .on_sparkle_model_selected_from_picker(model);
+                    }
+                    return Ok(AppRunControl::Continue);
+                }
                 if self
                     .active_thread_model_setting_update_params(model.clone())
                     .is_some_and(|params| params.permissions.is_some())
@@ -2558,40 +2694,8 @@ impl App {
                 }
             }
             AppEvent::PersistModelSelection { model, effort } => {
-                self.app_event_tx.send(AppEvent::FollowTranscript);
-                match self.persist_model_defaults(
-                    app_server.request_handle(),
-                    crate::config_update::build_model_selection_edits(
-                        model.as_str(),
-                        effort.as_ref(),
-                    ),
-                    "default model and reasoning effort",
-                )
-                .await
-                {
-                    Ok(()) => {
-                        let effort_label = effort
-                            .as_ref()
-                            .map(std::string::ToString::to_string)
-                            .unwrap_or_else(|| "default".to_string());
-                        tracing::info!("Selected model: {model}, Selected effort: {effort_label}");
-                        let mut message = format!("Model changed to {model}");
-                        if let Some(label) = Self::reasoning_label_for(&model, effort.as_ref()) {
-                            message.push(' ');
-                            message.push_str(&label);
-                        }
-                        self.chat_widget.add_info_message(message, /*hint*/ None);
-                    }
-                    Err(err) => {
-                        let error = format_config_error(&err);
-                        tracing::error!(
-                            error = %error,
-                            "failed to persist model selection"
-                        );
-                        self.chat_widget
-                            .add_error_message(format!("Failed to save default model: {error}"));
-                    }
-                }
+                self.persist_default_model_selection(app_server.request_handle(), model, effort)
+                    .await;
             }
             AppEvent::PersistDaybreakSelection { thread_id, enabled } => {
                 self.persist_daybreak_selection(app_server, thread_id, enabled).await;
@@ -2897,7 +3001,23 @@ impl App {
                 }
             }
             AppEvent::OpenAgentsOverview => self.open_agents_overview(app_server),
+            AppEvent::AlabModeChanged => self.alab_reload_mode(tui).await, // ALAB(interface): adopt native defaults without replacing the conversation
+            AppEvent::OpenAlabAutopilotTimer => self.chat_widget.alab_open_autopilot_timer(), // ALAB(interface): the deadline editor belongs to Codex.
+            AppEvent::OpenAlabTasks => self.alab_open_tasks(), // ALAB(tasks): local work is available with an embedded server
+            AppEvent::AlabEnrollment { view, thread_id, event } => self.chat_widget.alab_enrollment_event(view, thread_id, event), // ALAB(accounts): stale enrollment replies cannot replace another view.
+            AppEvent::AlabAccountsRefresh { view, thread_id } => self.chat_widget.alab_refresh_accounts(view, thread_id), // ALAB(accounts): stale refreshes cannot replace another view.
+            AppEvent::AlabAccountsReady { view, thread_id, text } => self.chat_widget.alab_accounts_ready(view, thread_id, text), // ALAB(accounts): no account metadata enters conversation history.
+            AppEvent::AlabTasksBack { thread_id } => self.alab_tasks_back(thread_id), // ALAB(tasks): queued Back cannot open Tasks over a replacement thread.
+            AppEvent::AlabTasksRefresh { view, thread_id, selected_key, selected_index, query } => self.alab_refresh_tasks(view, thread_id, selected_key, selected_index, query), // ALAB(tasks): stale refreshes never replace another view
+            AppEvent::AlabTaskDetails { thread_id, key } => self.alab_task_details(thread_id, &key), // ALAB(tasks): read current details without changing the work
             AppEvent::ShowMoreAgentsOverview => self.show_more_agents_overview(app_server),
+            AppEvent::RefreshViewedThread { backend_id, thread_id, revision } => {
+                if app_server.backend_id() == backend_id {
+                    app_server.frozen_receipt.take_if(|(id, rev)| *id == thread_id && *rev == revision);
+                    self.agents_overview.refresh_thread_ids.insert(thread_id);
+                    self.refresh_changed_agents_overview_threads(app_server);
+                }
+            }
             AppEvent::NewAgentsOverviewSession { cwd } => {
                 return Box::pin(self.new_agents_overview_session(tui, app_server, cwd)).await;
             }
@@ -3079,21 +3199,6 @@ impl App {
                 self.stop_agents_overview_thread(app_server, thread_id)
                     .await;
             }
-            #[cfg(any(unix, windows))]
-            AppEvent::StartAgentsDaemon => {
-                self.start_agents_daemon();
-            }
-            #[cfg(any(unix, windows))]
-            AppEvent::AgentsDaemonStarted { result } => match result {
-                Ok(()) => self.chat_widget.add_info_message(
-                    "Background server started. Run `codex agents` in another terminal; this session remains unchanged."
-                        .to_string(),
-                    /*hint*/ None,
-                ),
-                Err(error) => self
-                    .chat_widget
-                    .add_error_message(format!("Failed to start the background server: {error}")),
-            },
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
@@ -3239,7 +3344,9 @@ impl App {
                     .select_permission_profile(&profile_id);
             }
             AppEvent::OpenPermissionsPopup | AppEvent::OpenApprovalsPopup => {
+                self.chat_widget.permission_popup_pending = false;
                 if self.reject_pending_permission_change() {
+                    self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
                     return Ok(AppRunControl::Continue);
                 }
                 #[cfg(any(target_os = "windows", test))]
@@ -3248,6 +3355,7 @@ impl App {
                     && self.chat_widget.windows_sandbox_config.requirements.is_none()
                     && !self.refresh_windows_sandbox_config(app_server).await
                 {
+                    self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
                     return Ok(AppRunControl::Continue);
                 }
                 if app_server.uses_remote_workspace() {
@@ -3811,7 +3919,7 @@ impl App {
                 if !self.side_threads.is_empty()
                     && tokio::time::timeout(
                         SHUTDOWN_FIRST_EXIT_TIMEOUT,
-                        self.shutdown_side_threads(app_server),
+                        self.shutdown_side_threads(app_server, /*root*/ None),
                     )
                     .await
                     .is_err()
@@ -3851,6 +3959,32 @@ impl App {
         }
     }
 
+    async fn return_to_agents_after_removal(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        self.discard_thread_local_state(thread_id).await;
+        self.agents_overview.input_states.remove(&thread_id);
+        self.agents_overview.dispatched_requests.remove(&thread_id);
+        self.reset_for_thread_switch(tui)?;
+        self.pending_thread_switch_resets += 1;
+        self.app_event_tx
+            .send(AppEvent::ResetTranscriptForThreadSwitch);
+        self.detach_current_thread_for_navigation(app_server, /*destination*/ None)
+            .await;
+        self.reset_thread_event_state().await;
+        let init = self.chatwidget_init_for_forked_or_resumed_thread(
+            tui,
+            self.config.clone(),
+            /*initial_user_message*/ None,
+        );
+        self.replace_chat_widget(ChatWidget::new_with_app_event(init));
+        self.open_agents_overview(app_server);
+        Ok(())
+    }
+
     pub(super) async fn archive_current_thread(
         &mut self,
         tui: &mut tui::Tui,
@@ -3869,11 +4003,11 @@ impl App {
             return Ok(AppRunControl::Continue);
         }
 
-        if !matches!(self.app_server_target, AppServerTarget::Embedded) {
-            self.shutdown_side_threads(app_server).await;
-            if !self.side_threads.is_empty() {
-                return Ok(AppRunControl::Continue);
-            }
+        if !self
+            .shutdown_side_threads(app_server, Some(thread_id))
+            .await
+        {
+            return Ok(AppRunControl::Continue);
         }
 
         let result = async {
@@ -3883,32 +4017,14 @@ impl App {
         }
         .await;
         Ok(match result {
-            Ok(()) if matches!(self.app_server_target, AppServerTarget::Embedded) => {
-                AppRunControl::Exit(ExitReason::Archived(thread_id))
-            }
             Ok(()) => {
                 self.track_agents_overview_notification(&ServerNotification::ThreadArchived(
                     codex_app_server_protocol::ThreadArchivedNotification {
                         thread_id: thread_id.to_string(),
                     },
                 ));
-                self.discard_thread_local_state(thread_id).await;
-                self.agents_overview.input_states.remove(&thread_id);
-                self.agents_overview.dispatched_requests.remove(&thread_id);
-                self.reset_for_thread_switch(tui)?;
-                self.pending_thread_switch_resets += 1;
-                self.app_event_tx
-                    .send(AppEvent::ResetTranscriptForThreadSwitch);
-                self.detach_current_thread_for_navigation(app_server, /*destination*/ None)
-                    .await;
-                self.reset_thread_event_state().await;
-                let init = self.chatwidget_init_for_forked_or_resumed_thread(
-                    tui,
-                    self.config.clone(),
-                    /*initial_user_message*/ None,
-                );
-                self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-                self.open_agents_overview(app_server);
+                self.return_to_agents_after_removal(tui, app_server, thread_id)
+                    .await?;
                 AppRunControl::Continue
             }
             Err(err) => {
@@ -3937,11 +4053,11 @@ impl App {
             return Ok(AppRunControl::Continue);
         }
 
-        if !matches!(self.app_server_target, AppServerTarget::Embedded) {
-            self.shutdown_side_threads(app_server).await;
-            if !self.side_threads.is_empty() {
-                return Ok(AppRunControl::Continue);
-            }
+        if !self
+            .shutdown_side_threads(app_server, Some(thread_id))
+            .await
+        {
+            return Ok(AppRunControl::Continue);
         }
 
         let result = async {
@@ -3951,32 +4067,14 @@ impl App {
         }
         .await;
         Ok(match result {
-            Ok(()) if matches!(self.app_server_target, AppServerTarget::Embedded) => {
-                AppRunControl::Exit(ExitReason::ThreadRemoved)
-            }
             Ok(()) => {
                 self.track_agents_overview_notification(&ServerNotification::ThreadDeleted(
                     codex_app_server_protocol::ThreadDeletedNotification {
                         thread_id: thread_id.to_string(),
                     },
                 ));
-                self.discard_thread_local_state(thread_id).await;
-                self.agents_overview.input_states.remove(&thread_id);
-                self.agents_overview.dispatched_requests.remove(&thread_id);
-                self.reset_for_thread_switch(tui)?;
-                self.pending_thread_switch_resets += 1;
-                self.app_event_tx
-                    .send(AppEvent::ResetTranscriptForThreadSwitch);
-                self.detach_current_thread_for_navigation(app_server, /*destination*/ None)
-                    .await;
-                self.reset_thread_event_state().await;
-                let init = self.chatwidget_init_for_forked_or_resumed_thread(
-                    tui,
-                    self.config.clone(),
-                    /*initial_user_message*/ None,
-                );
-                self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-                self.open_agents_overview(app_server);
+                self.return_to_agents_after_removal(tui, app_server, thread_id)
+                    .await?;
                 AppRunControl::Continue
             }
             Err(err) => {

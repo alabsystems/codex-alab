@@ -32,7 +32,7 @@ impl ChatComposer {
             };
             strip.render(voice_rect, buf);
         }
-        alab_border::render(composer_rect, buf); // ALAB(banner): the rainbow kitty composer border while the codex-alab harness is on, over the voice strip and under the sparkle and the dim
+        alab_border::render(composer_rect, buf); // ALAB(banner): edition branding and its presentation switch, above the prompt and under the interactive-footer dim
     }
 }
 
@@ -126,9 +126,26 @@ impl ChatComposer {
             width: textarea_rect.width,
             height: remote_images_height,
         };
-        textarea_rect.y = textarea_rect.y.saturating_add(consumed);
-        textarea_rect.height = textarea_rect.height.saturating_sub(consumed);
+        let mut thumbnails = Rect {
+            y: textarea_rect.y.saturating_add(consumed),
+            height: self.thumbnail_height(textarea_rect.width, options),
+            ..textarea_rect
+        };
+        let available = textarea_rect.height.saturating_sub(consumed);
+        if thumbnails.height > 0
+            && available.saturating_sub(thumbnails.height)
+                < self
+                    .draft
+                    .textarea
+                    .desired_height(textarea_rect.width)
+                    .max(1)
+        {
+            thumbnails.height = 0;
+        }
+        textarea_rect.y = thumbnails.bottom();
+        textarea_rect.height = available - thumbnails.height;
         ComposerLayout {
+            thumbnails,
             status,
             composer: composer_rect,
             remote_images: remote_images_rect,
@@ -136,6 +153,12 @@ impl ChatComposer {
             popup: popup_rect,
             footer: footer_rect,
         }
+    }
+
+    fn thumbnail_height(&self, width: u16, options: ComposerRenderOptions<'_>) -> u16 {
+        options.image_previews.map_or(0, |previews| {
+            previews.height(width, self.attachments.local_images.len())
+        })
     }
 
     pub(crate) fn cursor_pos_with_options(
@@ -186,6 +209,7 @@ impl ChatComposer {
         let remote_images_separator = u16::from(remote_images_height > 0);
         self.draft.textarea.desired_height(inner_width)
             + remote_images_height
+            + self.thumbnail_height(inner_width, options)
             + remote_images_separator
             + self.status_surface_height(options)
             + if self.shortcuts_above_composer(options) {
@@ -209,4 +233,4 @@ impl ChatComposer {
             }
     }
 }
-#[path = "../../../../alab-tui/glue/composer_border.rs"] mod alab_border; // ALAB(banner): the composer border's glue lives in codex-rs/alab-tui; terminal_palette is private to codex-tui
+#[path = "../../../../alab-tui/glue/composer_border.rs"] pub(super) mod alab_border; // ALAB(banner): the composer border's glue lives in codex-rs/alab-tui; terminal_palette is private to codex-tui

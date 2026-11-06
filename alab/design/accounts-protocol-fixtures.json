@@ -1,0 +1,268 @@
+{
+  "fixture_schema": 1,
+  "copyright": "Copyright 2026 Andrew Yates; SPDX-License-Identifier: Apache-2.0",
+  "protocol": "codex-accounts snapshot schema=1; pure cached observation",
+  "frame_prefix": "OK codex-accounts ",
+  "bindings": {
+    "request": "0123456789abcdef0123456789abcdef",
+    "sid": "synthetic-session",
+    "process_pid": 4242,
+    "process_birth": "synthetic-birth-4242",
+    "test_runtime_substitution": "Replace process_pid with test process PID in both expected binding and generated snapshot. Change no other value for valid cases.",
+    "host_epoch": "Opaque nonempty bounded identity supplied by authenticated host. Do not compare with a fixture constant in production; fresh host observations and native caller revalidation establish host/session provenance. It is not assignment authority."
+  },
+  "construction": "Serialize snapshot as compact JSON after frame_prefix. Replace cases clone named base and apply JSON-pointer replacement (insert missing object key for unknown-field). Generated oversize pads serialized JSON with ASCII spaces after JSON; preserve valid JSON but exceed line limit.",
+  "limits": {
+    "max_line_bytes": 65536,
+    "max_accounts": 128,
+    "percentage_min": 0,
+    "percentage_max": 100,
+    "timestamp_min": 0,
+    "timestamp_max": 253402300799
+  },
+  "truthfulness": {
+    "assignment": "Unknown means no assignment inferred from missing route or global pool pin.",
+    "readiness": "Cached usable and file presence never establish fresh eligibility; this version exposes eligible=false and all mutation capabilities=false.",
+    "waiting": "Same request ID polls the same host job; timeout/disconnect is not a new enrollment operation."
+  },
+  "cases": [
+    {
+      "name": "valid-unknown-assignment",
+      "expect": "snapshot",
+      "snapshot": {
+        "schema": 1,
+        "observed_at": 1794000000,
+        "request": "0123456789abcdef0123456789abcdef",
+        "session": {
+          "sid": "synthetic-session",
+          "process_pid": 4242,
+          "process_birth": "synthetic-birth-4242",
+          "epoch": "synthetic-host-epoch"
+        },
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "assignment": {
+          "account_id": null,
+          "mode": "unknown"
+        },
+        "accounts": [
+          {
+            "id": "synthetic-account-a",
+            "label": "work",
+            "masked_email": "w***@example.invalid",
+            "condition": "usable",
+            "enrolled": true,
+            "held": false,
+            "eligible": false,
+            "quota": {
+              "stale": true,
+              "observed_at": 1793999000,
+              "five_hour_used_percent": 45.0,
+              "five_hour_reset_at": 1794010000,
+              "weekly_used_percent": 75.0,
+              "weekly_reset_at": 1794200000
+            }
+          },
+          {
+            "id": "synthetic-account-b",
+            "label": "spare",
+            "masked_email": null,
+            "condition": "not-enrolled",
+            "enrolled": false,
+            "held": false,
+            "eligible": false,
+            "quota": {
+              "stale": true,
+              "observed_at": null,
+              "five_hour_used_percent": null,
+              "five_hour_reset_at": null,
+              "weekly_used_percent": null,
+              "weekly_reset_at": null
+            }
+          }
+        ],
+        "capabilities": {
+          "add": false,
+          "select": false,
+          "auto": false
+        }
+      }
+    },
+    {
+      "name": "valid-waiting",
+      "expect": "waiting",
+      "line": "OK codex-accounts state=waiting request=0123456789abcdef0123456789abcdef"
+    },
+    {
+      "name": "wrong-request",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/request",
+        "value": "ffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "wrong-birth",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/session/process_birth",
+        "value": "other-birth"
+      }
+    },
+    {
+      "name": "wrong-pid",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/session/process_pid",
+        "value": 4243
+      }
+    },
+    {
+      "name": "wrong-session",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/session/sid",
+        "value": "other-session"
+      }
+    },
+    {
+      "name": "wrong-schema",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/schema",
+        "value": 2
+      }
+    },
+    {
+      "name": "unknown-condition",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/accounts/0/condition",
+        "value": "ready"
+      }
+    },
+    {
+      "name": "duplicate-ids",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/accounts/1/id",
+        "value": "synthetic-account-a"
+      }
+    },
+    {
+      "name": "quota-over-100",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/accounts/0/quota/weekly_used_percent",
+        "value": 100.01
+      }
+    },
+    {
+      "name": "quota-negative",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/accounts/0/quota/five_hour_used_percent",
+        "value": -0.01
+      }
+    },
+    {
+      "name": "negative-timestamp",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/accounts/0/quota/observed_at",
+        "value": -1
+      }
+    },
+    {
+      "name": "timestamp-too-large",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/observed_at",
+        "value": 253402300800
+      }
+    },
+    {
+      "name": "control-in-label",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/accounts/0/label",
+        "value": "work\nforged"
+      }
+    },
+    {
+      "name": "control-in-masked-email",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/accounts/0/masked_email",
+        "value": "w***\u001b@example.invalid"
+      }
+    },
+    {
+      "name": "unsupported-mutation-capability",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/capabilities/select",
+        "value": true
+      }
+    },
+    {
+      "name": "unknown-selection-mode",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/assignment/mode",
+        "value": "manual"
+      }
+    },
+    {
+      "name": "wrong-wait-correlation",
+      "expect": "reject",
+      "line": "OK codex-accounts state=waiting request=ffffffffffffffffffffffffffffffff"
+    },
+    {
+      "name": "unknown-wait-state",
+      "expect": "reject",
+      "line": "OK codex-accounts state=applied request=0123456789abcdef0123456789abcdef"
+    },
+    {
+      "name": "oversize-frame",
+      "expect": "reject",
+      "generate": {
+        "kind": "append-ascii-spaces",
+        "base": "valid-unknown-assignment",
+        "minimum_total_line_bytes": 65537
+      }
+    },
+    {
+      "name": "too-many-rows",
+      "expect": "reject",
+      "generate": {
+        "kind": "repeat-account-with-distinct-ids",
+        "base": "valid-unknown-assignment",
+        "row_count": 129
+      }
+    },
+    {
+      "name": "unknown-field",
+      "expect": "reject",
+      "base": "valid-unknown-assignment",
+      "replace": {
+        "path": "/unexpected",
+        "value": true
+      }
+    }
+  ]
+}

@@ -24,36 +24,36 @@ fn the_sheet_is_pinned() {
     assert_eq!(sheet.len(), SHEET_W * SHEET_H * 4);
     assert_eq!(
         format!("{:016x}", fnv1a(&sheet)),
-        "9b5b9ac33b4fb2dc",
+        "af79b175f26332c9",
         "the art changed: bump KITTY_FILE's version too"
     );
-    assert_eq!(KITTY_FILE, "alab-kitty-spritesheet-v1.png");
+    assert_eq!(KITTY_FILE, "alab-kitty-spritesheet-v2.png");
 }
 
 #[test]
-fn the_geometry_is_codexs_builtin_layout() {
-    assert_eq!((SHEET_W, SHEET_H), (1536, 1872));
-    assert_eq!((FRAME_W, FRAME_H, COLUMNS, ROWS), (192, 208, 8, 9));
+fn the_geometry_fits_codexs_frame_budget() {
+    assert_eq!((SHEET_W, SHEET_H), (4608, 1872));
+    assert_eq!((FRAME_W, FRAME_H, COLUMNS, ROWS), (192, 208, 24, 9));
     assert_eq!(
         ROW_NAMES.iter().zip(ROW_FRAMES).collect::<Vec<_>>(),
         vec![
-            (&"idle", 6),
-            (&"running-right", 8),
-            (&"running-left", 8),
-            (&"waving", 4),
-            (&"jumping", 5),
-            (&"failed", 8),
-            (&"waiting", 6),
-            (&"running", 6),
-            (&"review", 6),
+            (&"idle", 24),
+            (&"running-right", 24),
+            (&"running-left", 24),
+            (&"waving", 24),
+            (&"jumping", 24),
+            (&"failed", 24),
+            (&"waiting", 24),
+            (&"running", 24),
+            (&"review", 24),
         ]
     );
 }
 
 #[test]
-fn every_played_frame_is_drawn_and_every_unplayed_cell_is_empty() {
+fn every_frame_is_drawn() {
     let sheet = spritesheet_rgba();
-    for (row, &played) in ROW_FRAMES.iter().enumerate().take(ROWS) {
+    for row in 0..ROWS {
         for col in 0..COLUMNS {
             let opaque = (0..FRAME_H)
                 .flat_map(|y| (0..FRAME_W).map(move |x| (x, y)))
@@ -61,11 +61,7 @@ fn every_played_frame_is_drawn_and_every_unplayed_cell_is_empty() {
                     rgba_at(&sheet, SHEET_W, col * FRAME_W + x, row * FRAME_H + y)[3] > 0
                 })
                 .count();
-            if col < played {
-                assert!(opaque > 10_000, "row {row} frame {col}: {opaque} pixels");
-            } else {
-                assert_eq!(opaque, 0, "row {row} cell {col} is not played");
-            }
+            assert!(opaque > 10_000, "row {row} frame {col}: {opaque} pixels");
         }
     }
 }
@@ -100,7 +96,12 @@ fn the_calico_wears_s117s_colours() {
     }
     // The ribbon is aterm's spectrum, red where it meets the head's shoulder, violet at the tail.
     let (r, g, b) = palette::channels(palette::spectrum(1.0));
-    assert!(px.as_chunks::<4>().0.iter().any(|p| p[..3] == [r, g, b] && p[3] > 0));
+    assert!(
+        px.as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[..3] == [r, g, b] && p[3] > 0)
+    );
 }
 
 #[test]
@@ -121,7 +122,7 @@ fn running_left_is_running_right_mirrored() {
 
 #[test]
 fn failed_drains_the_ribbon_and_shuts_the_eyes() {
-    let failed = frame_rgba(5, 7);
+    let failed = frame_rgba(5, COLUMNS - 1);
     // Mid-ribbon, left of the head: grey-ish (channels within a narrow band).
     let spread = |p: [u8; 4]| {
         let (lo, hi) = (p[0].min(p[1]).min(p[2]), p[0].max(p[1]).max(p[2]));
@@ -133,4 +134,44 @@ fn failed_drains_the_ribbon_and_shuts_the_eyes() {
     // No iris shows.
     let (r, g, b) = palette::channels(palette::IRIS);
     assert!(!failed.as_chunks::<4>().0.contains(&[r, g, b, 255]));
+}
+
+#[test]
+fn looping_tracks_cross_the_seam_without_a_visual_jump() {
+    let difference = |left: &[u8], right: &[u8]| -> u64 {
+        left.iter()
+            .zip(right)
+            .map(|(a, b)| u64::from(a.abs_diff(*b)))
+            .sum()
+    };
+    for row in [0, 1, 2, 3, 4, 6, 7, 8] {
+        let frames: Vec<_> = (0..COLUMNS).map(|k| frame_rgba(row, k)).collect();
+        let seam = difference(&frames[COLUMNS - 1], &frames[0]);
+        let largest_step = frames
+            .windows(2)
+            .map(|pair| difference(&pair[0], &pair[1]))
+            .max()
+            .unwrap();
+        assert!(
+            seam <= largest_step,
+            "{} jumps at its loop seam: {seam} > {largest_step}",
+            ROW_NAMES[row]
+        );
+    }
+}
+
+#[test]
+fn idle_blink_is_brief_and_movement_uses_even_samples() {
+    assert_eq!(
+        (0..COLUMNS)
+            .filter(|&k| look(0, k).eyes == Eyes::Blink)
+            .count(),
+        1
+    );
+    for row in [0, 1, 2, 3, 4, 6, 7, 8] {
+        for k in 0..COLUMNS {
+            let next = (k + 1) % COLUMNS;
+            assert!((look(row, k).lift - look(row, next).lift).abs() <= 3);
+        }
+    }
 }

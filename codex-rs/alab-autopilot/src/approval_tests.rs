@@ -194,7 +194,7 @@ fn each_unless_clause_defers_alone() {
         ),
     ];
     for (facts, want) in cases {
-        assert_eq!(review(&facts), Err(want.clone()), "{facts:?}");
+        assert_eq!(review(&facts), Err(want), "{facts:?}");
     }
     // Negative controls for granular: its flag on approves.
     for (flag, tool) in [
@@ -256,6 +256,33 @@ prefix_rule(pattern=["ls"], decision="allow")"#,
             &command(&["bash", "-lc", "for i in $(seq 3); do echo $i; done"])
         ),
         RulePrompt::Unparsed
+    );
+}
+
+#[test]
+fn managed_human_prompt_rules_defer() {
+    let mut policy = ExecPolicy::empty();
+    policy
+        .add_prefix_rule(
+            &command(&["git", "push"]),
+            codex_execpolicy::Decision::PromptUser,
+        )
+        .expect("managed human prompt rule");
+    let commands = [
+        command(&["git", "push", "origin", "main"]),
+        command(&["bash", "-lc", "ls && git push origin main"]),
+        command(&["bash", "-lc", "for i in $(seq 3); do echo $i; done"]),
+        command(&["ls", "-la"]),
+    ];
+    let actual = commands.map(|command| rule_prompt(&policy, &command));
+    assert_eq!(
+        actual,
+        [
+            RulePrompt::Yes,
+            RulePrompt::Yes,
+            RulePrompt::Unparsed,
+            RulePrompt::No,
+        ]
     );
 }
 
@@ -437,7 +464,8 @@ fn every_left_approval_raises_attention_naming_why() {
     assert!(crate::supervisor::left_box_text(BlockedKind::Auth, None).starts_with("login:"));
 }
 
-/// A goal codex-alab types nothing past: only one that stopped by itself waits for a person.
+/// A goal codex-alab types nothing past: only one that stopped by itself waits for a person (a
+/// usage-limited one reaches here only where its point owes no usage resume).
 #[test]
 fn a_goal_that_stopped_by_itself_raises_attention() {
     use codex_state::ThreadGoalStatus;
@@ -452,11 +480,17 @@ fn a_goal_that_stopped_by_itself_raises_attention() {
         let raised = crate::extension::goal_left_to_person(status);
         let expected = matches!(
             status,
-            ThreadGoalStatus::Blocked | ThreadGoalStatus::BudgetLimited
+            ThreadGoalStatus::Blocked
+                | ThreadGoalStatus::BudgetLimited
+                | ThreadGoalStatus::UsageLimited
         );
         assert_eq!(raised.is_some(), expected, "{status:?}");
         if let Some(text) = raised {
             assert!(text.starts_with("goal: "), "{text}");
+            assert!(
+                codex_alab_aterm::wire::single_line(&text, 200) == text,
+                "one line within aterm's 200 bytes: {text}"
+            );
         }
     }
 }

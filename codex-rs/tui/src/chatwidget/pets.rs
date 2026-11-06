@@ -105,6 +105,7 @@ impl ChatWidget {
         area: Rect,
         composer_bottom_y: u16,
     ) -> Option<crate::pets::AmbientPetDraw> {
+        if codex_alab_tui::interface::enabled() { return super::alab_pet_layout::draw(self, area, composer_bottom_y); } // ALAB(interface): the image stays in the bottom pane's reserved dock
         if !self.bottom_pane.no_modal_or_popup_active() {
             return None;
         }
@@ -119,6 +120,7 @@ impl ChatWidget {
     }
 
     pub(super) fn ambient_pet_wrap_reserved_cols(&self) -> u16 {
+        if codex_alab_tui::interface::enabled() { return 0; } // ALAB(interface): the dedicated dock owns the reserve; history and narrow layouts keep their width
         self.ambient_pet
             .as_ref()
             .filter(|pet| pet.image_enabled())

@@ -124,6 +124,9 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 
+#[path = "control/spawn_publication_tests.rs"]
+mod spawn_publication;
+
 impl LocalAgentControl {
     /// Create a child fixture through the production spawn entry point.
     pub(crate) async fn spawn_agent_with_metadata(
@@ -489,7 +492,11 @@ async fn mcp_attribution_in_constructed_request(thread: &CodexThread) -> McpAttr
             .session
             .clone_history()
             .await
-            .for_prompt(&step_context.settings.model_info.input_modalities),
+            .for_prompt(
+                &step_context.settings.model_info.input_modalities,
+                thread.session.services.image_store.as_ref(),
+            )
+            .await,
         &step_context,
         thread.session.get_prompt_base_instructions().await,
         thread
@@ -780,11 +787,12 @@ async fn spawn_failure_context_survives_manager_and_fork_errors() {
 async fn spawn_failure_context_preserves_shutdown_during_child_startup() {
     let harness = AgentControlHarness::new().await;
     let state = harness.control.runtime.upgrade().expect("live manager");
+    let parent_id = ThreadId::new();
     let spawn = harness.control.spawn_agent(
         harness.config.clone(),
         text_input("hello"),
         Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id: ThreadId::new(),
+            parent_thread_id: parent_id,
             depth: 1,
             agent_path: None,
             agent_nickname: None,
@@ -823,6 +831,22 @@ async fn spawn_failure_context_preserves_shutdown_during_child_startup() {
         .wait()
         .await
         .expect("spawn releases its membership");
+    let closed_children = harness
+        .state_db
+        .as_ref()
+        .expect("manager should retain state db")
+        .list_thread_spawn_children_with_status(
+            parent_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(
+        closed_children.len(),
+        1,
+        "failed startup closes its published edge"
+    );
+    assert_thread_not_loaded(&harness.manager, closed_children[0]).await;
 }
 
 #[tokio::test]
@@ -886,6 +910,20 @@ async fn cancelled_spawn_after_input_admission_discards_child() {
         .wait()
         .await
         .expect("provisional cleanup releases tree membership");
+    assert_eq!(
+        harness
+            .state_db
+            .as_ref()
+            .expect("manager should retain state db")
+            .list_thread_spawn_children_with_status(
+                parent_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+            )
+            .await
+            .expect("closed child edge should load"),
+        vec![child_id],
+        "cancelled startup must close its published edge"
+    );
 }
 
 #[tokio::test]
@@ -1175,9 +1213,12 @@ async fn cancelled_v2_send_finishes_reload_registration() {
             .unwrap(),
         child_id,
     );
-    assert_eq!(
-        control.runtime.registry.evicted_environments(child_id),
-        None
+    assert!(
+        control
+            .runtime
+            .registry
+            .evicted_environments(child_id)
+            .is_none()
     );
     // Evict and reload again with the single child slot. This also catches a leaked
     // pin or pending residency reservation left behind by the cancelled sender.
@@ -2611,8 +2652,8 @@ async fn spawn_agent_without_fork_from_paginated_parent_stays_fresh_and_paginate
         Vec::new()
     };
     assert_eq!(
-        child_thread.session.dynamic_tools().await,
-        expected_dynamic_tools
+        child_thread.session.dynamic_tools().await.as_ref(),
+        expected_dynamic_tools.as_slice()
     );
     assert!(
         !history_contains_text(
@@ -2658,6 +2699,7 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
 
     let (parent_thread_id, parent_thread) = harness.start_paginated_thread().await;
     let parent_resume_metadata = codex_history::CompactionResumeMetadata {
+        dynamic_tools: None,
         multi_agent_version: Some(MultiAgentVersion::V2),
         last_started_turn_id: Some("parent-turn".to_string()),
         turn_attribution: Some(codex_history::TurnAttribution {
@@ -2692,7 +2734,7 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
     parent_thread
         .session
         .persist_rollout_items(&[
-            RolloutItem::Compacted(CompactedItem {
+            RolloutItem::Compacted(Box::new(CompactedItem {
                 message: String::new(),
                 replacement_history: Some(vec![user_message("compacted parent context").into()]),
                 retained_context: None,
@@ -2705,7 +2747,7 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
                 compaction_response_id: None,
                 latest_token_usage_record: Some(parent_record.clone()),
                 resume_metadata: Some(parent_resume_metadata.clone()),
-            }),
+            })),
             RolloutItem::TokenUsageRecord(parent_record),
             rollout_response_item(spawn_agent_call(&parent_spawn_call_id)),
         ])
@@ -2835,6 +2877,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
     parent_config.multi_agent_v2.subagent_usage_hint_text =
         Some("Parent subagent guidance.".to_string());
     let mut child_config = harness.config.clone();
+    child_config.multi_agent_v2.preserve_fork_prefix = false;
     let _ = child_config.features.enable(Feature::MultiAgentV2);
     child_config.developer_instructions = Some("Child developer instructions.".to_string());
     child_config.multi_agent_v2.subagent_developer_instructions =
@@ -3155,6 +3198,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
     );
 
     let mut no_hint_child_config = harness.config.clone();
+    no_hint_child_config.multi_agent_v2.preserve_fork_prefix = false;
     let _ = no_hint_child_config.features.enable(Feature::MultiAgentV2);
     no_hint_child_config.developer_instructions = Some(String::new());
     no_hint_child_config
@@ -3251,6 +3295,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
     parent_config.multi_agent_v2.subagent_usage_hint_text =
         Some("Parent subagent guidance.".to_string());
     let mut child_config = harness.config.clone();
+    child_config.multi_agent_v2.preserve_fork_prefix = false;
     let _ = child_config.features.enable(Feature::MultiAgentV2);
     child_config.developer_instructions = Some("Child developer instructions.".to_string());
     child_config.multi_agent_v2.subagent_developer_instructions =
@@ -3372,7 +3417,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
     parent_thread
         .session
         .persist_rollout_items(&[
-            RolloutItem::Compacted(CompactedItem {
+            RolloutItem::Compacted(Box::new(CompactedItem {
                 message: String::new(),
                 replacement_history: Some(
                     replacement_history
@@ -3393,7 +3438,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: None,
-            }),
+            })),
             RolloutItem::RetainedContext(answer_event),
             RolloutItem::ResponseItem(delivery),
             RolloutItem::TurnContext(turn_context.to_turn_context_item()),
@@ -3603,7 +3648,7 @@ async fn spawn_agent_full_fork_restores_instructions_after_compaction_discards_p
                 phase: None,
                 internal_chat_message_metadata_passthrough: None,
             }),
-            RolloutItem::Compacted(CompactedItem {
+            RolloutItem::Compacted(Box::new(CompactedItem {
                 message: String::new(),
                 replacement_history: Some(
                     replacement_history.into_iter().map(Into::into).collect(),
@@ -3618,7 +3663,7 @@ async fn spawn_agent_full_fork_restores_instructions_after_compaction_discards_p
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: None,
-            }),
+            })),
             RolloutItem::TurnContext(turn_context.to_turn_context_item()),
             rollout_response_item(spawn_agent_call(&parent_spawn_call_id)),
         ])
@@ -3799,7 +3844,7 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
             .await;
         let mut rollout_items = vec![
             rollout_response_item(parent_user_message),
-            RolloutItem::Compacted(CompactedItem {
+            RolloutItem::Compacted(Box::new(CompactedItem {
                 message: "legacy compacted summary".to_string(),
                 replacement_history: None,
                 retained_context: None,
@@ -3812,6 +3857,7 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: Some(codex_history::CompactionResumeMetadata {
+                    dynamic_tools: None,
                     multi_agent_version: Some(MultiAgentVersion::V2),
                     last_started_turn_id: None,
                     turn_attribution: None,
@@ -3822,7 +3868,7 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
                         realtime_active: None,
                     }),
                 }),
-            }),
+            })),
         ];
         if let Some(instructions) = parent_developer_instructions {
             rollout_items.push(rollout_response_item(ResponseItem::Message {
@@ -3946,6 +3992,7 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
         assert_eq!(
             inherited_state,
             Some(codex_history::CompactionResumeMetadata {
+                dynamic_tools: None,
                 multi_agent_version: Some(MultiAgentVersion::V2),
                 last_started_turn_id: None,
                 turn_attribution: None,

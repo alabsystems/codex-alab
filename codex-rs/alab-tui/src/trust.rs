@@ -20,7 +20,11 @@
 //!   a `-C` folder or a resumed task's other folder (`app/resume_config.rs` asks too);
 //! - aterm's `harness policy` for this session answered within [`POLICY_TIMEOUT`] with
 //!   `effective=on` (aterm folds `enabled`, the agent's own table, a suspension, a hold and
-//!   Autopilot `off` into it) and `approve=safe` or `all`, never `none`;
+//!   Autopilot `off` into it) and `approve=safe` or `all`, never `none`; a read that went
+//!   unanswered, met aterm's `busy` refusal, or found the host suspended for a seamless update,
+//!   is made again for up to [`SETTLE_WITHIN`] ([`passing`]) where the startup draft shows its
+//!   composer meanwhile (anywhere else one read, as nothing draws or reads keys then), and an
+//!   older aterm's refusal or no connection shows the screen at once;
 //! - under `approve=safe`, the folder AND the folder codex's trust is written for
 //!   (`trust_target`: in a Git repository's subdirectory, the repository root) lie under a trust
 //!   root ([`roots_from_config`] over `trust_roots=`), each both as written and where its
@@ -32,7 +36,9 @@
 //! The glue then writes codex's own trust entry through the write path the screen's "Trust and
 //! continue" takes (the same standing entry aterm's press writes), and the launch session card
 //! says which folder was trusted and why ([`take_notice`]). An older aterm (no `harness
-//! policy`), no socket, a timeout or any other error shows the screen (fail closed).
+//! policy`), no socket, a timeout or any other error shows the screen (fail closed), and the
+//! screen it shows raises codex-alab's attention while it waits for a person
+//! ([`crate::waiting`]), naming the folder and the reason.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -42,6 +48,7 @@ use std::time::Duration;
 
 use codex_alab_aterm::Client;
 use codex_alab_aterm::Endpoint;
+use codex_alab_aterm::Error as AtermError;
 use codex_alab_aterm::HarnessPolicy;
 use codex_alab_aterm::Options;
 use codex_alab_aterm::PolicyAnswer;
@@ -436,39 +443,107 @@ fn held<'r>(
 /// An `ERR` (an older aterm) or an `OK` this client cannot read, no answer in time, or no
 /// connection is the reason the screen shows.
 pub async fn read_policy(endpoint: Endpoint, within: Duration) -> Result<HarnessPolicy, String> {
+    read_policy_once(endpoint, within)
+        .await
+        .map_err(|unread| unread.why)
+}
+
+/// Why a policy read gave no policy, and whether it may answer if read again ([`passing`]).
+struct Unread {
+    why: String,
+    /// No answer in time, or aterm's `busy` refusal (every request lane taken, a version
+    /// switch): a host busy for a moment. An older aterm's refusal, an answer this client
+    /// cannot read and no connection stand.
+    passing: bool,
+    /// How long aterm asked to be left (`busy`'s `retry_ms=`), if it did.
+    retry_after: Option<Duration>,
+}
+
+impl Unread {
+    fn of(err: &AtermError) -> Self {
+        let (passing, retry_after) = match err {
+            AtermError::Unanswered => (true, None),
+            AtermError::Busy { retry_ms, .. } => (true, retry_ms.map(Duration::from_millis)),
+            _ => (false, None),
+        };
+        Self {
+            why: err.to_string(),
+            passing,
+            retry_after,
+        }
+    }
+}
+
+/// [`read_policy`], saying whether its failure may pass.
+async fn read_policy_once(endpoint: Endpoint, within: Duration) -> Result<HarnessPolicy, Unread> {
     let options = Options {
         timeout: within,
         ..Options::default()
     };
     let read = async {
+        // A hello cut off by its own deadline (the same as the read's) is as unanswered as
+        // the read (review of d5e2fc5abf, finding 2).
         let client = Client::connect(endpoint, options)
             .await
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| Unread::of(&err))?;
         let answer = client.harness_policy().await;
         client.close();
-        match answer.map_err(|err| err.to_string())? {
+        match answer.map_err(|err| Unread::of(&err))? {
             PolicyAnswer::Supported(policy) => Ok(policy),
-            PolicyAnswer::Unsupported(line) => {
-                Err(format!("aterm gave no harness policy ({line})"))
-            }
+            PolicyAnswer::Unsupported(line) => Err(Unread {
+                why: format!("aterm gave no harness policy ({line})"),
+                passing: false,
+                retry_after: None,
+            }),
         }
     };
     match tokio::time::timeout(within, read).await {
         Ok(read) => read,
-        Err(_) => Err(format!(
-            "aterm did not answer harness policy within {} ms",
-            within.as_millis()
-        )),
+        Err(_) => Err(Unread {
+            why: format!(
+                "aterm did not answer harness policy within {} ms",
+                within.as_millis()
+            ),
+            passing: true,
+            retry_after: None,
+        }),
     }
 }
 
 /// [`judge`] with its inputs named: the session's endpoint (`None` outside aterm), `home` and
-/// `uid` for the roots. Checks that need no aterm come first, so nothing connects for them.
+/// `uid` for the roots. Checks that need no aterm come first, so nothing connects for them. A
+/// policy that refuses for a moment only is read again for up to [`SETTLE_WITHIN`]
+/// ([`judge_settled_with`]).
 pub async fn judge_with(
     gate: &Gate,
     endpoint: Option<Endpoint>,
     home: Option<&Path>,
     uid: u32,
+) -> Verdict {
+    judge_settled_with(gate, endpoint, home, uid, SETTLE_WITHIN).await
+}
+
+/// How long a policy read that failed for a moment ([`passing`]) is tried again before the
+/// screen shows: a seamless update's commit suspends aterm's host for seconds, and a busy
+/// machine's many launches can each wait out [`POLICY_TIMEOUT`] or meet aterm's `busy`. Only
+/// where the startup draft shows its composer meanwhile, so the keys a person types go to it
+/// (`glue/folder_trust.rs`); anywhere else nothing draws, and one read is made.
+pub const SETTLE_WITHIN: Duration = Duration::from_secs(15);
+
+/// The first pause between policy reads, doubled each read up to [`SETTLE_PAUSE_MAX`].
+pub const SETTLE_PAUSE: Duration = Duration::from_millis(250);
+
+/// The longest pause between policy reads.
+pub const SETTLE_PAUSE_MAX: Duration = Duration::from_secs(2);
+
+/// [`judge_with`], reading the policy again while it refuses for a moment only ([`passing`])
+/// until `within` has gone; any other verdict stands at once.
+pub async fn judge_settled_with(
+    gate: &Gate,
+    endpoint: Option<Endpoint>,
+    home: Option<&Path>,
+    uid: u32,
+    within: Duration,
 ) -> Verdict {
     if let Err(why) = precheck(gate) {
         return Verdict::Show(why);
@@ -476,10 +551,31 @@ pub async fn judge_with(
     let Some(endpoint) = endpoint else {
         return Verdict::Show("not inside an aterm session".to_string());
     };
-    match read_policy(endpoint, POLICY_TIMEOUT).await {
-        Ok(policy) => decide(gate, &policy, home, uid, real_components),
-        Err(why) => Verdict::Show(why),
+    let until = tokio::time::Instant::now() + within;
+    let mut pause = SETTLE_PAUSE;
+    loop {
+        let (verdict, passing, asked) = match read_policy_once(endpoint.clone(), POLICY_TIMEOUT).await {
+            Ok(policy) => (
+                decide(gate, &policy, home, uid, real_components),
+                passing(&policy),
+                None,
+            ),
+            Err(unread) => (Verdict::Show(unread.why), unread.passing, unread.retry_after),
+        };
+        let wait = asked.map_or(pause, |asked| asked.min(SETTLE_PAUSE_MAX));
+        if !passing || tokio::time::Instant::now() + wait >= until {
+            return verdict;
+        }
+        tokio::time::sleep(wait).await;
+        pause = (pause * 2).min(SETTLE_PAUSE_MAX);
     }
+}
+
+/// Whether `policy` refuses for a moment only: aterm suspends its host at a seamless update's
+/// commit (`why=suspended`) and resumes it, or a successor takes it, in seconds. A person's
+/// hold, an Autopilot Off and the config's offs stand until a person moves them.
+pub fn passing(policy: &HarnessPolicy) -> bool {
+    !policy.effective && policy.why == "suspended"
 }
 
 /// Whether the hook asks at all: only in the codex-alab binary.
@@ -487,8 +583,10 @@ pub fn armed() -> bool {
     active()
 }
 
-/// The verdict for this process's folder-trust screen (module doc). Inert unless [`active`].
-pub async fn judge(gate: &Gate) -> Verdict {
+/// The verdict for this process's folder-trust screen (module doc), a policy that refuses for
+/// a moment only read again for up to `settle` ([`judge_settled_with`]; zero: one read). Inert
+/// unless [`active`].
+pub async fn judge(gate: &Gate, settle: Duration) -> Verdict {
     if !active() {
         return Verdict::Show("not codex-alab".to_string());
     }
@@ -498,7 +596,7 @@ pub async fn judge(gate: &Gate) -> Verdict {
         .map(PathBuf::from);
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
-    judge_with(gate, Endpoint::from_env(), home.as_deref(), uid).await
+    judge_settled_with(gate, Endpoint::from_env(), home.as_deref(), uid, settle).await
 }
 
 static NOTICE: Mutex<Option<Notice>> = Mutex::new(None);

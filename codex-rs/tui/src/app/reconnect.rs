@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::app_server_session::ResumeModelSettings;
+use crate::app_server_session::is_server_shutting_down_error;
 use crate::dynamic_tools_mcp::ThreadToolTransport;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -11,6 +12,7 @@ pub(super) enum ReconnectPresentation {
     #[default]
     Conversation,
     Overview,
+    Startup(tokio::time::Instant),
 }
 
 #[derive(Default)]
@@ -22,7 +24,7 @@ pub(super) struct ReconnectState {
 }
 
 pub(super) struct Reconnected {
-    session: AppServerSession,
+    pub(super) session: AppServerSession,
     bootstrap: AppServerBootstrap,
     thread: Option<AppServerStartedThread>,
 }
@@ -55,17 +57,27 @@ pub(super) async fn reconnect(
     }
     // Connecting already has transport deadlines. Give healthy history/inventory hydration one
     // shared budget instead of repeatedly discarding its progress on a short per-attempt timer.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 120);
+    let deadline = match presentation {
+        ReconnectPresentation::Startup(deadline) => deadline,
+        ReconnectPresentation::Conversation | ReconnectPresentation::Overview => {
+            tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 120)
+        }
+    };
+    // Track only the stage. Transport errors can contain endpoint credentials.
+    let mut stage = "connecting to the server";
     for delay in [0, 1, 2, 4].into_iter().chain(std::iter::repeat(/*elt*/ 8)) {
         let attempt = async {
             tokio::time::sleep(Duration::from_secs(delay)).await;
+            stage = "connecting to the server";
             let client = crate::app_server_connection::connect(&target).await?;
             let mut session = AppServerSession::new(backend_id, client, mode)
                 .with_local_codex_home(&config.codex_home)
                 .with_remote_cwd_override(remote_cwd.clone())
                 .with_thread_tool_transport(task_tools.clone());
+            stage = "loading session settings";
             let bootstrap = session.bootstrap(&config).await?;
             let thread = if let Some(thread_id) = thread_id {
+                stage = "resuming the conversation";
                 match session
                     .resume_thread(
                         &local_settings,
@@ -84,14 +96,14 @@ pub(super) async fn reconnect(
                     {
                         return Err(error);
                     }
-                    // Unloading threads use the same code as unavailable conversations, but
-                    // ordinary resume can reattach once the unload finishes.
+                    // Draining servers and unloading threads both reject resume temporarily.
                     Err(error)
                         if matches!(
                             error.downcast_ref::<TypedRequestError>(),
                             Some(TypedRequestError::Server { method, source })
                                 if method == "thread/resume" && source.code == -32600
-                                    && source.message.starts_with(&format!("thread {thread_id} is closing;"))
+                                    && (is_server_shutting_down_error(source)
+                                        || source.message.starts_with(&format!("thread {thread_id} is closing;")))
                         ) =>
                     {
                         return Err(error);
@@ -121,9 +133,9 @@ pub(super) async fn reconnect(
             Ok(Err(_)) => {}
             Err(_) => break,
         }
-        // Transport errors can contain endpoint credentials. Do not render or log them.
     }
-    color_eyre::eyre::bail!("Server connection could not be restored")
+    tracing::warn!(stage, "automatic reconnect timed out");
+    color_eyre::eyre::bail!("Automatic reconnect timed out while {stage}.")
 }
 
 impl App {
@@ -185,6 +197,25 @@ impl App {
     }
 
     pub(super) fn begin_reconnect(&mut self) -> bool {
+        self.pending_startup_thread_start = false;
+        self.begin_reconnect_inner(/*preserve_startup_input*/ false)
+    }
+
+    pub(super) fn begin_reconnect_for_rejected_startup(&mut self) -> bool {
+        if matches!(
+            self.reconnect.presentation,
+            ReconnectPresentation::Startup(_)
+        ) {
+            self.begin_reconnect();
+            self.reconnect.failed = true;
+            self.alab_refresh_connection_state(); // ALAB(interface): an exhausted startup reconnect labels retained account data offline.
+            self.chat_widget.reconnect_failed();
+            return true;
+        }
+        self.begin_reconnect_inner(/*preserve_startup_input*/ true)
+    }
+
+    fn begin_reconnect_inner(&mut self, preserve_startup_input: bool) -> bool {
         if matches!(self.app_server_target, AppServerTarget::Embedded) {
             return false;
         }
@@ -201,14 +232,17 @@ impl App {
             }
             self.retire_background_voice();
             self.reconnect.offline = true;
+            self.alab_tasks_connection_changed(); // ALAB(tasks): retained local lists disable agent actions before disconnected keys can select them.
             self.account_email_request_id = None;
+            self.alab_cancel_account_email_read(); // ALAB(interface): a disconnected transport cannot keep an identity retry alive.
             // Cached blank sessions are usable only while this connection owns a subscription.
             self.agents_overview.blank_sessions.clear();
             self.reconnect.failed = false;
+            self.alab_refresh_connection_state(); // ALAB(interface): retained account details and footer activity reflect the reconnecting transport.
             if self.pending_server_version_notice.take().is_some() {
                 self.reconnect.seen_version_notice = None;
                 self.update_server_version_overview_notice(
-                    CODEX_CLI_VERSION,
+                    cli_version(), // ALAB(version): running executable identity
                     /*server_version*/ None,
                 );
             }
@@ -256,7 +290,16 @@ impl App {
                 }
                 ReconnectPresentation::Conversation
             };
-            self.chat_widget.pause_for_disconnect();
+            if preserve_startup_input {
+                // Draining admission never reopens. Wait for this connection to close before
+                // reconnecting, then give the ordinary startup path one more attempt.
+                self.reconnect.presentation = ReconnectPresentation::Startup(
+                    tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 120),
+                );
+                self.chat_widget.pause_for_rejected_startup();
+            } else {
+                self.chat_widget.pause_for_disconnect();
+            }
             self.startup_pending_protected_request = false;
             self.abort_all_thread_event_listeners();
             for (_, (_, task)) in self.dynamic_tool_tasks.drain() {
@@ -264,6 +307,32 @@ impl App {
             }
         }
         true
+    }
+
+    pub(super) fn bind_backend_workspace(
+        &mut self,
+        app_server: &AppServerSession,
+        search_dir: PathBuf,
+    ) {
+        self.chat_widget.snapshot_local_images = self.app_server_target.uses_remote_workspace();
+        self.chat_widget.set_local_worktree_operations(
+            !crate::uses_remote_workspace_or_environment(
+                &self.app_server_target,
+                self.environment_manager.as_ref(),
+            ),
+        );
+        self.chat_widget.windows_sandbox_local_server =
+            !self.app_server_target.uses_remote_workspace()
+                && app_server.app_server_platform_os() == Some("windows");
+        self.chat_widget.remote_connection =
+            crate::status::remote_connection::remote_connection_status_value(
+                &self.app_server_target,
+                app_server.server_version(),
+            );
+        self.workspace_command_runner = Some(Arc::new(AppServerWorkspaceCommandRunner::new(
+            app_server.request_handle(),
+        )));
+        self.file_search = FileSearchManager::new(search_dir, self.app_event_tx.clone());
     }
 
     pub(super) async fn finish_reconnect(
@@ -331,16 +400,6 @@ impl App {
                 self.chat_widget.windows_sandbox_elevated_setup_complete = false;
             }
         }
-        self.chat_widget.snapshot_local_images = self.app_server_target.uses_remote_workspace();
-        self.chat_widget.set_local_worktree_operations(
-            !crate::uses_remote_workspace_or_environment(
-                &self.app_server_target,
-                self.environment_manager.as_ref(),
-            ),
-        );
-        self.chat_widget.windows_sandbox_local_server =
-            !self.app_server_target.uses_remote_workspace()
-                && app_server.app_server_platform_os() == Some("windows");
         self.chat_widget.windows_sandbox_host = WindowsSandboxHost::Unknown;
         self.chat_widget.requires_openai_auth = bootstrap.requires_openai_auth;
         let managed_daemon = self
@@ -348,19 +407,10 @@ impl App {
             .remote_connection
             .as_ref()
             .is_some_and(|connection| connection.is_managed_daemon);
-        self.chat_widget.remote_connection =
-            crate::status::remote_connection::remote_connection_status_value(
-                &self.app_server_target,
-                app_server.server_version(),
-            );
+        self.bind_backend_workspace(app_server, self.config.cwd.to_path_buf());
         if let Some(connection) = &mut self.chat_widget.remote_connection {
             connection.is_managed_daemon = connection.is_local_daemon && managed_daemon;
         }
-        self.workspace_command_runner = Some(Arc::new(AppServerWorkspaceCommandRunner::new(
-            app_server.request_handle(),
-        )));
-        self.file_search =
-            FileSearchManager::new(self.config.cwd.to_path_buf(), self.app_event_tx.clone());
         self.model_catalog = Arc::new(
             ModelCatalog::new(bootstrap.available_models)
                 .with_collaboration_modes(bootstrap.collaboration_modes),
@@ -389,7 +439,6 @@ impl App {
         for (_, cancellation) in self.pending_thread_titles.drain() {
             cancellation.cancel();
         }
-        self.sync_thread_title_progress();
         self.agents_overview.dispatched_requests.clear();
         self.agents_overview.request_id = None;
         self.agents_overview.refresh_show_more = false;
@@ -398,11 +447,15 @@ impl App {
         for input in self.agents_overview.input_states.values_mut() {
             input.reconnect_pending = true;
         }
-        self.pending_startup_thread_start = false;
+        self.pending_startup_thread_start = matches!(
+            self.reconnect.presentation,
+            ReconnectPresentation::Startup(_)
+        );
         // Move cached UI state into fresh channels. Old producers retain the old sender/store,
         // so their late requests cannot leak into recovery. Background threads attach on selection.
         for channel in self.thread_event_channels.values_mut() {
             let mut replacement = ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY);
+            replacement.backend_id = channel.backend_id;
             if channel.attachment() == ThreadEventAttachment::ExternalWriter {
                 replacement.mark_external_writer();
             } else {
@@ -479,7 +532,6 @@ impl App {
                 return Err(err);
             }
             self.config = self.chat_widget.config_ref().clone();
-            self.refresh_pending_thread_approvals().await;
             if self.thread_unavailable(id) && !self.chat_widget.is_external_writer_view() {
                 self.agent_navigation.mark_stopped(id);
                 self.chat_widget.pause_unavailable_thread();
@@ -500,6 +552,7 @@ impl App {
             self.replace_chat_widget(ChatWidget::new_with_app_event(init));
             self.chat_widget.restore_reconnected_input(input, &[]);
         }
+        self.refresh_pending_thread_approvals().await;
         // Discover tasks whose notifications were missed, without clearing retained rows.
         // A hidden overview performs this discovery when it is next opened.
         self.agents_overview.initialized = false;
@@ -531,6 +584,7 @@ impl App {
             server.reconnect(app_server.request_handle(), self.app_event_tx.clone());
         }
         self.reconnect.offline = false;
+        self.alab_refresh_connection_state(); // ALAB(interface): restore the latest native activity once the replacement connection is adopted.
         self.chat_widget.update_account_state(
             bootstrap.status_account_display,
             bootstrap.plan_type,
@@ -577,6 +631,10 @@ impl App {
             if self.reconnect.presentation != ReconnectPresentation::Overview {
                 self.chat_widget.add_server_version_warning(notice);
             }
+        }
+        if self.pending_startup_thread_start {
+            self.chat_widget
+                .set_queue_submissions_until_session_configured(/*queue*/ true);
         }
         if discard_replaced_view_input
             && let Err(err) = tui.discard_pending_input_before_interactive_screen()

@@ -13,8 +13,9 @@ Checks, each on both binaries:
             possible values) and its positional arguments as written. Every difference is
             attributed from the source: an item pristine upstream has at the commit
             codex-alab last merged (its merge-base with upstream/main) is upstream's move
-            since the vendor's version; an item only codex-alab's own crates name is ALab's;
-            anything else fails. A short flag, a value or an argument the vendor has and
+            since the vendor's version; ALab's own crates and its marked clap command
+            declarations establish its additions; anything else fails. A short flag, a
+            value or an argument the vendor has and
             codex-alab lacks fails unless upstream's source no longer names it; with no
             upstream/main to read (a clone alab/setup.sh has not set up) the check fails.
   exec      `codex exec --experimental-json` (the TypeScript SDK's argv) runs a turn against
@@ -41,8 +42,9 @@ Checks, each on both binaries:
 
 usage: dropin.py [--alab <codex-alab package dir>] [--vendor <vendor package dir>] [--keep]
 Defaults: the newest package under ~/.local/share/aterm/dev-builds/artifacts/codex (what
-alab/package.sh writes) and the newest vendor build in atpkg's store. Exit 0 when every check
-passes, 1 otherwise. Runs only those two binaries; builds nothing.
+alab/package.sh writes) and the newest vendor build in atpkg's store (`codex-old`, or `codex`
+before the rename). Exit 0 when every check passes, 1 otherwise. Runs only those two binaries;
+builds nothing.
 """
 
 import argparse
@@ -64,7 +66,10 @@ REPO = subprocess.run(
     capture_output=True, text=True, check=True,
 ).stdout.strip()
 ARTIFACTS = os.path.expanduser("~/.local/share/aterm/dev-builds/artifacts/codex")
-STORE = os.path.expanduser("~/Library/Application Support/aterm/pkg/store/codex")
+# atpkg's stores of OpenAI's own build: `codex-old` since `codex` became codex-alab, `codex`
+# before that.
+STORES = [os.path.expanduser("~/Library/Application Support/aterm/pkg/store/" + name)
+          for name in ("codex-old", "codex")]
 PROMPT = "reply with ok"
 
 
@@ -77,12 +82,13 @@ def newest_alab():
 
 
 def newest_vendor():
-    builds = [d for d in os.listdir(STORE) if d.isdigit()
-              and os.path.isfile(os.path.join(STORE, d, "codex-package.json"))
-              and not os.path.exists(os.path.join(STORE, d, "alab-build.json"))]
+    builds = [(int(d), os.path.join(store, d)) for store in STORES if os.path.isdir(store)
+              for d in os.listdir(store) if d.isdigit()
+              and os.path.isfile(os.path.join(store, d, "codex-package.json"))
+              and not os.path.exists(os.path.join(store, d, "alab-build.json"))]
     if not builds:
-        sys.exit(f"dropin: no vendor codex in {STORE}: aterm pkg install codex")
-    return os.path.join(STORE, max(builds, key=int))
+        sys.exit("dropin: no vendor codex in %s: aterm pkg install codex-old" % " or ".join(STORES))
+    return max(builds)[1]
 
 
 class Bin:
@@ -248,17 +254,142 @@ def named(commit, item, paths):
     camel = "".join(p.capitalize() for p in re.split(r"[-_]", word))
     pats = ['"%s"' % word, "--%s" % word, "fn %s" % snake_word, " %s:" % snake_word, camel + " {",
             camel + ",", camel + "(", "%s =" % snake_word, '"%s"' % snake_word]
+    # Experimental Rust types may be absent from committed schemas; keep their internal capitals.
+    pats += [word + " {", word + ",", word + "("]
     return grep(commit, pats, paths)
+
+
+def rust_declarations(text):
+    """Mask non-code while keeping offsets and real line comments (the ALAB markers)."""
+    token = re.compile(r"//[^\n]*|/\*|(?:br|r)(?P<hashes>#*)\"|b?\"|b?'(?:\\.|[^'\\\n])'")
+    masked, cursor = list(text), 0
+    while match := token.search(text, cursor):
+        start, end = match.span()
+        if match[0].startswith("//"):
+            cursor = end
+            continue
+        if match[0] == "/*":
+            depth = 1
+            for boundary in re.finditer(r"/\*|\*/", text[end:]):
+                depth += 1 if boundary[0] == "/*" else -1
+                if depth == 0:
+                    end += boundary.end()
+                    break
+            else:
+                end = len(text)
+        elif match["hashes"] is not None:
+            delimiter = '"' + match["hashes"]
+            closing = text.find(delimiter, end)
+            end = len(text) if closing < 0 else closing + len(delimiter)
+        elif match[0].endswith('"'):
+            while end < len(text):
+                char = text[end]
+                end += 2 if char == "\\" else 1
+                if char == '"':
+                    break
+        masked[start:end] = ["\n" if char == "\n" else " " for char in text[start:end]]
+        cursor = end
+    return "".join(masked)
+
+
+def clap_subcommands(text):
+    """Clap enum declarations, excluding similarly named data variants and handler arms.
+    Unrecognized declarations provide no attribution evidence.
+    """
+    header = re.compile(
+        r"(?m)^(?P<indent>[ \t]*)#\[derive\((?P<derive>[^\]]*)\)\]"
+        r"(?P<attrs>(?:\s*#\[[^\]]*\])*)\s*"
+        r"(?:pub(?:\([^)]*\))?\s+)?enum\s+(?P<enum>\w+)\s*\{")
+    code = rust_declarations(text)
+    for enum in header.finditer(code):
+        if not re.search(r"(?:^|,)\s*(?:clap::)?Subcommand\s*(?:,|$)", enum["derive"]):
+            continue
+        if re.search(r"\brename_all\s*=", enum["attrs"]):
+            continue
+        rest = code[enum.end():]
+        end = re.search(r"(?m)^" + re.escape(enum["indent"]) + r"\}", rest)
+        if end is None:
+            continue
+        body = rest[:end.start()]
+        variants = list(re.finditer(
+            r"(?m)^(?P<indent>[ \t]+)(?P<variant>\w+)[ \t]*[,({][^\n]*", body))
+        depth = min((len(v["indent"]) for v in variants), default=0)
+        previous = 0
+        for variant in variants:
+            if len(variant["indent"]) != depth:
+                continue
+            attrs = re.sub(r"//[^\n]*", lambda m: " " * len(m[0]),
+                           body[previous:variant.start()])
+            original_attrs = text[enum.end() + previous:enum.end() + variant.start()]
+            previous = variant.end()
+            if re.search(r"#\[(?:command|clap)\([^\]]*\b(?:flatten|skip|external_subcommand)\b", attrs):
+                continue
+            explicit = []
+            for attribute in re.finditer(r"#\[command\(\s*name\s*=[^\]]*\)\]", attrs):
+                literal = re.fullmatch(r'#\[command\(\s*name\s*=\s*"([^"\\]+)"\s*\)\]',
+                                       original_attrs[attribute.start():attribute.end()])
+                if literal:
+                    explicit.append(literal[1])
+            if re.search(r"\bname\s*=", attrs) and not explicit:
+                continue
+            name = explicit[-1] if explicit else snake(variant["variant"]).replace("_", "-")
+            marked = "ALAB(" in variant[0].partition("//")[2]
+            yield enum["enum"], variant["variant"], name, marked
+
+
+def command_declarations(commit, item, paths):
+    """Exact command declaration keys at the artifact/pristine commit, with hook ownership."""
+    if commit is None:
+        return {}
+    camel = "".join(p.capitalize() for p in re.split(r"[-_]", item))
+    files = subprocess.run(
+        ["git", "-C", REPO, "grep", "-l", "-F", "-e", camel, "-e", '"%s"' % item,
+         commit, "--"] + paths, capture_output=True, text=True)
+    declarations = {}
+    for entry in files.stdout.splitlines():
+        path = entry.removeprefix(commit + ":")
+        if not path.endswith(".rs"):
+            continue
+        source = subprocess.run(["git", "-C", REPO, "show", commit + ":" + path],
+                                capture_output=True, text=True)
+        if source.returncode == 0:
+            for enum, variant, name, marked in clap_subcommands(source.stdout):
+                if name == item:
+                    key = path, enum, variant
+                    declarations[key] = None if key in declarations else marked
+    return declarations
 
 
 UPSTREAM = ["codex-rs", ":(exclude)codex-rs/alab-*"]
 ALAB = ["codex-rs/alab-*"]
 
 
-def attribute(side, thing, base, source, vendor_version, paths=UPSTREAM):
+def attribute(side, thing, base, source, vendor_version, paths=UPSTREAM, subcommand=False):
     """The verdict on one item only one side has, and whether it is explained."""
     if base is None:
         return "UNEXPLAINED: no upstream/main in this clone to attribute it (run alab/setup.sh)", False
+    if subcommand:
+        upstream = command_declarations(base, thing, paths)
+        if side == "codex-alab":
+            local = command_declarations(source, thing, paths)
+            hooks = {key for key, marked in local.items()
+                     if marked and key not in upstream}
+            owned = command_declarations(source, thing, ALAB)
+            unknown = set(local) - set(upstream) - hooks
+            ambiguous = any(value is None for declarations in (upstream, local, owned)
+                            for value in declarations.values())
+            if ambiguous or unknown or ((hooks or owned) and upstream):
+                return "UNEXPLAINED: command declarations do not establish one origin", False
+            if hooks:
+                return "ALab: a marked clap command declaration adds it", True
+            if upstream:
+                return "upstream: added since vendor %s (in upstream %s)" % (vendor_version, base[:9]), True
+            if owned:
+                return "ALab: codex-alab's own crates add it", True
+            return "UNEXPLAINED: no matching clap command declaration", False
+        if not upstream and not named(base, thing, paths):
+            return "upstream: gone from upstream %s since vendor %s" % (base[:9], vendor_version), True
+        return "UNEXPLAINED: no evidence upstream removed this command", False
     up = named(base, thing, paths)
     if side == "codex-alab":
         if up:
@@ -282,7 +413,8 @@ def help_check(alab, vendor, source):
 
     def one_side(where, item, side, thing=None):
         nonlocal ok
-        verdict, good = attribute(side, thing or item, base, source, vendor.version)
+        verdict, good = attribute(side, thing or item, base, source, vendor.version,
+                                  subcommand=item == "(subcommand)")
         ok &= good
         out.append((where, item, "only in " + side, verdict))
 
@@ -492,6 +624,30 @@ INTENDED_ABSENT = [
     # scratch dir its git policy makes (git_policy.rs, `git-`).
     (r"\.tmp/(plugins|git-)", "the plugin marketplace sync (`plugins` off, alab-core/defaults.toml)"),
 ]
+
+
+# What codex-alab keeps under a name of its own in the CODEX_HOME it shares with codex-old
+# (codex-rs/alab-core/src/home.rs), as (codex-alab's prefix, the vendor's): the same files as the
+# vendor's, so the comparison reads them under the vendor's names, and codex-alab writing under
+# the vendor's name is a clash with codex-old, never a shared path.
+OWN_NAMES = [
+    ("skills/.alab-system/", "skills/.system/"),
+    ("models_cache.alab.", "models_cache."),
+]
+
+
+def as_vendor_names(paths):
+    """codex-alab's shapes under the vendor's names (OWN_NAMES), and the paths codex-alab wrote
+    under one of those names itself."""
+    renamed, clashes = set(), []
+    for path in paths:
+        own = next(((o, v) for o, v in OWN_NAMES if path.startswith(o)), None)
+        if own:
+            path = own[1] + path[len(own[0]):]
+        elif any(path.startswith(v) for _, v in OWN_NAMES):
+            clashes.append(path)
+        renamed.add(path)
+    return renamed, sorted(clashes)
 
 
 def shapes(home):
@@ -765,19 +921,22 @@ def main():
     for b in (alab, vendor):
         good, detail, homes[b.label], events[b.label] = exec_check(b, port)
         record("exec --experimental-json (%s)" % b.label, good, detail)
-    sa, sv = shapes(homes["alab"]), shapes(homes["vendor"])
+    (sa, clashes), sv = as_vendor_names(shapes(homes["alab"])), shapes(homes["vendor"])
     extra = sorted(sa - sv)
     missing = {}
     for path in sorted(sv - sa):
         why = next((w for pat, w in INTENDED_ABSENT if re.match(pat, path)), None)
         missing.setdefault(why, []).append(path)
     unexplained = missing.pop(None, [])
-    record("CODEX_HOME after exec", not extra and not unexplained,
-           "%d paths in both (%s); codex-alab writes nothing the vendor does not%s%s" % (
+    record("CODEX_HOME after exec", not extra and not unexplained and not clashes,
+           "%d paths in both (%s; codex-alab's own names read as the vendor's: %s); codex-alab"
+           " writes nothing the vendor does not%s%s" % (
                len(sa & sv), ", ".join(sorted(p for p in sa & sv if "/" not in p or p.startswith("sessions/"))[:8]),
+               ", ".join("%s for %s" % pair for pair in OWN_NAMES),
                "".join("; not written, as ALab intends (%d): %s" % (len(v), w) for w, v in missing.items()),
                ("; ONLY codex-alab: %s" % extra if extra else "")
-               + ("; UNEXPLAINED vendor-only: %s" % unexplained if unexplained else "")))
+               + ("; UNEXPLAINED vendor-only: %s" % unexplained if unexplained else "")
+               + ("; codex-alab wrote into codex-old's own: %s" % clashes if clashes else "")))
     server.shutdown()
     good, rows, same = shape_check(alab, vendor, events, base, source)
     diffs += rows
