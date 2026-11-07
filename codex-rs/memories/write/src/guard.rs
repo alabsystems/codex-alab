@@ -13,6 +13,7 @@ pub(crate) async fn rate_limits_ok(auth_manager: &AuthManager, config: &Config) 
 }
 
 async fn rate_limits_check(auth_manager: &AuthManager, config: &Config) -> Option<bool> {
+    let Ok(_assignment_resource) = auth_manager.alab_account_resource() else { return Some(false); }; // ALAB(accounts): skip unadmitted background work before reading source credentials.
     let auth = auth_manager.auth().await?;
     if !auth.uses_codex_backend() {
         return None;

@@ -22,6 +22,15 @@ Checklists, agents and terminals stay in `/tasks`; goals use Codex's native goal
 lifecycle. Launch art can name the Autopilot mode but does not advertise another
 harness or harness version. The plain interface setting remains available.
 
+Cruise leaves a brief opening conversation, such as `sup` followed by
+`Hey—what are we working on?`, for the person to answer. This applies only to the
+session's first exchange, answered in less than ten minutes, without tool work
+or a question box. A service-error retry shares that time budget; if it starts
+tool work or opens a question box, Cruise continues. Later interruptions and
+completed work still receive Cruise's continuation. Restarting preserves the
+opening's tool-work and question-box evidence; missing tool evidence in an older
+record does not establish a taskless opening.
+
 aterm supplies terminal I/O, context reads, shared settings, process recovery and
 fleet services. Claude Code and other vendor CLIs retain their separate aterm
 harnesses. Tests assert that Codex's terminal cells are unchanged by aterm's footer

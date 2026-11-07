@@ -143,6 +143,12 @@ pub enum Autopilot {
 #[serde(rename_all = "camelCase")]
 pub struct Record {
     pub v: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::assignment_record::read"
+    )]
+    pub assignment: Option<crate::assignment_record::Receipt>,
     pub pid: u32,
     pub proc_start: Option<String>,
     pub identity: Option<Identity>,
@@ -811,6 +817,16 @@ pub struct LeftPoint {
     pub point: ReplyPoint,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub opens: bool,
+    /// Older records do not prove the opening was taskless.
+    #[serde(default = "unknown_left_point_work")]
+    pub ran_tools: bool,
+    /// Unknown history in an older record cannot establish a taskless opening.
+    #[serde(default = "unknown_left_point_work")]
+    pub had_questions: bool,
+}
+
+fn unknown_left_point_work() -> bool {
+    true
 }
 
 /// The record's `pace.goAhead` ([`codex_alab_core::session::GoAheadCount`]): `acts` absent at 0,
@@ -958,6 +974,8 @@ impl From<codex_alab_core::session::Pace> for Pace {
                     questions: left.point.questions,
                 },
                 opens: left.opens,
+                ran_tools: left.ran_tools,
+                had_questions: left.had_questions,
             }),
             esc: pace.esc.map(|esc| EscHold {
                 at: esc.at_ms,
@@ -1036,6 +1054,8 @@ impl From<Pace> for codex_alab_core::session::Pace {
                         questions: left.point.questions,
                     },
                     opens: left.opens,
+                    ran_tools: left.ran_tools,
+                    had_questions: left.had_questions,
                 }),
             esc: pace.esc.map(|esc| codex_alab_core::session::EscHold {
                 at_ms: esc.at,

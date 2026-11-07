@@ -6,6 +6,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 
 
 class BuildCacheRegistrationTests(unittest.TestCase):
@@ -27,8 +29,7 @@ class BuildCacheRegistrationTests(unittest.TestCase):
         self.events = self.fixture / "events.jsonl"
         self.helper = self.fixture / "fake-aterm"
         self.helper.write_text(
-            f"#!{sys.executable}\n"
-            "import json, os, sys\nfrom pathlib import Path\n"
+            PYTHON_ENTRY + "import json, os, sys\nfrom pathlib import Path\n"
             "args = sys.argv[1:]\n"
             "assert os.environ['HOME'] == os.environ['EXPECT_CANONICAL_HOME']\n"
             "assert args[:2] == ['pkg', '__build_cache_register'], args\n"
@@ -168,22 +169,19 @@ class BuildCacheRegistrationTests(unittest.TestCase):
         text = (ROOT / "alab/sync.sh").read_text()
         return name + "() {" + text.split(name + "() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
 
-    def test_real_sync_gate_registers_both_workspaces_before_containment(self):
+    def test_gate_inventory_registers_both_workspaces_before_followup(self):
         pristine = self.home / "pristine/codex-rs"
         pristine.mkdir(parents=True)
         (pristine / "Cargo.toml").write_text("[workspace]\nmembers = []\n")
-        source = self.sync_function("run_check")
-        body = source + '\nwt="$1"; check=1; mode=continue; '
-        body += 'in_wt() { printf "fixture-source\\n"; }; alab_pristine_at() { :; }; '
-        body += 'alab_pristine() { printf "%s\\n" "$PRISTINE"; }; '
-        body += 'exit_with() { exit "$1"; }; '
-        body += 'alab_contained() { printf \'{"kind":"contained","target":"%s"}\\n\' "${CARGO_TARGET_DIR-unset}" >> "$FIXTURE_EVENTS"; }; run_check'
+        body = 'wt="$1"; '
+        body += 'chosen=$(alab_check_targets_ready "$wt" "$PRISTINE" "${CARGO_TARGET_DIR:-$wt/codex-rs/target}"); '
+        body += 'printf \'{"kind":"ready","target":"%s"}\\n\' "$chosen" >> "$FIXTURE_EVENTS"'
         self.environment.update(PRISTINE=str(pristine.parent), CARGO_TARGET_DIR=str(self.target))
         done = self.shell(body, self.workspace.parent)
         self.assertEqual(done.returncode, 0, done.stderr)
         events = self.recorded()
         self.assertEqual([event["kind"] for event in events],
-                         ["register"] * 5 + ["contained"])
+                         ["register"] * 5 + ["ready"])
         self.assertEqual([event["manifest"] for event in events[:5]],
                          [str(self.workspace / "Cargo.toml"), str(pristine / "Cargo.toml"),
                           str(self.workspace / "Cargo.toml"), str(self.workspace / "Cargo.toml"),
@@ -199,13 +197,13 @@ class BuildCacheRegistrationTests(unittest.TestCase):
         self.environment.pop("CARGO_TARGET_DIR")
         done = self.shell(body, self.workspace.parent)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(self.recorded()[-1]["target"], "unset", "preserve Cargo config precedence")
+        self.assertEqual(self.recorded()[-1]["target"], str(self.workspace / "target"))
 
         self.events.write_text("")
         self.environment.update(FIXTURE_REFUSE_TARGET=str(pristine / "target"),
                                 FIXTURE_REFUSE_MANIFEST=str(self.workspace / "Cargo.toml"))
         refused = self.shell(body, self.workspace.parent)
-        self.assertEqual(refused.returncode, 4, refused.stderr)
+        self.assertEqual(refused.returncode, 75, refused.stderr)
         events = self.recorded()
         self.assertEqual([event["kind"] for event in events], ["register"] * 3,
                          "refused runner ownership must not enter containment")
@@ -221,9 +219,36 @@ class BuildCacheRegistrationTests(unittest.TestCase):
             self.environment["FIXTURE_REFUSE_MANIFEST"] = str(
                 (self.workspace if lint_target == self.target / "tippy" else pristine) / "Cargo.toml")
             refused = self.shell(body, self.workspace.parent)
-            self.assertEqual(refused.returncode, 4, refused.stderr)
-            self.assertNotIn("contained", [event["kind"] for event in self.recorded()],
+            self.assertEqual(refused.returncode, 75, refused.stderr)
+            self.assertNotIn("ready", [event["kind"] for event in self.recorded()],
                              "a refused dedicated lint target starts no gate/compiler")
+
+    def test_real_sync_delegates_to_gate_and_preserves_target_environment(self):
+        gate = self.workspace.parent / "alab/check.sh"
+        gate.parent.mkdir()
+        gate.write_text(
+            PYTHON_ENTRY + "import json, os, sys\nfrom pathlib import Path\n"
+            "with Path(os.environ['FIXTURE_EVENTS']).open('a') as out:\n"
+            "    out.write(json.dumps({'kind': 'gate', 'cwd': os.getcwd(), "
+            "'target': os.environ.get('CARGO_TARGET_DIR')}) + '\\n')\n"
+            "sys.exit(int(os.environ.get('FIXTURE_GATE_STATUS', '0')))\n")
+        gate.chmod(0o700)
+        body = self.sync_function("run_check")
+        body += '\nwt="$1"; check=1; mode=continue; '
+        body += 'in_wt() { printf "fixture-source\\n"; }; '
+        body += 'exit_with() { exit "$1"; }; check_failed() { exit "$1"; }; run_check'
+        for target in (str(self.target), None):
+            for status in (0, 1, 75):
+                with self.subTest(target=target, status=status):
+                    self.events.write_text("")
+                    self.environment.pop("CARGO_TARGET_DIR", None)
+                    if target is not None:
+                        self.environment["CARGO_TARGET_DIR"] = target
+                    self.environment["FIXTURE_GATE_STATUS"] = str(status)
+                    done = self.shell(body, self.workspace.parent)
+                    self.assertEqual(done.returncode, status, done.stderr)
+                    self.assertEqual(self.recorded(), [{
+                        "kind": "gate", "cwd": str(self.workspace.parent), "target": target}])
 
     def test_real_metadata_resolver_registers_before_its_contained_command(self):
         (self.workspace / "Cargo.lock").write_text("fixture-lock\n")

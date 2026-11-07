@@ -462,6 +462,9 @@ pub(super) async fn submission_loop(
     rx_sub: Receiver<Submission>,
 ) {
     // Session shutdown and tree shutdown both use the existing teardown handler.
+    let mut assignment_gate = super::alab_assignment::DispatchGate::default(); // ALAB(accounts): retain deferred inputs while approvals remain serviceable.
+    let assignment_actions = super::alab_assignment::serve_actions(&sess); // ALAB(accounts): resource effects are polled beside approvals, never awaited by submission dispatch.
+    tokio::pin!(assignment_actions); // ALAB(accounts): retain accepted actions across every select iteration and pane lifetime.
     let mut shutdown_received = false;
     let mut mailbox = sess.input_queue.mailbox_updates();
     if let Some(updates) = &mut mailbox {
@@ -474,6 +477,8 @@ pub(super) async fn submission_loop(
                 shutdown_received = shutdown(&sess, super::new_submission_id()).await;
                 break;
             }
+            _ = &mut assignment_actions => continue, // ALAB(accounts): poll the owned action without cancelling it when another submission arrives.
+            sub = assignment_gate.next_ready(&sess), if assignment_gate.has_deferred() => sub, // ALAB(accounts): resume the original queued submission after assignment ACK.
             sub = rx_sub.recv() => match sub {
                 Ok(sub) => sub,
                 Err(_) => break,
@@ -499,6 +504,7 @@ pub(super) async fn submission_loop(
                 continue;
             }
         };
+        let Some((sub, assignment_activity)) = assignment_gate.admit(&sess, sub).await else { continue; }; // ALAB(accounts): root inputs defer, source-owned work inherits its live lease.
         debug!(
             thread_id = %sess.thread_id(),
             submission_id = %sub.id,
@@ -509,7 +515,7 @@ pub(super) async fn submission_loop(
             "Submission"
         );
         let dispatch_span = submission_dispatch_span(&sub);
-        let should_exit = async {
+        let should_exit = super::alab_assignment::scope(assignment_activity, async { // ALAB(accounts): task starts inherit the real admitted dispatcher activity.
             match sub.op {
                 Op::Interrupt => {
                     interrupt(&sess).await;
@@ -753,8 +759,7 @@ pub(super) async fn submission_loop(
                 _ => false, // Ignore unknown ops; enum is non_exhaustive to allow extensions.
             }
         }
-        .instrument(dispatch_span)
-        .await;
+        .instrument(dispatch_span)).await; // ALAB(accounts): release admission only after dispatch or task registration.
         drop(sub.residency_guard);
         if should_exit {
             shutdown_received = true;

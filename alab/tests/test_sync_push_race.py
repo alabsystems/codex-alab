@@ -6,6 +6,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 REF = "HEAD:refs/heads/main"
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 
 
 def rejected(reason="fetch first", ref=REF):
@@ -26,13 +28,12 @@ class PushRaceTests(unittest.TestCase):
         # Keep the recording fixtures; no real push, checkout, build or cleanup is invoked.
         scratch = Path(tempfile.mkdtemp(prefix="alab-push-race-", suffix=".noindex"))
         fake = scratch / "git"
-        fake.write_text(f'''#!{sys.executable} -I
-import json, os, sys
+        fake.write_text(PYTHON_ENTRY + '''import json, os, sys
 from pathlib import Path
 root = Path(os.environ["RACE_FIXTURE"])
 plan = json.loads((root / "plan.json").read_text())
 state_file = root / "state.json"
-state = json.loads(state_file.read_text()) if state_file.exists() else {{"push": 0, "fetch": 0}}
+state = json.loads(state_file.read_text()) if state_file.exists() else {"push": 0, "fetch": 0}
 args = sys.argv[1:]
 with (root / "git.jsonl").open("a") as log:
     log.write(json.dumps(args) + "\\n")

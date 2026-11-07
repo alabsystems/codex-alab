@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 
 
 def module(name, path):
@@ -33,7 +35,6 @@ class NetworkFetchTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp(prefix="alab-network-fetch-")).resolve()
         print(f"preserved network-fetch fixture: {self.home}", flush=True)
-        self.python = sys.executable
         self.real_git = shutil.which("git")
         self.ready = self.home / "writer-ready.json"
         self.expired = self.home / "deadline-observation.json"
@@ -63,8 +64,7 @@ class NetworkFetchTests(unittest.TestCase):
                   f"Path({str(self.ready)!r}).write_text(json.dumps([os.getpid(), os.getpgrp()])); "
                   "print('owned writer inherited stdout', flush=True); signal.alarm(60); signal.pause()")
         fake = tools / "git"
-        fake.write_text(f'''#!{self.python}
-import os, signal, subprocess, sys
+        fake.write_text(PYTHON_ENTRY + f'''import os, signal, subprocess, sys
 from pathlib import Path
 if "fetch" in sys.argv[1:] and not Path({str(self.release)!r}).exists():
     subprocess.Popen([sys.executable, "-I", "-B", "-c", {writer!r}])
@@ -74,8 +74,7 @@ os.execv({self.real_git!r}, [{self.real_git!r}, *sys.argv[1:]])
 ''')
         fake.chmod(0o755)
         self.wrapper = tools / "fixture-python"
-        self.wrapper.write_text(f'''#!{self.python}
-import json, runpy, subprocess, sys, time
+        self.wrapper.write_text(PYTHON_ENTRY + f'''import json, runpy, subprocess, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 while args and args[0] in ("-I", "-B"):

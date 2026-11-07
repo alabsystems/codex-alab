@@ -34,7 +34,7 @@ struct Waiting {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Ready {
+pub(crate) struct Ready {
     schema: u32,
     operation: String,
     session: Session,
@@ -72,38 +72,48 @@ fn parse(line: &str, operation: &str, sid: &str, birth: &str) -> io::Result<Outc
         .strip_prefix("OK codex-auth source ")
         .ok_or_else(unavailable)?;
     let reply: Ready = serde_json::from_str(body).map_err(|_| unavailable())?;
-    if reply.schema != 1
-        || reply.operation != operation
-        || !valid_session(&reply.session, sid, birth)
-        || reply.path.chars().any(char::is_control)
-        || reply.path.split('/').any(|part| matches!(part, "." | ".."))
-    {
-        return Err(unavailable());
+    Ok(Outcome::Ready(reply.into_source(operation, sid, birth)?))
+}
+
+impl Ready {
+    pub(crate) fn session(&self) -> &Session {
+        &self.session
     }
-    let native_intent = match reply.native_intent {
-        serde_json::Value::Null if reply.assignment_generation == 0 => None,
-        serde_json::Value::String(intent)
-            if reply.assignment_generation > 0 && valid_hex(&intent, 32) =>
+    pub(crate) fn into_source(self, operation: &str, sid: &str, birth: &str) -> io::Result<Source> {
+        let reply = self;
+        if reply.schema != 1
+            || reply.operation != operation
+            || !valid_session(&reply.session, sid, birth)
+            || reply.path.chars().any(char::is_control)
+            || reply.path.split('/').any(|part| matches!(part, "." | ".."))
         {
-            Some(intent)
+            return Err(unavailable());
         }
-        _ => return Err(unavailable()),
-    };
-    let source = Source {
-        operation: reply.operation,
-        slot: reply.slot,
-        path: PathBuf::from(reply.path),
-        account: reply.account,
-        user: reply.user,
-        revision: Revision {
-            generation: reply.credential_generation,
-            digest: reply.digest,
-        },
-        assignment_generation: reply.assignment_generation,
-        native_intent,
-    };
-    source.validate()?;
-    Ok(Outcome::Ready(source))
+        let native_intent = match reply.native_intent {
+            serde_json::Value::Null if reply.assignment_generation == 0 => None,
+            serde_json::Value::String(intent)
+                if reply.assignment_generation > 0 && valid_hex(&intent, 32) =>
+            {
+                Some(intent)
+            }
+            _ => return Err(unavailable()),
+        };
+        let source = Source {
+            operation: reply.operation,
+            slot: reply.slot,
+            path: PathBuf::from(reply.path),
+            account: reply.account,
+            user: reply.user,
+            revision: Revision {
+                generation: reply.credential_generation,
+                digest: reply.digest,
+            },
+            assignment_generation: reply.assignment_generation,
+            native_intent,
+        };
+        source.validate()?;
+        Ok(source)
+    }
 }
 
 /// Read only the caller's native source. The caller supplies a kernel-derived

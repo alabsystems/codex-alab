@@ -138,6 +138,11 @@ def package(path, root):
                        "resourcesDir": "codex-resources", "pathDir": "codex-path"}
     if any(manifest.get(field) != expected for field, expected in expected_layout.items()):
         raise ValueError("the ALab package layout does not name its staged components")
+    tools = ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"]
+    if "execServer" in manifest:
+        if manifest["execServer"] != "bin/codex-exec-server":
+            raise ValueError("the ALab package layout does not name its staged executor")
+        tools.append("bin/codex-exec-server")
     version = VERSION.fullmatch(build.get("version", ""))
     source = build.get("source", "")
     if (type(manifest.get("layoutVersion")) is not int or manifest["layoutVersion"] != 1
@@ -155,11 +160,12 @@ def package(path, root):
     for relative in ("bin", "codex-resources", "codex-path"):
         if not stat.S_ISDIR((path / relative).lstat().st_mode):
             raise ValueError(f"the package directory is not a regular directory: {relative}")
-    for relative in ("bin/codex", "bin/codex-code-mode-host", "codex-path/rg"):
+    for relative in tools:
         metadata = (path / relative).lstat()
-        if (not stat.S_ISREG(metadata.st_mode) or not metadata.st_mode & 0o111
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_size == 0
+                or not metadata.st_mode & 0o111
                 or metadata.st_mode & 0o022):
-            raise ValueError(f"the package tool is not a regular protected executable: {relative}")
+            raise ValueError(f"the package tool is not a nonempty regular protected executable: {relative}")
     return source, Version((int(version[index]) for index in (1, 2, 3)), version[0])
 
 

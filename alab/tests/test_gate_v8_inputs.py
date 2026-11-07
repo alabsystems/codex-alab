@@ -6,6 +6,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 FAKE_CARGO = r'''import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
@@ -92,7 +94,7 @@ class GateV8InputTests(unittest.TestCase):
         shutil.copyfile(source_root / "alab/unit-tests.sh", self.tooling / "unit-tests.sh")
         (self.tooling / "v8.py").write_text(FAKE_V8)
         self.cargo = self.tooling / "fake-cargo"
-        self.cargo.write_text(f"#!{sys.executable} -I\n" + FAKE_CARGO)
+        self.cargo.write_text(PYTHON_ENTRY + FAKE_CARGO)
         self.cargo.chmod(0o755)
         self.trees = [self.base / name for name in ("candidate", "pristine")]
         for tree in self.trees:
@@ -105,8 +107,10 @@ class GateV8InputTests(unittest.TestCase):
         self.home.mkdir()
         self.cargo_home = self.base / "private-cargo-home"
         self.cargo_home.mkdir()
+        git_program = shutil.which("git")
+        self.assertIsNotNone(git_program, "Git is required for V8 gate-wiring fixtures")
         self.environment = {"HOME": str(self.home),
-            "PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": str(Path(git_program).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin",
             "ALAB_CARGO_HOME": str(self.cargo_home), "ALAB_PYTHON": sys.executable,
             "ALAB_FAKE_CARGO_LOG": str(self.base / "cargo.jsonl"),
             "ALAB_FAKE_V8_LOG": str(self.base / "resolver.jsonl")}

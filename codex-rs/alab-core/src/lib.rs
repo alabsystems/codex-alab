@@ -83,6 +83,8 @@ pub fn configure_enhanced(enabled: bool) {
 }
 
 pub mod account_handoff;
+pub mod assignment;
+pub mod assignment_service;
 pub mod auth_lock;
 pub mod boxes;
 pub mod capacity;
@@ -93,6 +95,10 @@ pub mod home;
 pub mod mail;
 pub mod managed_auth;
 pub mod native_source;
+pub mod native_source_launch;
+pub mod native_source_lifetime;
+pub mod native_source_retirement;
+pub mod native_source_use;
 pub mod quota;
 pub mod renewal;
 pub mod session;

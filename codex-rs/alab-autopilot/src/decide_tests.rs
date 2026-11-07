@@ -5380,30 +5380,163 @@ fn under_land_only_the_sessions_opening_exchange_is_the_persons() {
     }
 }
 
-/// CRUISE NEVER PARKS (aterm 126e259836, the owner 2026-10-26): a person's own quick exchange
-/// is continued as any turn end is, the session's opening message and one after a done claim
-/// included, a question in the reply answered; a wall's retry of it is continued however short
-/// its answer; and an exchange Land's rule or an Off left to the person is taken back at
-/// Cruise's first decision (aterm's `cruise_takes_exchange`), whatever the word before.
-/// NEGATIVE CONTROL: the same left points decided under Land stay theirs.
+/// Cruise leaves a taskless opening exchange alone. Later messages and actual tool work
+/// still continue, and a wall's retry preserves the exchange within its work budget.
 #[test]
-fn cruise_never_leaves_a_persons_own_exchange() {
+fn a_restored_opening_keeps_its_tool_work_evidence() {
+    let now = Instant::now();
+    for ran_tools in [false, true] {
+        let mut s = ThreadState::default();
+        s.observe_resume(true, Some("Here is the answer."), false);
+        s.seed_left_point(
+            codex_alab_core::session::LeftPoint {
+                point: codex_alab_core::session::ReplyPoint {
+                    text: Some("Here is the answer.".into()),
+                    earlier: None,
+                    questions: false,
+                },
+                opens: true,
+                ran_tools,
+                had_questions: false,
+            },
+            now,
+        );
+        s.observe_held(now);
+        assert!(s.left_under(Mode::Land));
+        assert_eq!(s.left_under(Mode::Cruise), !ran_tools);
+        s.observe_mode(Mode::Cruise);
+        assert_eq!(s.left, !ran_tools);
+    }
+}
+
+#[test]
+fn an_opening_keeps_task_evidence_across_land_retries_and_reexec() {
+    let t = Timing::default();
+    let now = Instant::now();
+    for (tools, questions) in [(false, false), (true, false), (false, true)] {
+        let mut s = ThreadState {
+            ended_under: Some(Mode::Land),
+            ..ThreadState::default()
+        };
+        s.observe_person_hand(now - MIN);
+        s.observe_turn_end(
+            TurnEnd {
+                ran_tools: tools,
+                questions,
+                wall: Some(Wall::Server {
+                    what: "a 500".into(),
+                    cut_off: false,
+                    retry_at: None,
+                }),
+                ..end(now, "Partial answer.", MIN)
+            },
+            &t,
+        );
+        let retry = run(&mut s, &land(), &t, now);
+        assert_eq!(typed(&retry).map(|(r, _)| r), Some(words::RULE_API_RETRY));
+        s.observe_turn_end(ours(now + 2 * MIN, "Here is the answer.", MIN), &t);
+        assert!(s.left, "Land preserves the opening");
+        let left = s.left_point().expect("recorded opening");
+        assert_eq!(left.ran_tools, tools);
+        assert_eq!(left.had_questions, questions);
+        assert!(
+            !left.point.questions,
+            "the retry has no current question box"
+        );
+        let mut resumed = ThreadState::default();
+        resumed.observe_resume(true, left.point.text.as_deref(), false);
+        resumed.seed_left_point(left.clone(), now + 3 * MIN);
+        assert_eq!(resumed.left_point(), Some(left.clone()), "pending handoff");
+        resumed.observe_held(now + 3 * MIN);
+        assert_eq!(resumed.left_point(), Some(left), "materialized handoff");
+        for state in [&mut s, &mut resumed] {
+            assert_eq!(state.left_under(Mode::Cruise), !tools && !questions);
+            state.observe_mode(Mode::Cruise);
+            assert_eq!(state.left, !tools && !questions);
+        }
+    }
+}
+
+#[test]
+fn an_opening_retry_that_starts_work_is_carried_in_cruise() {
+    let t = Timing::default();
+    let now = Instant::now();
+    for mode in [Mode::Cruise, Mode::Land] {
+        let p = if mode == Mode::Cruise {
+            policy()
+        } else {
+            land()
+        };
+        for (tools, questions) in [(false, false), (true, false), (false, true)] {
+            let mut s = ThreadState::default();
+            walled_by_hand(&mut s, &t, Some(mode), now);
+            let retry = run(&mut s, &p, &t, now);
+            assert_eq!(typed(&retry).map(|(r, _)| r), Some(words::RULE_API_RETRY));
+            s.ended_under = Some(mode);
+            s.observe_turn_end(
+                TurnEnd {
+                    ran_tools: tools,
+                    questions,
+                    ..ours(now + 2 * MIN, "Here is the answer.", MIN)
+                },
+                &t,
+            );
+            let stays_quiet = mode == Mode::Land || (!tools && !questions);
+            assert_eq!(
+                s.left, stays_quiet,
+                "{mode:?} tools={tools} questions={questions}"
+            );
+            assert_eq!(s.left_under(mode), stays_quiet);
+            let d = probed(&mut s, &p, &t, now + 2 * MIN, None);
+            assert_eq!(d.act == Act::Nothing, stays_quiet, "{d:?}");
+        }
+    }
+}
+
+#[test]
+fn cruise_preserves_a_taskless_opening_exchange() {
     let t = Timing::default();
     let now = Instant::now();
     let p = policy();
-    // The session's opening message, answered in 3 min, decided with no mode folded: only
-    // the turn's end can have left it.
-    for (reply, rule) in [
-        ("Here is the plan.", words::RULE_CONTINUE),
-        ("Which file should I start with?", words::RULE_ANSWER),
+    for reply in [
+        "Hey—what are we working on?",
+        "Hello!",
+        "Which file should I start with?",
     ] {
         let mut s = ThreadState::default();
         by_hand(&mut s, &t, Some(Mode::Cruise), now, reply, 3 * MIN);
-        assert!(!s.left && !s.exchange, "{reply}");
+        assert!(s.left && s.exchange, "{reply}");
+        for _ in 0..3 {
+            assert_eq!(
+                probed(&mut s, &p, &t, now, None).act,
+                Act::Nothing,
+                "{reply}"
+            );
+            assert!(s.left, "a policy refresh must preserve the exchange");
+        }
+    }
+    for (tools, questions, worked) in [
+        (true, false, MIN),
+        (false, true, MIN),
+        (false, false, 12 * MIN),
+    ] {
+        let mut s = ThreadState {
+            ended_under: Some(Mode::Cruise),
+            ..ThreadState::default()
+        };
+        s.observe_person_hand(now);
+        s.observe_turn_end(
+            TurnEnd {
+                ran_tools: tools,
+                questions,
+                ..end(now, "Which file should I start with?", worked)
+            },
+            &t,
+        );
+        assert!(!s.left);
         assert_eq!(
             typed(&decide(&s, &p, &t, now, NO_JITTER)).map(|(r, _)| r),
-            Some(rule),
-            "{reply}"
+            Some(words::RULE_ANSWER)
         );
     }
     // Once the worker said done, a person's short turn is continued too.
@@ -5426,25 +5559,27 @@ fn cruise_never_leaves_a_persons_own_exchange() {
         typed(&decide(&s, &p, &t, at, NO_JITTER)).map(|(r, _)| r),
         Some(words::RULE_CONTINUE)
     );
-    // A wall's retry of their message: its answer is continued, however short.
+    // A wall's retry preserves the opening only within its work budget.
     for answer in [2 * MIN, 10 * MIN] {
         let mut s = ThreadState::default();
         walled_by_hand(&mut s, &t, Some(Mode::Cruise), now);
-        assert!(!s.exchange, "{answer:?}");
+        assert!(s.exchange, "{answer:?}");
         let d = run(&mut s, &p, &t, now);
         assert_eq!(typed(&d).map(|(r, _)| r), Some(words::RULE_API_RETRY));
         let at = now + 15 * MIN;
         s.observe_turn_end(ours(at, "Here is the plan.", answer), &t);
-        assert!(!s.left, "{answer:?}");
-        assert_eq!(
-            typed(&decide(&s, &p, &t, at, NO_JITTER)).map(|(r, _)| r),
-            Some(words::RULE_CONTINUE),
-            "{answer:?}"
-        );
+        if answer < 10 * MIN {
+            assert!(s.left, "{answer:?}");
+            assert_eq!(decide(&s, &p, &t, at, NO_JITTER).act, Act::Nothing);
+        } else {
+            assert!(!s.left, "{answer:?}");
+            assert_eq!(
+                typed(&decide(&s, &p, &t, at, NO_JITTER)).map(|(r, _)| r),
+                Some(words::RULE_CONTINUE)
+            );
+        }
     }
-    // CRUISE TAKES BACK what Land's rule left (the session's opening message) and what an Off
-    // left (a message after work, the Off having ended the carry), the latter with Cruise the
-    // word folded last, as an Off leaves it.
+    // Cruise preserves Land's taskless opening but takes back an exchange Off left after work.
     let land_left = || {
         let mut s = ThreadState::default();
         s.observe_mode(Mode::Land);
@@ -5485,33 +5620,44 @@ fn cruise_never_leaves_a_persons_own_exchange() {
         assert_eq!(under_land.left, opens, "{case}");
         let mut s = s;
         let d = probed(&mut s, &p, &t, at, None);
-        assert!(!s.left && !s.exchange, "{case}");
-        assert_eq!(
-            typed(&d).map(|(r, _)| r),
-            Some(words::RULE_CONTINUE),
-            "{case}"
-        );
+        assert_eq!(s.left && s.exchange, opens, "{case}");
+        if opens {
+            assert_eq!(d.act, Act::Nothing, "{case}");
+        } else {
+            assert_eq!(
+                typed(&d).map(|(r, _)| r),
+                Some(words::RULE_CONTINUE),
+                "{case}"
+            );
+        }
     }
 }
 
 /// A PERSON'S HOLD OVER AUTOPILOT OFF TAKES NOTHING BACK (review of gap 32, finding 9): the
 /// hold keeps the claim and, in its policy, the word before it (Cruise here), while the word the
 /// person chose is Off ([`ThreadState::observe_mode_under`]); an exchange the Off left stays
-/// theirs at the look the hold makes, and Land read after it keeps it. NEGATIVE CONTROL: the
-/// same look with Cruise the word the supervisor names takes it back.
+/// theirs while the hold stands. After work, either named mode takes it back when the hold
+/// ends. NEGATIVE CONTROL: an active Cruise read takes it back immediately.
 #[test]
 fn a_hold_over_off_takes_no_exchange_back() {
     let t = Timing::default();
     let now = Instant::now();
     let mut s = ThreadState::default();
     s.observe_mode(Mode::Cruise);
+    s.seed_worked();
     by_hand(&mut s, &t, None, now, "Here is where it stands.", 3 * MIN);
     assert!(s.left);
     let mut held = s.clone();
     held.observe_mode_under(Mode::Cruise, true);
     assert!(held.exchange && held.left);
-    assert_eq!(probed(&mut held, &land(), &t, now, None).act, Act::Nothing);
+    held.observe_mode_under(Mode::Land, true);
+    assert_eq!(decide(&held, &land(), &t, now, NO_JITTER).act, Act::Nothing);
     assert!(held.left);
+    assert_eq!(
+        typed(&probed(&mut held, &land(), &t, now, None)).map(|(rule, _)| rule),
+        Some(words::RULE_LAND)
+    );
+    assert!(!held.left);
     s.observe_mode_under(Mode::Cruise, false);
     assert!(!s.exchange && !s.left);
 }

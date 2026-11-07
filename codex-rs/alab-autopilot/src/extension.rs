@@ -3364,7 +3364,6 @@ impl Autopilot {
                 return;
             }
             if let Some(point) = decided_at
-                && policy.autopilot == decide::Mode::Land
                 && decision_state.task
                 && decision_state.left
                 && !decision_state.landed
@@ -3967,12 +3966,11 @@ impl Autopilot {
         // for outside the publication gate, which native turn admission waits on.
         self.tui_caught_up(&rt).await;
         let _publication = self.sup.task_face_publication().await;
+        let Some(policy) = self.sup.policy() else {
+            return;
+        };
         if rt.stopped.load(Ordering::SeqCst)
             || !self.sup.acting()
-            || !self
-                .sup
-                .policy()
-                .is_some_and(|policy| policy.autopilot == decide::Mode::Land)
             || self.sup.shared().exec_pending()
             || self.sup.shared().turn_running()
         {
@@ -3981,7 +3979,7 @@ impl Autopilot {
         let current = {
             let state = lock(&rt.state);
             state.task
-                && state.left
+                && state.left_under(policy.autopilot)
                 && !state.landed
                 && !state.compacting
                 && state.point_at() == Some(key.1)
@@ -6334,13 +6332,7 @@ impl Autopilot {
                     // THE POINT LEFT TO THE PERSON goes with them (edges-5), as aterm's next
                     // loop applies its LEFT record again.
                     if let Some(left) = &pace.left_point {
-                        state.seed_left_point(
-                            left.point.text.clone(),
-                            left.point.earlier.clone(),
-                            left.point.questions,
-                            left.opens,
-                            now,
-                        );
+                        state.seed_left_point(left.clone(), now);
                     }
                     // THE GO-AHEAD'S COUNT goes with the replies it bounds beside: a held park
                     // the image before gave its go-ahead gets none through the hold again.
@@ -6427,16 +6419,7 @@ impl Autopilot {
                         questions: point.questions,
                     }
                 }),
-                left_point: state.left_point().map(|(point, opens)| {
-                    codex_alab_core::session::LeftPoint {
-                        point: codex_alab_core::session::ReplyPoint {
-                            text: point.text.clone(),
-                            earlier: point.earlier.clone(),
-                            questions: point.questions,
-                        },
-                        opens,
-                    }
-                }),
+                left_point: state.left_point(),
                 go_ahead_hour_ms: state.go_ahead_hour_carried(now).map(epoch_ms_of),
                 go_ahead: state.go_aheads_carried().map(|count| {
                     codex_alab_core::session::GoAheadCount {
@@ -6621,8 +6604,8 @@ impl Autopilot {
             // In a passive spell that is no Off, Land's rule, whatever was folded last (review
             // of gap 32, finding 2: a Cruise folded before a standby carried the opening
             // exchange of a session whose word had moved to Land): Land's rule is the one that
-            // may leave it, and Cruise's first decision takes back what it left
-            // (`ThreadState::observe_mode`).
+            // may leave it. Cruise's first decision preserves a taskless opening and takes
+            // back other exchanges (`ThreadState::observe_mode`).
             state.ended_under = if off {
                 None
             } else {

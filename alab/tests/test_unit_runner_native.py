@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Use real Cargo and a native entry probe before either language runtime starts."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,11 @@ import tempfile
 import tomllib
 import unittest
 
-from test_unit_results import RUNNER, SCRIPT
+SPEC = importlib.util.spec_from_file_location(
+    "native_runner_fixtures", Path(__file__).with_name("test_unit_results.py"))
+FIXTURES = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(FIXTURES)
+RUNNER, SCRIPT = FIXTURES.RUNNER, FIXTURES.SCRIPT
 
 
 @unittest.skipUnless(os.name == "posix", "native Cargo exec context requires POSIX")

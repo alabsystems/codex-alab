@@ -30,6 +30,8 @@ mod storage_commit;
 #[path = "storage_telemetry.rs"]
 mod storage_telemetry;
 
+#[path = "../../../alab-core/glue/auth_owner_storage.rs"] mod alab_owner; // ALAB(accounts): canonical owner custody forbids unadmitted legacy credential access and fallback.
+
 use super::BedrockAccessKeysAuth;
 use super::BedrockApiKeyAuth;
 use crate::token_data::TokenData;
@@ -170,6 +172,7 @@ pub(super) fn get_auth_file(codex_home: &Path) -> PathBuf {
 
 pub(super) fn delete_file_if_exists(codex_home: &Path) -> std::io::Result<bool> {
     let auth_file = get_auth_file(codex_home);
+    alab_owner::check_file(&auth_file)?; // ALAB(accounts): direct logout cannot unlink a native canonical owner document.
     match std::fs::remove_file(&auth_file) {
         Ok(()) => Ok(true),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -187,6 +190,7 @@ pub(super) fn auth_storage_commit_guard() -> std::io::Result<std::sync::MutexGua
 }
 
 pub(super) trait AuthStorageBackend: Debug + Send + Sync {
+    fn alab_source_lifetime(&self) -> Option<codex_alab_core::native_source_lifetime::Lifetime> { None } // ALAB(accounts): native snapshots retain actual member/source lifetime.
     fn persistent_home(&self) -> Option<&Path> {
         None
     }
@@ -729,6 +733,7 @@ fn create_auth_storage_with_store(
         )),
         AuthCredentialsStoreMode::Ephemeral => Arc::new(EphemeralAuthStorage::new(codex_home)),
     };
+    let storage = alab_owner::wrap(storage, &commit_home, mode); // ALAB(accounts): every persistent backend checks custody before keyring or file access.
     storage_commit::wrap(
         storage_telemetry::observe(storage, mode, keyring_backend_kind),
         commit_home,

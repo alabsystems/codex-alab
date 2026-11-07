@@ -20,6 +20,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I -B "$0" "$@"\n\' \'\'\'\n'
 SOURCE = runpy.run_path(str(ROOT / "alab/package_source.py"))
 GUARD = runpy.run_path(str(ROOT / "alab/command_guard.py"))
 COMPILER = "0123456789abcdef"
@@ -898,6 +899,36 @@ fi
         session.finish()
         self.assertEqual(path.read_bytes(), before)
 
+    def test_source_custody_needs_no_configured_human_git_identity(self):
+        self.git("config", "--unset-all", "user.name")
+        self.git("config", "--unset-all", "user.email")
+        self.git("config", "user.useConfigOnly", "true")
+        environment = {key: value for key, value in os.environ.items()
+                       if not key.startswith("GIT_")}
+        environment.update(HOME=str(self.home), GIT_CONFIG_GLOBAL=os.devnull,
+                           GIT_CONFIG_NOSYSTEM="1")
+        with mock.patch.dict(os.environ, environment, clear=True):
+            absent = subprocess.run(["git", "-C", str(self.repo), "var", "GIT_COMMITTER_IDENT"],
+                                    capture_output=True, timeout=60)
+            self.assertNotEqual(absent.returncode, 0, "control: no ambient committer exists")
+            source = self.ready()
+            session = self.session()
+            try:
+                reused, result = self.acquire(session, self.second)
+                self.assertTrue(result["reused"])
+                self.assertEqual(reused, source)
+                self.assertEqual((source / "changing").read_text(), "second\n")
+                self.returned(session, source, self.second)
+            finally:
+                session.finish()
+            fresh = self.root / "fresh without identity"
+            fresh.mkdir(mode=0o700)
+            record = SOURCE["create_fresh"](self.repo, fresh, self.first)
+            self.assertEqual(SOURCE["validate_binding"](record), fresh)
+            self.assertEqual((fresh / "changing").read_text(), "first\n")
+            self.assertEqual(self.git("rev-parse", "HEAD", repo=source), self.second)
+            self.assertEqual(self.git("rev-parse", "HEAD", repo=self.repo), self.second)
+
     def test_normal_checkout_reuse_supports_reflog_configuration(self):
         for setting in ("false", "true", "always"):
             with self.subTest(setting=setting):
@@ -925,7 +956,7 @@ fi
                     SOURCE["release_fresh"](self.cache, record)
                 counter = self.root / f"monitor-count-{write_after}"
                 hook = self.repo / ".git/hooks/fsmonitor-custody"
-                hook.write_text(f'''#!{sys.executable} -I -B
+                hook.write_text(PYTHON_ENTRY + f'''
 from pathlib import Path
 counter=Path({str(counter)!r})
 count=int(counter.read_text())+1 if counter.exists() else 1
@@ -936,6 +967,12 @@ import sys
 sys.stdout.buffer.write(b"token\\0")
 ''')
                 hook.chmod(0o700)
+                # Prove the callback can run before relying on its absence as evidence.
+                control = subprocess.run([str(hook)], capture_output=True, timeout=60)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                self.assertEqual(control.stdout, b"token\0")
+                counter.unlink()
+                (entry / "notes").unlink(missing_ok=True)
                 self.git("config", "core.fsmonitor", str(hook))
                 session.finish()
                 self.assertFalse(counter.exists(), "custody queries/removal must not invoke fsmonitor")

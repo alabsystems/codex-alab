@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 SPEC = importlib.util.spec_from_file_location("alab_promote", ROOT / "alab/promote.py")
 PROMOTE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROMOTE)
@@ -97,6 +99,20 @@ class PromotionTests(unittest.TestCase):
     def promote(self, candidate=None, **kwargs):
         return PROMOTE.promote(self.repo, self.root, self.prefix, candidate or self.new,
                                self.source, aterm="/owned host/aterm", run=self.link, **kwargs)
+
+    def test_a_valid_forward_package_for_another_requested_source_is_not_selected(self):
+        # The artifact's version and manifests agree and it advances the current
+        # selection, but it does not contain the source the caller requested.
+        self.git("commit", "-q", "--allow-empty", "-m", "required fix")
+        required = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/remotes/origin/main", required)
+        selected, _ = PROMOTE.promote(self.repo, self.root, self.prefix, self.new,
+                                     required, run=self.link)
+        self.assertFalse(selected)
+        self.assertEqual(self.calls, [])
+        # The same intact artifact is eligible when its actual source is requested.
+        self.assertTrue(self.promote()[0])
+        self.assertEqual(len(self.calls), 2)
 
     def test_forward_published_package_uses_only_the_atomic_selector(self):
         selected, _ = self.promote()
@@ -269,6 +285,62 @@ class PromotionTests(unittest.TestCase):
         self.calls.clear()
         self.assertFalse(self.promote(hidden)[0])
         self.assertEqual(self.calls, [])
+
+    def test_truncated_package_tools_do_not_reach_selection(self):
+        for relative in ("bin/codex", "bin/codex-code-mode-host", "codex-path/rg"):
+            with self.subTest(tool=relative):
+                path = self.new / relative
+                original = path.read_bytes()
+                try:
+                    path.write_bytes(b"")
+                    self.assertFalse(self.promote()[0])
+                    self.assertEqual(self.calls, [])
+                finally:
+                    path.write_bytes(original)
+                    self.calls.clear()
+        self.assertTrue(self.promote()[0], "the restored complete artifact remains eligible")
+
+    def test_declared_executor_is_required_before_selection(self):
+        manifest = self.new / "codex-package.json"
+        record = json.loads(manifest.read_bytes())
+        record["execServer"] = "bin/codex-exec-server"
+        manifest.write_text(json.dumps(record))
+        executable = self.new / record["execServer"]
+        self.assertFalse(self.promote()[0], "a missing declared executor is incomplete")
+        self.assertEqual(self.calls, [])
+        executable.write_bytes(b"inert executor fixture, never executed")
+        executable.chmod(0o755)
+        self.assertTrue(self.promote()[0], "the complete executor package is eligible")
+
+        for mode in (0o644, 0o777):
+            with self.subTest(mode=oct(mode)):
+                self.calls.clear()
+                executable.chmod(mode)
+                self.assertFalse(self.promote()[0])
+                self.assertEqual(self.calls, [])
+        executable.chmod(0o755)
+        original = executable.read_bytes()
+        executable.write_bytes(b"")
+        self.calls.clear()
+        self.assertFalse(self.promote()[0])
+        self.assertEqual(self.calls, [])
+        executable.write_bytes(original)
+        held = self.home / "held executor"
+        executable.rename(held)
+        executable.symlink_to(held)
+        self.assertFalse(self.promote()[0])
+        self.assertEqual(self.calls, [])
+
+    def test_executor_layout_cannot_redirect_selection(self):
+        manifest = self.new / "codex-package.json"
+        record = json.loads(manifest.read_bytes())
+        for value in (None, False, [], "bin/codex", "../outside-executor"):
+            with self.subTest(executor=value):
+                record["execServer"] = value
+                manifest.write_text(json.dumps(record))
+                self.calls.clear()
+                self.assertFalse(self.promote()[0])
+                self.assertEqual(self.calls, [])
 
     def test_required_package_paths_are_regular_protected_components(self):
         for field in ("bin", "codex-resources", "codex-path"):
@@ -453,7 +525,7 @@ class PromotionTests(unittest.TestCase):
         self.new.rename(stage)
         journal = self.home / "selection.json"
         selector = self.home / "aterm"
-        selector.write_text(f'''#!{sys.executable}
+        selector.write_text(PYTHON_ENTRY + f'''
 import json
 from pathlib import Path
 import sys

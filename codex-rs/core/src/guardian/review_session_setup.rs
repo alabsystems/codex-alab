@@ -113,6 +113,7 @@ impl PreparedGuardianContext {
             prompt_cache_key: self.parent.services.model_client.prompt_cache_key_policy(),
             history_mode: Some(codex_protocol::protocol::ThreadHistoryMode::Paginated),
             internal_parent: Some(crate::thread_manager::InternalSessionParent {
+                assignment_parent: crate::session::alab_assignment::parent(&self.parent).await.map(|activity| activity.downgrade()), // ALAB(accounts): private reviewers finish under the actual source task lease.
                 thread_id: self.parent.thread_id(),
                 auth_manager: Arc::clone(&self.parent.services.auth_manager),
                 agent_control: crate::agent::control::AgentControlInit::Provided {

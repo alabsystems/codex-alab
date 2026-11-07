@@ -507,6 +507,12 @@ impl Writer {
                     if let Some(pace) = &previous.pace {
                         self.shared.set_pace(thread, pace.clone().into());
                     }
+                    self.shared.seed_assignment_receipt(
+                        previous
+                            .assignment
+                            .clone()
+                            .and_then(super::assignment_record::Receipt::into_core),
+                    );
                     if self.shared.owed_act().is_none() {
                         self.shared
                             .set_owed_act(previous.owed.clone().map(Into::into));
@@ -664,6 +670,12 @@ impl Writer {
                 // or aterm's relaunch typed this line ([`Self::handoff_allows`]).
                 let seeded = shared.seed_before_native_work(|| {
                     shared.set_carried_on(chain.max(shared.carried_on()));
+                    shared.seed_assignment_receipt(
+                        source
+                            .assignment
+                            .clone()
+                            .and_then(super::assignment_record::Receipt::into_core),
+                    );
                     if shared.owed_act().is_none() {
                         shared.set_owed_act(source.owed.clone().map(Into::into));
                     }
@@ -1146,6 +1158,7 @@ impl Writer {
             && in_flight_retry.is_none()
             && !busy_predecessor;
         let mut record = Record {
+            assignment: shared.assignment_receipt().as_ref().map(Into::into),
             v: record::SCHEMA_VERSION,
             pid: self.pid(),
             proc_start: launch.and_then(|launch| launch.proc_start.clone()),

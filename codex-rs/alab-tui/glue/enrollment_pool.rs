@@ -71,6 +71,10 @@ impl ChatWidget {
             return;
         }
         let (verb, label) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+        if matches!(verb, "use" | "auto") {
+            self.alab_accounts_assignment(verb, label);
+            return;
+        }
         let view = Arc::new(Mutex::new(View { busy: true }));
         self.alab_enrollment_show(view.clone(), "Loading account enrollment", vec![]);
         let event = if verb == "add"
@@ -81,9 +85,7 @@ impl ChatWidget {
                 label: (!label.trim().is_empty()).then(|| label.trim().to_owned()),
             })
         } else {
-            Event::Failed(
-                "Use /accounts add to enroll a configured account. Session selection is unavailable on this client.",
-            )
+            Event::Failed("Use /accounts add, /accounts use <configured label>, or /accounts auto.")
         };
         self.alab_enrollment_event(Arc::downgrade(&view), self.thread_id(), event);
     }

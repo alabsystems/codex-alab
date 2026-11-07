@@ -230,6 +230,11 @@ def collect(args):
                     "isolated unit-test selector or package directory changed")
             observed = observations[copy["key"]]
             matches, summaries = observed["results"], observed["summaries"]
+            if not matches and summaries and tuple(map(int, summaries[-1])) == (0, 0, 0):
+                raise Refusal(
+                    f"expected unit-test copy matched zero tests in {state['repo']}: "
+                    f"{copy['package']}/{copy['target']}: {copy['test']}; "
+                    "original failure remains gating")
             require(len(matches) == 1 and matches[0][0] == copy["test"] and matches[0][1] in ("ok", "FAILED")
                     and summaries and tuple(map(int, summaries[-1]))
                     == ((0, 1, 0) if matches[0][1] == "FAILED" else (1, 0, 0)),

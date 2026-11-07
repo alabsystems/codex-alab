@@ -199,6 +199,7 @@ impl PartialEq for CodexAuth {
 #[derive(Debug, Clone)]
 pub struct ApiKeyAuth {
     api_key: String,
+    alab_source: Option<codex_alab_core::native_source_lifetime::Lifetime>, // ALAB(accounts): direct API snapshots retain their native unrelated-source membership.
 }
 
 #[derive(Debug, Clone)]
@@ -610,6 +611,7 @@ impl CodexAuth {
 
     /// Returns `None` if `auth_mode() != AuthMode::ApiKey`.
     pub fn api_key(&self) -> Option<&str> {
+        self.alab_credential_access().ok()?; // ALAB(accounts): a retained native snapshot cannot expose credentials after EOF.
         match self {
             Self::ApiKey(auth) => Some(auth.api_key.as_str()),
             Self::Chatgpt(_)
@@ -624,6 +626,7 @@ impl CodexAuth {
 
     /// Returns `Err` if token-backed ChatGPT auth is unavailable.
     pub fn get_token_data(&self) -> Result<TokenData, std::io::Error> {
+        self.alab_credential_access()?; // ALAB(accounts): native scope liveness covers retained snapshots, not just manager cache reads.
         let auth_dot_json: Option<AuthDotJson> = self.get_current_auth_json();
         match auth_dot_json {
             Some(AuthDotJson {
@@ -637,6 +640,7 @@ impl CodexAuth {
 
     /// Returns the token string used for bearer authentication.
     pub fn get_token(&self) -> Result<String, std::io::Error> {
+        self.alab_credential_access()?; // ALAB(accounts): native scope liveness covers bearer extraction.
         match self {
             Self::ApiKey(auth) => Ok(auth.api_key.clone()),
             Self::Chatgpt(_) | Self::ChatgptAuthTokens(_) => {
@@ -916,6 +920,7 @@ impl CodexAuth {
     pub fn from_api_key(api_key: &str) -> Self {
         Self::ApiKey(ApiKeyAuth {
             api_key: api_key.to_owned(),
+            alab_source: None, // ALAB(accounts): constructor admission attaches actual native membership when required.
         })
     }
 }
@@ -1308,6 +1313,7 @@ impl AuthConfig {
         enable_codex_api_key_env: bool,
         allowed_auth_modes: Option<&[AuthMode]>,
     ) -> std::io::Result<Option<CodexAuth>> {
+        if let Some(result) = alab_native_member::direct_config_auth(self, enable_codex_api_key_env, allowed_auth_modes).await { return result; } // ALAB(accounts): direct readers validate constructor authority before credentials.
         let allowed_login_methods = self.allowed_login_methods();
         let workspaces = self.effective_chatgpt_workspaces();
         let agent_identity_authapi_base_url =
@@ -2204,6 +2210,9 @@ pub struct AuthManager {
     inner: RwLock<CachedAuth>,
     auth_change_tx: watch::Sender<u64>,
     auth_change_state_tx: watch::Sender<AuthChangeState>,
+    alab_assignment_domain: Arc<codex_alab_core::assignment::Domain>, // ALAB(accounts): every clone of this manager shares one process-session barrier.
+    alab_source_member: RwLock<Option<codex_alab_core::native_source_lifetime::Lifetime>>, // ALAB(accounts): storage and derived uses retain their issued native member.
+    alab_native_source: RwLock<alab_native_source::State>, // ALAB(accounts): a manager owns its native source independently of startup environment.
     workspace_routing_resolver: OnceLock<Weak<dyn WorkspaceRoutingResolver>>,
     enable_codex_api_key_env: bool,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
@@ -2298,7 +2307,7 @@ fn default_agent_identity_authapi_base_url() -> Option<String> {
 impl AuthManager {
     /// Returns the application policy associated with this account owner.
     pub fn application_network_policy(&self) -> codex_http_client::NetworkPolicy {
-        self.auth_route_config.application_network_policy().clone()
+        self.alab_native_network_policy(self.auth_route_config.application_network_policy().clone()) // ALAB(accounts): content transports capture the actual native member/source revision.
     }
 
     /// Creates content clients bound to the account currently owned by this manager.
@@ -2343,8 +2352,10 @@ impl AuthManager {
         enable_codex_api_key_env: bool,
         allowed_auth_modes: Option<Vec<AuthMode>>,
     ) -> Self {
-        let managed_auth = auth_config
-            .load_auth_with_modes(enable_codex_api_key_env, allowed_auth_modes.as_deref())
+        let alab_selected = alab_native_member::selected_source(); // ALAB(accounts): factory-local configured scope never changes another manager.
+        let alab_initial = alab_native_member::Initial::begin().await; // ALAB(accounts): allocate before any credential load.
+        let managed_auth = alab_initial
+            .load(&auth_config, enable_codex_api_key_env, allowed_auth_modes.as_deref(), alab_selected)
             .await
             .ok()
             .flatten();
@@ -2361,7 +2372,7 @@ impl AuthManager {
         let agent_identity_authapi_base_url =
             agent_identity_authapi_base_url(chatgpt_base_url.as_deref()).ok();
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
-        Self {
+        let manager = Self {
             codex_home,
             inner: RwLock::new(CachedAuth {
                 auth: managed_auth,
@@ -2369,6 +2380,9 @@ impl AuthManager {
             }),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
+            alab_assignment_domain: Arc::default(), // ALAB(accounts): activity coordination is separate from auth owner generations.
+            alab_source_member: RwLock::new(None), // ALAB(accounts): constructor completion installs actual membership before cache exposure.
+            alab_native_source: RwLock::new(alab_native_source::State::default()), // ALAB(accounts): native selection starts unset.
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env,
             auth_credentials_store_mode,
@@ -2386,7 +2400,9 @@ impl AuthManager {
             workload_identity_selected: false,
             auth_route_config,
             allowed_auth_modes: RwLock::new(allowed_auth_modes),
-        }
+        };
+        alab_initial.finish(&manager, alab_selected).await; // ALAB(accounts): real source/cache counters precede native Ready.
+        manager
     }
 
     /// Create an AuthManager with a specific CodexAuth, for testing only.
@@ -2407,6 +2423,9 @@ impl AuthManager {
             inner: RwLock::new(cached),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
+            alab_assignment_domain: Arc::default(), // ALAB(accounts): activity coordination is separate from auth owner generations.
+            alab_source_member: RwLock::new(None), // ALAB(accounts): constructor completion installs actual membership before cache exposure.
+            alab_native_source: RwLock::new(alab_native_source::State::default()), // ALAB(accounts): native selection starts unset.
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
@@ -2439,6 +2458,9 @@ impl AuthManager {
             inner: RwLock::new(cached),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
+            alab_assignment_domain: Arc::default(), // ALAB(accounts): activity coordination is separate from auth owner generations.
+            alab_source_member: RwLock::new(None), // ALAB(accounts): constructor completion installs actual membership before cache exposure.
+            alab_native_source: RwLock::new(alab_native_source::State::default()), // ALAB(accounts): native selection starts unset.
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
@@ -2475,6 +2497,9 @@ impl AuthManager {
             inner: RwLock::new(cached),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
+            alab_assignment_domain: Arc::default(), // ALAB(accounts): activity coordination is separate from auth owner generations.
+            alab_source_member: RwLock::new(None), // ALAB(accounts): constructor completion installs actual membership before cache exposure.
+            alab_native_source: RwLock::new(alab_native_source::State::default()), // ALAB(accounts): native selection starts unset.
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
@@ -2518,6 +2543,9 @@ impl AuthManager {
             }),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
+            alab_assignment_domain: Arc::default(), // ALAB(accounts): activity coordination is separate from auth owner generations.
+            alab_source_member: RwLock::new(None), // ALAB(accounts): constructor completion installs actual membership before cache exposure.
+            alab_native_source: RwLock::new(alab_native_source::State::default()), // ALAB(accounts): native selection starts unset.
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
@@ -2544,6 +2572,7 @@ impl AuthManager {
 
     /// Current cached auth (clone) without attempting a refresh.
     pub fn auth_cached(&self) -> Option<CodexAuth> {
+        if !self.alab_member_cache_available() { return None; } // ALAB(accounts): EOF/unfinished native membership never exposes cached credentials.
         self.inner
             .read()
             .ok()
@@ -2759,6 +2788,7 @@ impl AuthManager {
     }
 
     async fn read_persisted_account_tokens(&self) -> std::io::Result<Option<TokenData>> {
+        if let Some(result) = self.alab_native_account_tokens().await { return result; } // ALAB(accounts): grant inspection reads the selected Bound source, never startup A.
         let home = self.codex_home.clone();
         let mode = self.auth_credentials_store_mode;
         let backend = self.keyring_backend_kind;
@@ -2820,6 +2850,7 @@ impl AuthManager {
 
     /// Reloads auth from the active source. Returns whether the auth value changed.
     pub async fn reload(&self) -> bool {
+        if self.alab_native_overridden() { return self.alab_native_reload().await.unwrap_or(false); } // ALAB(accounts): a failed selected-source read retains the cached owner.
         tracing::info!("Reloading auth");
         loop {
             let generation = self.auth_change_state_tx.borrow().generation;
@@ -2962,6 +2993,7 @@ impl AuthManager {
         &self,
         cached_auth: Option<&CodexAuth>,
     ) -> std::io::Result<Option<CodexAuth>> {
+        if let Some(result) = self.alab_native_load(cached_auth).await { return result; } // ALAB(accounts): a selected source never falls back to startup credentials.
         if let Some(external_auth) = self.external_auth_provider() {
             let cached_auth = self.auth_cached();
             if cached_auth
@@ -2996,6 +3028,7 @@ impl AuthManager {
         &self,
         cached_auth: Option<&CodexAuth>,
     ) -> std::io::Result<Option<CodexAuth>> {
+        if let Some(result) = self.alab_native_storage_load(cached_auth).await { return result; } // ALAB(accounts): guarded reload uses this manager's explicit source.
         let allowed_auth_modes = self
             .allowed_auth_modes
             .read()
@@ -3102,6 +3135,8 @@ impl AuthManager {
         &self,
         external_auth: Arc<dyn ExternalAuth>,
     ) -> Result<(), RefreshTokenError> {
+        let _assignment_mutation = self.alab_admit_source_mutation()?; // ALAB(accounts): explicit auth changes drain before a source boundary, never race its commit.
+        if self.alab_native_overridden() { return Err(codex_alab_core::managed_auth::unavailable().into()); } // ALAB(accounts): an external provider cannot replace a selected native source.
         if self.workload_identity_selected {
             return Err(permanent_external_auth_error(
                 "workload identity auth cannot be replaced at runtime",
@@ -3277,10 +3312,12 @@ impl AuthManager {
         enable_codex_api_key_env: bool,
         allowed_auth_modes: Option<Vec<AuthMode>>,
     ) -> Result<Arc<Self>, AuthManagerInitializationError> {
+        codex_alab_core::native_source_launch::enter().await.map_err(RefreshTokenError::from)?; // ALAB(accounts): constructor proof precedes workload credentials/configuration.
         let external_auth = WorkloadIdentityExternalAuth::from_process_config(&auth_config)?;
-        let mut manager =
-            Self::new_from_auth_config(auth_config, enable_codex_api_key_env, allowed_auth_modes)
-                .await;
+        let mut manager = alab_native_member::configured_source( // ALAB(accounts): the actual workload selection scopes this constructor only.
+            external_auth.as_ref().map(|_| codex_alab_core::native_source::NoNativeReader::Workload),
+            Self::new_from_auth_config(auth_config, enable_codex_api_key_env, allowed_auth_modes),
+        ).await;
         manager.workload_identity_selected = external_auth.is_some();
         let manager = Arc::new(manager);
         if let Some(external_auth) = external_auth {
@@ -3466,6 +3503,8 @@ impl AuthManager {
     /// if none were present. On success, reloads the in-memory auth cache so
     /// callers immediately observe the unauthenticated state.
     pub async fn logout(&self) -> std::io::Result<bool> {
+        let _assignment_mutation = self.alab_admit_source_mutation()?; // ALAB(accounts): logout cannot race a pending native source assignment.
+        if self.alab_native_overridden() || self.alab_has_native_member() { self.ensure_logout_allowed()?; return self.alab_native_detach(); } // ALAB(accounts): detach this consumer without deleting the host's shared grant.
         self.ensure_logout_allowed()?;
         let removed = logout_all_stores(
             &self.codex_home,
@@ -3480,6 +3519,8 @@ impl AuthManager {
     }
 
     pub async fn logout_with_revoke(&self) -> std::io::Result<bool> {
+        let _assignment_mutation = self.alab_admit_source_mutation()?; // ALAB(accounts): retain auth-change admission through all revocation and cache updates.
+        if self.alab_native_overridden() || self.alab_has_native_member() { self.ensure_logout_allowed()?; return self.alab_native_detach(); } // ALAB(accounts): session logout never revokes another consumer's refresh lineage.
         self.ensure_logout_allowed()?;
         let auth_dot_json = self
             .auth_cached()
@@ -3698,6 +3739,10 @@ fn auth_config_from(config: &impl AuthManagerConfig) -> AuthConfig {
         auth_route_config: config.auth_route_config(),
     }
 }
+
+pub use alab_native_source::NativeSourceFence; // ALAB(accounts): the consumer holds real refresh exclusion across native commit.
+#[path = "../../../alab-core/glue/auth_native_member.rs"] mod alab_native_member; // ALAB(accounts): actual constructor source completion and per-manager lifetimes.
+#[path = "../../../alab-core/glue/auth_native_source.rs"] mod alab_native_source; // ALAB(accounts): private native storage and real auth-state publication live in ALab.
 
 #[cfg(test)]
 #[path = "auth_tests.rs"]

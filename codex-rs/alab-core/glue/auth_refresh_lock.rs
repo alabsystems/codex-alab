@@ -40,7 +40,7 @@ enum OnDisk {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ManagedGrantRelation {
+pub(super) enum ManagedGrantRelation {
     Same,
     Distinct,
     Ambiguous,
@@ -48,7 +48,7 @@ enum ManagedGrantRelation {
 
 /// Persistence compatibility is asymmetric and cannot prove independent grants.
 /// Match the owner's copy/rotation semantics before allowing native refresh.
-fn managed_grant_relation(left: &TokenData, right: &TokenData) -> ManagedGrantRelation {
+pub(super) fn managed_grant_relation(left: &TokenData, right: &TokenData) -> ManagedGrantRelation {
     use ManagedGrantRelation::Ambiguous;
     use ManagedGrantRelation::Distinct;
     use ManagedGrantRelation::Same;
@@ -147,11 +147,19 @@ fn on_disk(auth: &ChatgptAuth, tokens: &TokenData) -> OnDisk {
     }
 }
 
+pub(super) struct RefreshHold {
+    _file: auth_lock::Hold,
+    _activity: codex_alab_core::assignment::Activity,
+}
+
 impl AuthManager {
     /// Whether an unchanged-file reconciliation can read only the selected
     /// file store. Match storage's admitted-path transform; a leftover file
     /// alone must never cause an Auto/Keyring lookup or external-host refresh.
     pub fn alab_uses_file_auth(&self) -> bool {
+        if self.alab_native_overridden() {
+            return true;
+        }
         !self.has_external_auth()
             && (self.auth_credentials_store_mode == AuthCredentialsStoreMode::File
                 || (codex_alab_core::home::has_admitted_auth_path()
@@ -168,7 +176,10 @@ impl AuthManager {
     ///
     /// It asks [`codex_alab_core::is_alab_binary`], not `active`: in vanilla mode aterm's pool
     /// still hands codex its logins (`CODEX_AUTH_PATH` holds there too) and still refreshes them.
-    fn alab_login_file(&self) -> Option<PathBuf> {
+    pub(super) fn alab_login_file(&self) -> Option<PathBuf> {
+        if self.alab_native_overridden() {
+            return self.alab_native_path().ok().flatten();
+        }
         if !codex_alab_core::is_alab_binary() {
             return None;
         }
@@ -202,7 +213,8 @@ impl AuthManager {
         &self,
         auth: &ChatgptAuth,
         tokens: &TokenData,
-    ) -> Result<Option<auth_lock::Hold>, RefreshTokenError> {
+    ) -> Result<Option<RefreshHold>, RefreshTokenError> {
+        let activity = self.alab_account_resource()?;
         if let Some(slot) = self.alab_managed_binding(tokens)? {
             self.alab_managed_refresh(&slot, tokens).await?;
             return Ok(None);
@@ -264,7 +276,10 @@ impl AuthManager {
         }
         match admission {
             auth_lock::Admission::Unavailable(err) => Err(RefreshTokenError::from(err)),
-            auth_lock::Admission::Send(hold) => Ok(Some(hold)),
+            auth_lock::Admission::Send(hold) => Ok(Some(RefreshHold {
+                _file: hold,
+                _activity: activity,
+            })),
             auth_lock::Admission::Reused => match refused {
                 Some(err) => Err(RefreshTokenError::from(err)),
                 None => Ok(None),
@@ -272,7 +287,13 @@ impl AuthManager {
         }
     }
 
-    fn alab_managed_binding(&self, expected: &TokenData) -> std::io::Result<Option<String>> {
+    pub(super) fn alab_managed_binding(
+        &self,
+        expected: &TokenData,
+    ) -> std::io::Result<Option<String>> {
+        if let Some(binding) = self.alab_native_binding() {
+            return binding;
+        }
         let mut file = self
             .alab_uses_file_auth()
             .then(|| get_auth_file(&self.codex_home));
@@ -317,7 +338,24 @@ impl AuthManager {
         slot: &str,
         tokens: &TokenData,
     ) -> Result<(), RefreshTokenError> {
+        if self.alab_native_member()?.is_some() {
+            let activity = self
+                .alab_assignment_domain()
+                .admit_current_resource()
+                .map_err(|_| managed_auth::unavailable())?;
+            return activity
+                .scope(self.alab_managed_refresh_owned(slot, tokens))
+                .await;
+        }
+        self.alab_managed_refresh_owned(slot, tokens).await
+    }
+    async fn alab_managed_refresh_owned(
+        &self,
+        slot: &str,
+        tokens: &TokenData,
+    ) -> Result<(), RefreshTokenError> {
         use sha2::Digest as _;
+        let registered = self.alab_native_refresh_preload().await?;
         let file = self
             .alab_login_file()
             .ok_or_else(managed_auth::unavailable)?;
@@ -336,16 +374,32 @@ impl AuthManager {
         let expected_digest = format!("{:x}", sha2::Sha256::digest(bytes.as_slice()));
         drop(bytes);
         if stored_tokens != tokens {
+            if let Some(source) = &registered {
+                self.alab_native_note_revision(slot, &file, &source.revision)?;
+            }
             self.alab_reload_managed_tokens(stored_tokens).await?;
+            self.alab_native_refresh_ready(registered.as_ref()).await?;
             return Ok(());
         }
-        let revision = managed_auth::refresh(slot, &expected_digest).await?;
+        let revision = self
+            .alab_native_refresh_owner(slot, &expected_digest)
+            .await?;
+        let registered = self.alab_native_refresh_preload().await?;
+        let current_revision = registered
+            .as_ref()
+            .map_or(&revision, |source| &source.revision);
+        if current_revision.generation < revision.generation
+            || (current_revision.generation == revision.generation
+                && current_revision.digest != revision.digest)
+        {
+            return Err(managed_auth::unavailable().into());
+        }
         let hold = match auth_lock::admit(Some(&file), auth_lock::WAIT, || async { false }).await {
             auth_lock::Admission::Send(hold) => hold,
             _ => return Err(managed_auth::unavailable().into()),
         };
         let current = managed_auth::read_document(&file)?;
-        if format!("{:x}", sha2::Sha256::digest(current.as_slice())) != revision.digest {
+        if format!("{:x}", sha2::Sha256::digest(current.as_slice())) != current_revision.digest {
             return Err(managed_auth::unavailable().into());
         }
         let verified: super::AuthDotJson =
@@ -360,8 +414,10 @@ impl AuthManager {
             return Err(managed_auth::unavailable().into());
         }
         drop(current);
+        self.alab_native_note_revision(slot, &file, current_revision)?;
         self.alab_reload_managed_tokens(verified_tokens).await?;
         drop(hold);
+        self.alab_native_refresh_ready(registered.as_ref()).await?;
         Ok(())
     }
 

@@ -52,6 +52,8 @@ pub fn capture_launch() {
     codex_alab_aterm::managed_auth::install();
     #[cfg(unix)]
     crate::native_source::install();
+    #[cfg(unix)]
+    crate::assignment::install();
     if !session::active() {
         return;
     }

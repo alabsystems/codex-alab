@@ -604,7 +604,19 @@ def main():
         if inherit_fds and lockfile is not None:
             raise ValueError("a cache guardian cannot inherit caller descriptors")
         if lockfile is not None:
-            return run_with_cache_lock(lockfile, argv, disk_floor=disk_floor, package_repo=package_repo)
+            try:
+                return run_with_cache_lock(lockfile, argv, disk_floor=disk_floor, package_repo=package_repo)
+            finally:
+                if package_repo is not None:
+                    # The executable package controller is this guardian, not a
+                    # waiting shell. Maintenance remains outside the producer lock,
+                    # after run() has retired its separately owned writer group.
+                    try:
+                        maintenance = runpy.run_path(str(Path(__file__).with_name("package_cache.py")))
+                        maintenance["compact"](Path(lockfile).parent.resolve())
+                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                        print(f"alab: package cache maintenance deferred after producer retirement: {error}",
+                              file=sys.stderr)
         if inherit_fds:
             return run(argv, disk_floor=disk_floor, inherit_fds=True)
         return run(argv) if disk_floor is None else run(argv, disk_floor=disk_floor)

@@ -81,6 +81,7 @@ pub(super) async fn maybe_start(
         return;
     }
 
+    let Some(assignment_activity) = super::alab_assignment::background(sess) else { return; }; // ALAB(accounts): source-owned compaction remains counted after its foreground turn ends.
     let base_instructions = sess.get_prompt_base_instructions().await;
     let (prepared_input, tasks, shutdown_cancellation, launch, send) = {
         let mut state = sess.state.lock().await;
@@ -147,7 +148,7 @@ pub(super) async fn maybe_start(
             }
         }
     };
-    tasks.spawn(storage_originator.scope(task));
+    tasks.spawn(storage_originator.scope(assignment_activity.scope(task))); // ALAB(accounts): drain the actual request and usage charging before changing account.
     drop(launch);
 }
 

@@ -239,11 +239,16 @@ class PristineRetentionTests(unittest.TestCase):
         print(f"retained pristine fixture: {self.directory}", flush=True)
         self.repo = self.directory / "checkout"
         self.repo.mkdir()
+        git_program = shutil.which("git")
+        self.assertIsNotNone(git_program, "Git is required for pristine-retention fixtures")
+        fixture_path = str(Path(git_program).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin"
         self.environment = {
-            "HOME": str(self.directory / "home"), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME": str(self.directory / "home"), "PATH": fixture_path,
             "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_OPTIONAL_LOCKS": "0", "ALAB_PYTHON": sys.executable,
         }
+        if "ATPKG_BIN" in os.environ:
+            self.environment["ATPKG_BIN"] = os.environ["ATPKG_BIN"]
         Path(self.environment["HOME"]).mkdir()
         self.git("init", "-q")
         self.git("config", "user.name", "Fixture")

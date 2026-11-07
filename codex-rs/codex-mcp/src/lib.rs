@@ -27,6 +27,7 @@ pub use resource_client::McpResourceServerCacheKey;
 pub use rmcp::model::ReadResourceRequestParams;
 pub use rmcp_client::MCP_NETWORK_POLICY_META_CAPABILITY;
 pub use runtime::McpRuntime;
+pub use runtime::EnterpriseState; // ALAB(accounts): source retirement distinguishes absent authority from an existing enterprise grant.
 pub use runtime::McpRuntimeContext;
 pub use runtime::McpRuntimeInput;
 pub use runtime::McpStartupPolicy;

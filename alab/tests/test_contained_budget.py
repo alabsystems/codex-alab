@@ -37,7 +37,7 @@ class ContainedBudgetTests(unittest.TestCase):
                            if not key.startswith("ALAB_")}
             for key in ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "CARGO_NET_OFFLINE"):
                 environment.pop(key, None)
-            environment.update(values, ALAB_CARGO_HOME=str(cargo_home))
+            environment.update(values, ALAB_CARGO_HOME=str(cargo_home), ALAB_PYTHON=sys.executable)
             command = 'set -euo pipefail; . "$1/alab/lib.sh"; shift; alab_contained "$@"'
             read_args = [argument for path in reads for argument in ("--read", str(path))]
             self.contained_child_eof = True
@@ -104,7 +104,7 @@ else:
     result["tool_write"] = "allowed"
 print(json.dumps(result))
 '''
-        result = json.loads(self.contained_command({}, ("/usr/bin/python3", "-I", "-c", child)))
+        result = json.loads(self.contained_command({}, (sys.executable, "-I", "-c", child)))
         self.assertEqual(result["pid"], result["self"], result)
         self.assertEqual(result["setid"], 0, result)
         self.assertIn(result["tool_write"], (errno.EPERM, errno.EACCES), result)
@@ -145,7 +145,7 @@ print(json.dumps(result))
 '''
             output = self.contained_command(
                 {"PATH": f"{tools}:/usr/bin:/bin:/usr/sbin:/sbin"},
-                ("/usr/bin/python3", "-I", "-c", child, sysroot))
+                (sys.executable, "-I", "-c", child, sysroot))
             result = json.loads(output)
             self.assertEqual(result["read"], "sysroot-canary", result)
             self.assertIn(result["write"], (errno.EPERM, errno.EACCES), result)
@@ -269,7 +269,7 @@ print(json.dumps(result))
 '''
                 output = self.contained_command(
                     {"HOME": fake_home},
-                    ("/usr/bin/python3", "-I", "-c", child, str(denied), str(allowed), *names),
+                    (sys.executable, "-I", "-c", child, str(denied), str(allowed), *names),
                     reads=(allowed,),
                 )
                 result = json.loads(output)
@@ -305,6 +305,7 @@ class PackageCacheLockTests(unittest.TestCase):
         environment = {key: value for key, value in os.environ.items()
                        if not key.startswith("ALAB_")}
         environment["ALAB_CARGO_HOME"] = str(directory / "cargo-home")
+        environment["ALAB_PYTHON"] = sys.executable
 
         def start(cache, code, *arguments):
             process = subprocess.Popen(

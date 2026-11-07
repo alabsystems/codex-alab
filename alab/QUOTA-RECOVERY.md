@@ -1,6 +1,21 @@
 <!-- Copyright 2026 Andrew Yates; SPDX-License-Identifier: Apache-2.0 -->
 # Early usage restoration
 
+The root sampler also checks authenticated allowance before issuing each model request.
+At 95% usage it can redeem an earned
+reset before either the five-hour or weekly window is exhausted. Either window
+must be at least five minutes from its natural reset. Unknown identity or permission, nonordinary
+quota and explicit spend denial do not authorize this action. Already denied
+usage requires an actually exhausted window, rather than inferring its cause
+from a near-full counter. No AI prompt chooses or redeems the reset.
+
+Preflight uses the same account-bound custody lock and idempotent redemption
+record as reactive recovery. A consumed credit cannot lead to another preflight
+redemption before fresh usage has been observed below the threshold. The original
+request, input and completed tool results stay in place. Reactive recovery also
+handles ordinary five-hour exhaustion, including a request that consumes its
+remaining allowance before another preflight can run.
+
 A live usage wall normally waits for its provider reset and retry backoff. It can
 resume earlier when an accepted full account usage read explicitly permits
 ordinary usage and includes the matching quota bucket without an explicit denial. The request must
@@ -28,9 +43,57 @@ Older persisted recovery records lack this scope. They
 keep their original reset deadline after restart; no account scope is inferred
 from a later usage read. A new live wall can bind the known native account even
 when no usage read preceded it. The bridge does not poll separately, buy credits,
-sign in or switch accounts. Root TUI and exec samplers now redeem an earned reset automatically when a fresh authenticated ordinary weekly limit is exhausted and its next reset is at least 12 hours away. Redemption binds the actual account/user and weekly cycle, retains its chosen credit and idempotency key before sending, and retries the original in-flight request only after a fresh read confirms restored included usage. It never purchases credits.
+sign in or switch accounts. Root TUI and exec samplers redeem earned resets
+before ordinary five-hour or weekly exhaustion, using the preflight described
+above. They also retain reactive recovery if a request exhausts its remaining
+allowance. Redemption binds the actual account, user and allowance cycle, retains
+the chosen credit and idempotency key before sending, and continues only after
+a fresh read confirms restored included usage. It never purchases credits.
 
-## Validation
+## Proactive reset qualification (2026-11-06)
+
+The installed build `0.165.0-dev.13586+g133286d36` predates the quota-recovery
+module. The previous implementation on main also waited for a weekly wall and
+refused a reset with less than twelve hours remaining. The new preflight checks
+both ordinary windows before each root sampling request and retains the same
+request and completed tool results. The backend can refuse early redemption;
+reactive recovery remains available when a request exhausts its allowance.
+
+Quota source `76eacbc29b` passed nine unit tests, strict all-target quota lint,
+and scoped sampler/core lint. The repository filter reported no owned,
+spanning or failing diagnostics and separated five upstream warnings. The
+implementation was cleanly composed with main `766acd06bb` as
+`015959bd4baa039d85973c9bb2f447bb700f7df9`; those incoming changes touch none of
+the five quota-change files.
+
+The canonical package `0.1.0-dev.14964+codex.0.167.0.g015959bd4` passed its
+version, signature, system-library and layout checks and all fourteen raw CLI
+recovery scenarios. Both proactive scenarios redeem exactly one credit before
+the first model request, then complete in two model requests with the original
+input and completed plan output retained. The other scenarios cover repeated
+resets, lost acknowledgements, pending operations, stale reads, identity
+mismatch, unavailable credits, near-reset refusal and unrelated providers.
+Its `bin/codex` SHA-256 is
+`33770c9b22ab6fb03c15a15aed1737855cdb3593fc6972bcf3d4641bcb5d7b3c`.
+
+The installed old binary was a negative control: the five-hour preflight
+scenario rejected its first model request because no reset had occurred.
+That failure was the HTTP fixture's ordering assertion, not a missing binary
+or a build failure. Reproduce the runtime suite with
+`python3.14 -I -B alab/smoke/weekly_reset.py --package <package> --output <new-directory>`.
+
+The qualified package was selected through the conditional atpkg link, then
+the native restart resumed the same conversation. Kernel executable mapping
+confirmed that the new process loaded this package, and the executable hash
+matched the runtime qualification above. This verifies adoption as well as
+selection; the broader aterm rollout-format measurement was not run here.
+
+These checks used Trust's unverified lane, with no new formal-proof claim.
+Runtime scenarios used isolated fake ChatGPT authentication and loopback HTTP;
+they did not spend live reset credits. This focused qualification did not run
+the complete upstream sync gate.
+
+## Earlier allowance-wake validation
 
 Validated the code at `d76a3bc95c`, composed onto private main `5b7a00447a`:
 1,174 tests passed: core 141, Autopilot 714, ALab-TUI 299 and the focused allowance
@@ -46,12 +109,12 @@ model, TLA check, proof lane or full sync gate was run. Validation used scratch
 account homes and loopback fixtures; it did not change the installed binary,
 package index, pin, selected runtime or credentials.
 
-## Automatic earned weekly resets
+## Automatic earned resets
 
 An active ALab root turn can redeem an existing earned Codex reset credit when a
-fresh authenticated usage read reports ordinary usage denied, the weekly window
-at least 100% used, and its natural reset at least 12 hours away. The 12-hour
-boundary is inclusive. Session-only exhaustion, an unknown account or user,
+fresh authenticated usage read reports a five-hour or weekly window at least
+95% used. An explicitly denied allowance must be at least 100% used. The natural
+reset must be at least five minutes away, including that exact boundary. An unknown account or user,
 explicit credit or spend-control refusal, and missing available reset credits do
 not authorize redemption. The operation does not purchase credits.
 
@@ -59,8 +122,8 @@ The account, native user and authentication ownership generation are bound
 before sampling or foreground compaction. Recovery runs inside the original
 request loop, retaining its
 input and completed tool results. A fresh matching usage read must explicitly
-permit ordinary usage and report a restored weekly window before that request
-retries. Another genuinely exhausted weekly allowance can use another earned credit,
+permit ordinary usage and report restored ordinary windows before that request
+continues. Another genuinely exhausted allowance can use another earned credit,
 even within the same turn and natural reset deadline. Consumed-credit history
 and separate retry evidence prevent stale reads from replaying those credits.
 Cancellation interrupts the recovery.
@@ -71,6 +134,8 @@ reuse that key. An ambiguous operation is reconciled with its original key befor
 credit can be selected. Positive consumption, definitive rejection and usage
 permission are recorded separately; a healthy usage read never proves a credit
 was spent. Other quota handling remains in place when recovery cannot establish permission.
+
+### Earlier weekly-only qualification
 
 The sampling path at `3cc2166e51` passed twelve raw CLI runtime probes
 using isolated fake ChatGPT authentication and a loopback backend, plus seven

@@ -31,6 +31,7 @@
 
 pub mod account_recovery;
 pub mod accounts;
+pub mod assignment;
 mod client;
 pub mod conn;
 pub mod context;
@@ -47,6 +48,7 @@ pub mod native_source;
 pub mod policy;
 pub mod renewal;
 pub mod rotation;
+pub mod source_member;
 pub mod status;
 pub mod wire;
 

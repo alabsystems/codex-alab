@@ -35,7 +35,8 @@ COMMAND_TIMEOUT_SECONDS = 120
 GUARD_PATH = Path(__file__).resolve().parents[1] / "command_guard.py"
 TWO_CREDITS = ("repeated-same-cycle", "stale-credit-ledger", "selected-no-credit")
 TWO_TOOLS = ("repeated-same-cycle", "stale-credit-ledger", "unused-pending")
-SUCCESS_CASES = ("recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit")
+PREFLIGHT_CASES = ("preflight-five-hour", "preflight-weekly")
+SUCCESS_CASES = ("recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit", *PREFLIGHT_CASES)
 CASE_NAMES = (*SUCCESS_CASES, "stale-credit-ledger", "stale-restored", "identity-mismatch", "no-credit", "near-reset", "unrelated-provider")
 
 def require(condition, message):
@@ -169,7 +170,7 @@ def jwt():
 class Mock:
     def __init__(self, name):
         self.name = name
-        self.reset = int(time.time()) + (11 if name == "near-reset" else 24) * 3600
+        self.reset = int(time.time()) + (4 * 60 if name == "near-reset" else 24 * 3600)
         self.credit = name != "no-credit"
         self.consumed = name == "unused-pending"
         self.requests = []
@@ -183,6 +184,8 @@ class Mock:
         self.declined = []
 
     def usage(self):
+        preflight = self.name in PREFLIGHT_CASES
+        healthy = self.consumed or (not preflight and len(self.models) < 2)
         available = int(self.credit and not self.consumed)
         if self.name in TWO_CREDITS:
             available = 2 - len(self.spent) - len(self.declined)
@@ -192,10 +195,10 @@ class Mock:
             available = int(not self.spent)
         return {"account_id": "other-account" if self.name == "identity-mismatch" else ACCOUNT,
                 "user_id": USER, "plan_type": "pro",
-                "rate_limit": {"allowed": self.consumed, "limit_reached": not self.consumed,
-                    "primary_window": {"used_percent": 0, "limit_window_seconds": 18000,
+                "rate_limit": {"allowed": healthy or preflight, "limit_reached": not (healthy or preflight),
+                    "primary_window": {"used_percent": 95 if self.name == "preflight-five-hour" and not healthy else 0, "limit_window_seconds": 18000,
                         "reset_after_seconds": 3600, "reset_at": int(time.time()) + 3600},
-                    "secondary_window": {"used_percent": 0 if self.consumed else 100,
+                    "secondary_window": {"used_percent": 0 if healthy or self.name == "preflight-five-hour" else (95 if preflight else 100),
                         "limit_window_seconds": 604800,
                         "reset_after_seconds": self.reset - int(time.time()), "reset_at": self.reset}},
                 "rate_limit_reset_credits": {"available_count": available}}
@@ -207,6 +210,12 @@ class Mock:
             if method == "POST" and path == "/v1/responses":
                 self.models.append(body)
                 number = len(self.models)
+                if self.name in PREFLIGHT_CASES:
+                    require(self.consumed and len(self.spent) == 1, "preflight did not redeem before model work")
+                    if number == 2:
+                        item = {"type": "message", "role": "assistant", "id": "preflight-answer",
+                                "content": [{"type": "output_text", "text": ANSWER}]}
+                        return 200, response("preflight-completed", item), "text/event-stream"
                 if number == 1:
                     item = {"type": "function_call", "call_id": CALL_ID, "name": "update_plan",
                             "arguments": json.dumps({"plan": [{"step": PLAN, "status": "completed"}]})}
@@ -450,7 +459,7 @@ def case(executable, output, name):
                 "automatic weekly quota check missing")
     consumes = [request for request in mock.requests if request["path"].endswith("/consume")]
     if name in SUCCESS_CASES:
-        expected_models = 5 if name in TWO_TOOLS else 3
+        expected_models = 2 if name in PREFLIGHT_CASES else (5 if name in TWO_TOOLS else 3)
         require(code == 0 and len(mock.models) == expected_models, "weekly reset did not recover")
         expected_consumes = 2 if name in ("pending-old-cycle", "repeated-same-cycle", "selected-no-credit") else 1
         require(len(consumes) == expected_consumes and mock.consumed,
@@ -478,7 +487,12 @@ def case(executable, output, name):
             require(mock.spent == ["earned-weekly-credit"], "external restore excluded an unspent earned credit")
             require(consumes[0]["body"]["redeem_request_id"] == mock.old_key,
                     "new depletion abandoned the original ambiguous redemption key")
-        require(mock.models[1]["input"] == mock.models[2]["input"], "retry changed retained tool/input")
+        if name in PREFLIGHT_CASES:
+            first_model = next(request for request in mock.requests if request["path"] == "/v1/responses")
+            require(consumes[0]["at"] < first_model["at"], "reset happened after model work started")
+            require(not any("quotaResetUnix" in request for request in mock.requests), "preflight hit a quota wall")
+        else:
+            require(mock.models[1]["input"] == mock.models[2]["input"], "retry changed retained tool/input")
         if name in TWO_TOOLS:
             require(mock.models[3]["input"] == mock.models[4]["input"], "second retry changed retained input")
         if name == "repeated-same-cycle":

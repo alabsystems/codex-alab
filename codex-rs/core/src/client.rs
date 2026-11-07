@@ -26,6 +26,8 @@
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
 #[path = "../../alab-core/glue/auth_attempt.rs"] mod alab_auth_attempt; // ALAB(auth-renewal): retain the credential actually used by each foreground request.
+#[path = "../../alab-core/glue/assignment_model_client.rs"] mod alab_assignment; // ALAB(accounts): retire account-owned WebSocket and tool caches without disabling future sockets.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;

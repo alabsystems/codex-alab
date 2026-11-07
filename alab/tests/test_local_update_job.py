@@ -178,9 +178,19 @@ with Path({str(self.journal)!r}).open("a") as stream:
     def test_prepared_job_preserves_explicit_modern_builder_on_cache_miss(self):
         # Run this control under an older controller with ALAB_PYTHON bound to a
         # modern builder too: the emitted job must not replace that binding.
+        self.assert_prepared_builder(os.environ.get("ALAB_PYTHON", sys.executable))
+
+    def test_prepared_job_preserves_a_python_launcher_on_cache_miss(self):
         builder = os.environ.get("ALAB_PYTHON", sys.executable)
+        launcher = self.home / "python launcher with spaces"
+        launcher.write_text("#!/bin/sh\nexec " + shlex.quote(builder) + ' "$@"\n')
+        launcher.chmod(0o755)
+        self.assert_prepared_builder(str(launcher))
+
+    def assert_prepared_builder(self, builder):
         capable = subprocess.run([builder, "-I", "-c",
-                                  'import sys; sys.exit(sys.version_info < (3, 11))'],
+                                  'import json, sys; print(json.dumps({"executable": sys.executable})); '
+                                  'sys.exit(sys.version_info < (3, 11))'],
                                  capture_output=True, text=True, timeout=60)
         self.assertEqual(capable.returncode, 0, capable.stderr)
         self.environment["ALAB_PYTHON"] = builder
@@ -189,6 +199,7 @@ with Path({str(self.journal)!r}).open("a") as stream:
         self.assertEqual(prepared.returncode, 0, prepared.stderr)
         job = plistlib.loads(prepared.stdout.encode())
         self.assertEqual(job["ProgramArguments"][0], sys.executable)
+        self.assertEqual(job["EnvironmentVariables"]["ALAB_PYTHON"], builder)
         done = self.run_command(job["ProgramArguments"], job["EnvironmentVariables"] | {
             "ALAB_LOCAL_TEST_BUILD": self.environment["ALAB_LOCAL_TEST_BUILD"]})
         self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
@@ -196,14 +207,14 @@ with Path({str(self.journal)!r}).open("a") as stream:
         self.assertGreaterEqual(observed["version"], [3, 11])
         self.assertEqual(
             Path(observed["executable"]).resolve(),
-            Path(shutil.which(builder) or builder).resolve(),
+            Path(json.loads(capable.stdout)["executable"]).resolve(),
         )
         self.assertEqual(self.selected().name, f"0.164.0-dev.3+g{fresh[:9]}")
         self.assertEqual(json.loads(self.journal.read_text()), {"source": fresh, "lock": "held"})
 
     def test_prepared_job_uses_only_a_known_capable_controller_as_default_builder(self):
         self.environment.pop("ALAB_PYTHON")
-        self.environment["PATH"] = "/usr/bin:/bin"
+        self.environment["PATH"] = self.minimal_path_with_git()
         done = self.run_job("--launchd-plist")
         self.assertEqual(done.returncode, 0, done.stderr)
         job = plistlib.loads(done.stdout.encode())
@@ -501,7 +512,14 @@ while True:
                     old = subprocess.run(["git", "-C", str(ROOT), "show",
                                           f"{revision}:alab/{name}"],
                                          check=True, capture_output=True, timeout=60)
-                    (self.repo / "alab" / name).write_bytes(old.stdout)
+                    source = old.stdout.decode()
+                    if name == "lib.sh":
+                        # Preserve the historical lifetime boundary while using the
+                        # fixture's interpreter for its fixed account-home query.
+                        query = "$(/usr/bin/python3 -I -c "
+                        self.assertEqual(source.count(query), 1)
+                        source = source.replace(query, "$(" + shlex.quote(sys.executable) + " -I -c ")
+                    (self.repo / "alab" / name).write_text(source)
                 done = self.run_job()
                 self.assertEqual(done.returncode, 1, done.stderr + done.stdout)
                 self.assertEqual(self.selected(), self.old)
@@ -979,6 +997,18 @@ os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
         self.assertFalse(self.calls.exists())
         self.assertEqual(status.read_bytes(), previous)
 
+    def minimal_path_with_git(self):
+        # Keep Python discovery constrained without assuming Apple's optional Git
+        # is installed. Expose only the Git the fixture already uses, not its bin dir.
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git, "the update fixtures require Git")
+        tools = self.home / "fixture git"
+        tools.mkdir(exist_ok=True)
+        wrapper = tools / "git"
+        wrapper.write_text("#!/bin/sh\nexec " + shlex.quote(real_git) + ' "$@"\n')
+        wrapper.chmod(0o755)
+        return str(tools) + os.pathsep + "/usr/bin:/bin:/usr/sbin:/sbin"
+
     def disk_poll(self, low_path, *, unreadable=False):
         # The bootstrap and real fetched guardian share only a simulated space
         # measurement. All Git worktree, handoff and refusal paths remain real.
@@ -1013,7 +1043,7 @@ else:
         environment = {key: self.environment[key] for key in
                        ("HOME", "ALAB_ATERM", "ALAB_PACKAGE_CACHE", "ATPKG_BIN",
                         "ALAB_LOCAL_TEST_BUILD")}
-        environment.update(PATH="/usr/bin:/bin:/usr/sbin:/sbin", ALAB_PYTHON=str(launcher),
+        environment.update(PATH=self.minimal_path_with_git(), ALAB_PYTHON=str(launcher),
                            ALAB_CARGO_HOME=self.environment.get("ALAB_CARGO_HOME",
                                                                str(self.home / "cargo home")),
                            TMPDIR=self.environment.get("TMPDIR", str(self.home / "temporary")),

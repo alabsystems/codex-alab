@@ -187,17 +187,28 @@ pub(crate) fn set_cloexec(stream: &UnixStream) -> Result<(), Error> {
 pub(crate) async fn read_line<R: AsyncBufRead + Unpin>(
     reader: &mut R,
 ) -> Result<Option<String>, Error> {
+    read_line_bounded(reader, MAX_LINE_BYTES).await
+}
+
+async fn read_line_bounded<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    maximum: usize,
+) -> Result<Option<String>, Error> {
     let mut buf = Vec::new();
     let n = (&mut *reader)
-        .take(MAX_LINE_BYTES as u64 + 1)
+        .take(maximum as u64 + 1)
         .read_until(b'\n', &mut buf)
         .await?;
     if n == 0 {
         return Ok(None);
     }
     if buf.last() != Some(&b'\n') {
-        if buf.len() > MAX_LINE_BYTES {
-            return Err(Error::Malformed("reply line over 8 MiB".into()));
+        if buf.len() > maximum {
+            return Err(Error::Malformed(if maximum == MAX_LINE_BYTES {
+                "reply line over 8 MiB".into()
+            } else {
+                "reply line exceeds its bound".into()
+            }));
         }
         // End of stream inside a line: the reply is incomplete.
         return Err(Error::Closed);
@@ -213,8 +224,11 @@ pub(crate) async fn read_line<R: AsyncBufRead + Unpin>(
 async fn read_reply<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     framing: Framing,
+    maximum_status: usize,
 ) -> Result<Reply, Error> {
-    let status = read_line(reader).await?.ok_or(Error::Closed)?;
+    let status = read_line_bounded(reader, maximum_status)
+        .await?
+        .ok_or(Error::Closed)?;
     let mut lines = Vec::new();
     let mut bytes = Vec::new();
     if framing != Framing::Status && !status.starts_with("ERR") {
@@ -256,6 +270,7 @@ struct Job {
     /// Raw bytes sent right after the line (a length-framed `post … len=<n>`'s body).
     body: Vec<u8>,
     framing: Framing,
+    maximum_status: usize,
     /// How long this exchange may take once it is on the wire.
     deadline: Duration,
     reply: oneshot::Sender<Result<Reply, Error>>,
@@ -326,7 +341,8 @@ impl Conn {
         framing: Framing,
         deadline: Duration,
     ) -> Result<Reply, Error> {
-        self.exchange(line, Vec::new(), framing, deadline).await
+        self.exchange(line, Vec::new(), framing, deadline, MAX_LINE_BYTES)
+            .await
     }
 
     /// [`Self::request`] whose line announces `body.len()` bytes that follow it on the wire
@@ -337,7 +353,21 @@ impl Conn {
         body: Vec<u8>,
         framing: Framing,
     ) -> Result<Reply, Error> {
-        self.exchange(line, body, framing, self.deadline).await
+        self.exchange(line, body, framing, self.deadline, MAX_LINE_BYTES)
+            .await
+    }
+
+    /// Private protocols can impose a smaller status bound before allocating the reply.
+    pub(crate) async fn request_status_bounded(
+        &self,
+        line: &str,
+        maximum: usize,
+    ) -> Result<Reply, Error> {
+        if maximum == 0 || maximum > MAX_LINE_BYTES {
+            return Err(Error::BadRequest("invalid status bound".into()));
+        }
+        self.exchange(line, Vec::new(), Framing::Status, self.deadline, maximum)
+            .await
     }
 
     async fn exchange(
@@ -346,6 +376,7 @@ impl Conn {
         body: Vec<u8>,
         framing: Framing,
         deadline: Duration,
+        maximum_status: usize,
     ) -> Result<Reply, Error> {
         if line.is_empty() || line.contains(['\n', '\r']) {
             return Err(Error::BadRequest(line.to_string()));
@@ -358,6 +389,7 @@ impl Conn {
             line: line.to_string(),
             body,
             framing,
+            maximum_status,
             deadline,
             reply: tx,
         };
@@ -387,6 +419,9 @@ async fn serve(
         let job = tokio::select! {
             job = jobs.recv() => job,
             () = kill.notified() => None,
+            // Idle EOF must revoke liveness without waiting for another credential request.
+            // Unsolicited bytes also close this request/reply connection rather than shift framing.
+            _ = reader.fill_buf() => None,
         };
         let Some(job) = job else {
             break;
@@ -397,7 +432,7 @@ async fn serve(
             line.extend_from_slice(&job.body);
             writer.write_all(&line).await?;
             writer.flush().await?;
-            read_reply(&mut reader, job.framing).await
+            read_reply(&mut reader, job.framing, job.maximum_status).await
         };
         let result = tokio::select! {
             result = tokio::time::timeout(job.deadline, exchange) => match result {

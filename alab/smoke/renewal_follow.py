@@ -492,7 +492,7 @@ def consumed_receipt(root, thread, wall, successor_pid=None):
                     ledger = json.loads(ledger_path.read_text())
                 except (OSError, ValueError):
                     continue
-                matched = original and original in (ledger.get("native_prepare"), ledger.get("native_completed_prepare"))
+                matched = original == ledger.get("native_completed_prepare")
                 if not matched or ledger.get("native_coordination") is not True or ledger.get("native_rollback", False):
                     continue
                 observation = ledger.get("native_observation")

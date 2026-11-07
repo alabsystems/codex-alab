@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ import unittest
 SCRIPT = Path(__file__).resolve().parents[1] / "unit_results.py"
 RUNNER = Path(os.environ.get("ALAB_TEST_UNIT_RUNNER", SCRIPT.parents[1] / "codex-rs/target/debug/alab-unit-runner"))
 TEST = "same::test_name"
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 
 
 class Tree:
@@ -44,8 +46,7 @@ class Tree:
             binary = self.target / "debug/deps" / (target + "-" + hashlib.sha256(name.encode()).hexdigest()[:16])
             binary.parent.mkdir(parents=True, exist_ok=True)
             counter = self.target / ("calls-" + name)
-            binary.write_text(f'''#!{sys.executable} -I
-import json, os, signal, sys
+            binary.write_text(PYTHON_ENTRY + f'''import json, os, signal, sys
 from pathlib import Path
 counter = Path({str(counter)!r})
 counter.write_text(str(int(counter.read_text()) + 1) if counter.exists() else "1")
@@ -275,6 +276,10 @@ class UnitResultsTests(unittest.TestCase):
         log, status = self.execute(self.candidate, state)
         process, result = self.collect(state, log, status)
         self.assertNotEqual(process.returncode, 0)
+        self.assertIn(b"matched zero tests", process.stderr)
+        self.assertIn(str(self.candidate.root).encode(), process.stderr)
+        self.assertIn(b"package-a/custom_a: " + TEST.encode(), process.stderr)
+        self.assertIn(b"original failure remains gating", process.stderr)
         self.assertFalse(result.exists())
 
     def test_missing_or_crashed_expected_copy_cannot_use_another_packages_failure(self):

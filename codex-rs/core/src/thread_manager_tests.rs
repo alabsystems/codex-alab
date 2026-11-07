@@ -1736,6 +1736,7 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
     let child = manager
         .start_thread(StartThreadOptions {
             internal_parent: Some(InternalSessionParent {
+                assignment_parent: None, // ALAB(accounts): this idle inline-parent fixture admits a new root.
                 thread_id: parent.thread_id,
                 auth_manager: Arc::clone(&parent.thread.session.services.auth_manager),
                 agent_control: AgentControlInit::Provided {

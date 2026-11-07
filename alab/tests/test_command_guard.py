@@ -25,6 +25,25 @@ SPEC.loader.exec_module(GUARD)
 
 
 class CommandGuardTests(unittest.TestCase):
+    def test_refused_lock_symlink_cannot_redirect_post_package_maintenance(self):
+        directory = Path(tempfile.mkdtemp(prefix="alab-guard-maintenance-path-"))
+        cache, decoy = directory / "cache", directory / "decoy"
+        cache.mkdir()
+        decoy.mkdir()
+        (decoy / "lock").touch()
+        lock = cache / "lock"
+        lock.symlink_to(decoy / "lock")
+        observed = []
+        with (mock.patch.object(sys, "argv", ["guard", "--cache-lock", str(lock),
+                                             "--package-source-repo", str(directory), "--", "unused"]),
+              mock.patch.object(GUARD.runpy, "run_path", return_value={
+                  "compact": lambda selected: observed.append(selected)}),
+              mock.patch.object(GUARD, "run", side_effect=AssertionError("refused lock started command"))):
+            self.assertEqual(GUARD.main(), 1)
+        self.assertEqual(observed, [cache.resolve()], "maintenance belongs to the named cache parent")
+        self.assertTrue(lock.is_symlink())
+        self.assertEqual((decoy / "lock").read_bytes(), b"")
+
     def setUp(self):
         self.children = []
         self.mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())

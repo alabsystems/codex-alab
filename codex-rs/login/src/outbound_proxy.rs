@@ -1,3 +1,4 @@
+#[path = "../../alab-core/glue/auth_native_route.rs"] mod alab_native; // ALAB(accounts): derived auth transports retain the selected native source scope.
 use codex_http_client::HttpClientFactory;
 use codex_http_client::NetworkPolicy;
 

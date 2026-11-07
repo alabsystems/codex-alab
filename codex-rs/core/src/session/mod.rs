@@ -1,4 +1,5 @@
 pub(crate) mod startup;
+#[path = "../../../alab-core/glue/assignment_lifecycle.rs"] pub(crate) mod alab_assignment; // ALAB(accounts): shared auth-manager admission follows real session tasks.
 
 use crate::PromptCacheKey;
 use crate::WithTurnExtensionData;

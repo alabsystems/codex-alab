@@ -580,7 +580,7 @@ fn an_opening_exchange_records_its_point_once_and_a_later_message_is_carried() {
 fn a_refused_exchange_record_is_published_after_a_new_claim_without_typing() {
     big_stack(|| async {
         use codex_alab_autopilot::words::RULE_LEFT;
-        // The exchange that opens a Land session: Cruise leaves none to the person (gap 32).
+        // A taskless opening can stay quiet in either mode; use Land for this retry case.
         let h = harness_with(
             Mode::Current,
             vec![reply("answer", "Here is the answer.")],
@@ -701,18 +701,16 @@ fn an_off_leaves_a_persons_message_to_them_and_land_after_it_carries_it() {
     });
 }
 
-/// CRUISE NEVER PARKS end to end (aterm 126e259836, the owner 2026-10-26; gap 32): the
-/// session's opening message, opened by the person's hand and answered at once, is continued
-/// as any turn end is, and nothing is recorded as left to them. NEGATIVE CONTROL: the same
-/// exchange under Land is left to them (`an_opening_exchange_records_its_point_once_…`).
+/// A taskless opening is the person's exchange in Cruise. A later message continues the work.
 #[test]
-fn cruise_continues_a_persons_own_exchange() {
+fn cruise_leaves_a_taskless_opening_and_continues_a_later_exchange() {
     big_stack(|| async {
         use codex_alab_autopilot::words::RULE_LEFT;
         let h = harness_with(
             Mode::Current,
             vec![
-                reply("first", "Here is the answer."),
+                reply("greeting", "Hey—what are we working on?"),
+                reply("work", "Stage 1 is in; stage 2 is next."),
                 reply("continued", "Nothing left: done."),
             ],
             &[("human_grace_s", "0")],
@@ -720,19 +718,29 @@ fn cruise_continues_a_persons_own_exchange() {
         )
         .await;
         wait_until("proven claim", || h.autopilot.supervisor().acting()).await;
-        h.test
-            .submit_turn("a person's own question")
-            .await
-            .expect("first turn");
-        wait_until("the exchange is continued", || {
-            h.fake.acts().iter().any(|rule| rule == "continue@v1") && h.mock.requests().len() == 2
+        h.test.submit_turn("sup").await.expect("greeting turn");
+        let rt = h.autopilot.thread_rt(&h.thread).expect("registered thread");
+        wait_until("the greeting is left without a continuation timer", || {
+            h.fake.acts().iter().any(|rule| rule == RULE_LEFT)
+                && rt.state().left
+                && !rt.timer_pending()
         })
         .await;
-        assert!(!h.fake.acts().iter().any(|rule| rule == RULE_LEFT));
-        assert!(!journal_has(
-            &h,
-            "a person's own exchange: theirs to answer"
-        ));
+        assert_eq!(h.fake.acts(), vec![RULE_LEFT.to_string()]);
+        assert_eq!(
+            h.mock.requests().len(),
+            1,
+            "the greeting triggers no model turn"
+        );
+
+        h.test.submit_turn("do the task").await.expect("later turn");
+        wait_until("the later exchange is continued", || {
+            h.fake.acts().iter().any(|rule| rule == "continue@v1") && h.mock.requests().len() >= 3
+        })
+        .await;
+        let requests = h.mock.requests();
+        let typed = requests[2].message_input_texts("user");
+        assert_eq!(typed.last().map(String::as_str), Some("keep going"));
     });
 }
 
@@ -1105,8 +1113,7 @@ fn a_person_at_the_terminal_holds_the_continuation() {
         .await;
         // aterm saw a person's input 60 s ago (a key, a click, IME composition): inside the
         // 120 s grace, and before the turn's PERSON_TURN_SLACK, so the turn is no hand's own
-        // exchange (an opening one under Land is left to the person outright:
-        // under_land_only_the_sessions_opening_exchange_is_the_persons; Cruise leaves none).
+        // exchange (a taskless opening under either mode is left to the person outright).
         h.fake.set_status("human_ms", "60000");
         assert!(
             h.fake
@@ -2432,4 +2439,32 @@ fn a_usage_waits_resume_and_the_continuation_after_it_are_two_acts() {
             assert!(at("usage-resume@v1") < at("continue@v1"), "{acts:?}");
         });
     }
+}
+
+/// A brief Cruise opening without tools stays with the person end to end. Native
+/// publication agrees with the local decision and submits no unsolicited second turn.
+#[test]
+fn a_cruise_taskless_opening_stays_with_the_person() {
+    big_stack(|| async {
+        use codex_alab_autopilot::words::RULE_LEFT;
+        let h = harness_with(
+            Mode::Current,
+            vec![reply("first", "Here is the answer.")],
+            &[("human_grace_s", "0")],
+            &[("human_ms", "0")],
+        )
+        .await;
+        wait_until("proven claim", || h.autopilot.supervisor().acting()).await;
+        h.test
+            .submit_turn("a person's own question")
+            .await
+            .expect("first turn");
+        wait_until("the opening is left to the person", || {
+            h.fake.acts().iter().any(|rule| rule == RULE_LEFT)
+        })
+        .await;
+        assert_eq!(h.mock.requests().len(), 1);
+        assert!(!h.fake.acts().iter().any(|rule| rule == "continue@v1"));
+        assert!(journal_has(&h, "a person's own exchange: theirs to answer"));
+    });
 }

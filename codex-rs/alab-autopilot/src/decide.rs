@@ -78,7 +78,8 @@ pub const PERSON_TURN_SLACK: Duration = Duration::from_secs(30);
 /// The longest answer that is still A PERSON'S OWN EXCHANGE ([`ThreadState::left`]): a
 /// question or a message of theirs answered within it is theirs to answer, where a message can
 /// be theirs at all (under Land only the session's opening one, under Off any, under Cruise
-/// none: [`ThreadState::ended_under`], gap 32); a turn they opened that works longer is a job,
+/// only an opening without tools or a question box: [`ThreadState::ended_under`]); a turn
+/// they opened that works longer is a job,
 /// and is continued (aterm's `EXCHANGE_WORK`; the owner, 2026-10-15: "these auto prompts are
 /// for continuously running jobs").
 pub const EXCHANGE_WORK: Duration = Duration::from_secs(10 * 60);
@@ -1119,7 +1120,7 @@ pub struct ThreadState {
     /// THE POINT THE IMAGE BEFORE A RE-EXEC LEFT TO THE PERSON (its record's pace,
     /// [`ThreadState::seed_left_point`]), and whether its exchange opened the session: the
     /// resume stands at it again, still theirs ([`ThreadState::observe_held`]; edges-5).
-    pub left_seed: Option<(TurnEnd, bool)>,
+    pub left_seed: Option<(TurnEnd, bool, bool)>,
     /// THE ACT AWAITING ITS ANSWER (aterm's `awaiting`): set by each act typed
     /// ([`ThreadState::acted`]; `Some(own)`, `own` where the act is a wall's own try or the lost
     /// login's line, aterm's `is_wall_retry`), never by a command (a compaction), and taken by
@@ -1192,10 +1193,14 @@ pub struct ThreadState {
     /// delivers it again (aterm's `exchange`): their message, opened by their hand, on a task
     /// codex-alab was not carrying, answered within [`EXCHANGE_WORK`], where a message can be
     /// theirs at all (under Land only the session's opening one, under Off any, under Cruise
-    /// none: [`Self::ended_under`], gap 32).
+    /// only an opening without tools or a question box: [`Self::ended_under`], gap 32).
     pub exchange: bool,
     /// The exchange's work so far: their turn's, plus each wall act's that delivered it again.
     pub exchange_work: Duration,
+    /// Tool work anywhere in the opening exchange, including a wall retry under Land.
+    pub exchange_ran_tools: bool,
+    /// A question box anywhere in that exchange; a later plain retry cannot erase it.
+    pub exchange_questions: bool,
     /// THE EXCHANGE OPENED THE SESSION (aterm's `exchange_opens`): no turn had ended here before
     /// the person's turn that made it ([`Self::past_opening`]). Land keeps only such an
     /// exchange theirs; one an Off left past the opening is Land's to carry once the word moves
@@ -1203,7 +1208,7 @@ pub struct ThreadState {
     pub exchange_opens: bool,
     /// THE POINT IS LEFT TO THE PERSON (aterm's `left_to_person`): their own exchange ended
     /// with no wall (Land's opening one, or one an Off left: [`Self::ended_under`], gap 32;
-    /// Cruise takes any back, [`Self::observe_mode`]). Nothing is typed until the next turn
+    /// Cruise preserves taskless openings, [`Self::observe_mode`]). Nothing is typed until the next turn
     /// ends, whatever the reply says.
     pub left: bool,
     /// THE SESSION IS PAST ITS OPENING (aterm 791977cae8's `first_point`, `point_seed` and
@@ -1228,13 +1233,10 @@ pub struct ThreadState {
     /// before each live turn's end, never carried in a record: the live policy's word (a
     /// person's hold over a held claim keeps it); in a passive spell that is no Off (a standby,
     /// a claim not yet proven or not held) Land's, whatever was folded last, since Land's rule
-    /// is the one that may leave the exchange and Cruise's first decision takes back what it
-    /// left ([`Self::observe_mode`]); `None` under Off, as aterm's `Autopilot::Off`. It is the
-    /// supervisor's word as the turn ends: a switch from Cruise to Land not yet folded then
-    /// judges the turn under Cruise, so the session's opening exchange ending just then is
-    /// carried (aterm judges under its own word, which has no such lag; review of gap 32,
-    /// finding 8). [`Self::observe_exchange`] reads it: Cruise leaves no exchange to the
-    /// person, Land only the session's opening one, Off any.
+    /// is the one that may leave the exchange; Cruise preserves a taskless opening
+    /// ([`Self::observe_mode`]); `None` under Off, as aterm's `Autopilot::Off`.
+    /// [`Self::observe_exchange`] reads the supervisor's word as the turn ends: Cruise
+    /// preserves a taskless opening, Land any brief opening, Off any exchange.
     pub ended_under: Option<Mode>,
     /// The point in hand is a done claim (aterm's `done == 1`): a person's turn after it is
     /// carried by nobody.
@@ -1735,6 +1737,8 @@ impl ThreadState {
         self.awaited = None;
         self.exchange = false;
         self.exchange_work = Duration::ZERO;
+        self.exchange_ran_tools = false;
+        self.exchange_questions = false;
         self.left = false;
         self.carrying = false;
         self.claimed = false;
@@ -1766,8 +1770,8 @@ impl ThreadState {
     /// TRY stays owed: the point it was owed at is the wall's, which the point the record
     /// leaves is not, and a limit's resume types the words of the mode read when it goes
     /// ([`decide`]'s `owed_act`), as aterm's wall acts read the Autopilot word at their point.
-    /// CRUISE TAKES BACK A PERSON'S OWN EXCHANGE that Land's rule, an Off or a passive spell
-    /// left to them ([`Self::left`]), whatever the word before (gap 32).
+    /// Cruise preserves a brief opening without tools or a question box; other exchanges
+    /// left by Land, Off or a passive spell are taken back.
     pub fn observe_mode(&mut self, mode: Mode) {
         self.observe_mode_under(mode, false);
     }
@@ -1779,18 +1783,9 @@ impl ThreadState {
     /// Autopilot word Cruise alone, so an exchange the Off left stays theirs, and a Land read
     /// after it keeps it (review of gap 32, finding 9).
     pub fn observe_mode_under(&mut self, mode: Mode, off: bool) {
-        // CRUISE NEVER PARKS (aterm 126e259836's `cruise_takes_exchange`, the owner 2026-10-26):
-        // an exchange a Land run, an Off or a passive spell left to the person is taken back at
-        // Cruise's first decision, whatever the word before (an Off leaves the word folded last
-        // standing), and its point is decided as any turn end's. LAND TAKES BACK ONE THAT DID
-        // NOT OPEN THE SESSION (edges-4; the owner 2026-10-27: "the user question exception is
-        // only for the first message of a session"): an Off leaves any quick message to the
-        // person while it stands, and Land read after it carries one past the opening, as
-        // aterm's `mode_takes_exchange` (aterm 2242dc8b91).
-        let takes = match mode {
-            Mode::Cruise => true,
-            Mode::Land => !self.exchange_opens,
-        };
+        // A brief opening exchange without tool work or a question box is still the
+        // person's conversation in Cruise. Later interruptions resume the existing task.
+        let takes = self.takes_exchange(mode);
         if takes && !off && std::mem::take(&mut self.exchange) {
             self.left = false;
         }
@@ -1814,6 +1809,27 @@ impl ThreadState {
             .is_some_and(|owed| owed.mode != mode && !is_wall_rule(owed.rule))
         {
             self.owed = None;
+        }
+    }
+
+    /// Whether a point left to the person stays theirs under the current policy.
+    /// Publication rechecks this after waiting for the host connection.
+    pub fn left_under(&self, mode: Mode) -> bool {
+        self.left && !self.takes_exchange(mode)
+    }
+
+    fn takes_exchange(&self, mode: Mode) -> bool {
+        match mode {
+            Mode::Cruise => {
+                !self.exchange_opens
+                    || self.exchange_ran_tools
+                    || self.exchange_questions
+                    || self
+                        .point
+                        .as_ref()
+                        .is_none_or(|end| end.ran_tools || end.questions)
+            }
+            Mode::Land => !self.exchange_opens,
         }
     }
 
@@ -2272,7 +2288,7 @@ impl ThreadState {
     /// turn their hand opened, on a task codex-alab was not carrying (or whose worker had said
     /// done), not stopped, answered within [`EXCHANGE_WORK`], is theirs: under Land only where
     /// it opens the session (`opening`, [`ThreadState::past_opening`]), under Off any, under
-    /// Cruise none ([`ThreadState::ended_under`]; amended 2026-10-28 after the parity sweep, gap
+    /// Cruise only an opening without tools or a question box ([`ThreadState::ended_under`]; amended 2026-10-28 after the parity sweep, gap
     /// 32: aterm 126e259836, the owner 2026-10-26, and 791977cae8, the owner 2026-10-27: "you
     /// need to keep working even if the user interrupted a long running job. the user question
     /// exception is only for the first message of a session"). A wall's act of codex-alab's
@@ -2283,7 +2299,11 @@ impl ThreadState {
         let carried = self.carrying && !self.claimed && !self.left;
         if end.by_autopilot {
             self.exchange_work = self.exchange_work.saturating_add(end.worked);
+            self.exchange_ran_tools |= end.ran_tools;
+            self.exchange_questions |= end.questions;
             self.exchange &= self.exchange_work < EXCHANGE_WORK
+                && !(self.ended_under == Some(Mode::Cruise)
+                    && (self.exchange_ran_tools || self.exchange_questions))
                 && self
                     .last_rule
                     .is_some_and(|rule| !is_continue_rule(rule) && rule != words::RULE_HOST_TURN);
@@ -2291,13 +2311,14 @@ impl ThreadState {
         } else {
             let theirs = !carried && !end.aborted && hand;
             self.exchange_work = end.worked;
-            // CRUISE NEVER PARKS, AND UNDER LAND A PERSON'S MESSAGE ONCE THE SESSION HAS WORKED
-            // INTERRUPTS THAT WORK, WHICH LAND CARRIES ON AFTER THE REPLY. Off leaves it as before,
-            // and Land read after the Off takes back one that did not open the session.
+            self.exchange_ran_tools = end.ran_tools;
+            self.exchange_questions = end.questions;
+            // Tool work or a question box establishes a task in Cruise. Later interruptions
+            // continue the task in either mode.
             self.exchange = theirs
                 && end.worked < EXCHANGE_WORK
                 && match self.ended_under {
-                    Some(Mode::Cruise) => false,
+                    Some(Mode::Cruise) => opening && !end.ran_tools && !end.questions,
                     Some(Mode::Land) => opening,
                     None => true,
                 };
@@ -2925,7 +2946,7 @@ impl ThreadState {
     /// is owed and until its kept landing is recorded again ([`Self::reland`]): aterm reads the
     /// session open from the wake's turn until that record (amended 2026-10-29 after the review
     /// of gap 12, finding 1). No mode is read: the line reads the face under the Land word
-    /// only, a Cruise unlands and takes the left point back ([`Self::observe_mode_under`]),
+    /// only, a Cruise unlands and takes a tasked left point back ([`Self::observe_mode_under`]),
     /// and an Off keeps the landing ([`Self::park_off`]), so Land again wears it at once.
     pub fn task_face(&self, running: bool) -> codex_alab_core::session::TaskFace {
         use codex_alab_core::session::TaskFace;
@@ -3029,14 +3050,7 @@ impl ThreadState {
     /// edges-5: the live upgrade moved a left session with no notice, and the image after stood
     /// at no point, so a later switch to Cruise typed nothing until the person typed). Taken
     /// only where this memory stands at no point of its own.
-    pub fn seed_left_point(
-        &mut self,
-        text: Option<String>,
-        earlier: Option<String>,
-        questions: bool,
-        opens: bool,
-        at: Instant,
-    ) {
+    pub fn seed_left_point(&mut self, left: codex_alab_core::session::LeftPoint, at: Instant) {
         if self.point.is_some() {
             return;
         }
@@ -3045,33 +3059,53 @@ impl ThreadState {
                 at,
                 by_autopilot: false,
                 by_person: true,
-                text,
-                earlier,
-                questions,
+                text: left.point.text,
+                earlier: left.point.earlier,
+                questions: left.point.questions,
                 worked: Duration::ZERO,
                 wall: None,
                 aborted: false,
-                ran_tools: false,
+                ran_tools: left.ran_tools,
                 restored: true,
             },
-            opens,
+            left.opens,
+            left.had_questions,
         ));
     }
 
     /// THE POINT LEFT TO THE PERSON, whose words the record carries ([`Self::seed_left_point`]),
     /// and whether its exchange opened the session: this thread's point where it is left
     /// ([`Self::left`]), else the left point a re-exec seeded that the resume has not stood at
-    /// yet.
-    pub fn left_point(&self) -> Option<(&TurnEnd, bool)> {
+    /// yet. The snapshot retains work from the whole exchange, while its question-box state
+    /// describes only the latest turn.
+    pub fn left_point(&self) -> Option<codex_alab_core::session::LeftPoint> {
+        let snapshot = |point: &TurnEnd, opens, ran_tools, had_questions| {
+            codex_alab_core::session::LeftPoint {
+                point: codex_alab_core::session::ReplyPoint {
+                    text: point.text.clone(),
+                    earlier: point.earlier.clone(),
+                    questions: point.questions,
+                },
+                opens,
+                ran_tools,
+                had_questions,
+            }
+        };
         if self.left {
-            return self
-                .point
-                .as_ref()
-                .map(|point| (point, self.exchange_opens));
+            return self.point.as_ref().map(|point| {
+                snapshot(
+                    point,
+                    self.exchange_opens,
+                    point.ran_tools || self.exchange_ran_tools,
+                    point.questions || self.exchange_questions,
+                )
+            });
         }
         self.left_seed
             .as_ref()
-            .map(|(point, opens)| (point, *opens))
+            .map(|(point, opens, had_questions)| {
+                snapshot(point, *opens, point.ran_tools, *had_questions)
+            })
     }
 
     /// THE POINT RULING F HOLDS, whose words the record carries ([`Self::seed_held_point`]):
@@ -3098,14 +3132,17 @@ impl ThreadState {
     /// theirs, and only where none did.
     pub fn observe_held(&mut self, at: Instant) {
         // A POINT THE IMAGE BEFORE LEFT TO THE PERSON stands again, theirs as it was there, where
-        // the history still rests at its reply (edges-5): Land keeps it theirs, and Cruise's
-        // first decision takes it back ([`Self::observe_mode_under`]).
-        if let Some((point, opens)) = self.left_seed.take()
+        // the history still rests at its reply (edges-5). The current mode rechecks it:
+        // Land preserves an opening; Cruise preserves only a taskless opening
+        // ([`Self::observe_mode_under`]).
+        if let Some((point, opens, had_questions)) = self.left_seed.take()
             && self.task
             && self.point.is_none()
             && self.owed.is_none()
             && self.resumed_reply == point.text
         {
+            self.exchange_ran_tools = point.ran_tools;
+            self.exchange_questions = had_questions || point.questions;
             self.point = Some(TurnEnd { at, ..point });
             self.exchange = true;
             self.exchange_work = Duration::ZERO;
@@ -3916,8 +3953,8 @@ fn decide_inner(
         );
     }
     // A PERSON'S OWN EXCHANGE (aterm's `left_to_person`): theirs to answer, whatever the
-    // reply says; nothing is typed until the next turn ends. Only Land's opening one or an
-    // Off's stands here; Cruise takes any back ([`ThreadState::observe_mode`]).
+    // reply says; nothing is typed until the next turn ends. An opening without task work or an
+    // Off's stands here; Cruise preserves a taskless opening.
     if s.left {
         return Decision::nothing("a person's own exchange: theirs to answer");
     }

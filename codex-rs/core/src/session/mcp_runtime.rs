@@ -278,6 +278,7 @@ impl Session {
         ready_selected_capability_roots: &[SelectedCapabilityRoot],
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
+        let Some(_source_publication) = super::alab_assignment::publication(self) else { return; }; // ALAB(accounts): retirement closes old background publications before connection teardown.
         let mcp_projection = self
             .project_selected_environment_mcp_servers(
                 &desired.config,

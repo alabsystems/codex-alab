@@ -1987,6 +1987,9 @@ name = "codex-alab-aterm"
 version = "0.0.0"
 dependencies = [
  "codex-alab-core",
+ "codex-http-client",
+ "codex-websocket-client",
+ "futures",
  "libc",
  "pretty_assertions",
  "serde",
@@ -1995,6 +1998,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

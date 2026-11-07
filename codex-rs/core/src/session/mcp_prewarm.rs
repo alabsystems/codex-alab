@@ -52,7 +52,7 @@ impl Session {
                 tokio::select! {
                     biased;
                     _ = shutdown.cancelled() => break,
-                    _ = session.refresh_mcp_if_dirty() => {},
+                    _ = super::alab_assignment::prewarm(&session) => {}, // ALAB(accounts): nonblocking source admission and cancellation precede retirement joins.
                 }
             }
         });

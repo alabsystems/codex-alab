@@ -307,7 +307,10 @@ Its steps:
    environment, inherited descriptors or signal context. Python preparation/collection
    stays outside that child, and the adapter bypasses Rust startup's own signal/FD edits.
    A test gates unless its original package/library copy fails there too; a missing,
-   crashed or zero-match copy cannot borrow another library's outcome. Existing matching
+   crashed or zero-match copy cannot borrow another library's outcome. A zero-match
+   diagnostic names the comparison tree, package, library and test, and says that the
+   original failure remains gating. Check the original source failure when an ALab-only
+   test has no counterpart in pristine upstream. Existing matching
    cfg runners conflict instead of being replaced; a target-triple runner takes precedence
    and absent adapter receipts refuse attribution. A crash,
    a build error, more than 60 failures, or a failure count that disagrees with libtest's
@@ -392,6 +395,46 @@ the source tests finish and attribution starts. Prepare both exact lockfile
 closures before freezing a costly run; this observation never fetches or relaxes
 containment, registry ownership, or test attribution.
 Resource stops and interruptions return immediately without a dependency verdict.
+
+For a cold private Cargo home, run this from the fixed checkout before the gate.
+First run `alab/setup.sh` if `upstream/main` is absent. Set `ALAB_ATPKG_PUBLISH`
+to the real producer when it is not on PATH, and `ALAB_PYTHON` to the selected
+Python executable when needed. This preparation can fetch dependencies; the gate
+itself keeps its offline preflight. It uses the same native lease, target
+inventory and containment as the gate, and does not compile or use `~/.cargo`.
+
+```bash
+set -euo pipefail
+repo="$(pwd -P)"
+. "$repo/alab/lib.sh"
+alab_project_run "$repo" "" /bin/bash -c '
+  set -euo pipefail
+  repo="$1"
+  . "$repo/alab/lib.sh"
+  alab_project_selected
+  cd "$repo"
+  upstream_base="$(git merge-base HEAD upstream/main)"
+  pristine="$(alab_pristine "$repo" "$upstream_base")"
+  alab_pristine_at "$repo" "$upstream_base"
+  build_target="$(alab_check_targets_ready "$repo" "$pristine" "$repo/codex-rs/target")"
+  pristine_target="$(alab_real "$pristine/codex-rs/target")"
+  export CARGO_TARGET_DIR="$build_target"
+  alab_contained --pristine "$pristine" --read "$ATPKG_PROJECT_FRONT" \
+    --read "$ATPKG_PROJECT_EXECUTION" "$build_target" "$pristine_target" -- \
+    /bin/bash -c '\''
+      set -euo pipefail
+      . "$1/alab/lib.sh"
+      (cd "$1/codex-rs"; export CARGO_TARGET_DIR="$3"
+       alab_build_command "$ALAB_CARGO" metadata --locked --format-version 1 >/dev/null)
+      (cd "$2/codex-rs"; export CARGO_TARGET_DIR="$4"
+       alab_build_command "$ALAB_CARGO" metadata --locked --format-version 1 >/dev/null)
+    '\'' alab-prepare "$repo" "$pristine" "$build_target" "$pristine_target"
+' alab-prepare "$repo"
+```
+
+After it succeeds, leave the source fixed and run `bash alab/check.sh` normally.
+The [native gate review](reviews/native-gate-provisioning-2026-11-06.md)
+records a successful protected preparation followed by a passing full gate.
 
 When macOS's `/bin/ps` has set-id bits, the wrapper supplies an ordinary ad-hoc signed
 copy on PATH. The sandbox refuses to exec the privileged system image; the copy can
@@ -901,6 +944,18 @@ What a run does, in order (`--help` says the same):
    authenticated managed default. `ALAB_ATPKG_PUBLISH` may name a qualified native
    producer. Caller compiler overrides, including `ALAB_CARGO`, refuse.
    The canonical gate and package controllers refuse `ALAB_CONTAIN=0`.
+
+   `atpkg-publish` is a development producer, not a shipped client tool. If it is
+   absent from PATH, build it in an owned aterm worktree, following that repository's
+   toolchain and submodule instructions:
+   `targo --unverified build --profile test --locked -p atpkg-publish`.
+   Cargo's `metadata --no-deps --format-version=1` names the target directory; use
+   the real built executable through an absolute `ALAB_ATPKG_PUBLISH` path.
+   Its `toolchain run --repo DIR -- /usr/bin/true` can check compiler admission
+   before a costly gate. That preflight authenticates and leases the compiler;
+   the normal protected gate still has to run. Keep its private Cargo home and
+   prepare both locked dependency graphs when its offline preflight finds a cold
+   cache; do not substitute the owner's Cargo home or inject selection fields.
 
    The selector leases the signed payload and validates its execution root through
    controller settlement. Every compiler call uses its explicit native admission
@@ -1684,6 +1739,13 @@ physical ref/reflog admission and final old-OID CAS still apply in linked
 worktrees and with packed refs. Qualification caught and corrected an initial
 120-second failure caused by those repeated local probes, without changing the
 guardian's deadline.
+The 1,490-tag source-signing retry exposed another per-ref cost: launching
+`check-ref-format` separately for each observed and mapped name. Full names now
+go through Git's own parser in NUL-delimited `update-ref --stdin -z` batches
+that end with `abort`, without preparing any update. This retains Git's syntax
+rules without a second parser or per-tag processes. The large warm-snapshot
+regression bounds total Git calls, while malformed-name, command-injection,
+unchanged-ref/reflog and lock-cleanup checks exercise the aborted transaction.
 The existing floor, ledger, complete-history and source-identity checks still
 decide release eligibility; transport readiness alone is not release readiness.
 

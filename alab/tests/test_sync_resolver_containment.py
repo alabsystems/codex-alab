@@ -7,6 +7,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 
 
 @unittest.skipUnless(Path("/usr/bin/sandbox-exec").is_file(), "requires macOS containment")
@@ -57,8 +59,7 @@ class SyncResolverContainmentTests(unittest.TestCase):
                      "removed-paths", "owned-paths", "watched-paths"):
             shutil.copyfile(ROOT / "alab" / name, scripts / name)
         cargo = scripts / "fake-cargo"
-        cargo.write_text(f'''#!{sys.executable} -I
-import errno, json, os, sys
+        cargo.write_text(PYTHON_ENTRY + '''import errno, json, os, sys
 from pathlib import Path
 assert sys.argv[1:] == ["metadata", "--format-version", "1"], sys.argv
 cache = Path(os.environ["CARGO_HOME"])
@@ -75,8 +76,8 @@ for path in protected:
         denials.append(0)
 (Path.cwd() / "Cargo.lock").write_text("version = 4\\n# contained resolver wrote its lock\\n")
 (cache / "witness.json").write_text(json.dumps(denials))
-print(json.dumps({{"packages": [], "workspace_members": [],
-                  "workspace_root": str(Path.cwd()), "target_directory": str(Path.cwd() / "target")}}))
+print(json.dumps({"packages": [], "workspace_members": [],
+                  "workspace_root": str(Path.cwd()), "target_directory": str(Path.cwd() / "target")}))
 ''')
         cargo.chmod(0o755)
         git(repo, "add", ".")

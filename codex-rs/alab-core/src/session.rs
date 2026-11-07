@@ -697,6 +697,10 @@ pub struct LeftPoint {
     pub point: ReplyPoint,
     /// Its exchange opened the session: Land keeps only such an exchange theirs.
     pub opens: bool,
+    /// The exchange did tool work, including its wall retries: Cruise carries it after re-exec.
+    pub ran_tools: bool,
+    /// A question box occurred anywhere in the exchange; `point.questions` is the latest turn.
+    pub had_questions: bool,
 }
 
 /// THE GO-AHEAD'S COUNT AS THE RECORD CARRIES IT ([`Pace::go_ahead`]).
@@ -1081,6 +1085,8 @@ pub struct Shared {
     carry_on_owed: AtomicBool,
     carried_on: AtomicU32,
     owed_act: Mutex<Option<OwedAct>>,
+    assignment: Mutex<Option<crate::assignment::Receipt>>,
+    assignment_touched: AtomicBool,
     needs_off: AtomicU64,
     workdirs: Mutex<BTreeMap<String, PathBuf>>,
     /// Each thread's [`ProbeScope`] ([`Self::set_probe_scope`]).
@@ -1281,6 +1287,8 @@ impl Shared {
             carry_on_owed: AtomicBool::new(false),
             carried_on: AtomicU32::new(0),
             owed_act: Mutex::new(None),
+            assignment: Mutex::new(None),
+            assignment_touched: AtomicBool::new(false),
             needs_off: AtomicU64::new(0),
             workdirs: Mutex::new(BTreeMap::new()),
             probe_scopes: Mutex::new(BTreeMap::new()),
@@ -2323,6 +2331,60 @@ impl Shared {
         }
     }
 
+    pub fn assignment_receipt(&self) -> Option<crate::assignment::Receipt> {
+        lock(&self.assignment).clone()
+    }
+    pub fn seed_assignment_receipt(&self, receipt: Option<crate::assignment::Receipt>) {
+        if receipt.as_ref().is_some_and(|receipt| !receipt.valid()) {
+            return;
+        }
+        let mut slot = lock(&self.assignment);
+        if slot.is_none() {
+            *slot = receipt;
+        }
+    }
+    pub fn set_assignment_receipt(&self, receipt: Option<crate::assignment::Receipt>) -> bool {
+        if receipt.as_ref().is_some_and(|receipt| !receipt.valid()) {
+            return false;
+        }
+        let mut upgrade = lock(&self.upgrade_generation);
+        self.assignment_touched.store(true, Ordering::SeqCst);
+        let mut slot = lock(&self.assignment);
+        if slot.as_ref().is_some_and(|existing| {
+            !existing.acknowledged
+                && receipt
+                    .as_ref()
+                    .is_some_and(|next| existing.operation != next.operation)
+        }) {
+            return false;
+        }
+        if *slot != receipt {
+            *slot = receipt;
+            *upgrade = upgrade.wrapping_add(1);
+            drop(slot);
+            self.mark_changed();
+        }
+        true
+    }
+    pub fn clear_assignment_receipt(&self, operation: &str) -> bool {
+        let mut upgrade = lock(&self.upgrade_generation);
+        let mut slot = lock(&self.assignment);
+        if slot
+            .as_ref()
+            .is_none_or(|receipt| receipt.operation != operation)
+        {
+            return false;
+        }
+        *slot = None;
+        *upgrade = upgrade.wrapping_add(1);
+        drop(slot);
+        self.mark_changed();
+        true
+    }
+    pub fn has_record_writer(&self) -> bool {
+        self.flush.get().is_some()
+    }
+
     pub fn owed_act(&self) -> Option<OwedAct> {
         self.owed_act
             .lock()
@@ -2346,15 +2408,21 @@ impl Shared {
         let _generation = lock(&self.upgrade_generation);
         let mut book = lock(&self.turns);
         if book.running.iter().any(|(id, _)| id == thread)
-            || book.latest.get(thread).is_some_and(|id| id != turn) { return false; }
-        book.ended.retain(|ended| ended.0 != thread || ended.1 != turn);
+            || book.latest.get(thread).is_some_and(|id| id != turn)
+        {
+            return false;
+        }
+        book.ended
+            .retain(|ended| ended.0 != thread || ended.1 != turn);
         true
     }
 
     /// Retire only this acknowledged renewal; a newer intent keeps its custody.
     pub fn discard_renewal(&self, expected: &OwedAct) -> bool {
         let mut owed = lock(&self.owed_act);
-        if owed.as_ref() != Some(expected) || expected.renewal.is_none() { return false; }
+        if owed.as_ref() != Some(expected) || expected.renewal.is_none() {
+            return false;
+        }
         *owed = None;
         drop(owed);
         self.mark_changed();
@@ -2363,8 +2431,11 @@ impl Shared {
 
     pub fn clear_renewal(&self, receipt: &str) -> bool {
         let mut owed = lock(&self.owed_act);
-        if !owed.as_ref().and_then(|act| act.renewal.as_ref())
-            .is_some_and(|renewal| renewal.receipt.as_deref() == Some(receipt)) {
+        if !owed
+            .as_ref()
+            .and_then(|act| act.renewal.as_ref())
+            .is_some_and(|renewal| renewal.receipt.as_deref() == Some(receipt))
+        {
             return false;
         }
         *owed = None;
@@ -2703,6 +2774,9 @@ impl Shared {
     /// The closure uses only bookkeeping setters under this boundary.
     pub fn seed_before_native_work(&self, seed: impl FnOnce()) -> bool {
         let _generation = lock(&self.upgrade_generation);
+        if self.assignment_touched.load(Ordering::SeqCst) {
+            return false;
+        }
         let turns = lock(&self.turns);
         if !turns.latest.is_empty() || !turns.stopped_threads.is_empty() || !turns.ended.is_empty()
         {
@@ -2854,8 +2928,11 @@ impl Shared {
                 }
                 let mut owed = lock(&self.owed_act);
                 if owed.as_ref().is_some_and(|act| act.thread == thread) {
-                    if let Some(renewal) = owed.as_mut().and_then(|act| act.renewal.as_mut())
-                        .filter(|renewal| renewal.turn.as_deref() == Some(turn)) {
+                    if let Some(renewal) = owed
+                        .as_mut()
+                        .and_then(|act| act.renewal.as_mut())
+                        .filter(|renewal| renewal.turn.as_deref() == Some(turn))
+                    {
                         renewal.accepted = true;
                     } else {
                         *owed = None;
@@ -3057,7 +3134,11 @@ impl Shared {
     pub fn unrest(&self) -> Option<Unrest> {
         if self.turn_running() {
             Some(Unrest::TurnRunning)
-        } else if self.acting() {
+        } else if self.acting()
+            || self
+                .assignment_receipt()
+                .is_some_and(|receipt| !receipt.acknowledged)
+        {
             Some(Unrest::Acting)
         } else if self.box_answer_pending() {
             Some(Unrest::BoxAnswer)

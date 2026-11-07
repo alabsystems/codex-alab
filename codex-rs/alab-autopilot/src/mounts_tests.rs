@@ -114,7 +114,7 @@ fn the_firmlinks_file_is_read_line_by_line() {
         [
             (
                 PathBuf::from("/homes"),
-                PathBuf::from("/System/Volumes/Data/homes")
+                PathBuf::from("/System/Volumes/Data/Users")
             ),
             (
                 PathBuf::from("/opt"),

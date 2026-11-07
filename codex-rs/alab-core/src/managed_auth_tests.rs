@@ -261,3 +261,64 @@ fn document_read_preserves_exact_bytes_and_refuses_public_or_linked_files() -> i
     assert!(read_document(&link).is_err());
     std::fs::remove_dir_all(root)
 }
+
+#[cfg(unix)]
+#[test]
+fn owner_marker_is_negative_custody_and_never_a_slot() -> io::Result<()> {
+    let root = std::env::temp_dir().join(format!("alab-owner-{:032x}", rand::random::<u128>()));
+    std::fs::create_dir(&root)?;
+    let path = root.join("auth.json");
+    let owner = owner_path(&path);
+    assert!(!owner_present(&path)?);
+    crate::home::save_auth_bytes(&owner, OWNER_MARKER)?;
+    assert!(owner_present(&path)?);
+    assert!(owner_marked(&path)?);
+    assert!(custody_present(&path)?);
+    assert!(binding_for_path(true, None, Some(&path)).is_err());
+    crate::home::save_auth_bytes(
+        &marker_path(&path),
+        format!("{SLOT_MARKER_PREFIX}{SLOT}\n").as_bytes(),
+    )?;
+    assert!(
+        binding_for_path(true, Some(OsStr::new(SLOT)), Some(&path)).is_err(),
+        "a matching slot cannot override canonical owner custody"
+    );
+    crate::home::save_auth_bytes(&owner, b"invalid")?;
+    assert!(owner_marked(&path).is_err());
+    assert!(refuse_unadmitted_owner(&path).is_err());
+    std::fs::remove_file(&owner)?;
+    std::os::unix::fs::symlink(root.join("absent-owner"), &owner)?;
+    assert!(owner_present(&path)?);
+    assert!(owner_marked(&path).is_err());
+    assert!(binding_for_path(true, None, Some(&path)).is_err());
+    std::fs::remove_dir_all(root)
+}
+
+#[tokio::test]
+async fn explicit_context_uses_one_receipt_without_installing_a_legacy_host() {
+    let coordinator = Coordinator::default();
+    assert!(coordinator.refresh(SLOT, DIGEST).await.is_err());
+    let first = HostFixture::new(1);
+    let successor = HostFixture::new(0);
+    assert!(
+        coordinator
+            .refresh_using(SLOT, DIGEST, first.as_ref())
+            .await
+            .is_err()
+    );
+    let result = coordinator
+        .refresh_using(SLOT, DIGEST, successor.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(result.generation, 2);
+    assert_eq!(
+        first.requests(),
+        successor.requests(),
+        "a different admitted same-source manager reconciles the original exact action"
+    );
+    assert!(
+        coordinator.host.get().is_none(),
+        "context does not silently install a legacy route"
+    );
+    assert!(coordinator.refresh(SLOT, DIGEST).await.is_err());
+}

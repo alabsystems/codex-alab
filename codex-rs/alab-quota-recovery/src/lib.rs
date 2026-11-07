@@ -8,6 +8,8 @@ pub use unix::State;
 #[cfg(unix)]
 pub use unix::ordinary_weekly_wall;
 #[cfg(unix)]
+pub use unix::preflight;
+#[cfg(unix)]
 pub use unix::recover_weekly;
 
 #[cfg(not(unix))]
@@ -33,4 +35,15 @@ pub async fn recover_weekly(
     _: &State,
 ) -> bool {
     false
+}
+
+#[cfg(not(unix))]
+pub async fn preflight(
+    _: &codex_login::AuthManager,
+    _: &std::path::Path,
+    _: &str,
+    _: codex_http_client::HttpClientFactory,
+    _: &str,
+    _: &State,
+) {
 }

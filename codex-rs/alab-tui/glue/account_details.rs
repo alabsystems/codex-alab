@@ -28,6 +28,9 @@ mod accounts_pool;
 #[path = "enrollment_pool.rs"]
 mod enrollment_pool;
 
+#[path = "assignment_pool.rs"]
+mod assignment_pool;
+
 const VIEW_ID: &str = "alab-account";
 
 struct AccountDetailsHeader;

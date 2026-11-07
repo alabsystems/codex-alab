@@ -6,6 +6,9 @@
 //! [`crate::connection_manager`]. Registry removal revokes EMA authority before
 //! the thread becomes untracked.
 
+#[path = "../../alab-core/glue/assignment_mcp.rs"] mod alab_assignment; // ALAB(accounts): account retirement owns a fresh elicitation generation without recreating enterprise grants.
+pub use alab_assignment::EnterpriseState; // ALAB(accounts): distinguish absent enterprise authority from a revoked or unavailable owner.
+
 mod status;
 
 #[cfg(test)]
@@ -123,7 +126,7 @@ pub struct McpRuntime {
     event_stream_cancellation: Mutex<EventStreamCancellation>,
     reconnect_pending: AtomicBool,
     resource_cache_generation: AtomicU64,
-    elicitation_router: ElicitationRequestRouter,
+    elicitation_router: alab_assignment::RouterOwner, // ALAB(accounts): old publications retain their closed snapshot.
     resource_origins: Mutex<ResourceOrigins>,
     ema_auth: OnceLock<crate::ema_auth::EmaAuthContext>,
 }
@@ -285,7 +288,7 @@ impl McpRuntime {
             }),
             reconnect_pending: AtomicBool::new(false),
             resource_cache_generation: AtomicU64::new(0),
-            elicitation_router: ElicitationRequestRouter::default(),
+            elicitation_router: alab_assignment::RouterOwner::default(), // ALAB(accounts): a runtime owns replaceable account-scoped router snapshots.
             resource_origins: Mutex::default(),
             ema_auth: OnceLock::new(),
         }
@@ -444,7 +447,7 @@ impl McpRuntime {
                 }),
                 publication_gate,
                 input,
-                self.elicitation_router.clone(),
+                self.elicitation_router.snapshot(), // ALAB(accounts): connections retain their exact router owner.
             ))
             .await,
         );
@@ -696,15 +699,15 @@ impl McpRuntime {
     }
 
     pub fn elicitations_auto_deny(&self) -> bool {
-        self.elicitation_router.auto_deny()
+        self.elicitation_router.snapshot().auto_deny() // ALAB(accounts): inspect the current account router.
     }
 
     pub fn set_elicitations_auto_deny(&self, auto_deny: bool) {
-        self.elicitation_router.set_auto_deny(auto_deny);
+        self.elicitation_router.snapshot().set_auto_deny(auto_deny); // ALAB(accounts): permissions apply to the current account router.
     }
 
     pub fn enable_full_access_form_input(&self) {
-        self.elicitation_router.enable_full_access_form_input();
+        self.elicitation_router.snapshot().enable_full_access_form_input(); // ALAB(accounts): no permission is carried implicitly across retirement.
     }
 
     pub async fn resolve_elicitation(
@@ -713,7 +716,7 @@ impl McpRuntime {
         id: RequestId,
         response: ElicitationResponse,
     ) -> anyhow::Result<()> {
-        self.elicitation_router
+        self.elicitation_router.snapshot() // ALAB(accounts): a late old reply cannot enter the new router's request set.
             .resolve(server_name, id, response)
             .await
     }
@@ -950,7 +953,7 @@ impl McpRuntime {
     }
 
     pub async fn shutdown(&self) {
-        self.elicitation_router.close().await;
+        self.elicitation_router.snapshot().close().await; // ALAB(accounts): close the exact current router before connection teardown.
         let superseded = std::mem::take(
             &mut *self
                 .superseded_connections

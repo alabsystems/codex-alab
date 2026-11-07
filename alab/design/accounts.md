@@ -60,6 +60,38 @@ timeout mean uncertain progress, not permission to start a duplicate login.
 No response contains credentials. Credentials reach Codex only through the
 existing verified native credential-slot materialization and reload boundary.
 
+### Interaction and recovery states
+
+The account view keeps its selected row and scroll position while observations
+refresh. Show the current session account separately from the highlighted row;
+moving the highlight never selects an account. Account labels must be unique
+within the pool for command lookup; ambiguous labels return matching display
+names without submitting an operation. Internally, selection always uses the
+opaque account reference from the displayed snapshot.
+
+| Interaction | Visible result |
+| --- | --- |
+| Open or refresh | Keep the last snapshot visible with its observation time while loading; distinguish an empty pool from an unavailable host. |
+| Add account | Open one enrollment operation with its own progress and cancellation; an email or OTP is entered in aterm's private enrollment UI. |
+| Select an account | Show the destination and “Waiting for current work”; keep the current account marked until the handoff is acknowledged. |
+| Return to automatic selection | Show “Automatic selection pending”, then the acknowledged current account and automatic mode. |
+| Connection lost during a change | Show “Checking account change”; reconnect and poll the same operation. |
+| Enrollment needs interaction | Show “Complete sign-in in aterm”; opening the account view must not start another login. |
+| Account or policy changed | Show the native reason and refresh the choices; a different destination requires a new explicit selection. |
+
+Closing a view dismisses presentation and does not cancel an enrollment or
+assignment. An explicit Cancel requests cancellation of the existing operation;
+show “Cancelling” until native custody proves its outcome. If publication has
+already begun, reconcile that operation and display its actual result. A
+successful response means the session can use the acknowledged destination,
+not merely that its credentials were saved.
+
+Account metadata belongs in the account view, not model messages or transcript
+events. Navigation, refresh and dismissal remain available during network waits.
+An unavailable quota is displayed as unknown, never as zero remaining. Speed
+selection (Fast or Ultrafast) remains a separate model setting and does not imply
+that a subscription account supports that service tier.
+
 Before another model or account-scoped tool request, retire source-account
 realtime/WebSocket connections, account model caches, Apps MCP discovery,
 connections, credentials and tool catalogs. Re-establish those resources under

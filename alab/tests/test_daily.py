@@ -17,6 +17,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 
 
 class DailyTests(unittest.TestCase):
@@ -60,7 +61,7 @@ class DailyTests(unittest.TestCase):
         self.script("df", "#!/bin/sh\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfixture 1048576 1048575 1 99%% /\\n'\n")
         for name in ["lsof", "ps"]:
             self.script(name, "#!/bin/sh\nexit 0\n")
-        self.script("rm", f"#!{sys.executable}\n"
+        self.script("rm", PYTHON_ENTRY +
                     "import json, os, sys\n"
                     "with open(os.environ['DAILY_RM_LOG'], 'a') as out:\n"
                     "    out.write(json.dumps(sys.argv[1:]) + '\\n')\n")

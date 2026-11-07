@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,12 +34,16 @@ class DiskGuardWiringTests(unittest.TestCase):
         self.recorder = self.fixture / "fake-python"
         self.recorder.write_text(
             PYTHON_ENTRY + f"import json, os, sys\nfrom pathlib import Path\n"
-            "if any(Path(arg).name == 'package_cache.py' for arg in sys.argv[1:]):\n"
+            "if (any(Path(arg).name == 'package_cache.py' for arg in sys.argv[1:])\n"
+            "    or sys.argv[1:] == ['-I', '-c', 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)']):\n"
             f"    os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n"
             f"with Path({str(self.record)!r}).open('x') as stream:\n"
             "    json.dump(sys.argv[1:], stream)\n")
         self.recorder.chmod(0o755)
-        self.environment = {"HOME": str(self.home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        git_program = shutil.which("git")
+        self.assertIsNotNone(git_program, "Git is required for disk-wiring fixtures")
+        fixture_path = str(Path(git_program).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin"
+        self.environment = {"HOME": str(self.home), "PATH": fixture_path,
                             "ALAB_PYTHON": str(self.recorder),
                             "ALAB_PACKAGE_CACHE": str(self.fixture / "cache"),
                             "ALAB_CARGO_HOME": str(self.cargo), "TMPDIR": str(self.temporary)}

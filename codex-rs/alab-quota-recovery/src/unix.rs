@@ -13,6 +13,81 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
+const PREFLIGHT_USED_PERCENT: f64 = 95.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Recover,
+    Preflight,
+}
+
+fn preflight_cycle(
+    read: &RateLimitsWithResetCredits,
+    owner: &(String, String, u64),
+    now: i64,
+) -> Option<i64> {
+    let threshold = if read.ordinary_usage_allowed == Some(false) {
+        100.0
+    } else {
+        PREFLIGHT_USED_PERCENT
+    };
+    pressure_cycle(read, owner, now, threshold)
+}
+
+fn pressure_cycle(
+    read: &RateLimitsWithResetCredits,
+    owner: &(String, String, u64),
+    now: i64,
+    threshold: f64,
+) -> Option<i64> {
+    if !matches(read, owner) || explicit_denial(read) || read.ordinary_usage_allowed.is_none() {
+        return None;
+    }
+    read.rate_limits
+        .iter()
+        .filter(|s| s.limit_id.as_deref().is_none_or(|id| id == "codex"))
+        .flat_map(|s| [s.primary.as_ref(), s.secondary.as_ref()])
+        .flatten()
+        .filter(|w| w.used_percent.is_finite() && w.used_percent >= threshold)
+        .filter_map(|w| {
+            if !matches!(w.window_minutes, Some(300 | 10080)) {
+                return None;
+            }
+            let reset = w.resets_at?;
+            (reset.saturating_sub(now) >= 5 * 60).then_some(reset)
+        })
+        .max()
+}
+
+fn permitted_after_preflight(
+    read: &RateLimitsWithResetCredits,
+    owner: &(String, String, u64),
+) -> bool {
+    usage_below(read, owner, PREFLIGHT_USED_PERCENT)
+}
+
+fn usage_below(
+    read: &RateLimitsWithResetCredits,
+    owner: &(String, String, u64),
+    threshold: f64,
+) -> bool {
+    if !matches(read, owner) || explicit_denial(read) || read.ordinary_usage_allowed != Some(true) {
+        return false;
+    }
+    let mut windows = read
+        .rate_limits
+        .iter()
+        .filter(|s| s.limit_id.as_deref().is_none_or(|id| id == "codex"))
+        .flat_map(|s| [s.primary.as_ref(), s.secondary.as_ref()])
+        .flatten()
+        .filter(|w| matches!(w.window_minutes, Some(300 | 10080)))
+        .peekable();
+    windows.peek().is_some()
+        && windows.all(|w| {
+            w.used_percent.is_finite() && w.used_percent >= 0.0 && w.used_percent < threshold
+        })
+}
+
 fn identity(manager: &AuthManager) -> Option<(String, String, u64)> {
     let auth = manager.auth_cached()?;
     if !auth.uses_codex_backend() {
@@ -27,15 +102,6 @@ fn identity(manager: &AuthManager) -> Option<(String, String, u64)> {
 
 fn matches(read: &RateLimitsWithResetCredits, owner: &(String, String, u64)) -> bool {
     read.account_id.as_ref() == Some(&owner.0) && read.user_id.as_ref() == Some(&owner.1)
-}
-
-fn weekly(read: &RateLimitsWithResetCredits) -> Option<&codex_protocol::protocol::RateLimitWindow> {
-    read.rate_limits
-        .iter()
-        .filter(|s| s.limit_id.as_deref().is_none_or(|id| id == "codex"))
-        .flat_map(|s| [s.primary.as_ref(), s.secondary.as_ref()])
-        .flatten()
-        .find(|w| w.window_minutes == Some(10080))
 }
 
 fn explicit_denial(read: &RateLimitsWithResetCredits) -> bool {
@@ -56,23 +122,14 @@ fn eligible(
     owner: &(String, String, u64),
     now: i64,
 ) -> Option<i64> {
-    if !matches(read, owner) || explicit_denial(read) || read.ordinary_usage_allowed != Some(false)
-    {
+    if read.ordinary_usage_allowed != Some(false) {
         return None;
     }
-    let window = weekly(read)?;
-    let reset = window.resets_at?;
-    (window.used_percent.is_finite()
-        && window.used_percent >= 100.0
-        && reset.saturating_sub(now) >= 12 * 3600)
-        .then_some(reset)
+    pressure_cycle(read, owner, now, 100.0)
 }
 
 fn restored(read: &RateLimitsWithResetCredits, owner: &(String, String, u64)) -> bool {
-    matches(read, owner)
-        && !explicit_denial(read)
-        && read.ordinary_usage_allowed == Some(true)
-        && weekly(read).is_some_and(|w| w.used_percent.is_finite() && w.used_percent < 100.0)
+    usage_below(read, owner, 100.0)
 }
 
 fn digest(text: &str) -> String {
@@ -151,10 +208,42 @@ pub async fn recover_weekly(
     };
     tokio::time::timeout(
         Duration::from_secs(45),
-        recover(manager, &config, &owner, turn_id),
+        recover(manager, &config, &owner, turn_id, Purpose::Recover),
     )
     .await
     .unwrap_or(false)
+}
+
+/// Check the authenticated allowance before sampling, independently of model text.
+/// The existing account-bound ledger owns every redemption and uncertain retry.
+pub async fn preflight(
+    manager: &AuthManager,
+    home: &Path,
+    base: &str,
+    factory: HttpClientFactory,
+    turn_id: &str,
+    state: &State,
+) {
+    if !codex_alab_core::active() {
+        return;
+    }
+    let Some(owner) = state
+        .owner
+        .clone()
+        .filter(|owner| identity(manager).as_ref() == Some(owner))
+    else {
+        return;
+    };
+    let config = Settings {
+        home: home.to_owned(),
+        base: base.to_owned(),
+        factory,
+    };
+    let _ = tokio::time::timeout(
+        Duration::from_secs(45),
+        recover(manager, &config, &owner, turn_id, Purpose::Preflight),
+    )
+    .await;
 }
 
 async fn recover(
@@ -162,6 +251,7 @@ async fn recover(
     config: &Settings,
     owner: &(String, String, u64),
     turn_id: &str,
+    purpose: Purpose,
 ) -> bool {
     let current = || codex_alab_core::active() && identity(manager).as_ref() == Some(owner);
     if !current() {
@@ -210,7 +300,21 @@ async fn recover(
     if !current() {
         return false;
     }
-    if restored(&read, owner) {
+    if purpose == Purpose::Preflight && permitted_after_preflight(&read, owner) {
+        if ledger
+            .current
+            .as_ref()
+            .is_some_and(|op| op.outcome == Outcome::Consumed)
+        {
+            let _ = release(
+                &dir,
+                ledger.current.as_ref().map(|op| op.credit.as_str()),
+                turn_id,
+            );
+        }
+        return false;
+    }
+    if purpose == Purpose::Recover && restored(&read, owner) {
         return release(
             &dir,
             ledger.current.as_ref().map(|op| op.credit.as_str()),
@@ -219,8 +323,20 @@ async fn recover(
     }
     let mut tried = std::collections::BTreeSet::new();
     loop {
+        if purpose == Purpose::Preflight
+            && ledger.current.as_ref().is_some_and(|op| {
+                op.outcome == Outcome::Consumed
+                    && credit_at(&dir, &op.credit).is_none_or(|credit| !credit.retry_released)
+            })
+        {
+            return false;
+        }
         let now = chrono::Utc::now().timestamp();
-        let Some(cycle) = eligible(&read, owner, now) else {
+        let cycle = match purpose {
+            Purpose::Recover => eligible(&read, owner, now),
+            Purpose::Preflight => preflight_cycle(&read, owner, now),
+        };
+        let Some(cycle) = cycle else {
             return false;
         };
         let pending = ledger
@@ -295,12 +411,19 @@ async fn recover(
         if !current() {
             return false;
         }
-        if restored(&fresh, owner) {
+        let restored = match purpose {
+            Purpose::Recover => restored(&fresh, owner),
+            Purpose::Preflight => permitted_after_preflight(&fresh, owner),
+        };
+        if restored {
             return release(&dir, Some(&op.credit), turn_id);
         }
         // Unknown POST custody must be reconciled with this same immutable key.
         // A newly applied reset that has not restored usage cannot burn another.
-        if outcome == Outcome::Pending || code == Some(ConsumeRateLimitResetCreditCode::Reset) {
+        if outcome == Outcome::Pending
+            || code == Some(ConsumeRateLimitResetCreditCode::Reset)
+            || (purpose == Purpose::Preflight && outcome == Outcome::Consumed)
+        {
             return false;
         }
         read = fresh;
@@ -497,7 +620,7 @@ fn read_receipt(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
-/// Premium, spend-control and session-only walls cannot consume a weekly reset.
+/// Premium and spend-control walls cannot consume an ordinary allowance reset.
 pub fn ordinary_weekly_wall(details: &codex_protocol::error::UsageLimitReachedError) -> bool {
     use codex_protocol::protocol::RateLimitReachedType;
     details
@@ -577,20 +700,16 @@ mod tests {
         }
     }
     #[test]
-    fn exact_twelve_hour_boundary_and_fail_closed_inputs() {
+    fn exact_five_minute_boundary_and_fail_closed_inputs() {
         let owner = ("account".into(), "user".into(), 1);
         assert_eq!(
-            eligible(&reading(100.0, 10080, 44200), &owner, 1000),
-            Some(44200)
+            eligible(&reading(100.0, 10080, 1300), &owner, 1000),
+            Some(1300)
         );
-        for read in [
-            reading(100.0, 10080, 44199),
-            reading(99.9, 10080, 44200),
-            reading(100.0, 300, 44200),
-        ] {
+        for read in [reading(100.0, 10080, 1299), reading(99.9, 10080, 1300)] {
             assert_eq!(eligible(&read, &owner, 1000), None);
         }
-        let mut read = reading(100.0, 10080, 44200);
+        let mut read = reading(100.0, 10080, 1300);
         read.user_id = Some("other".into());
         assert_eq!(eligible(&read, &owner, 1000), None);
         read.user_id = Some("user".into());
@@ -616,6 +735,87 @@ mod tests {
             read.rate_limits[0].secondary.as_mut().unwrap().used_percent = 0.0;
             assert!(!restored(&read, &owner));
         }
+    }
+
+    #[test]
+    fn preflight_preserves_headroom_in_both_subscription_windows() {
+        let owner = ("account".into(), "user".into(), 1);
+        for (minutes, horizon) in [(300, 300), (10080, 300)] {
+            let mut read = reading(95.0, minutes, 1000 + horizon);
+            read.ordinary_usage_allowed = Some(true);
+            assert_eq!(preflight_cycle(&read, &owner, 1000), Some(1000 + horizon));
+            assert!(!permitted_after_preflight(&read, &owner));
+            read.rate_limits[0].secondary.as_mut().unwrap().used_percent = 94.9;
+            assert_eq!(preflight_cycle(&read, &owner, 1000), None);
+            assert!(permitted_after_preflight(&read, &owner));
+            read.rate_limits[0].secondary.as_mut().unwrap().used_percent = 100.0;
+            read.ordinary_usage_allowed = Some(false);
+            assert_eq!(eligible(&read, &owner, 1000), Some(1000 + horizon));
+            read.rate_limits[0].secondary.as_mut().unwrap().resets_at = Some(999 + horizon);
+            assert_eq!(preflight_cycle(&read, &owner, 1000), None);
+            read.ordinary_usage_allowed = None;
+            assert_eq!(preflight_cycle(&read, &owner, 1000), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_redeems_before_denial_and_does_not_repeat_the_request() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path;
+        codex_alab_core::activate();
+        let server = MockServer::start().await;
+        let redeemed = Arc::new(AtomicBool::new(false));
+        let read_redeemed = Arc::clone(&redeemed);
+        let reset = chrono::Utc::now().timestamp() + 3600;
+        Mock::given(method("GET")).and(path("/api/codex/usage"))
+            .respond_with(move |_: &wiremock::Request| {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "account_id":"account", "user_id":"user", "plan_type":"plus",
+                    "rate_limit":{"allowed":true, "limit_reached":false,
+                        "primary_window":{"used_percent":if read_redeemed.load(Ordering::SeqCst) {0}else{95},
+                        "limit_window_seconds":18000,"reset_at":reset,"reset_after_seconds":3600}}
+                }))
+            }).expect(3).mount(&server).await;
+        Mock::given(method("GET")).and(path("/api/codex/rate-limit-reset-credits"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "available_count":1,"credits":[{"id":"A","reset_type":"codex_rate_limits",
+                "status":"available","granted_at":"2026-01-01T00:00:00Z","expires_at":"2030-01-01T00:00:00Z"}]
+            }))).expect(1).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/api/codex/rate-limit-reset-credits/consume"))
+            .respond_with(move |_: &wiremock::Request| {
+                redeemed.store(true, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"code":"reset","windows_reset":2}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let home = tempfile::tempdir().unwrap();
+        let auth = codex_login::CodexAuth::from_external_chatgpt_tokens("e30.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudCIsImNoYXRncHRfdXNlcl9pZCI6InVzZXIiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InBsdXMifX0.fixture", "account", Some("plus")).unwrap();
+        let manager = AuthManager::from_auth_for_testing_with_home(auth, home.path().to_owned());
+        let state = State::bind(&manager).await;
+        for _ in 0..2 {
+            preflight(
+                &manager,
+                home.path(),
+                &server.uri(),
+                HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault),
+                "turn",
+                &state,
+            )
+            .await;
+        }
+        let account = digest(&format!("{}\0account\0user", server.uri()));
+        let dir = home.path().join(format!("weekly-reset-{account}.d"));
+        let credit = credit_at(&dir, "A").unwrap();
+        assert!(credit.consumed && credit.retry_released);
     }
     #[test]
     fn external_restoration_does_not_spend_a_pending_credit_or_its_positive_retry() {

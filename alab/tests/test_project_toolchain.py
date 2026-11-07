@@ -34,7 +34,10 @@ class ProjectToolchainTests(unittest.TestCase):
                               f"cwd=os.getcwd(),cargo_home=os.environ.get('CARGO_HOME'),git_dir=os.environ.get('GIT_DIR'),cache_exists=Path({str(self.cache)!r}).exists())))\n"
                               "raise SystemExit(75)\n")
         self.front.chmod(0o755)
-        self.env = dict(HOME=str(self.root), PATH="/usr/bin:/bin:/usr/sbin:/sbin",
+        git_program = shutil.which("git")
+        self.assertIsNotNone(git_program, "Git is required for project-selection fixtures")
+        fixture_path = str(Path(git_program).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin"
+        self.env = dict(HOME=str(self.root), PATH=fixture_path,
                         ALAB_PYTHON=sys.executable, ALAB_ATPKG_PUBLISH=str(self.front),
                         ALAB_PACKAGE_CACHE=str(self.cache), GIT_CONFIG_GLOBAL=os.devnull,
                         GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="Fixture",

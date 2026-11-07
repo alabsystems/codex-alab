@@ -37,6 +37,31 @@ use std::time::Instant;
 
 const THREAD: &str = "019a0000-0000-7000-8000-000000000001";
 
+/// Absence in an older record is not proof of an idle opening. New records carry both cases.
+#[test]
+fn a_left_point_keeps_its_tool_work_evidence() {
+    let old: record::LeftPoint =
+        serde_json::from_value(serde_json::json!({"opens": true})).expect("old point");
+    assert!(old.ran_tools);
+    assert!(old.had_questions);
+    for (ran_tools, had_questions) in [(false, false), (true, false), (false, true), (true, true)] {
+        let point: record::LeftPoint = serde_json::from_value(serde_json::json!({
+            "opens": true, "ranTools": ran_tools, "hadQuestions": had_questions
+        }))
+        .expect("new point");
+        assert_eq!(point.ran_tools, ran_tools);
+        assert_eq!(point.had_questions, had_questions);
+        assert!(
+            !point.point.questions,
+            "past boxes do not reopen a current box"
+        );
+        let read: record::LeftPoint =
+            serde_json::from_value(serde_json::to_value(&point).expect("write point"))
+                .expect("read point");
+        assert_eq!(read, point);
+    }
+}
+
 // ---- a clap definition shaped like codex's MultitoolCli (the real one: cli/src/main.rs's
 // ALAB(life) test glue, codex-rs/alab-tui/glue/cli_resume_tests.rs)
 
@@ -1262,6 +1287,8 @@ fn the_record_carries_the_pace_to_a_re_exec_and_a_relaunch() {
                 questions: false,
             },
             opens: true,
+            ran_tools: false,
+            had_questions: true,
         }),
         // A person's Esc over the point, and the goal a turn error blocked at its wall.
         esc: Some(codex_alab_core::session::EscHold {
@@ -1300,7 +1327,10 @@ fn the_record_carries_the_pace_to_a_re_exec_and_a_relaunch() {
         "landHold": {"since": 1_793_000_000_123_u64, "nudges": 3},
         "goAheadHour": 1_793_000_000_456_u64,
         "goAhead": {"acts": 2, "first": 1_793_000_000_789_u64},
-        "leftPoint": {"text": "It parses foo files.", "opens": true},
+        "leftPoint": {
+            "text": "It parses foo files.", "opens": true,
+            "ranTools": false, "hadQuestions": true
+        },
         "esc": {"at": 1_793_000_000_900_u64, "turn": "turn-7"},
         "wallGoal": {"id": "goal-1", "objective": "finish the original task", "budget": 1_000, "turn": "turn-7"},
     });

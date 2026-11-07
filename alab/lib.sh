@@ -275,7 +275,19 @@ alab_build_command() {
 # The guardian owns the BSD lock through cleanup; children inherit no lock descriptor.
 # Canonicalize before locking so two symlink spellings still serialize together.
 alab_package_cache_locked() {
-  local cache="$1" account_home home_root output repo cargo_home common guard_status=0
+  _alab_package_cache_guard run "$@"
+}
+
+# An executable native controller must itself become the cooperative guardian:
+# a signal forwarded to its root PID must reach the owner of writer retirement.
+alab_package_cache_exec() {
+  _alab_package_cache_guard exec "$@"
+}
+
+_alab_package_cache_guard() {
+  local mode="$1"
+  shift
+  local cache="$1" account_home home_root output repo cargo_home common
   local disk_args=() source_args=()
   shift
   # Only packaging opts in; other cache-guard clients retain their existing behavior.
@@ -314,19 +326,13 @@ alab_package_cache_locked() {
       compact --cache "${cache}" >/dev/null \
       || alab_say "package cache maintenance unavailable; existing disk guard remains active"
   fi
-  if /usr/bin/env ALAB_PACKAGE_CACHE="${cache}" "${ALAB_PYTHON:-/usr/bin/python3}" -I -B \
-    "${alab_library_root}/alab/command_guard.py" --cache-lock "${cache}/.alab-package.lockf" \
-    ${disk_args[@]+"${disk_args[@]}"} ${source_args[@]+"${source_args[@]}"} -- "$@"; then
-    guard_status=0
-  else
-    guard_status=$?
+  local guardian=(/usr/bin/env "ALAB_PACKAGE_CACHE=${cache}" "${ALAB_PYTHON:-/usr/bin/python3}" -I -B
+    "${alab_library_root}/alab/command_guard.py" --cache-lock "${cache}/.alab-package.lockf")
+  guardian+=(${disk_args[@]+"${disk_args[@]}"} ${source_args[@]+"${source_args[@]}"} -- "$@")
+  if [[ "${mode}" == exec ]]; then
+    exec "${guardian[@]}"
   fi
-  if [[ ${#source_args[@]} -gt 0 ]]; then
-    "${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${alab_library_root}/alab/package_cache.py" \
-      compact --cache "${cache}" >/dev/null \
-      || alab_say "package cache maintenance deferred after producer retirement"
-  fi
-  return "${guard_status}"
+  "${guardian[@]}"
 }
 
 # alab_upstream_ready: the upstream remote and its refs exist (alab/setup.sh makes them).
@@ -413,10 +419,10 @@ alab_home_or_above() {
 
 # The account home is independent of HOME: a smoke or test may set HOME to a scratch
 # directory, but that must not make this account's files readable. Query passwd with the
-# system interpreter, isolated from caller Python paths; refuse if it cannot name a home.
+# selected interpreter, isolated from caller Python paths; refuse if it cannot name a home.
 alab_account_home() {
   local home
-  home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" || {
+  home="$("${ALAB_PYTHON:-/usr/bin/python3}" -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" || {
     alab_say "alab_contained: cannot look up the current account home"
     return 1
   }

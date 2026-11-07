@@ -129,6 +129,51 @@ class GithubTests(unittest.TestCase):
         self.assertEqual(git(linked, "rev-parse", "HEAD"), self.head)
         self.assertEqual(sum(isinstance(args, tuple) for args, _ in self.client.requests), 1)
 
+    def test_large_current_snapshot_uses_bounded_git_calls_without_changing_refs(self):
+        # Match the release's real tag scale, with every object already local.
+        # Fresh remote enumeration remains required; per-tag Git processes do not.
+        tags = {"refs/tags/rust-vfixture" + str(at): self.head for at in range(1490)}
+        GITHUB.git(self.remote, "update-ref", "--stdin", data=("".join(
+            "update " + ref + " " + oid + "\n" for ref, oid in tags.items())).encode())
+        tags["refs/tags/rust-v0.1.0"] = self.tag
+        destinations = {"refs/upstream-tags/" + ref.removeprefix("refs/tags/"): oid
+                        for ref, oid in tags.items()}
+        destinations["refs/remotes/upstream/main"] = self.head
+        GITHUB.git(self.repo, "update-ref", "--stdin", data=("".join(
+            "update " + ref + " " + oid + "\n" for ref, oid in destinations.items())).encode())
+        before = GITHUB.local_refs(self.repo)
+        with mock.patch.object(GITHUB, "git", wraps=GITHUB.git) as calls:
+            GITHUB.fetch(self.repo, "fixture/codex", self.specs, anonymous=True, client=self.client)
+        self.assertLess(len(calls.call_args_list), 20,
+                        "the warm release fetch must not spawn a process for every tag")
+        self.assertEqual(GITHUB.local_refs(self.repo), before)
+        self.assertFalse(any(isinstance(args, tuple) for args, _ in self.client.requests))
+        self.assertEqual(sum(isinstance(args, str) for args, _ in self.client.requests), 2)
+
+    def test_aborted_ref_batch_matches_git_parser_and_leaves_metadata_untouched(self):
+        before = GITHUB.local_refs(self.repo)
+        reflogs = git(self.repo, "reflog", "show", "--all", "--format=%H %gs")
+        for ref in ("refs/heads/main", "refs/tags/valid", "refs/tags/ümlaut",
+                    "refs/tags/a..b", "refs/tags/foo.lock", "refs/tags/foo.",
+                    "refs/tags/.hidden", "refs/tags/a//b", "refs/tags/a@{b",
+                    "refs/tags/a b", "refs/tags/a?b", "refs/tags/a[b",
+                    "refs/tags/a\\b", "refs/tags/newline\nabort\ncommit",
+                    "refs/tags/tab\tname", "refs/tags/control\x01name"):
+            valid = subprocess.run(["git", "check-ref-format", ref],
+                                   capture_output=True).returncode == 0
+            with self.subTest(ref=ref):
+                if valid:
+                    GITHUB.validate_full_refs(self.repo, [ref])
+                else:
+                    with self.assertRaises(GITHUB.Refused):
+                        GITHUB.validate_full_refs(self.repo, ["refs/tags/valid", ref])
+        for ref in ("HEAD", "refs/tags/nul\0abort\0", "refs/tags/surrogate\ud800", None):
+            with self.subTest(ref=ref), self.assertRaises(GITHUB.Refused):
+                GITHUB.validate_full_refs(self.repo, [ref])
+        self.assertEqual(GITHUB.local_refs(self.repo), before)
+        self.assertEqual(git(self.repo, "reflog", "show", "--all", "--format=%H %gs"), reflogs)
+        self.assertFalse(list((self.repo / ".git").rglob("*.lock")))
+
     def test_oversized_snapshot_refuses_before_native_transfer_or_metadata_update(self):
         snapshot = {"refs/tags/rust-vfixture" + str(at): self.head
                     for at in range(GITHUB.MAX_FETCH_REFS + 1)}

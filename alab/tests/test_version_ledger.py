@@ -20,6 +20,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 SPEC = importlib.util.spec_from_file_location("versions", ROOT / "alab" / "versions.py")
 VERSIONS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERSIONS)
@@ -41,6 +43,7 @@ class Scratch(unittest.TestCase):
         self.env = {key: value for key, value in os.environ.items()
                     if not key.startswith(("GIT_", "ALAB_", "CODEX_ALAB_", "PUB_"))}
         self.env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
+                        ALAB_PYTHON=sys.executable,
                         HOME=str(self.scratch), GIT_AUTHOR_NAME="Upstream",
                         GIT_AUTHOR_EMAIL="upstream@example.invalid", GIT_COMMITTER_NAME="Upstream",
                         GIT_COMMITTER_EMAIL="upstream@example.invalid")
@@ -173,6 +176,8 @@ class CompoundVersionTests(Scratch):
         self.assertIn("+codex.0.164.0: the upstream Codex baseline, rust-v0.164.0",
                       version.stderr)
         self.assertIn("it never orders", version.stderr)
+        self.assertEqual(self.git(self.alab, "status", "--porcelain"), "",
+                         "a version query must leave its source checkout clean")
         client = self.package("--client-version-only")
         self.assertEqual(client.returncode, 0, client.stderr)
         self.assertEqual(client.stdout, f"0.165.0-dev.{count}+g{source[:9]}\n")
@@ -494,7 +499,7 @@ class ReleaseRecordTests(Scratch):
         self.git(self.scratch, "init", "-q", "--bare", str(empty))
         reader = self.scratch / "fixture-agh"
         requests = self.scratch / "agh-requests.jsonl"
-        reader.write_text(f"#!{sys.executable}\n" + f'''
+        reader.write_text(PYTHON_ENTRY + f'''
 import json, pathlib, subprocess, sys
 public = {str(self.public)!r}
 requests = pathlib.Path({str(requests)!r})
@@ -783,14 +788,12 @@ class LedgerGrammarTests(unittest.TestCase):
 
     def test_the_committed_ledger_reads_and_is_toml(self):
         text = (ROOT / "alab" / "versions.toml").read_text()
-        self.assertEqual(VERSIONS.parse(text), [])
+        rows = VERSIONS.parse(text)
         try:
             import tomllib
         except ImportError:
             return
-        self.assertEqual(tomllib.loads(text), {})
-        doc = tomllib.loads(text + "\n" + self.ROW)
-        self.assertEqual(doc["release"], VERSIONS.parse(text + "\n" + self.ROW))
+        self.assertEqual(tomllib.loads(text), {"release": rows} if rows else {})
 
     def test_a_row_reads_exactly(self):
         self.assertEqual(VERSIONS.parse("# a comment\n\n" + self.ROW),

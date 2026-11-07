@@ -32,6 +32,7 @@ class VersionLineTests(unittest.TestCase):
         self.env = {key: value for key, value in os.environ.items()
                     if not key.startswith(("GIT_", "ALAB_", "CODEX_ALAB_", "PUB_"))}
         self.env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
+                        ALAB_PYTHON=sys.executable,
                         HOME=str(self.scratch), GIT_AUTHOR_NAME="Upstream",
                         GIT_AUTHOR_EMAIL="upstream@example.invalid", GIT_COMMITTER_NAME="Upstream",
                         GIT_COMMITTER_EMAIL="upstream@example.invalid")

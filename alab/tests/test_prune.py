@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,10 @@ class PruneCustodyTests(unittest.TestCase):
         scratch = tempfile.TemporaryDirectory(prefix="alab-prune-custody-")
         self.addCleanup(scratch.cleanup)
         self.home = Path(scratch.name).resolve()
+        git_program = shutil.which("git")
+        self.assertIsNotNone(git_program, "Git is required for prune-custody fixtures")
+        self.environment = {"PATH": str(Path(git_program).parent) + ":/usr/bin:/bin",
+                            "HOME": str(self.home)}
         subprocess.run(["git", "init", "-q", str(self.home)], check=True)
         self.root = self.home / "artifacts with spaces/codex"
         self.prefix = self.home / "pkg"
@@ -85,7 +90,7 @@ runpy.run_path(script, run_name="__main__")
             [*command, "--root", str(self.root),
              "--keep", "1", "--prefix", str(self.prefix),
              "--codex-home", str(self.codex_home), "--repo", str(self.home), *extra],
-            env={"PATH": "/usr/bin:/bin", "HOME": str(self.home)},
+            env=self.environment,
             capture_output=True, text=True, timeout=60,
         )
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -252,7 +257,7 @@ sys.argv = [script, *sys.argv[2:]]
 sys.exit(ns["main"]())
 """, str(PRUNE), "--root", str(self.root), "--keep", "1", "--prefix", str(self.prefix),
             "--codex-home", str(self.codex_home), "--repo", str(self.home)],
-            env={"PATH": "/usr/bin:/bin", "HOME": str(self.home)},
+            env=self.environment,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         try:
@@ -281,7 +286,7 @@ with open(sys.argv[1], "rb") as stream:
         finally:
             if child.poll() is None:
                 child.kill()
-                child.communicate(timeout=60)
+            child.communicate(timeout=60)
 
     def test_clone_policy_preserves_all_packages_and_dry_run_never_deletes(self):
         said = self.prune(extra=("--dry-run",))

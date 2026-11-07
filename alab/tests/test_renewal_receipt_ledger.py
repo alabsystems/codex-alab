@@ -84,3 +84,20 @@ class ReceiptLedgerTests(unittest.TestCase):
                 self.write(self.attempt_path, changed)
                 with self.assertRaises(RuntimeError):
                     self.consumed()
+
+    def test_prepared_plan_cannot_stand_for_exact_native_completion(self):
+        self.continuation()
+        path = self.ledgers / ("renewal-" + self.child + ".json")
+        prepared = self.attempt["native_prepare"]
+        for completed in (None, self.receipt["native_prepare"]):
+            with self.subTest(completed=completed):
+                ledger = self.ledger(completed)
+                ledger["native_prepare"] = prepared
+                self.write(path, ledger)
+                self.assertIsNone(self.consumed())
+        self.write(path, self.ledger(prepared))
+        self.assertEqual(self.consumed()["nativeOperationId"], self.child)
+
+
+if __name__ == "__main__":
+    unittest.main()

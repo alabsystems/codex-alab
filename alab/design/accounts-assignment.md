@@ -66,6 +66,50 @@ A definitive terminal response requires durable evidence; timeout and disconnect
 are uncertain. This grammar is agreed; end-to-end runtime qualification remains
 required before advertising assignment support.
 
+## Private destination policy preview
+
+Before draining, `assignment-target schema=1 operation=<id>` obtains policy
+input for that exact prepared operation over the authenticated private channel.
+This is separate from public status and grants no credential access or commit
+authority. Its `OK codex-accounts-change assignment-target <JSON>` reply is
+bounded to 16 KiB and has exactly:
+
+| Field | Meaning |
+| --- | --- |
+| `schema`, `operation`, `session` | Schema 1, exact prepared operation, existing authenticated process/session binding |
+| `pool_revision`, `expected_assignment`, `target_ref` | Exact immutable prepared selection and source assignment |
+| `auth_mode` | `chatgpt` for subscription assignment |
+| `account`, `user` | Destination principal hashes in the existing native renewal domains |
+| `source_grant`, `target_grant` | Private immutable grant-binding hashes, never refresh-token hashes |
+| `source_provider`, `target_provider` | Validated OAuth authority bindings described below |
+| `source_fedramp`, `target_fedramp` | Actual source/destination realm booleans |
+
+The four grant/provider bindings, principal hashes, pool revision and target
+reference are lowercase 64-character hex. Assignment is canonical decimal and
+realms are JSON booleans. Unknown, duplicate or missing fields are refused.
+The SDK matches the immutable prepared operation and checks every registered
+manager's actual login-mode and effective workspace constraints. Account labels,
+email addresses and public readiness are not policy evidence.
+
+A provider binding is SHA-256 over the UTF-8 domain
+`aterm/codex-assignment-provider/v1` followed by a zero byte, then the validated
+refresh token endpoint and OAuth client ID, each prefixed by its UTF-8 byte
+length as an unsigned big-endian 32-bit integer. The endpoint uses the actual
+recorded issuer with trailing slashes removed and `/oauth/token` appended;
+validation follows native refresh authority rules. Exact string equality is
+deliberately conservative. Token JWT `iss` claims and guessed legacy defaults
+cannot supply missing provenance.
+
+Initially require equal source/destination provider bindings and equal realms.
+Preserve each manager's configured endpoints and proxy. Any effective refresh
+endpoint or client override must also match the validated binding; an override
+cannot silently send a managed token elsewhere. The preview does not select a
+new network destination. After binding, verify the loaded document's actual
+provenance and realm against the preview before initializing resources and
+acknowledging. Missing proof or a changed policy refuses the switch. This private
+preview remains unadvertised until the native producer and SDK consumer are
+qualified together.
+
 ## Handoff
 
 1. Prepare validates current source, destination, policy and live consumer
@@ -104,6 +148,21 @@ Authenticate slot records and compare their generation against the canonical
 assignment journal. A signed old record is not proof of the current assignment.
 Source lookup while awaiting ACK reuses the operation's held native lease rather
 than deadlocking on a second acquisition of its own file lock.
+
+Applied status retains the exact acknowledged credential revision. A later shared
+refresh does not rewrite that historical ACK. Replaying its exact original ACK
+body returns the original receipt; public polling alone does not prove that an
+arbitrary ACK body was accepted. Only an authenticated awaiting-ack phase permits
+the pending operation to accept a fresh ACK body after actual source rebinding
+and resource initialization. A generic source-changed error supplies no such proof.
+
+After obtaining the exact ACK receipt, a newer credential revision may complete
+the handoff only with a fresh private source, verified document continuity within
+the same immutable grant/assignment/member scope, actual current auth state and
+resource readiness. A greater counter alone is insufficient. Keep the original
+ACK and its scope evidence separate from the current readiness snapshot. An
+unresolved startup receipt closes new admission without fabricating the old
+process's boundary or native succession authority.
 
 Persist the pending operation, boundary, complete source auth stamp and opaque
 native locator before sending commit. Record the acknowledged destination stamp

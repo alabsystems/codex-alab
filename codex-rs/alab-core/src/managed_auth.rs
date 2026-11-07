@@ -23,6 +23,8 @@ pub const CAPABILITY_MARK: &str = "aterm machine credential slot v1";
 /// a slot whose initial refresh may have no known revision yet.
 pub const PENDING_CAPABILITY_MARK: &str = "aterm machine credential slot pending v1";
 pub const SLOT_MARKER_SUFFIX: &str = ".aterm-slot";
+pub const OWNER_MARKER_SUFFIX: &str = ".aterm-owner";
+pub const OWNER_MARKER: &[u8] = b"ATERM-CODEX-AUTH-OWNER 1\n";
 pub const SLOT_STATE_SUFFIX: &str = ".aterm-slot-state";
 pub const REFRESH_JOURNAL_SUFFIX: &str = ".refreshed";
 pub const SLOT_MARKER_PREFIX: &str = "ATERM-CODEX-AUTH-SLOT 1 ";
@@ -91,6 +93,34 @@ pub fn marker_path(auth_file: &Path) -> PathBuf {
     beside(auth_file, SLOT_MARKER_SUFFIX)
 }
 
+pub fn owner_path(auth_file: &Path) -> PathBuf {
+    beside(auth_file, OWNER_MARKER_SUFFIX)
+}
+
+/// Any owner marker presence closes legacy access, including malformed or unreadable markers.
+pub fn owner_present(auth_file: &Path) -> io::Result<bool> {
+    exists(&owner_path(auth_file))
+}
+
+/// This validates marker syntax only. It never proves a grant or permits credential loading.
+pub fn owner_marked(auth_file: &Path) -> io::Result<bool> {
+    if !owner_present(auth_file)? {
+        return Ok(false);
+    }
+    if read_document(&owner_path(auth_file))?.as_slice() != OWNER_MARKER {
+        return Err(unavailable());
+    }
+    Ok(true)
+}
+
+pub fn refuse_unadmitted_owner(auth_file: &Path) -> io::Result<()> {
+    if owner_present(auth_file)? {
+        Err(unavailable())
+    } else {
+        Ok(())
+    }
+}
+
 pub fn state_path(auth_file: &Path) -> PathBuf {
     beside(auth_file, SLOT_STATE_SUFFIX)
 }
@@ -120,7 +150,9 @@ pub fn refresh_pending(auth_file: &Path) -> io::Result<bool> {
 }
 
 pub fn custody_present(auth_file: &Path) -> io::Result<bool> {
-    Ok(exists(&marker_path(auth_file))? || exists(&state_path(auth_file))?)
+    Ok(owner_present(auth_file)?
+        || exists(&marker_path(auth_file))?
+        || exists(&state_path(auth_file))?)
 }
 
 /// The marker is a private explicit association, not discovery of arbitrary
@@ -137,6 +169,7 @@ pub fn binding_for_path(
     let Some(path) = admitted_path else {
         return Ok(carrier);
     };
+    refuse_unadmitted_owner(path)?;
     let marker = marker_path(path);
     match std::fs::symlink_metadata(&marker) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -233,24 +266,39 @@ struct Slot {
 /// Serializes callers of one slot while retaining an uncertain operation for
 /// exact retry. Other slots proceed independently. The host remains the durable
 /// authority across process exit, cancellation and machines.
+#[derive(Default)]
 pub struct Coordinator {
-    host: Arc<dyn Host>,
+    host: OnceLock<Arc<dyn Host>>,
     slots: Mutex<BTreeMap<String, Arc<Slot>>>,
 }
 
 impl Coordinator {
     pub fn new(host: Arc<dyn Host>) -> Self {
         Self {
-            host,
+            host: OnceLock::from(host),
             slots: Mutex::default(),
         }
+    }
+
+    pub async fn refresh(&self, slot: &str, expected_digest: &str) -> io::Result<Revision> {
+        self.refresh_using(
+            slot,
+            expected_digest,
+            self.host.get().ok_or_else(unavailable)?.as_ref(),
+        )
+        .await
     }
 
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "one slot's owner operation must stay serialized until acknowledgement; other slots have separate guards"
     )]
-    pub async fn refresh(&self, slot: &str, expected_digest: &str) -> io::Result<Revision> {
+    pub async fn refresh_using(
+        &self,
+        slot: &str,
+        expected_digest: &str,
+        host: &dyn Host,
+    ) -> io::Result<Revision> {
         if !valid_slot(slot) || !valid_hex(expected_digest, 64) {
             return Err(unavailable());
         }
@@ -287,11 +335,7 @@ impl Coordinator {
             }
             pending.request.clone()
         };
-        let revision = self
-            .host
-            .refresh(&request)
-            .await
-            .map_err(|_| unavailable())?;
+        let revision = host.refresh(&request).await.map_err(|_| unavailable())?;
         if revision.generation == 0 || !valid_hex(&revision.digest, 64) {
             return Err(unavailable());
         }
@@ -321,13 +365,25 @@ static HOST: OnceLock<Coordinator> = OnceLock::new();
 
 /// Installed by the final CLI through its owned launch hook, never by a model tool.
 pub fn install(host: Arc<dyn Host>) {
-    let _ = HOST.set(Coordinator::new(host));
+    let _ = HOST.get_or_init(Coordinator::default).host.set(host);
 }
 
 pub async fn refresh(slot: &str, expected_digest: &str) -> io::Result<Revision> {
     HOST.get()
         .ok_or_else(unavailable)?
         .refresh(slot, expected_digest)
+        .await
+}
+
+/// Uses the same immutable per-slot receipt as legacy refresh, with explicit
+/// caller-bound admission. It never installs a legacy route implicitly.
+pub async fn refresh_using(
+    slot: &str,
+    expected_digest: &str,
+    host: &dyn Host,
+) -> io::Result<Revision> {
+    HOST.get_or_init(Coordinator::default)
+        .refresh_using(slot, expected_digest, host)
         .await
 }
 

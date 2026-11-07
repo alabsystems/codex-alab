@@ -1,6 +1,25 @@
 <!-- Copyright 2026 Andrew Yates. SPDX-License-Identifier: Apache-2.0 -->
 # codex-alab native harness: the contract between codex-alab and aterm (v2)
 
+## Opening conversations — 2026-11-06
+
+A brief opening exchange without tool work or a question box stays the person's
+conversation under Cruise as well as Land. In particular, `sup` answered with
+`Hey—what are we working on?` must not generate an automatic `Nobody is here to
+answer` turn or a continuation that invents a task. This overrides the historical
+Cruise rule below only for that opening exchange. Policy refreshes, mode switches
+and a re-exec preserve it. Tool work, question boxes, the existing ten-minute work
+budget and later interruptions retain the normal task continuation rules.
+
+The quiet point is published to aterm as `left-to-person@v1` in either mode,
+with the same publication and native-turn fences as Land. Its restart record
+carries `ranTools`; a record without that evidence cannot prove a taskless
+opening when switching to Cruise.
+
+`claude-code-alab` delegates turn-end decisions to aterm's built-in Claude lane;
+it does not implement an independent auto-prompter (`README.md`, “aterm
+supervision: not claimed”). Codex makes this decision in `alab-autopilot`.
+
 ## Current operating rule — 2026-11-01
 
 ALab decides, records the decision and its reason, and continues autonomously. Later AIs

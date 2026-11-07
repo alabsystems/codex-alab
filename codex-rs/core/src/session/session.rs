@@ -1934,6 +1934,7 @@ impl Session {
                 forked_from_ordinal_exclusive,
                 next_internal_sub_id: AtomicU64::new(0),
             });
+            super::alab_assignment::register(&sess); // ALAB(accounts): include private and background sessions sharing this real manager in source retirement.
             if let Some(startup) = &startup {
                 startup.set_session(Arc::clone(&sess));
             }

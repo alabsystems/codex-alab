@@ -183,3 +183,12 @@ async fn unsupported_sdk_work_is_denied_and_running_work_is_cancelled() {
         Err(NetworkPolicyDenied::Revoked)
     );
 }
+
+#[test]
+fn native_source_failure_cannot_become_an_unmanaged_transport() {
+    let policy = NetworkPolicy::unmanaged().with_native_source(Err(()));
+    assert!(matches!(policy.acquire(&Url::parse("https://example.com/").unwrap()), Err(NetworkPolicyDenied::Unavailable)));
+    assert!(matches!(policy.acquire_for_unsupported_sdk(), Err(NetworkPolicyDenied::Unavailable)));
+    let bound = NetworkPolicy::unmanaged().with_account_binding(&policy).unwrap();
+    assert!(matches!(bound.acquire(&Url::parse("https://example.com/").unwrap()), Err(NetworkPolicyDenied::Unavailable)));
+}

@@ -6,6 +6,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,7 +25,10 @@ class PackageSourceVersionTests(unittest.TestCase):
         self.repo.mkdir()
         self.home = self.root / "home"
         self.home.mkdir()
-        self.env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(self.home),
+        self.git_program = shutil.which("git")
+        self.assertIsNotNone(self.git_program, "Git is required for source-version fixtures")
+        fixture_path = str(Path(self.git_program).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin"
+        self.env = {"PATH": fixture_path, "HOME": str(self.home),
                     "TMPDIR": str(self.root), "GIT_CONFIG_NOSYSTEM": "1"}
         self.git("init", "--quiet")
         self.git("config", "user.name", "Package fixture")
@@ -38,7 +42,7 @@ class PackageSourceVersionTests(unittest.TestCase):
         self.calls = self.root / "metadata-calls"
 
     def git(self, *args):
-        done = subprocess.run(["/usr/bin/git", "-C", str(self.repo), *args],
+        done = subprocess.run([self.git_program, "-C", str(self.repo), *args],
                               env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout.strip()

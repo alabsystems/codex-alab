@@ -6,6 +6,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,10 @@ class PackageInputTests(unittest.TestCase):
         self.repo = self.root / "source with spaces"
         self.repo.mkdir()
         self.target = self.root / "target with spaces.noindex"
-        self.env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(self.root),
+        self.git_program = shutil.which("git")
+        self.assertIsNotNone(self.git_program, "Git is required for package-input fixtures")
+        fixture_path = str(Path(self.git_program).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin"
+        self.env = {"PATH": fixture_path, "HOME": str(self.root),
                     "TMPDIR": str(self.root), "GIT_CONFIG_NOSYSTEM": "1"}
         self.cli = self.repo / "scripts/codex_package/cli.py"
         self.cli.parent.mkdir(parents=True)
@@ -38,7 +42,7 @@ class PackageInputTests(unittest.TestCase):
         self.new = self.commit()
 
     def git(self, *args):
-        done = subprocess.run(["/usr/bin/git", "-C", str(self.repo), *args], env=self.env,
+        done = subprocess.run([self.git_program, "-C", str(self.repo), *args], env=self.env,
                               capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout.strip()

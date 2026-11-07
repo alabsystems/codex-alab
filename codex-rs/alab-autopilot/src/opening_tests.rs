@@ -130,7 +130,7 @@ async fn a_resumed_thread_whose_books_were_not_read_is_past_its_opening() {
 /// A PERSON'S TURN THAT ENDS IN A PASSIVE SPELL THAT IS NO OFF (here no claim proven) IS JUDGED
 /// UNDER LAND'S RULE, whatever word was folded before the spell (review of gap 32, findings 2,
 /// 3, 7 and 11): the session's opening exchange is left to the person (Land's first decision
-/// keeps it theirs, Cruise's takes it back), and their message once the session has worked is
+/// keeps it theirs, as Cruise does without tool work), and their message once the session has worked is
 /// carried. NEGATIVE CONTROLS: a Cruise folded before the spell leaves the opening exchange left
 /// all the same (the word folded last would carry it), and no word read is no Off (which would
 /// leave the later message to them).
@@ -173,7 +173,10 @@ async fn a_passive_spell_ends_a_persons_turn_under_lands_rule() {
         assert_eq!(land.left, !worked, "{case}: under Land");
         let mut cruise = state;
         cruise.observe_mode(Mode::Cruise);
-        assert!(!cruise.left, "{case}: Cruise takes it back");
+        assert_eq!(
+            cruise.left, !worked,
+            "{case}: Cruise preserves a taskless opening"
+        );
     }
 }
 
@@ -661,7 +664,7 @@ async fn a_hand_read_that_raced_the_connection_is_read_again_at_the_turns_end() 
 /// A POINT LEFT TO THE PERSON CROSSES THE LIVE UPGRADE'S RE-EXEC (edges-5; aterm re-applies a
 /// LEFT record in its next loop and lets Cruise act there): Land's opening exchange left to the
 /// person moves with no notice, and the image after stands at that point again, still theirs
-/// under Land, so a later switch to Cruise takes it back and continues, as the image before
+/// under Land; a later switch to Cruise preserves this taskless opening, as the image before
 /// would have. NEGATIVE CONTROLS: Land keeps it theirs in the new image, and a history whose
 /// last reply moved since restores no point.
 #[tokio::test]
@@ -719,9 +722,10 @@ async fn a_point_left_to_the_person_crosses_the_re_exec() {
         clock(),
         Duration::ZERO,
     );
-    assert!(
-        matches!(&d.act, decide::Act::Type { rule, .. } if *rule == words::RULE_CONTINUE),
-        "Cruise takes it back and continues: {d:?}"
+    assert_eq!(
+        d.act,
+        decide::Act::Nothing,
+        "Cruise preserves the opening: {d:?}"
     );
     // NEGATIVE CONTROL: Land keeps it theirs.
     let mut land = state;

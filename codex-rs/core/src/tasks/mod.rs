@@ -295,6 +295,7 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
+        let Some(assignment_activity) = crate::session::alab_assignment::task_activity(self, &turn_context).await else { return; }; // ALAB(accounts): admit before plugin or MCP work and hold through actual task completion.
         // Replace the cache; in-flight acquisitions retain their previous Arc.
         self.services
             .thread_extension_data
@@ -424,7 +425,7 @@ impl Session {
             done_clone.notify_waiters();
         }
         .instrument(task_span);
-        let handle = tokio::spawn(storage_originator.scope(task_future));
+        let handle = tokio::spawn(storage_originator.scope(assignment_activity.scope(task_future))); // ALAB(accounts): include finish callbacks and nested task startup in the real source lease.
         let timer = turn_context
             .session_telemetry
             .start_timer(TURN_E2E_DURATION_METRIC, &[])
@@ -476,6 +477,7 @@ impl Session {
         sub_id: String,
     ) {
         let Ok(_exec_start) = self.services.local_agent_runtime.admit_exec_tree_start() else { return; }; // ALAB(exec-tree): retain pending mail when a handoff fences automatic starts.
+        let Some(assignment_start) = crate::session::alab_assignment::automatic_start(self) else { return; }; // ALAB(accounts): retain pending input before extraction while a root assignment is pending.
         if !self.input_queue.has_pending_mailbox_items().await {
             return;
         }
@@ -529,6 +531,7 @@ impl Session {
             }
             None => self.new_turn_with_default_settings(sub_id, options).await,
         };
+        turn_context.extension_data.insert(assignment_start.downgrade()); // ALAB(accounts): carry the actual admitted automatic start through context construction.
         if let Some(trigger) = start_options.turn_trigger {
             turn_context.turn_metadata_state.set_turn_trigger(trigger);
         }

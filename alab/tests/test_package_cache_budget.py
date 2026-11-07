@@ -4,17 +4,23 @@
 """Real package/guardian orchestration with an inert native cache authority."""
 
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
+import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 COMPILER = "0123456789abcdef"
 TARGET = "aarch64-apple-darwin"
 
@@ -232,7 +238,16 @@ class PackageCacheBudgetTests(unittest.TestCase):
         self.repo = self.fixture / "repo"
         (self.repo / "codex-rs").mkdir(parents=True)
         (self.repo / "codex-rs/Cargo.toml").write_text("[workspace]\nmembers = []\n")
-        self.base_env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        # Keep this fixture independent of Apple's optional Git and expose no
+        # unrelated tools alongside the caller's selected executable.
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git, "the cache fixtures require Git")
+        tools = self.fixture / "tools"
+        tools.mkdir()
+        git = tools / "git"
+        git.write_text("#!/bin/sh\nexec " + shlex.quote(real_git) + ' "$@"\n')
+        git.chmod(0o700)
+        self.base_env = {"HOME": str(self.home), "PATH": str(tools) + ":/usr/bin:/bin:/usr/sbin:/sbin",
                          "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                          "GIT_OPTIONAL_LOCKS": "0", "ALAB_PYTHON": sys.executable,
                          "FIXTURE_ROOT": str(ROOT), "FIXTURE_REPO": str(self.repo),
@@ -249,7 +264,7 @@ class PackageCacheBudgetTests(unittest.TestCase):
         self.atpkg = self.prefix / "atpkg"
         self.driver = self.fixture / "compiler-driver"
         for path, body in ((self.host, HOST), (self.atpkg, HOST), (self.driver, DRIVER)):
-            path.write_text(f"#!{sys.executable}\n" + textwrap.dedent(body))
+            path.write_text(PYTHON_ENTRY + textwrap.dedent(body))
             path.chmod(0o700)
         self.worker = self.fixture / "worker.bash"
         self.worker.write_text(textwrap.dedent(WORKER))
@@ -283,14 +298,15 @@ class PackageCacheBudgetTests(unittest.TestCase):
                 "events": events, "marker": marker,
                 "env": environment, "frontend": frontend}
 
-    def run_job(self, case, *, code=0, worker=None, plain=False):
+    def run_job(self, case, *, code=0, worker=None, plain=False, exec_root=False):
         environment = {**case["env"], "FIXTURE_CODE": str(code)}
         command = '. "$FIXTURE_ROOT/alab/lib.sh"; '
         command += 'alab_account_home() { printf "%s\\n" "$HOME"; }; '
         if plain:
             command += 'alab_package_cache_locked "$FIXTURE_CACHE" "$FIXTURE_DRIVER"'
         else:
-            command += 'alab_package_cache_locked "$FIXTURE_CACHE" --build-disk "$FIXTURE_OUTPUT" "$FIXTURE_REPO" '
+            command += ('alab_package_cache_exec' if exec_root else 'alab_package_cache_locked')
+            command += ' "$FIXTURE_CACHE" --build-disk "$FIXTURE_OUTPUT" "$FIXTURE_REPO" '
             command += '"$FIXTURE_MISSING"' if worker == "missing" else '/bin/bash "$FIXTURE_WORKER"'
             environment["FIXTURE_MISSING"] = str(self.fixture / "missing-worker")
         return subprocess.run(["/bin/bash", "-c", "set -euo pipefail; " + command],
@@ -349,6 +365,75 @@ class PackageCacheBudgetTests(unittest.TestCase):
                 self.assert_lifecycle(case, later, success=True)
                 self.assertNotEqual(rows[1]["attempt"], later[1]["attempt"])
                 self.assertEqual(identity, (case["target"].stat().st_dev, case["target"].stat().st_ino))
+
+    def test_package_controller_cancellation_retires_writers_before_root_exit(self):
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=signum):
+                self.check_package_controller_cancellation(signum)
+
+    def check_package_controller_cancellation(self, signum):
+        case = self.case(f"cancel-root-{signum}")
+        ready, release = case["cache"] / "ready", case["cache"] / "release"
+        writer = self.fixture / "cancel-writer.py"
+        writer.write_text(
+            "import os,time\nfrom pathlib import Path\n"
+            "root=Path(os.environ['FIXTURE_CACHE'])\n(root/'ready').touch()\n"
+            "while not (root/'release').exists(): time.sleep(.01)\n"
+            "(root/'released-writer').touch()\n")
+        scripts = self.repo / "alab"
+        scripts.mkdir(exist_ok=True)
+        (scripts / "package.sh").write_text(
+            'package_main() { exec "$FIXTURE_PYTHON" -I -B "$FIXTURE_CANCEL_WRITER"; }\n')
+        # Exercise the actual sourceable selected-entry dispatch with an inert product.
+        # Native authority authentication is outside this process-lifetime fixture.
+        text = (ROOT / "alab/package.sh").read_text()
+        function = "package_selected_entry() {" + text.split("package_selected_entry() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        body = '. "$FIXTURE_ROOT/alab/lib.sh"; repo_root="$FIXTURE_REPO"; '
+        body += 'alab_project_selected() { return 0; }; alab_account_home() { printf "%s\\n" "$HOME"; }; '
+        body += function + '\npackage_selected_entry --out "$FIXTURE_OUTPUT"'
+        lock = case["cache"] / ".alab-package.lockf"
+        def available():
+            with lock.open("r+b") as stream:
+                try:
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return True
+                except BlockingIOError:
+                    return False
+        with (self.fixture / "cancel-stdout").open("wb") as out, (self.fixture / "cancel-stderr").open("wb") as err:
+            child = subprocess.Popen(["/bin/bash", "-c", body], cwd=self.fixture,
+                                     env={**case["env"], "FIXTURE_CANCEL_WRITER": str(writer),
+                                          "ALAB_PACKAGE_CACHE": str(case["cache"])},
+                                     stdout=out, stderr=err, start_new_session=True)
+            try:
+                deadline = time.monotonic() + 10
+                while not ready.exists():
+                    self.assertIsNone(child.poll(), "controller exited before writer startup")
+                    self.assertLess(time.monotonic(), deadline, "writer startup hung")
+                    time.sleep(.01)
+                child.send_signal(signum)  # Only our own unreaped root, as the native front does.
+                code = child.wait(timeout=10)
+                unlocked_at_exit = available()
+            finally:
+                # Also retire the deliberately broken baseline without signalling a descendant PID.
+                release.touch()
+                if child.poll() is None:
+                    child.send_signal(signal.SIGTERM)
+                    child.wait(timeout=10)
+                deadline = time.monotonic() + 10
+                while lock.exists() and not available():
+                    self.assertLess(time.monotonic(), deadline, "fixture custody did not retire")
+                    time.sleep(.01)
+        self.assertTrue(unlocked_at_exit, "root exit must not precede writer retirement and lock release")
+        self.assertEqual(code, 128 + signum)
+        self.assertFalse((case["cache"] / "released-writer").exists(), "cancellation stopped the real writer")
+
+    def test_executable_guard_keeps_maintenance_order_and_product_exit_status(self):
+        for code in (0, 23):
+            with self.subTest(code=code):
+                case = self.case(f"exec-root-{code}")
+                done = self.run_job(case, code=code, exec_root=True)
+                self.assertEqual(done.returncode, code, done.stderr)
+                self.assert_lifecycle(case, self.events(case), success=code == 0)
 
     def test_failed_build_keeps_its_status_through_uncertain_maintenance(self):
         for mode in ("supported", "compact-unavailable", "compact-busy"):

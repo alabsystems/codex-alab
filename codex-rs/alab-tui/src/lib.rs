@@ -10,6 +10,9 @@
 //! (both off under codex-tui's own tests unless a glue test forces them).
 
 pub mod banner;
+mod assignment_record;
+#[cfg(unix)]
+mod assignment;
 
 /// Native account observation used by the ALab-owned TUI glue.
 pub use codex_alab_aterm as aterm;

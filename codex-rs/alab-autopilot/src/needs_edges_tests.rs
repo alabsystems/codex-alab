@@ -228,7 +228,7 @@ fn one_messages_open_fence_hides_no_later_messages_need() {
 /// the Off are theirs while the Off stands, and Land read after it takes the point back, as
 /// aterm's `mode_takes_exchange` does (aterm 2242dc8b91). NEGATIVE CONTROLS: the
 /// session's opening message under the Off stays theirs under Land, a person's hold over Off
-/// takes nothing back, and Cruise takes either back as before.
+/// takes nothing back, and Cruise likewise preserves a taskless opening while carrying later work.
 #[test]
 fn land_takes_back_an_exchange_an_off_left_once_the_session_has_worked() {
     let t = Timing::default();
@@ -268,13 +268,19 @@ fn land_takes_back_an_exchange_an_off_left_once_the_session_has_worked() {
         Act::Nothing
     );
     assert!(opening.left);
-    // NEGATIVE CONTROL: Cruise takes either back.
-    for mut s in [worked(), {
-        let mut s = ThreadState::default();
-        by_hand(&mut s, &t, None, now, "Here is the plan.", 3 * MIN);
-        s
-    }] {
+    // Cruise takes the worked exchange back and preserves a taskless opening.
+    for (mut s, opens) in [
+        (worked(), false),
+        (
+            {
+                let mut s = ThreadState::default();
+                by_hand(&mut s, &t, None, now, "Here is the plan.", 3 * MIN);
+                s
+            },
+            true,
+        ),
+    ] {
         s.observe_mode(Mode::Cruise);
-        assert!(!s.left);
+        assert_eq!(s.left, opens);
     }
 }

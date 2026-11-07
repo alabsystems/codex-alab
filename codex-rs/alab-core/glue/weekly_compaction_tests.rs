@@ -6,6 +6,7 @@
 use super::*;
 use pretty_assertions::assert_eq;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use wiremock::Mock;
 use wiremock::matchers::method;
@@ -66,16 +67,20 @@ async fn weekly_compaction_child() {
         return;
     }
     codex_alab_core::activate();
-    for remote in [false, true] {
+    for (remote, preflight) in [(false, false), (true, false), (false, true), (true, true)] {
         let server = responses::start_mock_server().await;
         let home = tempfile::tempdir().unwrap();
         let restored = Arc::new(AtomicBool::new(false));
         let observed = Arc::clone(&restored);
+        let usage_reads = Arc::new(AtomicUsize::new(0));
         let reset = chrono::Utc::now().timestamp() + 13 * 3600;
         Mock::given(method("GET"))
             .and(path("/api/codex/usage"))
             .respond_with(move |_: &wiremock::Request| {
-                let healthy = observed.load(Ordering::SeqCst);
+                // Reactive cases exhaust quota after a healthy preflight. Proactive
+                // cases begin under pressure and must redeem before the model request.
+                let first_read = usage_reads.fetch_add(1, Ordering::SeqCst) == 0;
+                let healthy = (!preflight && first_read) || observed.load(Ordering::SeqCst);
                 ResponseTemplate::new(200).set_body_json(json!({
                     "account_id":"account","user_id":"user","plan_type":"plus",
                     "rate_limit":{"allowed":healthy,"limit_reached":!healthy,
@@ -83,7 +88,7 @@ async fn weekly_compaction_child() {
                             "limit_window_seconds":604800,"reset_at":reset,"reset_after_seconds":46800}}
                 }))
             })
-            .expect(2)
+            .expect(if preflight { 2 } else { 3 })
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -114,7 +119,7 @@ async fn weekly_compaction_child() {
         provider.base_url = Some(format!("{}/v1", server.uri()));
         provider.supports_websockets = false;
         let base = server.uri();
-        let (session, turn, _events) = make_session_and_context_with_auth_config_home_and_rx(
+        let (session, turn, events) = make_session_and_context_with_auth_config_home_and_rx(
             auth,
             Vec::new(),
             home.path(),
@@ -160,13 +165,21 @@ async fn weekly_compaction_child() {
         } else {
             responses::ev_assistant_message("summary", "retained summary")
         };
-        let requests = responses::mount_response_sequence(&server, vec![
-            ResponseTemplate::new(429).set_body_json(json!({"error":{
+        let mut replies = Vec::new();
+        if !preflight {
+            replies.push(ResponseTemplate::new(429).set_body_json(json!({"error":{
                 "type":"usage_limit_reached","message":"Fixture weekly quota exhausted","resets_at":reset
-            }})),
-            ResponseTemplate::new(200).insert_header("content-type", "text/event-stream")
-                .set_body_string(responses::sse(vec![item, responses::ev_completed("compact-success")])),
-        ]).await;
+            }})));
+        }
+        replies.push(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(responses::sse(vec![
+                    item,
+                    responses::ev_completed("compact-success"),
+                ])),
+        );
+        let requests = responses::mount_response_sequence(&server, replies).await;
         let compact = async {
             if remote {
                 crate::compact_remote_v2::run_remote_compact_task(Arc::clone(&session), step, world)
@@ -184,17 +197,42 @@ async fn weekly_compaction_child() {
                 .await
             }
         };
-        tokio::time::timeout(Duration::from_secs(15), compact)
-            .await
-            .unwrap()
-            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(15), compact).await;
+        if result.is_err() {
+            let paths = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .map(|request| format!("{} {}", request.method, request.url.path()))
+                .collect::<Vec<_>>();
+            let errors = std::iter::from_fn(|| events.try_recv().ok())
+                .filter_map(|event| match event.msg {
+                    EventMsg::Error(error) => Some(error.message),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            panic!(
+                "compaction stalled: remote={remote}, reset={}, paths={paths:?}, errors={errors:?}",
+                restored.load(Ordering::SeqCst)
+            );
+        }
+        result.unwrap().unwrap();
         let bodies = requests.requests();
-        assert_eq!(bodies.len(), 2, "exactly one original compaction retry");
-        assert_eq!(
-            bodies[0].body_json()["input"],
-            bodies[1].body_json()["input"],
-            "compaction input survives redemption"
+        assert_eq!(bodies.len(), if preflight { 1 } else { 2 });
+        assert!(
+            bodies[0].body_json()["input"]
+                .to_string()
+                .contains("keep this exact compaction input"),
+            "the original history reaches compaction"
         );
+        if !preflight {
+            assert_eq!(
+                bodies[0].body_json()["input"],
+                bodies[1].body_json()["input"],
+                "compaction input survives redemption"
+            );
+        }
         assert!(restored.load(Ordering::SeqCst));
         assert!(
             turn.extension_data

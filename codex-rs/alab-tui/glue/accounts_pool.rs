@@ -140,7 +140,7 @@ impl ChatWidget {
         self.alab_fetch_accounts(weak, thread_id, tx);
     }
 
-    fn alab_accounts_view(&mut self) -> Weak<Mutex<String>> {
+    pub(crate) fn alab_accounts_view(&mut self) -> Weak<Mutex<String>> {
         self.bottom_pane.dismiss_view_by_id(VIEW_ID);
         let text = Arc::new(Mutex::new(
             "Loading subscription accounts from aterm…".to_owned(),

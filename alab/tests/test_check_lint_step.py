@@ -11,6 +11,7 @@ under alab_contained as alab/sync.sh's run_check does, since what the sandbox re
 here-document's temp file, under macOS's bash 3.2) breaks only there.
 """
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -21,7 +22,11 @@ import sys
 import tempfile
 import unittest
 
-from test_unit_results import RUNNER
+SPEC = importlib.util.spec_from_file_location(
+    "lint_step_fixtures", Path(__file__).with_name("test_unit_results.py"))
+FIXTURES = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(FIXTURES)
+RUNNER = FIXTURES.RUNNER
 
 
 ROOT = Path(__file__).resolve().parents[2]

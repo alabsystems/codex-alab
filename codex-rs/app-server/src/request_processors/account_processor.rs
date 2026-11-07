@@ -1098,6 +1098,7 @@ impl AccountRequestProcessor {
         &self,
         params: GetAuthStatusParams,
     ) -> Result<GetAuthStatusResponse, JSONRPCErrorError> {
+        let _assignment_resource = self.auth_manager.alab_account_resource().map_err(|_| invalid_request("account assignment is pending; authentication read was deferred"))?; // ALAB(accounts): hold source ownership through auth resolution and status delivery.
         let include_token = params.include_token.unwrap_or(false);
         let do_refresh = params.refresh_token.unwrap_or(false);
 
@@ -1172,6 +1173,7 @@ impl AccountRequestProcessor {
         &self,
         params: GetAccountRateLimitsParams,
     ) -> Result<GetAccountRateLimitsResponse, JSONRPCErrorError> {
+        let _assignment_resource = self.auth_manager.alab_account_resource().map_err(|_| invalid_request("account assignment is pending; usage read was deferred"))?; // ALAB(accounts): drain source reads and prevent new background HTTP across assignment.
         let Some((auth, http_client_factory)) =
             self.auth_manager.auth_with_http_client_factory().await
         else {
@@ -1281,6 +1283,7 @@ impl AccountRequestProcessor {
         &self,
         params: Option<GetAccountTokenUsageParams>,
     ) -> Result<GetAccountTokenUsageResponse, JSONRPCErrorError> {
+        let _assignment_resource = self.auth_manager.alab_account_resource().map_err(|_| invalid_request("account assignment is pending; token usage read was deferred"))?; // ALAB(accounts): background account reads cannot straddle source publication.
         let thread_id = params
             .and_then(|params| params.thread_id)
             .map(|thread_id| {

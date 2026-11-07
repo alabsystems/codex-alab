@@ -654,6 +654,38 @@ fn left_point(h: &Harness) {
     assert!(h.rt.state().left, "the point is left to the person");
 }
 
+/// The greeting is quiet locally and published once to the host in either mode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cruise_opening_is_published_as_the_persons_exchange() {
+    for (word, mode) in [
+        ("cruise", crate::decide::Mode::Cruise),
+        ("land", crate::decide::Mode::Land),
+    ] {
+        let h = started_with_claim_watch(&[], |fake, _| fake.set_status("autopilot", word), false)
+            .await;
+        wait_until("the claim is proven", || h.sup.acting()).await;
+        h.rt.with_state(|state| {
+            let end = TurnEnd {
+                worked: Duration::ZERO,
+                ..ended(Some("Hey—what are we working on?"), None)
+            };
+            state.ended_under = Some(mode);
+            state.observe_person_hand(end.at);
+            state.observe_turn_end(end, &Timing::default());
+        });
+        assert!(h.rt.state().left);
+        for _ in 0..2 {
+            Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
+            assert_eq!(
+                h.fake.acts(),
+                vec![crate::words::RULE_LEFT.to_string()],
+                "{word}"
+            );
+            assert!(h.rt.state().left, "{word}");
+        }
+    }
+}
+
 /// AN ATERM WITHOUT THE ACT LEASE (CX-C C1). aterm before 0.110.0 answers `meta prepare
 /// harness_act` with its plain `meta` usage. aterm 0.109.0 reads `left-to-person@v1` as
 /// `theirs`: the point is recorded in its unbounded spelling, inside the publication gate,
@@ -1757,9 +1789,8 @@ async fn reread_hold(h: &Harness, answer: &str) {
 
 /// A PERSON'S HOLD OVER AUTOPILOT OFF TAKES NO EXCHANGE BACK at the runtime's look (review of
 /// gap 32, finding 9): the hold keeps the claim and the policy's word Cruise while the word the
-/// supervisor names is Off, so an exchange the Off left stays the person's, and Land read after
-/// the hold keeps it theirs. NEGATIVE CONTROL: the same look once the hold reads Cruise as the
-/// session's word takes it back.
+/// supervisor names is Off, so an exchange the Off left stays the person's. NEGATIVE CONTROL:
+/// the same look once the hold reads Cruise as the session's word takes this later exchange back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hold_over_autopilot_off_takes_no_exchange_back() {
     use crate::decide::Mode as Word;
@@ -1772,6 +1803,7 @@ async fn a_hold_over_autopilot_off_takes_no_exchange_back() {
     assert_eq!(h.shared.harness_word(), HarnessWord::Off);
     // The person's quick message ends under the hold: no word, as the runtime sets it there.
     h.rt.with_state(|state| {
+        state.seed_worked();
         let end = TurnEnd {
             worked: Duration::ZERO,
             ..ended(Some("Here is where it stands."), None)

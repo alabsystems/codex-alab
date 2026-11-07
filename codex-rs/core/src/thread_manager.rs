@@ -277,6 +277,7 @@ pub struct ThreadManager {
 /// agent budget remain bound to the parent that created this value.
 #[derive(Clone)]
 pub struct InternalSessionParent {
+    pub(crate) assignment_parent: Option<codex_alab_core::assignment::ActivityRef>, // ALAB(accounts): capture live source lineage even for unregistered private parents.
     pub(crate) thread_id: ThreadId,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) agent_control: AgentControlInit,
@@ -431,6 +432,7 @@ struct PreparedChildOrigin {
 }
 
 struct ThreadSpawnRequest {
+    assignment_parent: Option<codex_alab_core::assignment::Activity>, // ALAB(accounts): retain the actual parent lease through child startup.
     ready_notification: ThreadReadyNotification,
     startup: Option<Arc<crate::session::startup::SessionStartup>>,
     options: StartThreadOptions,
@@ -454,6 +456,7 @@ impl ThreadSpawnRequest {
         agent_control: impl Into<AgentControlInit>,
     ) -> Self {
         Self {
+            assignment_parent: auth_manager.alab_assignment_domain().current(), // ALAB(accounts): nested source work inherits authority, new roots do not.
             ready_notification: ThreadReadyNotification::Emit,
             startup: None,
             options,
@@ -1289,6 +1292,7 @@ impl ThreadManager {
         let parent = self.get_thread(parent_thread_id).await?;
         options.initial_history = history;
         options.internal_parent = Some(InternalSessionParent {
+            assignment_parent: crate::session::alab_assignment::parent(&parent.session).await.map(|activity| activity.downgrade()), // ALAB(accounts): retain the active source's actual lease.
             thread_id: parent_thread_id,
             auth_manager: Arc::clone(&parent.session.services.auth_manager),
             agent_control: AgentControlInit::Provided {
@@ -1335,6 +1339,7 @@ impl ThreadManager {
         let mut request = if let Some(parent) = parent {
             let mut request =
                 ThreadSpawnRequest::new(options, parent.auth_manager, parent.agent_control);
+            request.assignment_parent = parent.assignment_parent.and_then(|activity| activity.upgrade()).or(request.assignment_parent); // ALAB(accounts): private parent capture survives an async startup handoff.
             request.parent_thread_id = Some(parent.thread_id);
             request.parent_originator = Some(parent.originator);
             request.inherited_instructions = parent.inherited_instructions;
@@ -2267,6 +2272,8 @@ impl ThreadManagerState {
 
     /// Spawn a new thread with optional history and register it with the manager.
     async fn spawn_thread(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+        let _assignment_start = crate::session::alab_assignment::startup(&request.auth_manager, request.assignment_parent.as_ref()).await?; // ALAB(accounts): include session initialization in the shared manager's barrier.
+        if let Some(parent) = &request.assignment_parent { request.options.thread_extension_init.insert(parent.downgrade()); } // ALAB(accounts): child turns can finish the admitted source tree while root admission is pending.
         let cancellation = request
             .options
             .config
@@ -2291,6 +2298,7 @@ impl ThreadManagerState {
         let startup_guard =
             owns_startup.then(|| SessionStartupGuard::new(Arc::clone(&startup_state)));
         let ThreadSpawnRequest {
+            assignment_parent: _assignment_parent, // ALAB(accounts): retain the admitted parent until startup returns.
             ready_notification,
             startup,
             options,

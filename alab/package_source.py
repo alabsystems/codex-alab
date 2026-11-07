@@ -379,12 +379,14 @@ def bind(binding, key, source_id, epoch):
 
 
 def git_identity(repo):
-    """Fix this command's resolved committer time so its exact reflog is known."""
-    identity = git(repo, "var", "GIT_COMMITTER_IDENT")
+    """Name our automated reflog writes and fix their resolved committer time."""
+    environment = {"GIT_COMMITTER_NAME": "ALab package source custody",
+                   "GIT_COMMITTER_EMAIL": "package-source@invalid"}
+    identity = git(repo, "var", "GIT_COMMITTER_IDENT", env=environment)
     match = re.fullmatch(r"(.+) (-?[0-9]+) ([+-][0-9]{4})", identity)
     if not match or "\n" in identity or "\t" in identity or len(os.fsencode(identity)) > MAX_BYTES:
         raise ValueError("Git did not provide a single bounded committer identity")
-    return os.fsencode(identity), {"GIT_COMMITTER_DATE": f"@{match[2]} {match[3]}"}
+    return os.fsencode(identity), {**environment, "GIT_COMMITTER_DATE": f"@{match[2]} {match[3]}"}
 
 
 def binding(repo, source, commit):

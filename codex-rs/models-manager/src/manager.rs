@@ -39,6 +39,8 @@ use tracing::Instrument as _;
 use tracing::error;
 use tracing::info;
 
+#[path = "../../alab-core/glue/assignment_models.rs"] mod alab_assignment; // ALAB(accounts): catalog I/O participates in the real manager's source boundary.
+
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 
@@ -654,6 +656,7 @@ impl OpenAiModelsManager {
         &self,
         http_client_factory: &HttpClientFactory,
     ) -> CoreResult<()> {
+        let _assignment_resource = alab_assignment::admit(self.auth_manager.as_deref())?; // ALAB(accounts): unadmitted prewarming never holds retirement open.
         let client_version = crate::client_version_to_whole();
         let request_identity = self.endpoint_client.identity();
         let ModelsEndpointResponse {

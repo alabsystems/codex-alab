@@ -188,12 +188,14 @@ def list_refs(repo, remote, patterns, *, anonymous=False, client=None):
             if not isinstance(ref, str) or not isinstance(oid, str) or not OID.fullmatch(oid):
                 raise ValueError
             if any(fnmatch.fnmatchcase(ref, pattern) for pattern in patterns):
-                git(repo, "check-ref-format", ref)
                 if ref in found and found[ref] != oid:
                     raise Refused("remote reference listing changed within one snapshot")
                 found[ref] = oid
+                if len(found) > MAX_FETCH_REFS:
+                    raise Refused("reference snapshot exceeds Agh's 2048-reference batch contract")
     except (KeyError, TypeError, ValueError):
         raise Refused("Agh returned a malformed reference identity") from None
+    validate_full_refs(repo, found)
     return found
 
 
@@ -203,6 +205,32 @@ def current_ref(repo, ref):
     if oid and not OID.fullmatch(oid):
         raise Refused("local reference has an invalid object identity")
     return oid or ZERO
+
+
+def validate_full_refs(repo, refs):
+    """Use Git's ref parser once, without preparing or committing any update.
+
+    A release can enumerate thousands of tags. Spawning check-ref-format for
+    every source and destination exhausts the whole fetch deadline even when
+    every object is already local. NUL-delimited verify commands preserve each
+    name as data; abort leaves existing refs and their reflogs untouched.
+    """
+    refs = list(refs)
+    if any(not isinstance(ref, str) or not ref.startswith("refs/") or "\0" in ref
+           for ref in refs):
+        raise Refused("reference validation needs full, NUL-free ref names")
+    refs = sorted(set(refs))
+    if not refs:
+        return
+    commands = [b"start\0"]
+    for ref in refs:
+        try:
+            name = ref.encode("utf-8")
+        except UnicodeEncodeError:
+            raise Refused("reference name is not valid UTF-8") from None
+        commands.append(b"verify " + name + b"\0" + ZERO.encode("ascii") + b"\0")
+    commands.append(b"abort\0")
+    git(repo, "update-ref", "--stdin", "-z", data=b"".join(commands))
 
 
 def local_refs(repo):
@@ -287,20 +315,21 @@ def fetch(repo, remote, refspecs, *, anonymous=False, snapshot=None, client=None
             prefix, wildcard, suffix = source.partition("*")
             middle = ref[len(prefix):len(ref) - len(suffix) if suffix else None] if wildcard else ""
             target = destination.replace("*", middle)
-            if target in desired and desired[target] != oid:
+            if target in desired and desired[target][0] != oid:
                 raise Refused("different source references map to one fetch destination")
-            desired[target] = oid
-            git(repo, "check-ref-format", target)
-            guard_ref(repo, target, common)
-            old = before.get(target, ZERO)
-            if old == oid:
-                continue
-            if old != ZERO and target.startswith("refs/tags/"):
-                raise Refused("an existing public release tag is immutable")
-            slot = "refs/agh/codex-release-" + hashlib.sha256((identity + "\n" + ref).encode()).hexdigest()[:24]
-            guard_ref(repo, slot, common)
-            pending[target] = (oid, old, force, ref, slot)
-            updates[target] = (oid, old)
+            desired[target] = (oid, force, ref)
+    validate_full_refs(repo, desired)
+    for target, (oid, force, ref) in desired.items():
+        guard_ref(repo, target, common)
+        old = before.get(target, ZERO)
+        if old == oid:
+            continue
+        if old != ZERO and target.startswith("refs/tags/"):
+            raise Refused("an existing public release tag is immutable")
+        slot = "refs/agh/codex-release-" + hashlib.sha256((identity + "\n" + ref).encode()).hexdigest()[:24]
+        guard_ref(repo, slot, common)
+        pending[target] = (oid, old, force, ref, slot)
+        updates[target] = (oid, old)
     if network:
         rows = {}
         for oid, _old, _force, ref, slot in pending.values():

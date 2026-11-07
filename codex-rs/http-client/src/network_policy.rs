@@ -12,6 +12,8 @@ use std::sync::MutexGuard;
 use std::sync::Weak;
 
 use reqwest::Url;
+
+#[path = "../../alab-core/glue/http_native_source.rs"] mod alab_native; // ALAB(accounts): native source use follows request/body/WebSocket lifetime.
 use tokio::sync::watch;
 
 /// Effective application destinations, after the requirements owner has applied precedence.
@@ -57,6 +59,7 @@ pub struct NetworkPolicy {
     state: Option<Arc<Mutex<State>>>,
     endpoints: Option<Arc<BTreeSet<Url>>>,
     account: Option<u64>,
+    alab_native: alab_native::Binding, // ALAB(accounts): captured native credential scope.
 }
 
 impl fmt::Debug for NetworkPolicy {
@@ -71,6 +74,7 @@ impl PartialEq for NetworkPolicy {
     fn eq(&self, other: &Self) -> bool {
         self.endpoints == other.endpoints
             && self.account == other.account
+            && self.alab_native == other.alab_native // ALAB(accounts): compare exact native member and source revision.
             && match (&self.state, &other.state) {
                 (Some(left), Some(right)) => Arc::ptr_eq(left, right),
                 (None, None) => true,
@@ -144,6 +148,7 @@ impl NetworkPolicyController {
             state: Some(self.state.clone()),
             endpoints: None,
             account: None,
+            alab_native: alab_native::Binding::NONE, // ALAB(accounts): ordinary policies have no native source.
         }
     }
 
@@ -194,6 +199,7 @@ impl NetworkPolicy {
             state: None,
             endpoints: None,
             account: None,
+            alab_native: alab_native::Binding::NONE, // ALAB(accounts): ordinary policies have no native source.
         }
     }
 
@@ -217,6 +223,7 @@ impl NetworkPolicy {
     /// Bind a caller's restrictions to a captured credential policy without widening either.
     /// Different managed controllers or account bindings cannot authorize the same request.
     pub fn with_account_binding(mut self, credentials: &Self) -> Option<Self> {
+        self.alab_native = self.alab_native.bind(&credentials.alab_native)?; // ALAB(accounts): never pair A credentials with a B transport.
         if let Some(state) = &credentials.state {
             if let Some(caller) = &self.state {
                 if !Arc::ptr_eq(caller, state) {
@@ -240,7 +247,7 @@ impl NetworkPolicy {
 
     /// Whether this transport participates in the application policy lifecycle.
     pub fn is_managed(&self) -> bool {
-        self.state.is_some()
+        self.state.is_some() || self.alab_native.is_bound() // ALAB(accounts): a native-only source still requires policy-aware transport.
     }
 
     /// Watches effective changes; unmanaged callers have no application policy owner.
@@ -302,8 +309,9 @@ impl NetworkPolicy {
         &self,
         destination: PermitDestination,
     ) -> Result<NetworkPermit, NetworkPolicyDenied> {
+        let alab_native = self.alab_native.acquire()?; // ALAB(accounts): admit actual source use before transport work.
         let Some(state) = &self.state else {
-            return Ok(NetworkPermit { inner: None });
+            return Ok(NetworkPermit { inner: None, alab_native });
         };
         let mut state = lock_state(state);
         if self.account.is_some_and(|account| account != state.account) {
@@ -328,6 +336,7 @@ impl NetworkPolicy {
         state.permits.push(Arc::downgrade(&permit));
         Ok(NetworkPermit {
             inner: Some(permit),
+            alab_native, // ALAB(accounts): response and WebSocket clones keep the actual source lease.
         })
     }
 }
@@ -336,6 +345,7 @@ impl NetworkPolicy {
 #[derive(Clone)]
 pub struct NetworkPermit {
     inner: Option<Arc<Permit>>,
+    alab_native: Option<codex_alab_core::native_source_lifetime::NetworkUse>, // ALAB(accounts): request use survives through the last body/WS owner.
 }
 
 impl fmt::Debug for NetworkPermit {
@@ -346,6 +356,7 @@ impl fmt::Debug for NetworkPermit {
 
 impl NetworkPermit {
     pub fn check(&self) -> Result<(), NetworkPolicyDenied> {
+        alab_native::check(self)?; // ALAB(accounts): native EOF or source retirement revokes credential use.
         if self
             .inner
             .as_ref()
@@ -358,6 +369,7 @@ impl NetworkPermit {
     }
 
     pub async fn revoked(&self) {
+        let application = async { // ALAB(accounts): preserve the original application-policy wait.
         match &self.inner {
             Some(permit) => {
                 let _ = permit
@@ -368,6 +380,7 @@ impl NetworkPermit {
             }
             None => std::future::pending().await,
         }
+        }; alab_native::revoked(self, application).await; // ALAB(accounts): join native revocation without moving upstream's wait.
     }
 
     pub async fn run<T>(
@@ -377,7 +390,7 @@ impl NetworkPermit {
         tokio::select! {
             biased;
             _ = self.revoked() => Err(NetworkPolicyDenied::Revoked),
-            result = operation => Ok(result),
+            result = alab_native::run(self, operation) => result, // ALAB(accounts): native Begin precedes transport inside the existing revocation race.
         }
     }
 }

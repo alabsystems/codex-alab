@@ -669,4 +669,28 @@ pub(crate) async fn bind_weekly(sess: &Session, turn: &TurnContext) {
         let state = codex_alab_quota_recovery::State::bind(&sess.services.auth_manager).await;
         turn.extension_data.insert_if(state, |old| old.is_none());
     }
+    if codex_alab_core::active()
+        && weekly_provider(turn)
+        && !turn.session_source.is_non_root_agent()
+        && (matches!(
+            turn.session_source,
+            codex_protocol::protocol::SessionSource::Cli
+        ) || turn
+            .extension_data
+            .get::<codex_alab_core::quota::HeadlessExec>()
+            .is_some())
+        && let Some(state) = turn
+            .extension_data
+            .get::<codex_alab_quota_recovery::State>()
+    {
+        codex_alab_quota_recovery::preflight(
+            &sess.services.auth_manager,
+            &turn.config.codex_home,
+            &turn.config.chatgpt_base_url,
+            turn.config.http_client_factory(),
+            &turn.sub_id,
+            &state,
+        )
+        .await;
+    }
 }

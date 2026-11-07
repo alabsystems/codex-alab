@@ -806,7 +806,7 @@ if git cat-file -e "${commit}:alab/versions.toml" 2>/dev/null; then
 alab/client-version: the ledger maps codex-alab's own line, which a commit names with both \
 (alab/README.md, Decision 8)"
 fi
-versions_py=("${ALAB_PYTHON:-/usr/bin/python3}" -I "${repo_root}/alab/versions.py")
+versions_py=("${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${repo_root}/alab/versions.py")
 # The public release repository: the record of every release (each a snapshot naming the dev
 # commit it was cut from), which the ledger check reads (alab/versions.py, released).
 # publish/pre-promote names the engine's release repository here.
@@ -1499,7 +1499,7 @@ package_selected_entry() {
   [[ "${output}" == /* ]] || output="${repo_root}/${output}"
   # The command guardian owns the cache's BSD lock through child-group cleanup:
   # V8's temporaries, rg's replacement and package staging share this lifetime.
-  alab_package_cache_locked "${cache}" --build-disk "${output}" "${repo_root}" /bin/bash -c \
+  alab_package_cache_exec "${cache}" --build-disk "${output}" "${repo_root}" /bin/bash -c \
     '. "$1"; shift; package_main "$@"' alab-package "${repo_root}/alab/package.sh" "$@"
 }
 

@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import signal
 import subprocess
@@ -20,6 +21,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 CLIENT = "0.166.0-dev.1+gaaaaaaaaa"
 PRODUCT = "0.1.0-dev.1+codex.0.165.0.gaaaaaaaaa"
+PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
 
 
 class ExecutorSmokeTests(unittest.TestCase):
@@ -33,7 +35,7 @@ class ExecutorSmokeTests(unittest.TestCase):
         (self.package / "codex-package.json").write_text(json.dumps(
             {"version": PRODUCT, "execServer": "bin/codex-exec-server"}))
         executable = self.package / "bin/codex-exec-server"
-        executable.write_text(f"#!{sys.executable}\n" + r'''
+        executable.write_text(PYTHON_ENTRY + r'''
 import json, os, sys
 from pathlib import Path
 home = Path.home()
@@ -128,13 +130,17 @@ for line in sys.stdin:
         target = self.root / "target checkout"
         target.mkdir()
         for repo in (driver, target):
-            subprocess.run(["/usr/bin/git", "init", "--quiet", str(repo)], check=True, timeout=60)
+            subprocess.run(["git", "init", "--quiet", str(repo)], check=True, timeout=60)
         cargo_home = self.root / "cargo-home"
         cargo_home.mkdir()
         (cargo_home / ".alab-seeded").touch()
         (self.home / "scenario").write_text("valid")
         environment = {key: value for key, value in os.environ.items() if not key.startswith("ALAB_")}
-        environment.update(ALAB_CONTAIN="1", ALAB_CARGO_HOME=str(cargo_home), ALAB_PYTHON=sys.executable)
+        # The profile denies reads beneath its declared home. OS temporary paths
+        # otherwise remain readable, so the missing-read control needs this home
+        # to contain both checkouts rather than depending on tempfile's location.
+        environment.update(HOME=str(self.root), ALAB_CONTAIN="1",
+                           ALAB_CARGO_HOME=str(cargo_home), ALAB_PYTHON=sys.executable)
         command = r'''set -euo pipefail
 . "$1/alab/package.sh"
 repo_root="$2"
