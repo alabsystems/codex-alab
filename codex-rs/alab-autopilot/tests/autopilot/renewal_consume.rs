@@ -209,6 +209,7 @@ fn resumed_native_stop_releases_only_the_exact_confirmed_consumed_custody() {
                         turn_id: wall.clone(),
                         thread_settings: Default::default(),
                         trace: None,
+                        prompt_cache_ttl: None,
                         cyber_access_program: None,
                     },
                     init,

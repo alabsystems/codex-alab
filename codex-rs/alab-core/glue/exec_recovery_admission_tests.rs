@@ -261,6 +261,7 @@ async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::
         turn_id: turn_id.clone(),
         thread_settings: Default::default(),
         trace: None,
+        prompt_cache_ttl: None,
         cyber_access_program: None,
     };
     let mut unadmitted = ExtensionDataInit::new();

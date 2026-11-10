@@ -101,6 +101,23 @@ Pending approvals and results retain their original account and turn binding.
 Preserve the local conversation and workspace intentionally; do not merge the
 destination account's remote history or account-scoped resources into them.
 
+### Destination graph construction
+
+The selected native handoff uses authenticated cold restart of the same
+conversation. Normal destination startup constructs fresh configuration, auth,
+model client/provider, model catalog and MCP/Apps resources under the admitted
+destination source. It must preserve the original accepted input and wait for
+actual destination readiness and native acknowledgment before continuation.
+Source processes and captured resources retain their original ownership until
+actual retirement.
+
+Generic in-process assignment remains unavailable. A future implementation must
+prepare and atomically publish the complete destination resource graph across
+all actual participants. Configuration preparation and a standalone model-client
+reconstruction cannot establish that publication proof. Configuration cohort and
+resource-custody APIs remain separate; capability advertisement still requires
+joined qualification of the complete handoff.
+
 ### Existing resource ownership mechanisms
 
 The current tree already distinguishes credential refresh from account ownership

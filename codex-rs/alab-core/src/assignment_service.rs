@@ -186,13 +186,55 @@ impl Command {
 
 /// Private prepared-target policy input, authenticated by the owning native transport.
 /// This is not a credential source or permission to install a grant.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TargetPolicy {
+    /// Domain-separated bindings of the actual validated endpoint and client ID.
+    pub source_provider: String,
+    pub target_provider: String,
+    /// Classifications read from the authenticated source and destination documents.
+    pub source_fedramp: bool,
+    pub target_fedramp: bool,
+    /// Exact native endpoint against which each manager checks its effective override.
+    pub target_refresh_endpoint: String,
+}
+impl TargetPolicy {
+    fn validate(&self) -> io::Result<()> {
+        let endpoint = &self.target_refresh_endpoint;
+        if !valid_hex(&self.source_provider, 64)
+            || !valid_hex(&self.target_provider, 64)
+            || self.source_provider != self.target_provider
+            || self.source_fedramp != self.target_fedramp
+            || endpoint.len() > 2048
+            || !endpoint.starts_with("https://")
+            || !endpoint.ends_with("/oauth/token")
+            || endpoint.bytes().any(|byte| {
+                byte <= 0x20 || byte >= 0x7f || matches!(byte, b'\\' | b'?' | b'#' | b'@')
+            })
+            || endpoint[8..].split('/').next().is_none_or(str::is_empty)
+        {
+            return Err(unavailable());
+        }
+        Ok(())
+    }
+}
+impl std::fmt::Debug for TargetPolicy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PreparedTargetPolicy(<private>)")
+    }
+}
+
+/// Exact prepared metadata; every policy field is required, with no inferred defaults.
 #[derive(Clone)]
 pub struct Target {
     pub operation: String,
+    pub pool_revision: String,
+    pub expected_assignment: u64,
+    pub target_ref: String,
     pub account: String,
     pub user: String,
     pub source_grant: String,
     pub target_grant: String,
+    pub policy: TargetPolicy,
 }
 impl Target {
     pub fn validate(&self, operation: &str) -> io::Result<()> {
@@ -203,13 +245,15 @@ impl Target {
                 &self.user,
                 &self.source_grant,
                 &self.target_grant,
+                &self.pool_revision,
+                &self.target_ref,
             ]
             .into_iter()
             .any(|value| !valid_hex(value, 64))
         {
             return Err(unavailable());
         }
-        Ok(())
+        self.policy.validate()
     }
 }
 impl std::fmt::Debug for Target {
@@ -312,6 +356,69 @@ where
         }
         waiting();
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+#[cfg(test)]
+mod target_policy_tests {
+    use super::*;
+
+    fn target() -> Target {
+        Target {
+            operation: "a".repeat(32),
+            pool_revision: "1".repeat(64),
+            expected_assignment: 1,
+            target_ref: "2".repeat(64),
+            account: "b".repeat(64),
+            user: "c".repeat(64),
+            source_grant: "d".repeat(64),
+            target_grant: "e".repeat(64),
+            policy: TargetPolicy {
+                source_provider: "f".repeat(64),
+                target_provider: "f".repeat(64),
+                source_fedramp: false,
+                target_fedramp: false,
+                target_refresh_endpoint: "https://auth.example/oauth/token".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn policy_requires_same_admitted_provider_and_realm() {
+        let mut target = target();
+        assert!(target.validate(&target.operation).is_ok());
+        target.policy.target_provider = "1".repeat(64);
+        assert!(target.validate(&target.operation).is_err());
+        target.policy.target_provider = target.policy.source_provider.clone();
+        target.policy.target_fedramp = true;
+        assert!(target.validate(&target.operation).is_err());
+        target.policy.source_fedramp = true;
+        assert!(target.validate(&target.operation).is_ok());
+        assert_eq!(format!("{target:?}"), "PreparedTarget(<private>)");
+        assert_eq!(
+            format!("{:?}", target.policy),
+            "PreparedTargetPolicy(<private>)"
+        );
+    }
+
+    #[test]
+    fn policy_refuses_missing_binding_and_unsafe_endpoint_metadata() {
+        for endpoint in [
+            "",
+            "http://auth.example/oauth/token",
+            "https:///oauth/token",
+            "https://user@auth.example/oauth/token",
+            "https://auth.example/oauth/token?x",
+            "https://auth.example/\noauth/token",
+            "https://auth.example/other",
+        ] {
+            let mut target = target();
+            target.policy.target_refresh_endpoint = endpoint.into();
+            assert!(target.validate(&target.operation).is_err());
+        }
+        let mut target = target();
+        target.policy.source_provider.clear();
+        assert!(target.validate(&target.operation).is_err());
     }
 }
 

@@ -26,6 +26,9 @@
 //! copy of the standing rules after them, fitted to aterm's verbatim bound (`fitted_act`),
 //! the repository named at a Land claim, `says_finished` retired (`448726c354`), and Land's
 //! no-repository sentence in [`LAND`] and [`LAND_NUDGE`] (aterm `2b871cf8a1`, `72aa7380fe`).
+//! [`LAND_QUESTION_TEXT`] is `question.rs` `LAND_TEXT` as aterm `bd35baa1e2` wrote it (ported
+//! 2026-11-06), its last sentence attributed to codex-alab as the long-term and short-term
+//! texts' are.
 //! The readers were then diffed item by item against aterm main `66894933d2` (2026-10-24):
 //! [`clean_defense`], `land_open_words` and [`says_done`] were main's already, and what the
 //! strict reading and the needs reader lacked is ported there (aterm `4cacfb7913`,
@@ -1475,6 +1478,17 @@ pub const SHORT_TERM_TEXT: &str = "Decide yourself: choose the option that gets 
                                    chose and why in one line and continue without asking again. \
                                    (Answered by codex-alab autopilot by policy. The user was not \
                                    asked.)";
+
+/// Autopilot Land's policy text for a question box's notes (aterm `question.rs` `LAND_TEXT`,
+/// aterm `bd35baa1e2`; `answer-land@v1`, [`crate::answer::RULE_ANSWER_LAND`]): Land's answer
+/// under the policy texts' rules, opening `Decide yourself:` as they do. It is written bare,
+/// never with the standing rules, as aterm's harness policy reply sends it
+/// (`land_question_text`); this copy is written only where a reply sends none.
+pub const LAND_QUESTION_TEXT: &str = "Decide yourself: take the option that lands all of this \
+                                      work on remote main soonest and starts no new work. Never \
+                                      force push or delete work. Say which and why in one line \
+                                      and continue without asking again. (Answered by codex-alab \
+                                      autopilot by policy. The user was not asked.)";
 
 /// Every wall act resumes from the last known result and asks the agent to record
 /// unavailable work, decide what can proceed and continue without routine alerts, then to

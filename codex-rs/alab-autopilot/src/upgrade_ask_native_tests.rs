@@ -235,6 +235,7 @@ async fn hooked(h: &Harness, id: &str, ours: bool, reply: &str, error: Option<Co
                     thread,
                     &turn,
                     &TurnItem::AgentMessage(AgentMessageItem {
+                        moderation: None,
                         id: format!("{id}-reply"),
                         content: vec![AgentMessageContent::Text {
                             text: reply.to_string(),

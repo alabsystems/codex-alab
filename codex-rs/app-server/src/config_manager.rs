@@ -38,6 +38,7 @@ use tracing::warn;
 
 #[path = "application_network.rs"]
 pub(crate) mod application_network;
+#[path = "../../alab-core/glue/application_destination_owner.rs"] pub(crate) mod alab_destination; // ALAB(accounts): destination config owns fresh account state while retaining proven live local inputs.
 
 /// Shared app-server entry point for loading effective Codex configuration.
 #[derive(Clone)]
@@ -45,6 +46,7 @@ pub(crate) struct ConfigManager {
     codex_home: PathBuf,
     cli_overrides: Arc<RwLock<Vec<(String, TomlValue)>>>,
     runtime_feature_enablement: Arc<RwLock<BTreeMap<String, bool>>>,
+    local_inputs: Arc<alab_destination::local_inputs::LocalInputs>, // ALAB(accounts): shared local-input occurrence fences destination snapshots.
     loader_overrides: LoaderOverrides,
     strict_config: bool,
     cloud_config_bundle: Arc<RwLock<CloudConfigBundleLoader>>,
@@ -104,6 +106,7 @@ impl ConfigManager {
             codex_home,
             cli_overrides: Arc::new(RwLock::new(cli_overrides)),
             runtime_feature_enablement: Arc::new(RwLock::new(BTreeMap::new())),
+            local_inputs: Arc::default(), // ALAB(accounts): one occurrence owner per live local-input allocation.
             loader_overrides,
             strict_config,
             cloud_config_bundle: Arc::new(RwLock::new(cloud_config_bundle)),
@@ -185,6 +188,7 @@ impl ConfigManager {
     where
         I: IntoIterator<Item = (String, bool)>,
     {
+        let _local_update = self.local_inputs.begin_update(); // ALAB(accounts): publish a fresh occurrence after the runtime writer drops, including unwind.
         let mut runtime_feature_enablement =
             self.runtime_feature_enablement.write().map_err(|_| ())?;
         runtime_feature_enablement.extend(enablement);
@@ -324,7 +328,7 @@ impl ConfigManager {
     ) -> std::io::Result<Config> {
         let mcp_ema_cancellation = self.capture_mcp_ema_cancellation();
         let mut manager = self.clone();
-        manager.thread_config_loader = Arc::new(codex_config::NoopThreadConfigLoader);
+        manager.thread_config_loader = crate::alab_no_external_thread_config_loader(codex_config::NoopThreadConfigLoader); // ALAB(accounts): retained-session local reload has a distinct proven loader occurrence.
         let refreshed_layers = manager
             .load_config_layers_for_cwd(AbsolutePathBuf::from_absolute_path(cwd)?)
             .await?;
@@ -434,27 +438,6 @@ impl ConfigManager {
         Ok(CloudStartupConfig { bootstrap, config })
     }
 
-    /// Admits resumed threads and input only on the currently selected provider.
-    pub(crate) async fn check_thread_model_provider_for_input(
-        &self,
-        current: &Config,
-    ) -> std::io::Result<()> {
-        self.check_thread_model_provider(current).await?;
-        let configured = self
-            .load_latest_config(Some(current.cwd.to_path_buf()))
-            .await?;
-        if current.model_provider_id != configured.model_provider_id {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                ModelProviderError::ModelProviderMismatch {
-                    model_provider: current.model_provider_id.clone(),
-                    current_model_provider: configured.model_provider_id,
-                },
-            ));
-        }
-        Ok(())
-    }
-
     /// Installs local policy before cloud access; failed policy loads block traffic while
     /// non-strict startup remains available for configuration repair.
     pub(crate) async fn load_startup_config(
@@ -544,7 +527,7 @@ impl ConfigManager {
         &self,
         saved_provider: Option<&str>,
         request_overrides: Option<HashMap<String, serde_json::Value>>,
-        typesafe_overrides: ConfigOverrides,
+        mut typesafe_overrides: ConfigOverrides,
         cwd: Option<PathBuf>,
     ) -> std::io::Result<Config> {
         let requested_provider = typesafe_overrides.model_provider.clone().or_else(|| {
@@ -554,11 +537,9 @@ impl ConfigManager {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         });
-        // Resolve the selection before the saved provider is applied as a resume override.
-        let current_provider = self
-            .load_latest_config(typesafe_overrides.cwd.clone().or_else(|| cwd.clone()))
-            .await
-            .map(|config| config.model_provider_id);
+        if let Some(saved) = saved_provider {
+            typesafe_overrides.model_provider = Some(saved.to_owned());
+        }
         self.load_with_validation(
             &self.current_cli_overrides(),
             request_overrides,
@@ -567,6 +548,7 @@ impl ConfigManager {
             |config, _overrides, layers| {
                 let requested_provider = requested_provider
                     .as_deref()
+                    .or(saved_provider)
                     .or(config.model_provider.as_deref())
                     .unwrap_or("openai");
                 // Validate the saved route even when a client sends a provider override.
@@ -597,20 +579,13 @@ impl ConfigManager {
                         ));
                     }
                 }
-                let current_provider = current_provider?;
-                for provider in [
-                    saved_provider.unwrap_or(requested_provider),
-                    requested_provider,
-                ] {
-                    if provider != current_provider {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            ModelProviderError::ModelProviderMismatch {
-                                model_provider: provider.to_owned(),
-                                current_model_provider: current_provider,
-                            },
-                        ));
-                    }
+                if let Some(saved) = saved_provider
+                    && saved != requested_provider
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Cannot change this thread's model provider from `{saved}` to `{requested_provider}` on resume."),
+                    ));
                 }
                 Ok(())
             },

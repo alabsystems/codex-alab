@@ -3,6 +3,7 @@
 use crate::ActorInfo;
 use crate::RegistrationError;
 use crate::RuntimeAgentInstance;
+use crate::RuntimeAuthBinding;
 use crate::RuntimeAuthError;
 use codex_api::AuthError;
 use codex_api::AuthHeaderTelemetry;
@@ -12,6 +13,7 @@ use codex_features::RuntimeAuthMode;
 use codex_http_client::CHATGPT_ACCOUNT_ID_HEADER;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthChangeState;
+use codex_login::AuthOwner;
 use codex_login::CodexAuth;
 use http::HeaderMap;
 use http::HeaderValue;
@@ -28,6 +30,8 @@ pub struct RuntimeAuth {
     pub(crate) auth: CodexAuth,
     pub(crate) http_client_factory: HttpClientFactory,
     pub(crate) change_state: AuthChangeState,
+    pub(crate) owner: AuthOwner,
+    pub(crate) binding: Arc<RuntimeAuthBinding>,
 }
 
 impl std::fmt::Debug for RuntimeAuth {
@@ -61,6 +65,14 @@ impl RuntimeAuth {
 
     pub fn change_state(&self) -> AuthChangeState {
         self.change_state
+    }
+
+    pub fn auth_owner(&self) -> &AuthOwner {
+        &self.owner
+    }
+
+    pub fn binding(&self) -> &Arc<RuntimeAuthBinding> {
+        &self.binding
     }
 
     /// Preserve the caller's transport settings and restrictions while binding requests to
@@ -126,9 +138,10 @@ impl RuntimeAuth {
 }
 
 impl AuthProvider for RuntimeRequestAuth {
+    fn alab_source_policy(&self) -> Result<Option<codex_http_client::NetworkPolicy>, AuthError> { Ok(Some(alab_source::policy(self))) } // ALAB(accounts): the selected runtime retains its actual credential factory source.
     fn add_auth_headers(&self, headers: &mut HeaderMap) -> Result<(), AuthError> {
-        headers.extend(self.auth.auth_headers(self.mode)?);
-        Ok(())
+        alab_source::copy(self, headers) // ALAB(accounts): synchronous callers need actual source-use context.
+
     }
 
     fn auth_header_telemetry(&self) -> Result<AuthHeaderTelemetry, AuthError> {
@@ -139,12 +152,7 @@ impl AuthProvider for RuntimeRequestAuth {
     }
 
     fn apply_auth_headers(&self, headers: HeaderMap) -> AuthHeadersFuture<'_> {
-        Box::pin(async move {
-            Ok(replace_auth_headers(
-                headers,
-                self.auth.auth_headers(self.mode)?,
-            ))
-        })
+        alab_source::headers(self, headers) // ALAB(accounts): retain original replacement semantics after source admission.
     }
 }
 
@@ -169,8 +177,11 @@ impl From<RuntimeAuthError> for AuthError {
             RuntimeAuthError::Unavailable
             | RuntimeAuthError::Unsupported
             | RuntimeAuthError::UnsupportedResourceSelection
+            | RuntimeAuthError::InvalidResourceSelection(_)
             | RuntimeAuthError::Changed
             | RuntimeAuthError::RefreshFailed
+            | RuntimeAuthError::RefreshTokenFailed(_)
+            | RuntimeAuthError::Task(_)
             | RuntimeAuthError::KeyGeneration
             | RuntimeAuthError::Registration(
                 RegistrationError::InvalidEndpoint
@@ -198,3 +209,5 @@ fn replace_auth_headers(mut headers: HeaderMap, auth: HeaderMap) -> HeaderMap {
     headers.extend(auth);
     headers
 }
+
+#[path = "../../alab-core/glue/runtime_auth_source.rs"] mod alab_source; // ALAB(accounts): typed source-use wrappers keep runtime auth and transport coherent.

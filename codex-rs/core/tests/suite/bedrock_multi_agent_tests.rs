@@ -28,6 +28,7 @@ async fn bedrock_catalog_selects_v2_by_default(
     .await;
     let test = test_codex()
         .with_auth(CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             api_key: "dummy".to_string(),
             region: "us-east-1".to_string(),
         }))

@@ -1,19 +1,63 @@
 //! Tracks credential changes separately from ownership changes, before notifications coalesce.
 
+use super::AuthManager;
 use super::CodexAuth;
+use std::sync::Arc;
+
+#[path = "../../../alab-core/glue/auth_owner.rs"] mod alab_auth_owner; // ALAB(auth-renewal): expose the captured owner revision without re-reading mutable credentials.
+
+/// An account owner within a particular credential source, retained by in-flight work.
+#[derive(Clone)]
+pub struct AuthOwner {
+    manager: Arc<AuthManager>,
+    generation: u64,
+}
+
+impl AuthOwner {
+    pub(super) fn new(manager: Arc<AuthManager>, generation: u64) -> Self {
+        Self {
+            manager,
+            generation,
+        }
+    }
+
+    /// Watch credential changes from the source that owns this work.
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<AuthChangeState> {
+        self.manager.auth_change_state_receiver()
+    }
+
+    pub fn is_current(&self) -> bool {
+        self.changes().borrow().owner_generation == self.generation
+    }
+}
+
+impl PartialEq for AuthOwner {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.manager, &other.manager) && self.generation == other.generation
+    }
+}
+
+impl Eq for AuthOwner {}
+
+impl std::fmt::Debug for AuthOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthOwner")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Opaque revisions local to one auth manager. Consumers must reset on reconnect.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AuthChangeState {
     /// Advances on cached credential changes and explicit invalidation of pending reads.
     pub generation: u64,
-    /// Advances on login, logout, or changes of user, workspace, or auth mode.
-    /// A verified legacy-to-OAuth credential migration preserves the same owner.
+    /// Advances on login, logout, or changes of user, workspace, service account, or auth mode.
     /// Credential changes with incomplete owner identity also advance this revision.
     /// Losing login metadata alone preserves the account owner.
     pub owner_generation: u64,
     /// Advances on an underlying actor credential/source change, including a new OAuth login.
-    /// Ordinary refresh within an identifiable OAuth session preserves this revision.
+    /// Renewal within an identifiable OAuth session or WIF subject preserves this revision.
     pub source_generation: u64,
     /// Preserves strict login ownership for EMA, including loss of login metadata.
     pub login_generation: u64,
@@ -47,6 +91,9 @@ pub(super) fn same_owner(previous: Option<&CodexAuth>, current: Option<&CodexAut
     if previous.api_auth_mode() != current.api_auth_mode() {
         return false;
     }
+    if let Some(subject) = previous.api_workload_identity() {
+        return current.api_workload_identity() == Some(subject);
+    }
     let (Some(user), Some(workspace)) = (previous.get_chatgpt_user_id(), previous.get_account_id())
     else {
         return false;
@@ -64,6 +111,5 @@ pub(super) fn same_login(previous: Option<&CodexAuth>, current: Option<&CodexAut
 }
 
 fn login_owner_id(auth: Option<&CodexAuth>) -> Option<String> {
-    auth.and_then(|auth| auth.get_token_data().ok())
-        .and_then(|tokens| tokens.login_owner_id)
+    auth.and_then(CodexAuth::alab_cached_login_owner_id) // ALAB(accounts): compare already-loaded metadata while native readiness is transitioning, without extracting credentials.
 }

@@ -6,7 +6,8 @@
 //! ported verbatim from aterm main `66894933d2` (`supervise/policy/turn_end_land_tests.rs`,
 //! which aterm includes into `turn_end_tests.rs`' `land_reading` module; the tables it reads
 //! are main's), with each family's search reading first the rows that spell it (aterm
-//! `aa82345035`) and the holdout's measurement (`4cacfb7913`). A child of
+//! `aa82345035`), the holdout's measurement (`4cacfb7913`) and a NEEDS YOU token its clause
+//! has for subject (`8d270de041`). A child of
 //! [`crate::open_work`], so `super::*` is that module's items ([`land_open_words`] among them),
 //! as aterm's `land_reading` sees `turn_end`'s.
 
@@ -234,6 +235,37 @@ fn land_reads_the_needs_table_as_labelled() {
 /// defense beside it never lands however clean it reads; one that says none
 /// stands, however it is marked, lands. NEGATIVE CONTROL: the same defense
 /// with no NEEDS YOU line lands, and a need after a none word holds it.
+/// A NEEDS YOU TOKEN ITS CLAUSE HAS FOR SUBJECT ASKS THE PERSON NOTHING (live 2026-11-04: `- **NEEDS
+/// YOU can be lost.** …`): its `YOU` is the head's name, not the person, so Land reads no `you can`
+/// there ([`needs::token_you`]) and a defense beside it lands. A `you can` that is no token's, and
+/// a question after a bare head, still hold. Negative control: on the reader before the rule each
+/// prose report below held on `you can`. PORTED from aterm `8d270de041`'s `turn_end_land_tests.rs`,
+/// with the rule.
+#[test]
+fn a_needs_you_token_its_clause_has_for_subject_asks_nothing() {
+    let defense = "Nothing left: all on origin/main.";
+    for said in [
+        "- **NEEDS YOU can be lost.** A NEEDS YOU line in a turn that ended on a usage wall …",
+        "NEEDS YOU can't be answered by the harness.",
+        "The rule: NEEDS-YOU could be read past a comma too.",
+    ] {
+        let reply = format!("Merged and pushed main.\n{said}\n{defense}");
+        assert!(
+            clean_defense(Some(&reply)),
+            "{reply:?}: {:?}",
+            land_open_words(Some(&reply))
+        );
+    }
+    for said in [
+        "If you can, rotate the deploy key.",
+        "The signing step needs you: you can run it from the Settings page.",
+        "NEEDS YOU can you sign in to GitHub?",
+    ] {
+        let reply = format!("Merged and pushed main.\n{said}\n{defense}");
+        assert!(!clean_defense(Some(&reply)), "{reply:?}");
+    }
+}
+
 #[test]
 fn a_need_however_headed_holds_the_landing() {
     let defense = "Nothing left: all on origin/main.";

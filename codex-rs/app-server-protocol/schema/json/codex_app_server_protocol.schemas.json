@@ -1850,7 +1850,14 @@
               "type": "string"
             },
             "params": {
-              "type": "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/v2/GatewayOAuthReadParams"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -1873,7 +1880,14 @@
               "type": "string"
             },
             "params": {
-              "type": "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/v2/GatewayOAuthLoginParams"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -1928,6 +1942,30 @@
             "params"
           ],
           "title": "ModelProvider/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "modelProvider/config/write"
+              ],
+              "title": "ModelProvider/config/writeRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ModelProviderConfigWriteParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "ModelProvider/config/writeRequest",
           "type": "object"
         },
         {
@@ -2261,6 +2299,29 @@
             "method"
           ],
           "title": "Account/logoutRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "account/securitySetup/read"
+              ],
+              "title": "Account/securitySetup/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "id",
+            "method"
+          ],
+          "title": "Account/securitySetup/readRequest",
           "type": "object"
         },
         {
@@ -6978,6 +7039,48 @@
         ],
         "type": "string"
       },
+      "AccountSecuritySetupAction": {
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "url"
+        ],
+        "type": "object"
+      },
+      "AccountSecuritySetupNotice": {
+        "properties": {
+          "accountId": {
+            "type": "string"
+          },
+          "action": {
+            "$ref": "#/definitions/v2/AccountSecuritySetupAction"
+          },
+          "description": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accountId",
+          "action",
+          "description",
+          "title",
+          "userId"
+        ],
+        "type": "object"
+      },
       "AccountSession": {
         "properties": {
           "displayName": {
@@ -7349,8 +7452,34 @@
           }
         ]
       },
+      "AgentMessageModeration": {
+        "properties": {
+          "moderated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "moderated"
+        ],
+        "type": "object"
+      },
       "AgentPath": {
         "type": "string"
+      },
+      "AlabAccountSecuritySetupIdentity": {
+        "properties": {
+          "accountId": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accountId",
+          "userId"
+        ],
+        "type": "object"
       },
       "AllowDenyRequirement": {
         "enum": [
@@ -8421,6 +8550,13 @@
           }
         },
         "type": "object"
+      },
+      "BedrockProviderId": {
+        "enum": [
+          "amazon-bedrock",
+          "amazon-bedrock-runtime"
+        ],
+        "type": "string"
       },
       "BrowserUseAccessApprovalLifetime": {
         "enum": [
@@ -9711,6 +9847,17 @@
                 "type": "null"
               }
             ]
+          },
+          "client_search_provider": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WebSearchProvider"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Effective tools.client_search_provider hint. Model-selected providers take precedence."
           },
           "compact_prompt": {
             "type": [
@@ -13135,9 +13282,35 @@
         "title": "GatewayOAuthChangedNotification",
         "type": "object"
       },
+      "GatewayOAuthLoginParams": {
+        "description": "Authorize a configured provider without changing the default or any thread's provider.",
+        "properties": {
+          "modelProvider": {
+            "description": "Defaults to the current provider when omitted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "GatewayOAuthLoginResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "GatewayOAuthLoginResponse",
+        "type": "object"
+      },
+      "GatewayOAuthReadParams": {
+        "description": "Read credential readiness for a configured provider without starting browser login.",
+        "properties": {
+          "modelProvider": {
+            "description": "Defaults to the current provider when omitted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "GatewayOAuthReadResponse": {
@@ -13186,6 +13359,12 @@
           "started",
           "succeeded",
           "failed"
+        ],
+        "type": "string"
+      },
+      "GcpProviderId": {
+        "enum": [
+          "gcp"
         ],
         "type": "string"
       },
@@ -13284,12 +13463,48 @@
           },
           "requiresOpenaiAuth": {
             "type": "boolean"
+          },
+          "userId": {
+            "default": null,
+            "description": "ChatGPT user ID belonging to this account response, when available.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "requiresOpenaiAuth"
         ],
         "title": "GetAccountResponse",
+        "type": "object"
+      },
+      "GetAccountSecuritySetupResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Optional security reminder bound to the account that fetched it. Unavailable or ineligible accounts return no notice; this read never changes account security.",
+        "properties": {
+          "alabSuccessfulEmpty": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AlabAccountSecuritySetupIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AccountSecuritySetupNotice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "GetAccountSecuritySetupResponse",
         "type": "object"
       },
       "GetAccountTokenUsageParams": {
@@ -14348,6 +14563,16 @@
             "format": "int64",
             "type": "integer"
           },
+          "contentTokenCount": {
+            "default": null,
+            "description": "Native content tokens for the completed assistant message, including a sampled footer. Null when unavailable. Completion telemetry is not part of the stored thread item.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "item": {
             "$ref": "#/definitions/v2/ThreadItem"
           },
@@ -15241,6 +15466,14 @@
       "McpResourceReadParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "_meta": {
+            "additionalProperties": true,
+            "description": "Additional MCP request metadata. Account and turn routing keys are reserved.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "connectorId": {
             "type": [
               "string",
@@ -16204,6 +16437,13 @@
               "integer",
               "null"
             ]
+          },
+          "modelProvider": {
+            "description": "List models for this configured provider instead of the app-server default.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "title": "ModelListParams",
@@ -16252,6 +16492,33 @@
           "webSearch"
         ],
         "title": "ModelProviderCapabilitiesReadResponse",
+        "type": "object"
+      },
+      "ModelProviderConfigWriteParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "settings": {
+            "$ref": "#/definitions/v2/ProviderSettingsPatch"
+          }
+        },
+        "required": [
+          "settings"
+        ],
+        "title": "ModelProviderConfigWriteParams",
+        "type": "object"
+      },
+      "ModelProviderConfigWriteResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "provider": {
+            "$ref": "#/definitions/v2/ModelProviderSummary"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "title": "ModelProviderConfigWriteResponse",
         "type": "object"
       },
       "ModelProviderError": {
@@ -16785,6 +17052,30 @@
           "compact"
         ],
         "type": "string"
+      },
+      "NullableGatewayOAuthLoginParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "anyOf": [
+          {
+            "$ref": "#/definitions/v2/GatewayOAuthLoginParams"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Nullable_GatewayOAuthLoginParams"
+      },
+      "NullableGatewayOAuthReadParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "anyOf": [
+          {
+            "$ref": "#/definitions/v2/GatewayOAuthReadParams"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Nullable_GatewayOAuthReadParams"
       },
       "NullableGetAccountRateLimitsParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -17567,7 +17858,7 @@
             ]
           },
           "defaultPrompt": {
-            "description": "Starter prompts for the plugin. Capped at 3 entries with a maximum of 128 characters per entry.",
+            "description": "Starter prompts for the plugin. Capped at 3 entries with a maximum of 512 characters per entry.",
             "items": {
               "type": "string"
             },
@@ -18949,6 +19240,124 @@
           }
         ]
       },
+      "ProviderSettingsPatch": {
+        "description": "Omitted patch fields preserve their values. Explicit null clears a nullable field.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "baseUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "envKey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "providerId": {
+                "description": "Omit or pass null to allocate a new custom provider ID.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "customGateway"
+                ],
+                "title": "CustomGatewayProviderSettingsPatchType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "CustomGatewayProviderSettingsPatch",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "AWS configuration fields for built-in Bedrock providers.",
+            "properties": {
+              "profile": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "providerId": {
+                "$ref": "#/definitions/v2/BedrockProviderId"
+              },
+              "region": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "bedrock"
+                ],
+                "title": "BedrockProviderSettingsPatchType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "providerId",
+              "type"
+            ],
+            "title": "BedrockProviderSettingsPatch",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "GCP configuration fields. Credential-file paths refer to the app-server host.",
+            "properties": {
+              "credentialFile": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "location": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "projectId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "providerId": {
+                "$ref": "#/definitions/v2/GcpProviderId"
+              },
+              "type": {
+                "enum": [
+                  "gcp"
+                ],
+                "title": "GcpProviderSettingsPatchType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "providerId",
+              "type"
+            ],
+            "title": "GcpProviderSettingsPatch",
+            "type": "object"
+          }
+        ]
+      },
       "QueuedSubmission": {
         "properties": {
           "clientUserMessageId": {
@@ -18962,6 +19371,16 @@
               "$ref": "#/definitions/v2/UserInput"
             },
             "type": "array"
+          },
+          "responsesapiClientMetadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Metadata retained with this input, including across reconnect and restoration.",
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -23146,6 +23565,17 @@
                 ],
                 "default": null
               },
+              "moderation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentMessageModeration"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "phase": {
                 "anyOf": [
                   {
@@ -24023,6 +24453,10 @@
         ],
         "type": "object"
       },
+      "ThreadItemOutputDeferral": {
+        "properties": {},
+        "type": "object"
+      },
       "ThreadItemsListAnchor": {
         "description": "An exclusive item position within the requested visible turn.",
         "oneOf": [
@@ -24072,6 +24506,17 @@
               }
             ],
             "description": "Opaque continuation cursor or an exclusive item anchor in the requested visible turn. An item anchor requires a non-empty `turnId`; ascending (the default) returns items after it, and descending returns items before it. Continue with the returned string cursor."
+          },
+          "deferOutput": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadItemOutputDeferral"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a single turn, choose which saved outputs to fetch separately by item ID."
           },
           "limit": {
             "description": "Optional item page size.",
@@ -24162,6 +24607,10 @@
               "boolean",
               "null"
             ]
+          },
+          "currentAccountOnly": {
+            "description": "Show local history visible to the current ChatGPT account. Defaults to false.",
+            "type": "boolean"
           },
           "cursor": {
             "description": "Opaque pagination cursor returned by a previous call.",
@@ -27858,6 +28307,14 @@
           "cached",
           "indexed",
           "live"
+        ],
+        "type": "string"
+      },
+      "WebSearchProvider": {
+        "description": "Provider preference selected by the resolved model catalog entry.",
+        "enum": [
+          "standalone",
+          "search_mcp"
         ],
         "type": "string"
       },

@@ -1,0 +1,118 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+# Behavior ownership inventory. Topics locate adapters; they do not prove parity.
+# Validation evidence remains attached to each exact integration, never this file.
+schema = 1
+status = "initial-contract-inventory"
+
+[[features]]
+id = "account-isolation"
+lifecycle = "active"
+purpose = "Keep credential use and account assignment bound to the actual runtime owner."
+topics = ["accounts", "auth-path", "auth-refresh-lock", "auth-renewal", "bootstrap-auth", "manager-catalog", "renewal"]
+implementation = ["codex-rs/alab-core/src/account_handoff.rs", "codex-rs/alab-core/src/auth_lock.rs", "codex-rs/alab-core/src/managed_auth.rs"]
+invariants = ["No retired account background read or transport enters the destination account.", "Refresh writes hold the credential file lock and retain source ownership.", "Assertion-only authentication never becomes an invented bearer credential."]
+scenarios = ["Switch accounts during async budget checks and WebSocket reuse.", "Race refresh and assignment; refuse unavailable source ownership."]
+equivalence = "Upstream proves destination publication, credential use, cancellation and background-read isolation under the same races."
+
+[[features]]
+id = "exec-handoff"
+lifecycle = "active"
+purpose = "Transfer a live session tree and accepted input without losing ownership or delivery state."
+topics = ["exec-accounting", "exec-config", "exec-ephemeral", "exec-input", "exec-mail", "exec-recovery", "exec-review", "exec-transfer", "exec-tree", "resume-projection", "turns"]
+implementation = ["codex-rs/alab-core/glue"]
+invariants = ["Native End acknowledgement and persistence closure precede successful handoff.", "Accepted input, queues, review delegates and model context retain exact state.", "The destination supplies fresh runtime authority and item-ID ownership.", "Cancellation cannot orphan a registered child or silently consume input."]
+scenarios = ["Suspend with queued input, active review and nested children.", "Restore sampling counters, audio metadata and review budgeting; reject malformed snapshots.", "Cancel before and after destination child registration."]
+equivalence = "Upstream supports the complete native tree handoff contract including partial failure and cancellation."
+
+[[features]]
+id = "provider-recovery"
+lifecycle = "active"
+purpose = "Recover eligible foreground work while preserving provider pacing and account custody."
+topics = ["capacity", "quota", "recovery", "retry-status", "wake", "weekly-reset", "goal-recovery"]
+implementation = ["codex-rs/alab-quota-recovery", "codex-rs/alab-core/glue/responses_retry.rs", "alab/smoke/weekly_reset.py"]
+invariants = ["Only verified reset eligibility redeems credits or retries foreground work.", "Provider deadlines survive delayed reporting and host sleep.", "Terminal or unadvised errors do not become generic retry loops.", "Cancellation ends recovery waits and stale status cannot reach another connection."]
+scenarios = ["Advised and unadvised overload, invalid compaction and retry exhaustion.", "Natural reset, earned reset, duplicate receipt, account switch and long-wait cancellation."]
+equivalence = "Upstream matches earned-reset custody, absolute deadline handling and persisted-origin recovery behavior."
+
+[[features]]
+id = "model-discovery"
+lifecycle = "active"
+purpose = "Expose current eligible models without overriding explicit selection."
+topics = ["model-poll", "models-cache", "speed"]
+implementation = ["codex-rs/alab-core", "codex-rs/alab-tui"]
+invariants = ["The destination account owns its catalog and startup defaults.", "Explicit model and supported service-tier selections survive refresh.", "ALab and vendor cache names do not evict one another."]
+scenarios = ["Catalog-only launch, source-dependent capability, stale cache and unavailable account.", "Fresh embedded/remote startup, profile precedence and cleared model selection."]
+equivalence = "Upstream refresh and cache behavior preserves all supported live-experience and explicit-selection contracts."
+
+[[features]]
+id = "native-session"
+lifecycle = "active"
+purpose = "Integrate aterm lifecycle, attention, trust and mail through authenticated native ownership."
+topics = ["autopilot", "answer", "context", "inbox", "life", "login", "session", "startup-wait", "trust"]
+implementation = ["codex-rs/alab-aterm", "codex-rs/alab-autopilot", "codex-rs/alab-tui"]
+invariants = ["Native claims and explicit human holds govern autonomous behavior.", "Only actual human input stamps human activity.", "Crash/restart records identify the running session and executable."]
+scenarios = ["Missing or stale native claim, explicit hold, sign-in attention and crash restart."]
+equivalence = "Upstream provides the same aterm protocol and lifecycle ownership."
+
+[[features]]
+id = "product-policy"
+lifecycle = "active"
+purpose = "Own packaged policy while retaining explicit user/profile/project overrides."
+topics = ["core", "defaults", "interface", "no-attribution", "no-daemon", "no-phone-home", "no-upsell", "quiet-logs", "usage-poll"]
+implementation = ["codex-rs/alab-core/defaults.toml", "codex-rs/alab-core/aterm-defaults.toml"]
+policy_files = ["codex-rs/alab-core/defaults.toml", "codex-rs/alab-core/aterm-defaults.toml"]
+invariants = ["Packaged defaults remain the lowest config layer.", "Terminal-specific defaults apply only inside aterm.", "Vanilla mode disables ALab behavioral hooks.", "New telemetry, background work and activation defaults require a recorded intake decision."]
+scenarios = ["Packaged/default/profile/project/CLI precedence inside and outside aterm.", "Vanilla mode and live-experience changes during sleeping workers."]
+equivalence = "Upstream configuration expresses the complete ALab policy without source adapters."
+
+[[features]]
+id = "native-ui"
+lifecycle = "active"
+purpose = "Retain optional ALab presentation, prompt storage and local task controls."
+topics = ["banner", "progress", "stash", "tasks", "pets", "pet-perf"]
+implementation = ["codex-rs/alab-tui"]
+invariants = ["Prompt text and structured editor state move together within their conversation.", "Pet disable and overlay transitions release owned image resources.", "Progress and task controls follow the current backend owner."]
+scenarios = ["Switch conversations with stashed structured drafts and parked backends.", "Resize, hide overlays and disable pets with cached frames."]
+equivalence = "Upstream provides equivalent optional behavior and lifecycle cleanup."
+
+[[features]]
+id = "security-notices"
+lifecycle = "active"
+purpose = "File and settle security reminders only from verified current observations."
+topics = ["notices"]
+implementation = ["codex-rs/alab-tui/src/notices.rs", "codex-rs/alab-tui/glue/security_setup.rs"]
+invariants = ["Failed or unavailable RPC data never proves reminder absence.", "Request admission and current saved identity guard settlement."]
+scenarios = ["Verified absence, present notice, old server, timeout and identity changes while a request is pending."]
+equivalence = "Upstream distinguishes verified absence and unavailable observations with current-identity settlement."
+
+[[features]]
+id = "skill-discovery"
+lifecycle = "active"
+purpose = "Keep system skills independent of vendor reinstall and bound filesystem watches."
+topics = ["skills", "skills-watch"]
+implementation = ["codex-rs/alab-core"]
+invariants = ["Vendor reinstall does not invalidate ALab system skills.", "A missing skills root does not create a whole-home filesystem watch."]
+scenarios = ["Missing root, root creation, vendor reinstall and actual skill edits."]
+equivalence = "Upstream isolates packaged roots and bounds missing-root watches identically."
+
+[[features]]
+id = "build-and-adoption"
+lifecycle = "active"
+purpose = "Build, identify and adopt exact native-qualified source through ALab tooling."
+topics = ["build", "toolchain", "release", "upgrade", "version"]
+implementation = ["alab/check.sh", "alab/package.sh", "codex-rs/alab-core/src/version.rs"]
+policy_files = ["alab/removed-paths", "alab/owned-paths", "alab/watched-paths"]
+invariants = ["Every shipped identity remains reachable; main is never rebased or force-pushed.", "Source qualification, artifact packaging, selection and running identity are separate evidence.", "Removal policy is reapplied and removed upstream behavior is assessed at intake.", "ALab lock requirements do not rewrite upstream dependency identities."]
+scenarios = ["Compiler/source identity mismatch, source race, hook loss and package rollback."]
+equivalence = "Upstream exposes the required native qualification and adoption protocol; distribution policy remains ALab-owned."
+
+[[features]]
+id = "qualification-fixtures"
+lifecycle = "active"
+purpose = "Make qualification observe real lifecycle completion with bounded resources."
+topics = ["core-test-fixtures", "native-event-temp", "native-snapshots", "pet-tests", "startup-test-fixture", "test", "test-assertions", "test-config"]
+implementation = ["alab/check.sh", "codex-rs/alab-core/glue", "codex-rs/alab-tui/glue"]
+invariants = ["Fixtures observe actual completion rather than aborting unfinished work.", "Native filesystem tests use excluded scratch and bounded lifecycle phases.", "A shared pristine failure is recorded as a failure, not a pass."]
+scenarios = ["Backend drain failure, persistent child cleanup and native watcher delivery."]
+equivalence = "Upstream fixtures provide the same resource and completion guarantees."

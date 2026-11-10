@@ -18,9 +18,33 @@ unsafe extern "C" fn main(argc: libc::c_int, argv: *const *const libc::c_char) -
         })
         .collect::<Vec<_>>();
     if arguments.get(1).map(String::as_str) == Some("--inject-fd") {
-        // Trust Cargo intentionally strips arbitrary inherited FDs. This native
-        // exec prefix supplies the same explicit descriptor to the direct probe
-        // and to the adapter, without changing Cargo's policy or child custody.
+        // Cargo/frontends may normalize inherited descriptors and signal masks.
+        // Install controlled input at the Cargo-runner boundary for both paths;
+        // the adapter must preserve it, while Python startup must be detected.
+        for (signal, handler) in [
+            (libc::SIGHUP, libc::SIG_IGN),
+            (libc::SIGUSR2, libc::SIG_IGN),
+            (libc::SIGXFSZ, libc::SIG_DFL),
+        ] {
+            // SAFETY: initialize a complete action for a valid fixture signal.
+            let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+            action.sa_sigaction = handler;
+            // SAFETY: the initialized action and mask live through each call.
+            if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0
+                || unsafe { libc::sigaction(signal, &action, std::ptr::null_mut()) } != 0
+            {
+                return 14;
+            }
+        }
+        // SAFETY: initialize and populate this process's controlled input mask.
+        let mut blocked: libc::sigset_t = unsafe { std::mem::zeroed() };
+        if unsafe { libc::sigemptyset(&mut blocked) } != 0
+            || unsafe { libc::sigaddset(&mut blocked, libc::SIGUSR1) } != 0
+            || unsafe { libc::sigaddset(&mut blocked, libc::SIGUSR2) } != 0
+            || unsafe { libc::sigprocmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut()) } != 0
+        {
+            return 15;
+        }
         let file = match std::env::var("ALAB_CONTEXT_FILE")
             .ok()
             .and_then(|path| std::ffi::CString::new(path).ok())

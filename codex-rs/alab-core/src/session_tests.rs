@@ -1302,12 +1302,29 @@ fn land_at_round_trips_and_none_is_zero() {
 
 #[test]
 fn renewal_custody_survives_its_accepted_turn_but_not_new_native_work() {
-    use crate::session::{NativeOrigin, NativePhase, OwedAct, AccountHandoff};
+    use crate::session::AccountHandoff;
+    use crate::session::NativeOrigin;
+    use crate::session::NativePhase;
+    use crate::session::OwedAct;
     let marker = OwedAct {
         thread: "thread".into(),
-        native_origin: Some(NativeOrigin { turn_id: "wall".into(), phase: NativePhase::Complete }),
-        renewal: Some(AccountHandoff { purpose: crate::account_handoff::Purpose::Login, destination: None, openai_scope: true, local: false, account: "a".repeat(64), user: "b".repeat(64),
-            receipt: Some("c".repeat(32)), turn: Some("wall".into()), accepted: false, starts: 1, goal_id: None }),
+        native_origin: Some(NativeOrigin {
+            turn_id: "wall".into(),
+            phase: NativePhase::Complete,
+        }),
+        renewal: Some(AccountHandoff {
+            purpose: crate::account_handoff::Purpose::Login,
+            destination: None,
+            openai_scope: true,
+            local: false,
+            account: "a".repeat(64),
+            user: "b".repeat(64),
+            receipt: Some("c".repeat(32)),
+            turn: Some("wall".into()),
+            accepted: false,
+            starts: 1,
+            goal_id: None,
+        }),
         ..Default::default()
     };
     let shared = Shared::new();
@@ -1316,9 +1333,17 @@ fn renewal_custody_survives_its_accepted_turn_but_not_new_native_work() {
     assert!(shared.publish_renewal(shared.upgrade_generation(), marker.clone()));
     assert!(shared.admit_recovered_turn("thread", "wall"));
     assert!(shared.turn_started("thread", "wall"));
-    assert!(!shared.turn_started("thread", "wall"), "duplicate notification is inert");
+    assert!(
+        !shared.turn_started("thread", "wall"),
+        "duplicate notification is inert"
+    );
     shared.set_owed_act(None);
-    assert!(shared.owed_act().and_then(|owed| owed.renewal).is_some_and(|r| r.accepted));
+    assert!(
+        shared
+            .owed_act()
+            .and_then(|owed| owed.renewal)
+            .is_some_and(|r| r.accepted)
+    );
     assert!(!shared.clear_renewal(&"d".repeat(32)));
     assert!(shared.clear_renewal(&"c".repeat(32)));
     assert!(shared.owed_act().is_none());

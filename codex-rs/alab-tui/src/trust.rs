@@ -554,14 +554,19 @@ pub async fn judge_settled_with(
     let until = tokio::time::Instant::now() + within;
     let mut pause = SETTLE_PAUSE;
     loop {
-        let (verdict, passing, asked) = match read_policy_once(endpoint.clone(), POLICY_TIMEOUT).await {
-            Ok(policy) => (
-                decide(gate, &policy, home, uid, real_components),
-                passing(&policy),
-                None,
-            ),
-            Err(unread) => (Verdict::Show(unread.why), unread.passing, unread.retry_after),
-        };
+        let (verdict, passing, asked) =
+            match read_policy_once(endpoint.clone(), POLICY_TIMEOUT).await {
+                Ok(policy) => (
+                    decide(gate, &policy, home, uid, real_components),
+                    passing(&policy),
+                    None,
+                ),
+                Err(unread) => (
+                    Verdict::Show(unread.why),
+                    unread.passing,
+                    unread.retry_after,
+                ),
+            };
         let wait = asked.map_or(pause, |asked| asked.min(SETTLE_PAUSE_MAX));
         if !passing || tokio::time::Instant::now() + wait >= until {
             return verdict;

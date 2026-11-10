@@ -12,7 +12,7 @@
 //!
 //! | codex-alab | story |
 //! | --- | --- |
-//! | a question box answered | `chose <policy word>` |
+//! | a question box answered | `chose <policy word>` (`land` under Land) |
 //!
 //! Every other act (an approval, the plan box's yes, a prose question answered in the
 //! composer, a continuation, the owner's standing go-ahead, Land's acts, a wall's try, a
@@ -28,6 +28,7 @@ pub fn for_act(rule: &str) -> Option<(&'static str, &'static str)> {
         answer::RULE_ANSWER_RECOMMENDED => ("chose", "recommended"),
         answer::RULE_ANSWER_LONG_TERM => ("chose", "long-term"),
         answer::RULE_ANSWER_SHORT_TERM => ("chose", "short-term"),
+        answer::RULE_ANSWER_LAND => ("chose", "land"),
         _ => return None,
     })
 }
@@ -46,6 +47,7 @@ mod tests {
             answer::RULE_ANSWER_RECOMMENDED,
             answer::RULE_ANSWER_LONG_TERM,
             answer::RULE_ANSWER_SHORT_TERM,
+            answer::RULE_ANSWER_LAND,
         ] {
             let (verb, text) = for_act(rule).unwrap_or_else(|| panic!("{rule} tells nothing"));
             assert!(
@@ -96,5 +98,8 @@ mod tests {
             for_act(answer::RULE_ANSWER_LONG_TERM),
             Some(("chose", "long-term"))
         );
+        // Land's answer is told by the word aterm's own loop tells it by (`QuestionPriority::Land`
+        // `word()`). MUTANT: no Land row, and Land's answer tells no story.
+        assert_eq!(for_act(answer::RULE_ANSWER_LAND), Some(("chose", "land")));
     }
 }

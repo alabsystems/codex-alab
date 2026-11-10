@@ -667,6 +667,7 @@ impl Autopilot {
             turn_id: wall.clone(),
             thread_settings: Default::default(),
             trace: None,
+            prompt_cache_ttl: None,
             cyber_access_program: *lock(&rt.cyber_access_program),
         };
         let me = Arc::clone(self);
@@ -1449,6 +1450,7 @@ impl Autopilot {
             turn_id: wall,
             thread_settings: Default::default(),
             trace: None,
+            prompt_cache_ttl: None,
             cyber_access_program: *lock(&rt.cyber_access_program),
         };
         // Native refusal returns here before consuming input or starting work.

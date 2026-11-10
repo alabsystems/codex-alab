@@ -294,14 +294,15 @@ fn codexs_own_change_alone_delivers_the_renewed_login() {
     });
 }
 
-/// After initial reconciliation, a change that moves no stat reloads nothing: the file's mode
+/// After initial reconciliation, changes that move no stat reload nothing: the file's mode
 /// changed in a folder whose
 /// changes the OS reports names the file in an event but moves none of the stat's fields
 /// (device, inode, size, modified time), so codex reloads nothing and nothing is typed; the
 /// renewal after it is the one reload. A change reported late (the fixture's own save, arriving
 /// once the watch stands) is the same case: it failed `an_unrenewed_login_types_nothing` once at
 /// a machine's load of ~100. NEGATIVE CONTROL: reloading on an event that names the file (the
-/// watch before this fix) reloads at the mode's change.
+/// watch before this fix) reloads at the mode's change. Drive metadata changes until a real
+/// wake arrives: filesystem events are hints and a single chmod can be coalesced away.
 #[test]
 fn a_change_that_moves_no_stat_reloads_nothing() {
     big_stack(|| async {
@@ -320,10 +321,18 @@ fn a_change_that_moves_no_stat_reloads_nothing() {
         let initial_reads = notes(&h, "the lost login's file changed");
         let file = scratch.home.path().join("auth.json");
         let wakes = h.autopilot.login_wakes();
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640))
-            .unwrap_or_else(|err| panic!("the login file's mode: {err}"));
+        let stat = codex_alab_autopilot::login::stat(&file);
+        assert!(stat.is_some());
+        let mode = std::cell::Cell::new(0o600);
         wait_until("the mode's change in the folder", || {
-            h.autopilot.login_wakes() > wakes
+            if h.autopilot.login_wakes() > wakes {
+                return true;
+            }
+            mode.set(mode.get() ^ 0o040);
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode.get()))
+                .unwrap_or_else(|err| panic!("the login file's mode: {err}"));
+            assert_eq!(codex_alab_autopilot::login::stat(&file), stat);
+            false
         })
         .await;
         assert_eq!(notes(&h, "the lost login's file changed"), initial_reads);

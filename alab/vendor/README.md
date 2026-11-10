@@ -17,3 +17,8 @@ remain checked against the unchanged snapshot.
 
 The workspace has one `ALAB(toolchain)` patch entry. Drop this copy and entry when
 upstream ships equivalent compatibility and Codex's committed lockfile selects it.
+
+Pristine upstream (alab/check.sh's comparisons, alab/sync.sh's lane-fault build) is built
+with these copies too, as path overrides (`lib.sh`, `alab_pristine_config`): without them
+upstream alone does not compile under Trust. Each copy's `ALAB-SOURCE.json` is what names it,
+and a path override takes only a copy whose manifest keeps upstream's dependencies.

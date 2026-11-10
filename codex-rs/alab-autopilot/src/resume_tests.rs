@@ -230,6 +230,7 @@ async fn a_need_said_earlier_in_a_turn_is_restored_from_the_history() {
     use codex_protocol::protocol::ItemCompletedEvent;
     let legacy = |text: &str| {
         codex_history::RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
+            moderation: None,
             message: text.to_string(),
             phase: None,
             memory_citation: None,
@@ -239,10 +240,12 @@ async fn a_need_said_earlier_in_a_turn_is_restored_from_the_history() {
     };
     let paginated = |text: &str| {
         codex_history::RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+            content_token_count: None,
             thread_id: codex_protocol::ThreadId::new(),
             turn_id: "t1".to_string(),
             item: codex_protocol::items::TurnItem::AgentMessage(
                 codex_protocol::items::AgentMessageItem {
+                    moderation: None,
                     id: "agent-1".to_string(),
                     content: vec![codex_protocol::items::AgentMessageContent::Text {
                         text: text.to_string(),
@@ -323,6 +326,7 @@ async fn a_compactions_turn_answers_nothing_and_is_no_task_in_the_history() {
     let typed =
         codex_history::RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::ItemCompleted(
             codex_protocol::protocol::ItemCompletedEvent {
+                content_token_count: None,
                 thread_id: codex_protocol::ThreadId::new(),
                 turn_id: "t4".to_string(),
                 item: codex_protocol::items::TurnItem::UserMessage(

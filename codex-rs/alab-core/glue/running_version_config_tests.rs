@@ -14,7 +14,10 @@ fn compiled_build_identity_preserves_packaged_credential_store_policy() -> std::
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[expect(clippy::print_stdout, reason = "exact child completion handshake for the owning test")]
+#[expect(
+    clippy::print_stdout,
+    reason = "exact child completion handshake for the owning test"
+)]
 async fn running_version_consumer_child() -> std::io::Result<()> {
     let Some((version, _)) = process::identity(module_path!()) else {
         return Ok(());
@@ -31,8 +34,7 @@ async fn running_version_consumer_child() -> std::io::Result<()> {
             ..Default::default()
         },
         ConfigOverrides::default(),
-        AbsolutePathBuf::from_absolute_path(home.path())
-            .expect("absolute private home"),
+        AbsolutePathBuf::from_absolute_path(home.path()).expect("absolute private home"),
     )
     .await?;
     assert_eq!(

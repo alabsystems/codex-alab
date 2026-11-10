@@ -439,6 +439,7 @@ async fn drive(cohort: &Cohort, intent: &domain::Intent) {
             .alab_rebind_native_source_fenced(&intent.operation, &source, &boundary)
             .await
     );
+    reconcile!(cohort, intent, cohort.manager.alab_verify_native_target(&target));
     let mut binding = reconcile!(cohort, intent, boundary.bound());
     reconcile!(
         cohort,
@@ -466,6 +467,7 @@ async fn drive(cohort: &Cohort, intent: &domain::Intent) {
             });
             reconcile!(cohort, intent, persist(receipt.clone()).await);
             observe(cohort, intent, domain::Progress::Initializing);
+            reconcile!(cohort, intent, cohort.manager.alab_verify_native_target(&target));
             let ready = cohort.prepare_destination(&boundary).await;
             let fence = reconcile!(
                 cohort,
@@ -480,6 +482,7 @@ async fn drive(cohort: &Cohort, intent: &domain::Intent) {
                     .alab_rebind_native_source_fenced(&intent.operation, &fence, &boundary)
                     .await
             );
+            reconcile!(cohort, intent, cohort.manager.alab_verify_native_target(&target));
             let observed = reconcile!(cohort, intent, boundary.bound());
             reconcile!(
                 cohort,

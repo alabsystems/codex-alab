@@ -186,6 +186,7 @@ async fn reply(
     text: &str,
 ) {
     let item = TurnItem::AgentMessage(AgentMessageItem {
+        moderation: None,
         id: "msg-1".to_string(),
         content: vec![AgentMessageContent::Text {
             text: text.to_string(),

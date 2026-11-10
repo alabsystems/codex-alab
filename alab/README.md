@@ -8,6 +8,10 @@ codex-alab is ALab's build of OpenAI's Codex CLI. It follows
 [openai/codex](https://github.com/openai/codex) daily and carries ALab's changes on top.
 This directory holds the process and tooling that keep both true at once.
 
+[Systematic upstream alignment](design/upstream-alignment.md) proposes the intake,
+feature-retention and new-model readiness workflow around the existing sync gate,
+and identifies the automation still to build.
+
 [Native controls](NATIVE-CONTROLS.md) describes the version, update and Autopilot UI
 owned by this binary. aterm supplies terminal services; it draws no Codex overlay.
 
@@ -23,6 +27,10 @@ it needs no functional hook.
 | `CONTRACT.md` | the native harness: what codex-alab does itself in aterm, and the wire between them |
 | `check.sh` | the gate a sync passes before it lands |
 | `delta.sh` | the ALab layer, measured: where the next conflict will come from |
+| `upstream_intake.py` | snapshot an exact upstream range and validate complete, current review decisions; qualification remains separate |
+| `upstream_status.py` | report local main/upstream identities, integrated frontier and lag; fetch, qualification and installed adoption remain unknown without evidence |
+| `features.toml`, `feature_inventory.py` | behavior contracts and hook-topic ownership; validate with Python 3.11+, separately from semantic qualification |
+| `github_push.py` | publish an exact fast-forward main through Agh using a fresh admitted transport clone while preserving the source clone's guards |
 | `package.sh` | build a codex package and advance its already selected local artifact channel |
 | `local_update.py` | poll origin/main for that selected local channel; prepare its separate LaunchAgent |
 | `promote.py` | conditionally select a forward local package through atpkg after smoke passes |
@@ -37,6 +45,7 @@ it needs no functional hook.
 | `smoke/parallel_logins.py` | concurrent real exec processes with distinct credentials and shared conversation storage; no build |
 | `smoke/quota_resume.py` | quota recovery across persisted thread origins using existing binaries |
 | `smoke/quota_wait.py` | repeated stale-reset backoff and native cancellation during a distant reset |
+| `smoke/weekly_reset.py` | earned reset credits, natural resets, receipt reconciliation and paced recovery using an existing binary or package |
 | `smoke/prune_test.py` | `prune.py` against a scratch package root and atpkg prefix |
 
 ## What upstream is like (measured 2026-10-15)
@@ -142,6 +151,15 @@ run:
    Git's per-ref fast-forward rejection and a successful fetch proving that main advanced
    without rewriting history and has commits the sync lacks. Authentication, transport and
    remote-hook failures still stop, as do conflicts and failed checks.
+
+GitHub reads use `github.py`; writes use `github_push.py` and Agh's atomic
+expected-ref operation. A fresh transport clone avoids changing the source
+clone's intentional upstream push refusal, which Agh's write-config screen rejects.
+Only local Git transfers the exact candidate graph into that admitted clone.
+An upstream history rewrite, a non-forward candidate, an authentication error or
+an unknown write outcome stops publication. A typed lease conflict retries only
+after a fresh admitted fetch proves that main advanced forward; every composed
+candidate is checked again by the existing sync loop.
 
 A sync that stops for a person (exit 3, 4 or 6) records why, and so do a `--no-push`
 merge and a person's `--continue` that failed: each waits (exit 5) for `--continue` or
@@ -608,13 +626,11 @@ hooks needs almost none. So:
    - `model_providers` and `profiles`.
    - For aterm integration, drive the `codex app-server` protocol or `exec --json` from
      the aterm side instead of patching the TUI.
-4. **Config before code.** ALab's defaults go in `codex-rs/config/defaults.toml`. It is
-   compiled into the binary as the lowest config layer ("packaged defaults"), so it
-   reaches every install with no file on disk, and upstream has changed it twice in 90
-   days. Two placement rules:
-   - Top-level keys go in a block right after its first line. The file ends inside
-     `[history]`, so a key appended at the end is silently read as `history.<key>`.
-   - New tables go at the end.
+4. **Config before code.** ALab's defaults go in `codex-rs/alab-core/defaults.toml`,
+   merged over upstream's packaged defaults by the ALab binary. Terminal-specific
+   defaults go in `codex-rs/alab-core/aterm-defaults.toml`. Leave upstream's defaults
+   unchanged. Put top-level keys before tables so TOML does not silently assign
+   them to the preceding table.
 5. **Never reformat, reorder, rename or re-indent upstream code.** Format only what you
    wrote, with `trustfmt <file>`. A workspace-wide `targo fmt` rewrites upstream's files.
 6. **Remove only whole paths, through `removed-paths`.** A hand-deleted upstream file
@@ -803,6 +819,12 @@ emitted. Otherwise a capable controller also serves as the builder, even off `PA
 an older controller leaves builder discovery to `package.sh`. Without `tomllib`, marker
 reads accept only the flat generated keys, single-line strings and string arrays;
 unsupported syntax or malformed values leave the selected channel unchanged.
+
+Run the updater's integration tests with Python 3.11 or newer, for example
+`python3.14 -B -m unittest discover -s alab/tests -p 'test_local_update*.py'`.
+These tests use the test interpreter as a native builder fixture; the controller's
+Python 3.9 minimum does not suffice for that fixture. On macOS, check which Python
+the shell resolves before interpreting builder-capability failures as updater defects.
 
 Its log is `<git-common-dir>/alab-local-update.launchd.log`;
 `python3.14 -I alab/local_update.py --status` prints the last reported transaction phase,
@@ -1890,6 +1912,52 @@ input and growing positive backoff. It also sends native SIGINT during a
 one-hour quota wait and checks a handled exit within ten seconds, no additional
 HTTP request, and no guardian timeout. It builds nothing and uses isolated homes
 and a local server, with raw process evidence retained alongside each result.
+
+For ordinary authenticated ChatGPT allowance exhaustion, earned-reset recovery
+keeps the original request waiting and polls fresh usage and available reset
+credits, waiting 30 seconds between attempts. Each attempt has a 45-second timeout,
+shortened by a known natural reset deadline, and releases account custody before
+sleeping. A newly available earned credit can restore work without
+a new prompt; fresh usable allowance can also resume it after a natural reset,
+without redeeming a credit. Account changes and cancellation end the old wait.
+Premium and spend-control denials do not authorize ordinary reset redemption.
+Receipts preserve the exact redemption key across uncertain responses and process
+restarts, and fresh usage must confirm restoration before the request retries.
+Each waiting turn can retry once per consumed credit, including a credit settled
+by another session; the account-wide receipt still guards redemption custody.
+A used grant suppresses another sampler retry. A known original quota reset
+deadline bounds both HTTP attempts and polling waits, including backend outages;
+at that deadline the native quota policy can retry the retained request. Later
+confirmed exhaustion can use a fresh earned credit. Without a known deadline,
+pending recovery keeps polling; an already-used grant returns scheduling to the
+native quota policy.
+
+`alab/smoke/weekly_reset.py --codex /path/to/codex --output /new/retained-output`
+checks these paths with fake ChatGPT auth and a loopback service. It retains the
+original request's completed plan across recovery. Use repeatable `--case` options
+for focused checks, including `late-credit`, `natural-reset`, `committed-ack`, and
+`lost-ack-propagation`. The natural-reset case starts with zero credits, observes
+a denied allowance, then verifies a paced fresh usage check and success with no
+redemption POST. The probe builds nothing and keeps raw process and HTTP evidence.
+The `usage-outage` and `credit-list-outage` cases inject one HTTP 503 after quota
+exhaustion and require a paced retry before any credit redemption.
+The `usage-outage-deadline` and `credit-list-outage-deadline` cases keep the backend
+unavailable while the Responses quota resets. They require a timely native retry
+after the known deadline with no credit redemption and the completed plan intact.
+The backend-restoration `natural-reset` case independently verifies a paced fresh
+usage check that restores work before the original wall deadline.
+
+Use `--package /absolute/package` instead of `--codex` to bind the probe to an
+immutable package's build and layout records. The aggregate report retains its
+source commit, binary hash and probe hash. `passed` describes only the requested
+run; require `fullSuite: true` for complete declared coverage. `requestedCases`
+names the intended cases and `cases` retains those completed successfully.
+Repeatable `--case` selects distinct cases; duplicate selections are rejected.
+On failure, `failedCase` identifies the case that did not finish. Handled
+interruption records `interrupted: true`, preserves incomplete coverage and
+rethrows the original cancellation, including its exit status. A missing or empty
+guardian result after interruption is incomplete evidence, even when the aggregate
+report exists. Abrupt termination can prevent the aggregate report itself.
 
 For the account boundary, run each of these two smokes through `alab_contained` from a
 neutral directory, granting the package, script and private Cargo home read-only, with only

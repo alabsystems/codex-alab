@@ -103,8 +103,8 @@ impl<T: HttpTransport> EndpointSession<T> {
                 let auth = self.auth.clone();
                 let transport = &self.transport;
                 async move {
-                    let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
-                    transport.execute(req).await
+                    crate::alab_auth_source::execute(auth.as_ref(), transport, req).await // ALAB(accounts): conjunct source and caller policy before credential selection.
+
                 }
             },
         )
@@ -144,8 +144,8 @@ impl<T: HttpTransport> EndpointSession<T> {
                 let auth = self.auth.clone();
                 let transport = &self.transport;
                 async move {
-                    let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
-                    transport.stream(req).await
+                    crate::alab_auth_source::stream(auth.as_ref(), transport, req).await // ALAB(accounts): the source lease follows the actual response byte stream.
+
                 }
             },
         )

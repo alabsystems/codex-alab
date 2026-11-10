@@ -13,6 +13,8 @@ use codex_protocol::auth::AuthMode;
 /// Managed Amazon Bedrock API key persisted in `auth.json`.
 #[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct BedrockApiKeyAuth {
+    #[serde(skip)]
+    pub alab_epoch: crate::auth::AlabSourceSnapshot, // ALAB(accounts): runtime-only source provenance.
     pub api_key: String,
     pub region: String,
 }
@@ -42,6 +44,7 @@ pub fn login_with_bedrock_api_key(
         agent_identity: None,
         personal_access_token: None,
         bedrock_api_key: Some(BedrockApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             api_key: api_key.to_string(),
             region: region.to_string(),
         }),

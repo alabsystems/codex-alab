@@ -10,6 +10,22 @@ use std::sync::Arc;
 struct Host;
 
 impl core::Host for Host {
+    fn target_context<'a>(
+        &'a self,
+        assignment: &'a str,
+    ) -> codex_alab_core::native_target::DestinationFuture<'a> {
+        Box::pin(async move {
+            let endpoint =
+                codex_alab_aterm::Endpoint::managed_auth_from_env().ok_or_else(unavailable)?;
+            let identity = crate::identity::current().map_err(|_| unavailable())?;
+            let birth = crate::identity::proc_start_utc(&identity).ok_or_else(unavailable)?;
+            let target =
+                codex_alab_aterm::source_member::target::context_at(&endpoint, assignment, &birth)
+                    .await?;
+            Ok(Box::new(target) as Box<dyn codex_alab_core::native_target::Destination>)
+        })
+    }
+
     fn open_member<'a>(&'a self, open_nonce: &'a str) -> core::MemberFuture<'a> {
         Box::pin(async move {
             let endpoint =

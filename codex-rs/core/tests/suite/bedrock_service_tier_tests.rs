@@ -34,6 +34,7 @@ async fn bedrock_ultrafast_can_be_configured_and_toggled(
     .await;
     let test = test_codex()
         .with_auth(CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             api_key: "dummy".to_string(),
             region: "us-west-2".to_string(),
         }))
@@ -101,6 +102,7 @@ async fn bedrock_custom_catalog_controls_service_tiers(
     .await;
     let test = test_codex()
         .with_auth(CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             api_key: "dummy".to_string(),
             region: "us-west-2".to_string(),
         }))

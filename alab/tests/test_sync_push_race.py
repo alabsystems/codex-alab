@@ -71,6 +71,8 @@ sys.exit(rc)
         harness.write_text("set -euo pipefail\n" + source[begin:end] + '''
 wt=candidate
 in_wt() { git -C "${wt}" "$@"; }
+sync_push() { in_wt push --porcelain origin HEAD:refs/heads/main; }
+sync_fetch() { git fetch --quiet "$1"; }
 alab_die() { printf '%s\\n' "$*" >&2; exit 1; }
 alab_say() { printf '%s\\n' "$*"; }
 sleep() { printf 'sleep %s\\n' "$1" >>"${RACE_FIXTURE}/actions"; }

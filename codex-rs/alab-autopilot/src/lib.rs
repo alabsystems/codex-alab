@@ -124,9 +124,9 @@ mod open_work_tests;
 #[cfg(test)]
 mod passive_tests;
 #[cfg(test)]
-mod replies_tests;
-#[cfg(test)]
 mod probe_scope_tests;
+#[cfg(test)]
+mod replies_tests;
 #[cfg(test)]
 mod repo_tests;
 #[cfg(test)]

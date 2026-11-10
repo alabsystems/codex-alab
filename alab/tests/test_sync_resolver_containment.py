@@ -55,7 +55,7 @@ class SyncResolverContainmentTests(unittest.TestCase):
         git(repo, "remote", "add", "upstream", str(upstream))
         scripts = repo / "alab"
         scripts.mkdir()
-        for name in ("sync.sh", "lib.sh", "command_guard.py", "retention.py", "merge-attributes",
+        for name in ("sync.sh", "lib.sh", "github.py", "github_push.py", "command_guard.py", "retention.py", "merge-attributes",
                      "removed-paths", "owned-paths", "watched-paths"):
             shutil.copyfile(ROOT / "alab" / name, scripts / name)
         cargo = scripts / "fake-cargo"

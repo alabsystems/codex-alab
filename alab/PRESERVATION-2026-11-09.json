@@ -1,0 +1,232 @@
+{
+  "base_main": "faf104c11323e30daf127ecda02716d08e25a519",
+  "future_integration": "These original commits count as merged in Git ancestry. To activate a saved variant later, apply and validate its diff explicitly (for example, cherry-pick the desired change); a normal merge may consider its historical changes already merged.",
+  "mode": "Archive merge into main history. The current main source tree is retained. Saved feature variants are historical content, not activated or software-validated by this merge.",
+  "purpose": "Lossless preservation of local work rescued during the 2026-11-09 disk emergency.",
+  "recovery": "Read any saved commit with git show SHA:PATH or git switch --detach SHA. All original ancestors remain reachable through this merge after the temporary preservation refs are removed.",
+  "saved_refs": [
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-appserver-config-adapter",
+      "sha": "160f282b4dcbf10541ae10e691624d2a10955e0a"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-assignment",
+      "sha": "5ef583ff0d72d90aefa8f15e167c57e7ce66139d"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-config-preparer",
+      "sha": "b4c5c3479224ad92842f02175644e95605917177"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-deferred-source-reselection-fix",
+      "sha": "47d2749e800cc40185ff110cd3babc8471f5a9d3"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-destination-config-owner-audit",
+      "sha": "9b53e9a8ef165a328c645b389264b5f5057d417a"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-enrollment",
+      "sha": "9f4310575d130b151845e825f0eecf7b05a5fd45"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-lifetime-feedback",
+      "sha": "12571795750c394d221f19be1b1b8f2563b8dc04"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-policy-doc-root",
+      "sha": "43d78bf473405314af4d2f746be9d8134b2c1da8"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-reader-fixture-feedback",
+      "sha": "54ae0560dada0017b8cd25132f31ee90fcfbcb68"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-view",
+      "sha": "171766f47f1221e6c299bd73801e4479ec9e7276"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/active-stop-controller",
+      "sha": "3930eaea860a71cc6ed1ba28293abfed167a02e1"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/assignment-reconcile-guardian",
+      "sha": "21305a55aee458d8de607325b27803e4f94a5cdb"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-admission-fence",
+      "sha": "72e4e7a8187c6e769d4f16a44aae7b2509ce096b"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-bound-stop",
+      "sha": "58f4fc259f8ce4f6c307e11bf2bf83defca22719"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-consume-retry",
+      "sha": "2e6cbff2ab8f08698540cd292a4741ce795fa8d9"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-final-composition",
+      "sha": "86a93f34bb60b82f2bbe14035499f795fcb44539"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-http-lint-fixes",
+      "sha": "daa85404c82f0c7b2c4c12016833ab2cc20443fa"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-native-commit-fence",
+      "sha": "1953b778d0453c71a25795a954e3fe81c623323f"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-observation-fix",
+      "sha": "82e8fcd73ffa947a27bc7af43e92069e85eadc07"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-retirement-review",
+      "sha": "531cfe730d1624ddf1a5ff11b696dd8564e2c93e"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/core-owned-lint-prepare-review",
+      "sha": "ec2d54a1f04e418ac713a2b414d98d7c3b1ab8f9"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/debug-source-eof",
+      "sha": "640f8e9925bd31bb4725f5c83ab80969cb5fabcf"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/debug-source-proof",
+      "sha": "c2d94b7aebb0de0417545225fcdeaa96c84659b5"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/dispatcher-scope-frame-prepare-review",
+      "sha": "fa8c5898ac8c80bae5f1addcdc32c81eb85e1b93"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/exec-tree-capture-frame-prepare-review",
+      "sha": "790edef85af8c56ed6a9696cc46e0c1fa3ea3fe2"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/headless-quota-resume",
+      "sha": "ca167863437f238f4ae082fccbdd9f6712744306"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/login-back-fixture-baselines",
+      "sha": "4c53e20b11c0537f0d20f3f413c358441dbab7a1"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/login-lifetime-fixture-review",
+      "sha": "6fdd33e44e9acbbaf72f5de3ed3f66904f5ae201"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/login-watch-fixtures",
+      "sha": "a0dcdc26592843c2486229f3cf2182fc685a7687"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/native-member-cache-fence",
+      "sha": "ae7e7943d65c9c3ec797ae3c6912e77e2d7c6bf0"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/native-member-scope-tests",
+      "sha": "3a7b81c1cad87a877b27dc2b480808fd110c5711"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/native-source-rebound",
+      "sha": "5c5b75f3a9141ebce054e1cc56879c7d8eb933cc"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/postsignal-controller",
+      "sha": "137ac13fe8eeebfe5441dc285b527f7d4f4c618c"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/preload-configuration-lint",
+      "sha": "2343bdc801bae84e28f22c4494b9b2bcaaafeed4"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/remove-unused-destination-model-builder",
+      "sha": "e82d55c81c2d719be31fc0f7b5b5cc9ffd2f5352"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-case-budgets",
+      "sha": "e53dafba8c5c4017b34d167f1c97f938b6c41481"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-grace-clock",
+      "sha": "eb2e82cc7aafdcdf16a4ac2a39ffe1b04bf99de6"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-grace-full-clock",
+      "sha": "4db52ca28f565fc6da7a664b7910c5dcf4a4c909"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-launcher-path",
+      "sha": "11cd67bdb27a02c80620485f3a9bf29240b8512a"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-ordinary-owed",
+      "sha": "a0a85748681a5dbfbf9ff750946ea40dacc86f9d"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-plan-oracle",
+      "sha": "53d97e9ed90d46b907d7298fb16d00b3896e6fde"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-post-clock",
+      "sha": "c194cfcd1765cf6d58bc56eb2de9567df89553e0"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-repeat-fixture",
+      "sha": "de669fac4c49cf2d8a0bdaac0fbad2c26b82b797"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-request-attribution",
+      "sha": "75e3da2795cfc9eb875a570b5417ed0b66bb7744"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-rollback-scope",
+      "sha": "feefe84b6abee2a35868440a8f42e128abb0b681"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-stop-oracle",
+      "sha": "0923dec497ce47899f79c161a9649d3f7b5d04a4"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-wire-contract",
+      "sha": "0fbb87d8c7b7fe629fce2daa71f6fcd000542420"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/session-startup-phases",
+      "sha": "7c6325c369c9f8a2f6c77438eb9ee88819a188d0"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/session-startup-poll-stack",
+      "sha": "863f2703de7bb46f1668efd5aa4c8debb9d7733a"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/source-rebound-failure-prepare-review",
+      "sha": "32a8e80c040bea46221cbff4e7371698230d02b3"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/startup-submission-construction",
+      "sha": "907060eca718a4f8f69ac9ca1052f575c8757115"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/submission-loop-frame-prepare-review",
+      "sha": "8c2b05b10ab89d6decfe3220181b3102d7fb4f46"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2cd4d30c78/working-files",
+      "sha": "53e34005710be252a435f258f7467f549bc075b8"
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/e171867ef5/working-files",
+      "sha": "3047bfa2b7ea716553ef23b1ac83f4e7b93d0fbc"
+    }
+  ],
+  "schema": 1,
+  "software_checks": "No software build, test, proof or feature-integration claim. Only preservation metadata changes against first-parent main.",
+  "validation": [
+    "Exact first-parent tree diff contains only this manifest.",
+    "Every saved tip is an ancestor.",
+    "Saved names and object IDs match the verified remote inventory."
+  ]
+}

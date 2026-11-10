@@ -190,6 +190,8 @@ pub(super) fn auth_storage_commit_guard() -> std::io::Result<std::sync::MutexGua
 }
 
 pub(super) trait AuthStorageBackend: Debug + Send + Sync {
+    fn alab_source_scope(&self) -> Option<codex_alab_core::native_source::Source> { None } // ALAB(accounts): immutable native descriptor distinguishes source changes with identical document bytes.
+    fn alab_source_access(&self) -> std::io::Result<()> { Ok(()) } // ALAB(accounts): exact direct-reader snapshots validate their native loaded observation.
     fn alab_source_lifetime(&self) -> Option<codex_alab_core::native_source_lifetime::Lifetime> { None } // ALAB(accounts): native snapshots retain actual member/source lifetime.
     fn persistent_home(&self) -> Option<&Path> {
         None

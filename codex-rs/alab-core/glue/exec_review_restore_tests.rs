@@ -113,7 +113,7 @@ impl SessionTask for CompleteAfter {
     ) -> SessionTaskResult {
         let finish = self.0.lock().await.take().unwrap();
         finish.await.unwrap();
-        Ok(Some(json!({"findings":[],"overall_correctness":"correct","overall_explanation":"completed before attachment","overall_confidence_score":1.0}).to_string()))
+        Ok(Some(crate::tasks::alab_test_output::completed(json!({"findings":[],"overall_correctness":"correct","overall_explanation":"completed before attachment","overall_confidence_score":1.0}).to_string())))
     }
 }
 

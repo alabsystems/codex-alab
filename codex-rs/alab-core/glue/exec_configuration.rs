@@ -499,6 +499,7 @@ mod tests {
         requirements.feature_requirements = Some(codex_config::Sourced {
             value: codex_config::FeatureRequirementsToml {
                 entries: std::collections::BTreeMap::from([("shell_tool".into(), false)]),
+                runtime_auth_mode: None,
             },
             source: codex_config::RequirementSource::Unknown,
         });

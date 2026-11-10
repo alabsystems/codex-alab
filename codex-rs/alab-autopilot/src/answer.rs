@@ -25,10 +25,29 @@
 //!   with `No` or declining the act), or is left to a person; an unmarked question where an
 //!   option names an act only to decline it takes the one option that refuses every such act,
 //!   or is left to a person.
+//! - Autopilot Land (`policy.autopilot`, CONTRACT §3) answers a box under its own priority
+//!   over every word that answers (`Priority::of`, aterm `approval_loop.rs`
+//!   `dialog_priority`): Land's text (aterm's `land_question_text`, else
+//!   [`words::LAND_QUESTION_TEXT`]) goes in the notes as the long-term text does, recorded as
+//!   [`RULE_ANSWER_LAND`] (aterm `question.rs` `choose_text` under `QuestionPriority::Land`). A
+//!   question with no options gets it too where it names a destructive act, as Land answers a
+//!   prose question that names one: Cruise's [`words::REVERSIBLE_ANSWER`] ends `and keep
+//!   going`, which is no landing, and Land's text itself rules out a force push and deleted
+//!   work. An unmarked question that names a destructive act still takes its one refusal, else
+//!   a person, under Land's rule (aterm's `destructive_unmarked`, answered by
+//!   `recommended_instead`). `ask` and `answer_questions` off stay a person's under Land: Land
+//!   answers only where a word already does.
 //! - Left to a person (attention): `ask`, `answer_questions` off, a secret question, a person
 //!   who began answering, a `(Recommended)` answer kept for every later ask, or an unmarked
 //!   question whose every option names a destructive act, keeps its answer, or approves what
 //!   it does not say beside an act.
+//! - What aterm's text path keeps a person's beside these has no counterpart on the overlay.
+//!   The TUI glue applies a posted answer whole, in one step and its notes with it, so no key of
+//!   codex-alab's is ever half sent: a switch of the Autopilot after an answer is posted cannot
+//!   leave a priority moved mid-dialog (aterm's latch), and one before it is decided afresh at
+//!   the next look. A person's typing since codex-alab's answer is the glue's own `begun` refusal.
+//!   The overlay takes a note structurally, so a text gone from its row, a row too far from the
+//!   focus, Muse Code's notes field and a preview are no rows here.
 //! - The plan box: under `approve=all` only, its `Yes, implement this plan` row while
 //!   enabled; never `clear context`.
 //! - The goal box ("Resume paused goal?", which a resume opens over a goal that is not
@@ -49,6 +68,7 @@ use codex_alab_core::boxes::Choice;
 use codex_alab_core::boxes::GoalStop;
 use codex_alab_core::boxes::OpenBox;
 
+use crate::decide::Mode;
 use crate::decide::Policy;
 use crate::decide::Questions;
 use crate::words;
@@ -57,6 +77,8 @@ use crate::words;
 pub const RULE_ANSWER_RECOMMENDED: &str = "answer-recommended@v1";
 pub const RULE_ANSWER_LONG_TERM: &str = "answer-long-term@v1";
 pub const RULE_ANSWER_SHORT_TERM: &str = "answer-short-term@v1";
+/// Autopilot Land's answer (`approval.rs` `RULE_ANSWER_LAND`), over every word that answers.
+pub const RULE_ANSWER_LAND: &str = "answer-land@v1";
 /// The plan box's yes (`approval.rs` `RULE_PLAN`).
 pub const RULE_PLAN: &str = "plan-approve@v2";
 /// The goal box's `Leave paused` (codex-alab's own: aterm's Claude Code lane meets no such box).
@@ -151,9 +173,9 @@ fn question(
     if !policy.answer_questions {
         return BoxDecision::Leave("answer_questions is off".to_string());
     }
-    if policy.questions == Questions::Ask {
+    let Some(priority) = Priority::of(policy) else {
         return BoxDecision::Leave("this session's questions word is `ask`".to_string());
-    }
+    };
     if let Some(begun) = begun {
         return BoxDecision::Leave(format!("{begun}: theirs to finish"));
     }
@@ -163,7 +185,7 @@ fn question(
     let mut answers = Vec::with_capacity(questions.len());
     let mut said = Vec::with_capacity(questions.len());
     for q in questions {
-        match one(q, policy) {
+        match one(q, priority, policy) {
             Ok((choice, words)) => {
                 answers.push((q.id.clone(), choice));
                 said.push(words);
@@ -171,23 +193,67 @@ fn question(
             Err(why) => return BoxDecision::Leave(why),
         }
     }
-    let rule = match policy.questions {
-        Questions::LongTerm => RULE_ANSWER_LONG_TERM,
-        Questions::ShortTerm => RULE_ANSWER_SHORT_TERM,
-        Questions::Recommended | Questions::Ask => RULE_ANSWER_RECOMMENDED,
-    };
     BoxDecision::Answer {
         answer: BoxAnswer::Question {
             id: id.to_string(),
             answers,
         },
-        rule,
+        rule: priority.rule(),
         words: format!("answered the question box: {}", said.join("; ")),
     }
 }
 
+/// THE PRIORITY A QUESTION BOX IS ANSWERED UNDER (aterm `approval_loop.rs` `dialog_priority`):
+/// Land's where the session's Autopilot is Land, over every word that answers; else the
+/// `questions` word's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Priority {
+    Recommended,
+    LongTerm,
+    ShortTerm,
+    Land,
+}
+
+impl Priority {
+    /// The priority `policy` answers under, or `None` where its `questions` word is `ask` (a
+    /// person's under Land too).
+    fn of(policy: &Policy) -> Option<Priority> {
+        let word = match policy.questions {
+            Questions::Ask => return None,
+            Questions::Recommended => Priority::Recommended,
+            Questions::LongTerm => Priority::LongTerm,
+            Questions::ShortTerm => Priority::ShortTerm,
+        };
+        Some(if policy.autopilot == Mode::Land {
+            Priority::Land
+        } else {
+            word
+        })
+    }
+
+    fn rule(self) -> &'static str {
+        match self {
+            Priority::Recommended => RULE_ANSWER_RECOMMENDED,
+            Priority::LongTerm => RULE_ANSWER_LONG_TERM,
+            Priority::ShortTerm => RULE_ANSWER_SHORT_TERM,
+            Priority::Land => RULE_ANSWER_LAND,
+        }
+    }
+
+    /// The policy text a priority writes in the notes, so the worker decides, and how the
+    /// journal names it; `None` for the recommended word, which chooses an option.
+    fn text(self, policy: &Policy) -> Option<(&str, &'static str)> {
+        match self {
+            Priority::Recommended => None,
+            Priority::LongTerm => Some((words::LONG_TERM_TEXT, "the policy text")),
+            Priority::ShortTerm => Some((words::SHORT_TERM_TEXT, "the policy text")),
+            Priority::Land => Some((&policy.texts.land_question, "the land policy text")),
+        }
+    }
+}
+
 /// One question's choice and how it reads in the journal, or why a person answers it.
-fn one(q: &BoxQuestion, policy: &Policy) -> Result<(Choice, String), String> {
+fn one(q: &BoxQuestion, priority: Priority, policy: &Policy) -> Result<(Choice, String), String> {
     let subject = if q.header.trim().is_empty() {
         q.question.trim()
     } else {
@@ -203,41 +269,32 @@ fn one(q: &BoxQuestion, policy: &Policy) -> Result<(Choice, String), String> {
         .iter()
         .position(|o| o.label.trim().to_lowercase().ends_with(RECOMMENDED));
     if q.options.is_empty() {
-        let text = if destructive(q).is_some() {
+        let text = if priority == Priority::Land {
+            // Land's text itself rules out a force push and deleted work; Cruise's reversible
+            // answer ends `and keep going`, which is no landing.
+            policy.texts.land_question.clone()
+        } else if destructive(q).is_some() {
             words::REVERSIBLE_ANSWER.to_string()
+        } else if let Some((text, _)) = priority.text(policy) {
+            text.to_string()
         } else {
-            match policy.questions {
-                Questions::LongTerm => words::LONG_TERM_TEXT.to_string(),
-                Questions::ShortTerm => words::SHORT_TERM_TEXT.to_string(),
-                Questions::Recommended | Questions::Ask => match &policy.answer_text {
-                    Some(text) => text.clone(),
-                    None => {
-                        return Err(format!(
-                            "a free-text question ({subject}) and no answer_text"
-                        ));
-                    }
-                },
+            match &policy.answer_text {
+                Some(text) => text.clone(),
+                None => {
+                    return Err(format!(
+                        "a free-text question ({subject}) and no answer_text"
+                    ));
+                }
             }
         };
         return Ok((Choice::Note(text), format!("{subject} → notes")));
     }
-    match policy.questions {
-        Questions::LongTerm | Questions::ShortTerm
-            if marked.is_some() || destructive(q).is_none() =>
-        {
-            let text = if policy.questions == Questions::LongTerm {
-                words::LONG_TERM_TEXT
-            } else {
-                words::SHORT_TERM_TEXT
-            };
-            Ok((
-                Choice::Note(text.to_string()),
-                format!("{subject} → the policy text (the worker decides)"),
-            ))
-        }
-        Questions::LongTerm | Questions::ShortTerm | Questions::Recommended | Questions::Ask => {
-            choose_option(q, subject, marked)
-        }
+    match priority.text(policy) {
+        Some((text, named)) if marked.is_some() || destructive(q).is_none() => Ok((
+            Choice::Note(text.to_string()),
+            format!("{subject} → {named} (the worker decides)"),
+        )),
+        _ => choose_option(q, subject, marked),
     }
 }
 

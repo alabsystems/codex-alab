@@ -1,29 +1,15 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! The rainbow kitty launch banner's codex-tui cell.
+//! Launch-card integration for codex-tui's private HistoryCell trait.
 //!
-//! Not a file of the codex-alab-tui crate: codex-tui compiles it as
-//! `history_cell::session::alab_banner` through a `#[path]` module at the end of
-//! `tui/src/history_cell/session.rs` (`ALAB(banner)`), because codex's `HistoryCell` trait is
-//! `pub(crate)` and only a module of codex-tui can implement it. Its tests run as codex-tui
-//! `--lib` tests, so `alab/check.sh` gates them. Everything that draws lives in
-//! `codex_alab_tui::banner`; this file only knows codex: the trait, the welcome predicate in
-//! `LocalSettings`, the colour level and background `terminal_palette` probed, and the build's
-//! commit. The same call also puts the launch folder-trust notice under the header
-//! (`ALAB(trust)`), so that line needs no hook of its own.
-//!
-//! The one call is `prepend(&mut parts, local_settings)` right after `new_session_info` builds
-//! its header: part 0 of the launch `SessionInfoCell` becomes the banner with the header under
-//! it, so the art inherits that cell's startup-cell handling (it is no activity and does not
-//! dismiss the blossom), its place ahead of paginated history and its exclusion from `/export`,
-//! and the header's own leading blank row is the one row between the label and
-//! `>_ OpenAI Codex` (a part of its own would get the composite's blank row as well). The banner
-//! does push the transcript down, so `codex_alab_tui::banner::blossom_stage` (a second hook, in
-//! `empty_state_animation.rs`) moves the blossom into the space left. Once per process: the first
-//! session header takes the launch slot whether or not it draws, so a later one never does.
-//! Only in codex-alab (`codex_alab_tui::banner::active`), and never under upstream's own unit
-//! tests.
+//! The default Codex card integrates the header's model, directory and permissions into one
+//! framed banner. The existing explicit ribbon/stripes styles keep the separate header.
+//! Raw scrollback, copy and export always retain the original header text. The first session
+//! header consumes the launch slot even when artwork is disabled, so /new never adds art.
+//! The cell tracks the live harness word and terminal width in its render cache. It remains
+//! startup metadata, excluded from activity and export, and shares the existing blossom
+//! placement hook. All drawing lives in codex_alab_tui::banner; this glue is ALab-owned.
 
 use crate::history_cell::HistoryCell;
 use crate::local_settings::LocalSettings;
@@ -66,9 +52,16 @@ impl BannerCell {
         {
             return lines.clone();
         }
-        // With aterm's harness on, the harness row names its Autopilot word (the moonbow
-        // under Off); unsupervised or outside aterm, the plain banner.
-        let lines = self.banner.lines_with_harness(width, state);
+        // The card names the live Autopilot word; session details stay in the same frame.
+        let lines = if self.banner.is_codex() {
+            self.banner.session_lines(
+                width,
+                state,
+                self.header.raw_lines().into_iter().skip(1).collect(),
+            )
+        } else {
+            self.banner.lines_with_harness(width, state)
+        };
         *cache = Some((width, state, lines.clone()));
         lines
     }
@@ -79,8 +72,12 @@ impl BannerCell {
         art: impl FnOnce(Vec<Line<'static>>) -> Vec<T>,
         header: Vec<T>,
     ) -> Vec<T> {
-        let mut lines = art(self.art(width));
-        lines.extend(header);
+        let rendered = self.art(width);
+        let unified = self.banner.is_codex() && !rendered.is_empty();
+        let mut lines = art(rendered);
+        if !unified {
+            lines.extend(header);
+        }
         lines
     }
 }
@@ -354,6 +351,23 @@ mod tests {
     }
 
     #[test]
+    fn default_card_contains_one_title_and_all_session_details() {
+        let parts = force(None, || launch_parts(/*welcome*/ true));
+        let cell = banner(&parts).expect("default banner");
+        for width in [20, 40, 80, 120] {
+            let rows = text(&cell.display_lines(width));
+            let rendered = rows.join("\n");
+            assert_eq!(rendered.matches("OpenAI Codex").count(), 1, "{rendered}");
+            assert!(rendered.contains("gpt-5"), "{rendered}");
+            assert!(rendered.contains("/tmp/project"), "{rendered}");
+            assert!(rows.iter().all(
+                |row| unicode_width::UnicodeWidthStr::width(row.as_str()) < usize::from(width)
+            ));
+            assert_eq!(cell.raw_lines(), cell.header.raw_lines());
+        }
+    }
+
+    #[test]
     fn forced_banner_leads_the_header() {
         let parts = force(None, || launch_parts(/*welcome*/ true));
         assert_eq!(parts.len(), 1);
@@ -432,7 +446,7 @@ mod tests {
 
     #[test]
     fn the_cell_follows_the_width() {
-        let parts = force(None, || launch_parts(/*welcome*/ true));
+        let parts = force(Some("ribbon"), || launch_parts(/*welcome*/ true));
         let cell = banner(&parts).unwrap_or_else(|| panic!("no banner in {parts:?}"));
         for width in [0u16, 12, 13, 27, 28, 44, 80, 200, 80] {
             let lines = cell.art(width);
@@ -464,7 +478,7 @@ mod tests {
             bg: (15, 20, 37),
         };
         let card = crate::terminal_palette::with_test_default_colors(colors, || {
-            SessionInfoCell(CompositeHistoryCell::new(force(None, || {
+            SessionInfoCell(CompositeHistoryCell::new(force(Some("ribbon"), || {
                 launch_parts(/*welcome*/ true)
             })))
         });
@@ -515,7 +529,7 @@ mod tests {
         })));
         let _scope = codex_alab_tui::boxes::scoped(shared);
 
-        let parts = force(None, || launch_parts(/*welcome*/ true));
+        let parts = force(Some("ribbon"), || launch_parts(/*welcome*/ true));
         let info = SessionInfoCell(CompositeHistoryCell::new(parts));
         let cell = banner(&info.0.parts).expect("banner cell");
         assert_eq!(info.transcript_animation_tick(), None);

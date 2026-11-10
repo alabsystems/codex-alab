@@ -391,11 +391,13 @@ mod tests {
             }));
         let managed_auth =
             AuthManager::from_auth_for_testing(CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+                alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
                 api_key: "managed-bedrock-api-key".to_string(),
                 region: "us-east-1".to_string(),
             }));
         let managed_access_keys = AuthManager::from_auth_for_testing(CodexAuth::BedrockAccessKeys(
             BedrockAccessKeysAuth {
+                alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
                 access_key_id: "managed-access-key-id".to_string(),
                 secret_access_key: "managed-secret-access-key".to_string(),
                 session_token: None,

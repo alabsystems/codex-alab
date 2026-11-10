@@ -19,6 +19,90 @@ use codex_alab_tui::notices::ObservedLater;
 use codex_alab_tui::notices::RoutedNotice;
 use std::time::Duration;
 
+/// Capture the native observation before app-server performs its account-owned fetch.
+/// An empty successful response may settle only that captured identity and revision.
+pub(crate) fn prefetch_using(
+    config: &Config,
+    server: &crate::app_server_session::AppServerSession,
+    tx: crate::app_event_sender::AppEventSender,
+    request_id: uuid::Uuid,
+    delivery: Delivery,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if config.model_provider_id != "openai" || server.uses_remote_workspace() {
+        return None;
+    }
+    let config = config.clone();
+    let request_handle = server.request_handle();
+    Some(tokio::spawn(async move {
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            let auth = config.auth_config().load_auth(false).await.ok().flatten()?;
+            if !matches!(auth, codex_login::CodexAuth::Chatgpt(_)) || auth.is_fedramp_account() {
+                return None;
+            }
+            let identity = Identity::from_auth(&auth)?;
+            let observed = delivery.observe(&identity).await;
+            let response: codex_app_server_protocol::GetAccountSecuritySetupResponse =
+                request_handle
+                    .request_typed(
+                        codex_app_server_protocol::ClientRequest::GetAccountSecuritySetup {
+                            request_id: codex_app_server_protocol::RequestId::String(
+                                uuid::Uuid::new_v4().to_string(),
+                            ),
+                            params: None,
+                        },
+                    )
+                    .await
+                    .ok()?;
+            let notice = match response.notice {
+                Some(fetched) => {
+                    if fetched.account_id != identity.account || fetched.user_id != identity.user {
+                        return None;
+                    }
+                    let notice = Notice {
+                        title: fetched.title,
+                        description: fetched.description,
+                        action: super::Action {
+                            label: fetched.action.label,
+                            url: fetched.action.url,
+                        },
+                    };
+                    if !notice.valid() {
+                        return None;
+                    }
+                    Some(notice)
+                }
+                None if observed.is_some()
+                    && response
+                        .alab_successful_empty
+                        .as_ref()
+                        .is_some_and(|fetched| {
+                            fetched.account_id == identity.account
+                                && fetched.user_id == identity.user
+                        }) =>
+                {
+                    None
+                }
+                None => return None,
+            };
+            let current = config.auth_config().load_auth(false).await.ok().flatten()?;
+            if Identity::from_auth(&current).as_ref() != Some(&identity) {
+                return None;
+            }
+            Some((identity, notice, observed))
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some((identity, notice, observed)) = result {
+            tx.send(crate::app_event::AppEvent::SecuritySetupLoaded {
+                request_id,
+                identity,
+                notice: Fetched::new(notice, observed, delivery),
+            });
+        }
+    }))
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Fetched {
     pub(crate) notice: Option<Notice>,

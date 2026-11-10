@@ -10,12 +10,13 @@ use http::HeaderMap;
 /// Codex may use them to enforce managed authentication policy.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AuthHeaders {
+    pub alab_epoch: crate::auth::AlabSourceSnapshot, // ALAB(accounts): runtime-only source provenance.
     headers: HeaderMap,
 }
 
 impl AuthHeaders {
     pub fn new(headers: HeaderMap) -> Self {
-        Self { headers }
+        Self { headers, alab_epoch: Default::default() } // ALAB(accounts): cache publication binds this snapshot.
     }
 
     pub fn headers(&self) -> &HeaderMap {

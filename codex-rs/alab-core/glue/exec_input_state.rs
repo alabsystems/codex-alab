@@ -14,6 +14,7 @@ use crate::state::MailboxDeliveryPhase;
 use codex_alab_core::quota::HeadlessExec;
 use codex_protocol::ThreadId;
 use codex_protocol::turn_input::CyberAccessProgram;
+use codex_protocol::turn_input::PromptCacheTtl;
 use codex_protocol::turn_input::TurnStartOptions;
 use serde::Deserialize;
 use serde::Serialize;
@@ -102,12 +103,40 @@ impl From<Activity> for InputQueueActivity {
     }
 }
 
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum SavedPromptCacheTtl {
+    #[serde(rename = "30m")]
+    ThirtyMinutes,
+    #[serde(rename = "12h")]
+    TwelveHours,
+}
+
+impl From<PromptCacheTtl> for SavedPromptCacheTtl {
+    fn from(value: PromptCacheTtl) -> Self {
+        match value {
+            PromptCacheTtl::ThirtyMinutes => Self::ThirtyMinutes,
+            PromptCacheTtl::TwelveHours => Self::TwelveHours,
+        }
+    }
+}
+
+impl From<SavedPromptCacheTtl> for PromptCacheTtl {
+    fn from(value: SavedPromptCacheTtl) -> Self {
+        match value {
+            SavedPromptCacheTtl::ThirtyMinutes => Self::ThirtyMinutes,
+            SavedPromptCacheTtl::TwelveHours => Self::TwelveHours,
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedStart {
     turn_trigger: Option<String>,
     final_output_json_schema: Option<serde_json::Value>,
+    direct_only_tool_namespaces: Option<Vec<String>>,
     service_tier: Option<String>,
+    prompt_cache_ttl: Option<SavedPromptCacheTtl>,
     parent_turn_id: Option<String>,
     initiating_agent_path: Option<codex_protocol::AgentPath>,
     root_turn_id: Option<String>,
@@ -118,7 +147,9 @@ impl From<TurnStartOptions> for SavedStart {
         let TurnStartOptions {
             turn_trigger,
             final_output_json_schema,
+            direct_only_tool_namespaces,
             service_tier,
+            prompt_cache_ttl,
             parent_turn_id,
             initiating_agent_path,
             root_turn_id,
@@ -127,7 +158,9 @@ impl From<TurnStartOptions> for SavedStart {
         Self {
             turn_trigger,
             final_output_json_schema,
+            direct_only_tool_namespaces,
             service_tier,
+            prompt_cache_ttl: prompt_cache_ttl.map(Into::into),
             parent_turn_id,
             initiating_agent_path,
             root_turn_id,
@@ -140,7 +173,9 @@ impl From<SavedStart> for TurnStartOptions {
         let SavedStart {
             turn_trigger,
             final_output_json_schema,
+            direct_only_tool_namespaces,
             service_tier,
+            prompt_cache_ttl,
             parent_turn_id,
             initiating_agent_path,
             root_turn_id,
@@ -149,7 +184,9 @@ impl From<SavedStart> for TurnStartOptions {
         Self {
             turn_trigger,
             final_output_json_schema,
+            direct_only_tool_namespaces,
             service_tier,
+            prompt_cache_ttl: prompt_cache_ttl.map(Into::into),
             parent_turn_id,
             initiating_agent_path,
             root_turn_id,
@@ -530,11 +567,7 @@ mod tests {
         use crate::agent_communication::ExecPublication;
         use crate::agent_communication::MessageDelivery;
         let recipient = ThreadId::new();
-        let delivery = MessageDelivery::publish(
-            ThreadId::new(),
-            codex_protocol::ResponseItemId::new("shared"),
-            &[],
-        );
+        let delivery = MessageDelivery::publish(ThreadId::new(), &[]);
         let mail = crate::PendingAgentMessage::new(
             InterAgentCommunication::new(
                 AgentPath::root(),
@@ -550,7 +583,7 @@ mod tests {
             TurnInput::InterAgentCommunication(mail),
         ];
         let snapshot = ExecInputSnapshot {
-            version: 3,
+            version: 4,
             thread: recipient,
             turn: "original".into(),
             input: ExecPendingInputs::capture(&items).unwrap(),
@@ -653,7 +686,7 @@ mod tests {
             .unwrap()
             .snapshot();
         let snapshot = ExecInputSnapshot {
-            version: 3,
+            version: 4,
             thread,
             turn: context.sub_id.clone(),
             input: ExecPendingInputs::capture(
@@ -865,14 +898,16 @@ mod tests {
         let start = SavedStart::from(TurnStartOptions {
             turn_trigger: Some("original-trigger".into()),
             final_output_json_schema: Some(serde_json::json!({"type":"object"})),
+            direct_only_tool_namespaces: Some(vec!["fixture_namespace".into()]),
             service_tier: Some("priority".into()),
+            prompt_cache_ttl: Some(codex_protocol::turn_input::PromptCacheTtl::TwelveHours),
             parent_turn_id: Some("parent".into()),
             initiating_agent_path: Some(AgentPath::root()),
             root_turn_id: Some("root".into()),
             cyber_access_program: Some(CyberAccessProgram::Standard),
         });
         let snapshot = ExecInputSnapshot {
-            version: 3,
+            version: 4,
             thread,
             turn: "original-turn".into(),
             input: ExecPendingInputs::capture(&original).unwrap(),

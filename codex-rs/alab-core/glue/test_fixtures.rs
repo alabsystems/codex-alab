@@ -47,41 +47,6 @@ impl Drop for Phase {
     }
 }
 
-/// Explicit worker stacks must not discard the unit runner's stack allowance.
-pub(crate) fn worker_stack_size(upstream_minimum: usize) -> usize {
-    configured_worker_stack(
-        upstream_minimum,
-        std::env::var("RUST_MIN_STACK").ok().as_deref(),
-    )
-}
-
-fn configured_worker_stack(upstream_minimum: usize, requested: Option<&str>) -> usize {
-    let runner_minimum = 8 * 1024 * 1024;
-    let requested = requested
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    upstream_minimum.max(runner_minimum).max(requested)
-}
-
-#[test]
-fn worker_stack_preserves_runner_and_upstream_minima_and_larger_requests() {
-    let upstream = 4 * 1024 * 1024;
-    for requested in [None, Some("0"), Some("4194304"), Some("invalid")] {
-        assert_eq!(
-            configured_worker_stack(upstream, requested),
-            8 * 1024 * 1024
-        );
-    }
-    assert_eq!(
-        configured_worker_stack(16 * 1024 * 1024, Some("8388608")),
-        16 * 1024 * 1024,
-    );
-    assert_eq!(
-        configured_worker_stack(upstream, Some("16777216")),
-        16 * 1024 * 1024,
-    );
-}
-
 /// Session constructors drop their local home before returning. Keep a distinct
 /// workspace for the command's lifetime; the contained driver owns outer TMPDIR
 /// cleanup after the tests. Uncontained runs retain this generated scratch.

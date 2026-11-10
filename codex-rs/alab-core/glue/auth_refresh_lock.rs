@@ -355,7 +355,7 @@ impl AuthManager {
         tokens: &TokenData,
     ) -> Result<(), RefreshTokenError> {
         use sha2::Digest as _;
-        let registered = self.alab_native_refresh_preload().await?;
+        let (registered, predecessor) = self.alab_native_refresh_preload(None).await?;
         let file = self
             .alab_login_file()
             .ok_or_else(managed_auth::unavailable)?;
@@ -384,7 +384,10 @@ impl AuthManager {
         let revision = self
             .alab_native_refresh_owner(slot, &expected_digest)
             .await?;
-        let registered = self.alab_native_refresh_preload().await?;
+        // An open owned PRELOAD replays its original packet. Resample the exact
+        // predecessor after owner publication; neither a new operation string
+        // nor the owner's revision alone grants permission to read newer bytes.
+        let (registered, _) = self.alab_native_refresh_preload(predecessor).await?;
         let current_revision = registered
             .as_ref()
             .map_or(&revision, |source| &source.revision);
@@ -802,11 +805,15 @@ mod tests {
         let expected = attempted.clone();
         auth.state.auth_dot_json = Arc::new(Mutex::new(Some(document.clone())));
         auth.storage = Arc::new(FixtureKeyring(document));
-        let mut manager =
-            AuthManager::from_auth_for_testing_with_home(selected, file_manager.codex_home.clone());
-        Arc::get_mut(&mut manager)
-            .context("unique fixture manager")?
-            .auth_credentials_store_mode = AuthCredentialsStoreMode::Auto;
+        let manager = super::super::alab_manager_catalog::fixture::configured(
+            |manager| manager.auth_credentials_store_mode = AuthCredentialsStoreMode::Auto,
+            || {
+                AuthManager::from_auth_for_testing_with_home(
+                    selected,
+                    file_manager.codex_home.clone(),
+                )
+            },
+        );
         let cached = manager.auth_cached().context("keyring-selected fixture")?;
         let CodexAuth::Chatgpt(auth) = cached else {
             anyhow::bail!("fixture must be Chatgpt")
@@ -990,13 +997,16 @@ mod tests {
         } {
             // Retain the fixture's file-backed ChatgptAuth while testing the
             // manager's storage-selection guard. Never touch the OS keychain.
-            let mut unpinned = AuthManager::from_auth_for_testing_with_home(
-                manager.auth_cached().context("fixture auth")?,
-                manager.codex_home.clone(),
+            let selected = manager.auth_cached().context("fixture auth")?;
+            let unpinned = super::super::alab_manager_catalog::fixture::configured(
+                move |manager| manager.auth_credentials_store_mode = mode,
+                || {
+                    AuthManager::from_auth_for_testing_with_home(
+                        selected,
+                        manager.codex_home.clone(),
+                    )
+                },
             );
-            Arc::get_mut(&mut unpinned)
-                .context("unique fixture manager")?
-                .auth_credentials_store_mode = mode;
             let cached = unpinned.auth_cached().context("cached fixture auth")?;
             let CodexAuth::Chatgpt(auth) = cached else {
                 anyhow::bail!("fixture must be Chatgpt")

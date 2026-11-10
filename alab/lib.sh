@@ -43,6 +43,30 @@ alab_pristine() {
   printf '%s-%s\n' "${base}" "${want}"
 }
 
+# alab_pristine_config <alab-tree>: the cargo --config value under which a pristine upstream tree
+# builds with the crates <alab-tree>'s alab/vendor carries in place of upstream's (each one's
+# ALAB-SOURCE.json: the very version and archive upstream locks, adapted to the Trust toolchain;
+# alab/vendor/README.md), or nothing when it carries none. Without them upstream alone does not
+# build under Trust at all (allocative 0.3.6: E0119, `impl Allocative for !` beside Infallible's,
+# which Trust's std makes one type), so no pristine comparison could run. ALab's tree takes them
+# through codex-rs/Cargo.toml's [patch.crates-io]; upstream's tree is never edited, so they come
+# in as path overrides, which change no dependency and leave upstream's lockfile as it is
+# (--locked holds): upstream alone, as this toolchain builds it.
+alab_pristine_config() {
+  local record dir paths=""
+  for record in "$1"/alab/vendor/*/ALAB-SOURCE.json; do
+    [[ -f "${record}" ]] || continue
+    dir="$(alab_real "$(dirname "${record}")")" || return 1
+    case "${dir}" in *\"* | *\\*)
+      alab_say "alab_pristine_config: ${dir} cannot be named in a cargo --config string"
+      return 1
+      ;;
+    esac
+    paths="${paths:+${paths}, }\"${dir}\""
+  done
+  [[ -z "${paths}" ]] || printf 'paths = [%s]\n' "${paths}"
+}
+
 # A pristine tree may contain ignored build outputs, but no changed or untracked source.
 alab_pristine_clean() {
   local untracked common actual_common top
@@ -182,11 +206,18 @@ alab_check_lint_target() { printf '%s/tippy\n' "$1"; }
 # metadata misses the pristine registry/Git closure used by later attribution.
 # Offline resolution cannot fetch; keep every error and check both trees.
 alab_check_dependencies_ready() {
-  local tree cargo_home status=0 code cargo="${ALAB_CARGO:-targo}"
+  local tree cargo_home status=0 code cargo="${ALAB_CARGO:-targo}" source_tree="${1:-}" config
+  local config_args=()
+  [[ -n "${source_tree}" ]] || return 0
+  config="$(alab_pristine_config "${source_tree}")" || return $?
   cargo_home="$(alab_cargo_home)" || return $?
   for tree in "$@"; do
+    config_args=()
+    if [[ "${tree}" != "${source_tree}" && -n "${config}" ]]; then
+      config_args=(--config "${config}")
+    fi
     if (cd "${tree}/codex-rs" && CARGO_HOME="${cargo_home}" CARGO_NET_OFFLINE=true \
-      alab_build_command "${cargo}" metadata --offline --locked --format-version 1 >/dev/null); then
+      alab_build_command "${cargo}" metadata --offline --locked ${config_args[@]+"${config_args[@]}"} --format-version 1 >/dev/null); then
       :
     else
       code=$?

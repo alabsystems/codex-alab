@@ -252,7 +252,8 @@ async fn parsed_failure_with_queued_steering(
     let store = Arc::new(ExtensionData::new(turn.sub_id.clone()));
     let diff = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
     let mut client = session.services.model_client.new_session();
-    let mut input = crate::context_manager::ContextManager::new();
+    let mut input =
+        crate::context_manager::ContextManager::new(Arc::clone(&session.item_id_generator));
     input.replace(vec![ResponseItem::Message {
         id: None,
         status: None,

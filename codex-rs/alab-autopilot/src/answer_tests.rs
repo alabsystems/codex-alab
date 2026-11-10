@@ -18,6 +18,7 @@ use crate::answer::CHOSE_UNMARKED;
 use crate::answer::GOAL_LEAVE;
 use crate::answer::GOAL_RESUME;
 use crate::answer::PLAN_YES;
+use crate::answer::RULE_ANSWER_LAND;
 use crate::answer::RULE_ANSWER_LONG_TERM;
 use crate::answer::RULE_ANSWER_RECOMMENDED;
 use crate::answer::RULE_ANSWER_SHORT_TERM;
@@ -27,6 +28,7 @@ use crate::answer::bears;
 use crate::answer::decide_box;
 use crate::answer::declined;
 use crate::answer::refuses;
+use crate::decide::Mode;
 use crate::decide::Policy;
 use crate::decide::Questions;
 use crate::words;
@@ -350,26 +352,231 @@ fn the_reset_in_a_description_incident_is_answered_under_every_priority() {
             ),
         ],
     )]);
-    for (questions, rule) in [
-        (Questions::Recommended, RULE_ANSWER_RECOMMENDED),
-        (Questions::LongTerm, RULE_ANSWER_LONG_TERM),
-        (Questions::ShortTerm, RULE_ANSWER_SHORT_TERM),
+    for (questions, autopilot, rule) in [
+        (
+            Questions::Recommended,
+            Mode::Cruise,
+            RULE_ANSWER_RECOMMENDED,
+        ),
+        (Questions::LongTerm, Mode::Cruise, RULE_ANSWER_LONG_TERM),
+        (Questions::ShortTerm, Mode::Cruise, RULE_ANSWER_SHORT_TERM),
+        (Questions::Recommended, Mode::Land, RULE_ANSWER_LAND),
     ] {
         let p = Policy {
             questions,
+            autopilot,
             ..policy()
         };
         let d = decide_box(&open, &p);
         assert_eq!(
             chosen(&d),
             vec![("target".to_string(), Choice::Option(1))],
-            "{questions:?}"
+            "{questions:?} {autopilot:?}"
         );
         assert!(
             matches!(d, BoxDecision::Answer { rule: got, .. } if got == rule),
-            "{questions:?}: {d:?}"
+            "{questions:?} {autopilot:?}: {d:?}"
         );
     }
+}
+
+/// The text aterm's harness policy reply sends as `land_question_text` in these tests: not
+/// codex-alab's copy, so an answer shows which it wrote.
+const LAND_TEXT: &str = "Decide yourself: land it (aterm's land_question_text).";
+
+fn land(questions: Questions) -> Policy {
+    let mut p = Policy {
+        questions,
+        autopilot: Mode::Land,
+        ..policy()
+    };
+    p.texts.land_question = LAND_TEXT.to_string();
+    p
+}
+
+/// A marked option question, an unmarked one that names no destructive act, a free-text one,
+/// and a free-text one that names a destructive act.
+fn every_kind() -> OpenBox {
+    question_box(vec![
+        q(
+            "marked",
+            "Which cache?",
+            &[("Disk", ""), ("Memory (Recommended)", "")],
+        ),
+        q("unmarked", "Which name?", &[("cache", ""), ("store", "")]),
+        q("free", "What should we call it?", &[]),
+        q("destructive", "Which branch should I force-push?", &[]),
+    ])
+}
+
+/// LAND'S TEXT OVER EVERY WORD THAT ANSWERS (aterm `approval_loop.rs` `dialog_priority`,
+/// `question.rs` `choose_text` under `QuestionPriority::Land`): under Autopilot Land a marked
+/// option question, an unmarked one that names no destructive act and a free-text one each get
+/// aterm's `land_question_text` in the notes, recorded as `answer-land@v1`, whatever the
+/// `questions` word, and so does a free-text question that names a destructive act, which
+/// Cruise answers with its reversible answer. NEGATIVE CONTROL: the same box under Cruise gets
+/// each word's own answers and rule. MUTANTS: `Priority::of` without its Land arm (each word's
+/// own answer under Land), and the free-text branch without its Land arm (the reversible answer
+/// under Land).
+#[test]
+fn land_writes_its_text_over_every_word_that_answers() {
+    let note = |text: &str| Choice::Note(text.to_string());
+    let ids = ["marked", "unmarked", "free", "destructive"].map(str::to_string);
+    for questions in [
+        Questions::Recommended,
+        Questions::LongTerm,
+        Questions::ShortTerm,
+    ] {
+        let d = decide_box(&every_kind(), &land(questions));
+        assert_eq!(
+            chosen(&d),
+            ids.clone().map(|id| (id, note(LAND_TEXT))).to_vec(),
+            "{questions:?}"
+        );
+        assert!(
+            matches!(
+                d,
+                BoxDecision::Answer {
+                    rule: RULE_ANSWER_LAND,
+                    ..
+                }
+            ),
+            "{questions:?}: {d:?}"
+        );
+        assert!(
+            said(&d).contains("Which cache? → the land policy text (the worker decides)"),
+            "{}",
+            said(&d)
+        );
+
+        let cruise = Policy {
+            autopilot: Mode::Cruise,
+            ..land(questions)
+        };
+        let (rule, answers) = match questions {
+            Questions::Recommended => (
+                RULE_ANSWER_RECOMMENDED,
+                [
+                    Choice::Option(1),
+                    Choice::Option(0),
+                    note("Pick the recommended option."),
+                    note(words::REVERSIBLE_ANSWER),
+                ],
+            ),
+            Questions::LongTerm | Questions::ShortTerm => {
+                let (rule, text) = if questions == Questions::LongTerm {
+                    (RULE_ANSWER_LONG_TERM, words::LONG_TERM_TEXT)
+                } else {
+                    (RULE_ANSWER_SHORT_TERM, words::SHORT_TERM_TEXT)
+                };
+                (
+                    rule,
+                    [
+                        note(text),
+                        note(text),
+                        note(text),
+                        note(words::REVERSIBLE_ANSWER),
+                    ],
+                )
+            }
+            Questions::Ask => unreachable!("not among the words looped"),
+        };
+        let d = decide_box(&every_kind(), &cruise);
+        assert_eq!(
+            chosen(&d),
+            ids.clone().into_iter().zip(answers).collect::<Vec<_>>(),
+            "the control, {questions:?} under Cruise"
+        );
+        assert!(
+            matches!(d, BoxDecision::Answer { rule: got, .. } if got == rule),
+            "the control, {questions:?} under Cruise: {d:?}"
+        );
+    }
+}
+
+/// LAND KEEPS A PERSON'S BOX A PERSON'S (aterm `dialog_priority` puts Land only over a word that
+/// already answers, and `choose_text`'s `destructive_unmarked` row presses the recommended
+/// answer's refusal instead): under Land, `ask`, `answer_questions` off, a secret question, a
+/// person who began answering and a box with no question are each left to a person, and an
+/// unmarked question that asks a destructive act takes its one refusing option under Land's rule,
+/// or is left to a person, never given Land's text. CONTROLS: each box without its row is
+/// answered under Land, and a MARKED destructive question gets Land's text (the worker decides,
+/// under a text that rules deleted work out). MUTANTS: `Priority::of` taking Land before the
+/// `ask` row, and the unmarked destructive question given Land's text (the option branch's
+/// guard dropped).
+#[test]
+fn land_keeps_the_fail_closed_rows_a_persons() {
+    let land = land(Questions::Recommended);
+    let open = question_box(vec![q("a", "Which?", &[("A", ""), ("B", "")])]);
+    assert!(
+        matches!(
+            decide_box(&open, &land),
+            BoxDecision::Answer {
+                rule: RULE_ANSWER_LAND,
+                ..
+            }
+        ),
+        "the control"
+    );
+    let ask = Policy {
+        questions: Questions::Ask,
+        ..land.clone()
+    };
+    assert!(left(&decide_box(&open, &ask)).contains("`ask`"));
+    let off = Policy {
+        answer_questions: false,
+        ..land.clone()
+    };
+    assert!(left(&decide_box(&open, &off)).contains("answer_questions"));
+
+    let mut secret = q("a", "Your token?", &[]);
+    secret.is_secret = true;
+    assert!(left(&decide_box(&question_box(vec![secret]), &land)).contains("secret"));
+
+    let mut begun = open;
+    if let BoxKind::Question { begun, .. } = &mut begun.kind {
+        *begun = Some("a person typed in its notes".to_string());
+    }
+    assert!(left(&decide_box(&begun, &land)).contains("theirs to finish"));
+    assert!(left(&decide_box(&question_box(Vec::new()), &land)).contains("no question"));
+
+    let refusal = question_box(vec![q(
+        "a",
+        "Should I delete the old migrations?",
+        &[("Yes, delete them", ""), ("No, keep them", "")],
+    )]);
+    let d = decide_box(&refusal, &land);
+    assert_eq!(chosen(&d), vec![("a".to_string(), Choice::Option(1))]);
+    assert!(
+        matches!(
+            d,
+            BoxDecision::Answer {
+                rule: RULE_ANSWER_LAND,
+                ..
+            }
+        ),
+        "{d:?}"
+    );
+    assert!(said(&d).contains("its one refusal"), "{}", said(&d));
+    let none = question_box(vec![q(
+        "a",
+        "Should I delete the old migrations?",
+        &[("Yes", ""), ("Not now", "")],
+    )]);
+    assert!(left(&decide_box(&none, &land)).contains("would delete"));
+
+    let marked = question_box(vec![q(
+        "a",
+        "Should I delete the old migrations?",
+        &[
+            ("No, keep them", ""),
+            ("Yes, delete them (Recommended)", ""),
+        ],
+    )]);
+    assert_eq!(
+        chosen(&decide_box(&marked, &land)),
+        vec![("a".to_string(), Choice::Note(LAND_TEXT.to_string()))]
+    );
 }
 
 /// The review of 9744af4ee8: an option that names an act only to decline it (`Don't drop the

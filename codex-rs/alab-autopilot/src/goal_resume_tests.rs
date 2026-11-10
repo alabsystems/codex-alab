@@ -15,21 +15,22 @@ mod test_progress;
 #[test]
 fn a_usage_resume_preserves_a_goal_changed_while_it_waits_for_the_mutation_permit() {
     native_test(|| async {
+        use codex_state::ThreadGoalStatus;
         let progress = test_progress::Progress::default();
-        tokio::time::timeout(Duration::from_secs(60), async {
-            use codex_state::ThreadGoalStatus;
-            for changed in [
-                "unchanged",
-                "paused",
-                "blocked",
-                "budget-limited",
-                "complete",
-                "replacement",
-                "objective",
-                "budget",
-                "native",
-            ] {
-                progress.case(changed);
+        for changed in [
+            "unchanged",
+            "paused",
+            "blocked",
+            "budget-limited",
+            "complete",
+            "replacement",
+            "objective",
+            "budget",
+            "native",
+        ] {
+            progress.case(changed);
+            // Keep the existing hang bound for each independently isolated fixture.
+            tokio::time::timeout(Duration::from_secs(60), async {
                 let goals = Arc::new(GoalService::new());
                 progress.phase("create native harness");
                 let setup_progress = progress.clone();
@@ -221,15 +222,15 @@ fn a_usage_resume_preserves_a_goal_changed_while_it_waits_for_the_mutation_permi
                     .await
                     .expect("native shutdown");
                 progress.phase("drop native fixture");
-            }
-        })
-        .await
-        .unwrap_or_else(|error| {
-            panic!(
-                "usage resume race hang detector: {error:?}; {}",
-                progress.describe()
-            )
-        });
+            })
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "usage resume race hang detector: {error:?}; {}",
+                    progress.describe()
+                )
+            });
+        }
     });
 }
 

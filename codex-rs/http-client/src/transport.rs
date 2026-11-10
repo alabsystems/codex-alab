@@ -34,6 +34,7 @@ pub struct StreamResponse {
 }
 
 pub trait HttpTransport: Send + Sync {
+    fn alab_source_policy(&self) -> Option<crate::NetworkPolicy> { None } // ALAB(accounts): unknown transport coverage grants no source independence.
     fn execute(
         &self,
         req: Request,
@@ -172,6 +173,7 @@ fn request_body_for_trace(req: &Request) -> String {
 }
 
 impl HttpTransport for ReqwestTransport {
+    fn alab_source_policy(&self) -> Option<crate::NetworkPolicy> { Some(alab_snapshot::policy(self)) } // ALAB(accounts): preserve the actual caller transport's restrictions and source.
     async fn execute(&self, req: Request) -> Result<Response, TransportError> {
         self.trace_request(&req);
 
@@ -297,7 +299,7 @@ fn bounded_response_stream(
     Ok(Box::pin(stream))
 }
 
-async fn bounded_response_bytes(
+pub async fn bounded_response_bytes(
     response: HttpResponse,
     max_bytes: usize,
 ) -> Result<Bytes, TransportError> {
@@ -316,3 +318,5 @@ mod tests;
 #[cfg(test)]
 #[path = "transport_limit_tests.rs"]
 mod limit_tests;
+
+#[path = "../../alab-core/glue/http_snapshot_transport.rs"] mod alab_snapshot; // ALAB(accounts): source-policy conjunction stays outside upstream transport logic.

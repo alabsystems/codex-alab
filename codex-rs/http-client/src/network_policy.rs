@@ -341,11 +341,14 @@ impl NetworkPolicy {
     }
 }
 
+/// Source-use ownership only; this grants no network destination permission.
+pub struct CredentialSourceUse { source: Option<alab_native::Use> } // ALAB(accounts): credential selection and provider response custody have a distinct admission type.
+
 /// Authorization retained for the entire operation, including response or WebSocket streaming.
 #[derive(Clone)]
 pub struct NetworkPermit {
     inner: Option<Arc<Permit>>,
-    alab_native: Option<codex_alab_core::native_source_lifetime::NetworkUse>, // ALAB(accounts): request use survives through the last body/WS owner.
+    alab_native: Option<alab_native::Use>, // ALAB(accounts): request use survives through the last body/WS owner.
 }
 
 impl fmt::Debug for NetworkPermit {

@@ -12,6 +12,8 @@ use super::storage::AuthKeyringBackendKind;
 /// Managed Amazon Bedrock AWS access keys persisted in auth storage.
 #[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct BedrockAccessKeysAuth {
+    #[serde(skip)]
+    pub alab_epoch: crate::auth::AlabSourceSnapshot, // ALAB(accounts): runtime-only source provenance.
     pub access_key_id: String,
     pub secret_access_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +51,7 @@ pub fn login_with_bedrock_access_keys(
         personal_access_token: None,
         bedrock_api_key: None,
         bedrock_access_keys: Some(BedrockAccessKeysAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             access_key_id: access_key_id.to_string(),
             secret_access_key: secret_access_key.to_string(),
             session_token: session_token.map(str::to_string),

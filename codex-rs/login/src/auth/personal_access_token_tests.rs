@@ -38,6 +38,7 @@ async fn hydrate_sends_bearer_token_and_preserves_metadata() {
     assert_eq!(
         auth,
         PersonalAccessTokenAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): runtime provenance is not persisted credential data.
             access_token: "at-example".to_string(),
             metadata: PersonalAccessTokenMetadata {
                 email: Some("user@example.com".to_string()),
@@ -69,6 +70,7 @@ async fn hydrate_preserves_missing_email() {
     assert_eq!(
         auth,
         PersonalAccessTokenAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): runtime provenance is not persisted credential data.
             access_token: "at-example".to_string(),
             metadata: PersonalAccessTokenMetadata {
                 email: None,

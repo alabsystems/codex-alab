@@ -342,7 +342,7 @@ async fn bound_environments(
         if child.permission_profile == current.permission_profile {
             continue;
         }
-        if owner.environment.is_remote() {
+        if owner.environment().is_remote() {
             return Err("restored remote environment permissions require fresh validation".into());
         }
         let cwd = request.cwd.to_abs_path().map_err(|e| e.to_string())?;
@@ -668,7 +668,7 @@ impl Plan {
             return Err(error);
         }
         let pin = if is_v2 {
-            match runtime.pin_v2_residency(&state, &child).await {
+            match runtime.pin_v2_residency(&child).await {
                 Ok(pin) => pin,
                 Err(error) => {
                     discard_failed_child(&state, &child).await;

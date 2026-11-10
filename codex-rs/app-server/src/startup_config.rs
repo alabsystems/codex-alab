@@ -116,7 +116,7 @@ async fn read_startup_config(
         strict_config,
         Default::default(),
         arg0_paths,
-        Arc::new(NoopThreadConfigLoader),
+        crate::alab_no_external_thread_config_loader(NoopThreadConfigLoader), // ALAB(accounts): startup retains actual local-loader provenance.
     );
     let cwd = std::env::current_dir().ok();
     let loaded = manager

@@ -39,7 +39,10 @@ pub(super) fn record(
                 None
             }
         });
-    let owner = setup.auth_owner_generation;
+    let captured_owner = setup.auth_owner.clone();
+    let owner = captured_owner
+        .as_ref()
+        .map(codex_login::AuthOwner::alab_generation);
     let generation = setup.auth_revision;
     // Freeze only the actual Authorization bearer, not refresh/ID tokens or
     // mutable login metadata. No value or fingerprint leaves this RAM closure.
@@ -65,13 +68,16 @@ pub(super) fn record(
         owner.unwrap_or_default(),
         generation.unwrap_or_default(),
         move || {
-            manager
-                .auth_cached()
-                .and_then(|auth| manager.auth_change_state_for(&auth))
-                .is_some_and(|now| {
-                    Some(now.owner_generation) == owner
-                        && (!api_key || Some(now.generation) == generation)
-                })
+            captured_owner
+                .as_ref()
+                .is_some_and(codex_login::AuthOwner::is_current)
+                && manager
+                    .auth_cached()
+                    .and_then(|auth| manager.auth_change_state_for(&auth))
+                    .is_some_and(|now| {
+                        Some(now.owner_generation) == owner
+                            && (!api_key || Some(now.generation) == generation)
+                    })
         },
         move || {
             attempted_bearer

@@ -438,16 +438,16 @@ impl ResponsesWebsocketClient {
         turn_state: Option<Arc<OnceLock<String>>>,
         telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     ) -> Result<ResponsesWebsocketConnection, ApiError> {
-        let connector = WebSocketConnector::new(http_client_factory)
+        let (factory, source) = crate::alab_auth_source::prepare_factory(self.auth.as_ref(), http_client_factory, &self.provider.url_for_path(RESPONSES_PATH)).await?; // ALAB(accounts): source and caller destination agree before headers/signing.
+        let connector = WebSocketConnector::new(&factory)
             .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
-        self.connect_with_connector(
+        source.scope(self.connect_with_connector(
             &connector,
             extra_headers,
             default_headers,
             turn_state,
             telemetry,
-        )
-        .await
+        )).await.map_err(|error| ApiError::Transport(error.into()))? // ALAB(accounts): the real bound socket permit takes over before handshake source admission ends.
     }
 
     /// Opens a WebSocket connection long enough to validate the upgrade response.
@@ -464,6 +464,9 @@ impl ResponsesWebsocketClient {
         default_headers: HeaderMap,
         immediate_close_timeout: Duration,
     ) -> Result<ResponsesWebsocketProbe, ResponsesWebsocketProbeError> {
+        let (factory, source) = crate::alab_auth_source::prepare_factory(self.auth.as_ref(), http_client_factory, &self.provider.url_for_path(RESPONSES_PATH)).await.map_err(|error| ResponsesWebsocketProbeError::before_upgrade(error.into(), ResponsesWebsocketProbeFailureStage::Unknown))?; // ALAB(accounts): probe headers also require actual source use.
+        source.scope(async {
+        let http_client_factory = &factory;
         let ws_url = self
             .provider
             .websocket_url_for_path(RESPONSES_PATH)
@@ -528,7 +531,8 @@ impl ResponsesWebsocketClient {
             server_model_present: server_model.is_some(),
             immediate_close,
         })
-    }
+            }).await.map_err(|error| ResponsesWebsocketProbeError::before_upgrade(ApiError::Transport(error.into()), ResponsesWebsocketProbeFailureStage::Unknown))? // ALAB(accounts): retain source use until the real probe socket closes.
+}
 }
 
 fn immediate_close_from_message(message: Message) -> Option<ResponsesWebsocketClose> {
@@ -771,6 +775,18 @@ struct InterruptAcknowledgement {
     response_id: String,
 }
 
+fn is_websocket_receive_failure(
+    response: &Result<Option<Result<Message, WsError>>, ApiError>,
+) -> bool {
+    match response {
+        Ok(Some(Ok(message))) => match message {
+            Message::Text(_) | Message::Ping(_) | Message::Pong(_) => false,
+            Message::Binary(_) | Message::Close(_) | Message::Frame(_) => true,
+        },
+        Ok(Some(Err(_))) | Ok(None) | Err(_) => true,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_websocket_response_stream(
     ws_stream: &mut WsStream,
@@ -830,8 +846,11 @@ async fn run_websocket_response_stream(
                 continue;
             }
         };
-        if let Some(t) = telemetry.as_ref() {
-            t.on_ws_event(&response, poll_start.elapsed());
+        let poll_duration = poll_start.elapsed();
+        if let Some(telemetry) = &telemetry
+            && is_websocket_receive_failure(&response)
+        {
+            telemetry.on_ws_receive_failure(poll_duration);
         }
         let message = match response {
             Ok(Some(Ok(msg))) => msg,
@@ -850,14 +869,21 @@ async fn run_websocket_response_stream(
 
         match message {
             Message::Text(text) => {
-                if let Some(wrapped_error) = alab_error_headers::parse_for_stream(&text)? // ALAB(capacity): preserve equal status aliases and bound contradictory refusals.
+                let event = serde_json::from_str::<ResponsesStreamEvent>(&text);
+                let kind = event.as_ref().ok().map(ResponsesStreamEvent::kind);
+                if let Some(t) = telemetry.as_ref() {
+                    t.on_ws_text_event(&text, kind, poll_duration);
+                }
+                // A wrapped error can still be valid when an unrelated stream field is malformed.
+                if matches!(kind, Some("error") | None)
+                    && let Some(wrapped_error) = alab_error_headers::parse_for_stream(&text)? // ALAB(capacity): preserve status aliases while upstream reuses decoded event kinds.
                     && let Some(error) =
                         map_wrapped_websocket_error_event(wrapped_error, text.to_string())
                 {
                     return Err(error);
                 }
 
-                let event = match serde_json::from_str::<ResponsesStreamEvent>(&text) {
+                let event = match event {
                     Ok(event) => event,
                     Err(err) => {
                         debug!("failed to parse websocket event: {err}, data: {text}");
@@ -1124,6 +1150,9 @@ mod tests {
             include: vec!["reasoning.encrypted_content".to_string()],
             service_tier: Some("priority".to_string()),
             prompt_cache_key: Some("cache-key".to_string()),
+            prompt_cache_options: Some(crate::PromptCacheOptions {
+                ttl: codex_protocol::turn_input::PromptCacheTtl::TwelveHours,
+            }),
             text: None,
             access_programs: Some(
                 codex_protocol::turn_input::CyberAccessProgram::DaybreakBlue.into(),

@@ -39,6 +39,7 @@ fn bedrock_only_auth() -> AuthDotJson {
 
 fn bedrock_auth() -> BedrockApiKeyAuth {
     BedrockApiKeyAuth {
+        alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
         api_key: "bedrock-api-key-test".to_string(),
         region: "us-east-1".to_string(),
     }
@@ -179,6 +180,7 @@ async fn access_keys_auth_round_trips_and_logs_out() -> anyhow::Result<()> {
             | CodexAuth::BedrockApiKey(_) => None,
         }),
         Some(crate::auth::BedrockAccessKeysAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             access_key_id: "access-key-id".to_string(),
             secret_access_key: "secret-access-key".to_string(),
             session_token: Some("session-token".to_string()),

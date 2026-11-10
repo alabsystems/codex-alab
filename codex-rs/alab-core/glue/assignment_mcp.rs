@@ -46,7 +46,7 @@ impl super::McpRuntime {
     pub async fn alab_retire_account(
         &self,
         domain: &std::sync::Arc<codex_alab_core::assignment::Domain>,
-        retirement: &codex_alab_core::assignment::RetirementPermit,
+        retirement: &dyn codex_alab_core::assignment::RetirementProof,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             retirement.protects(domain),

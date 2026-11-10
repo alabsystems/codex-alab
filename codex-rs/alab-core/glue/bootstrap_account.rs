@@ -19,6 +19,7 @@ fn alab_bootstrap_account(
             },
             workspace_routing: None,
             workspace_name: None,
+            user_id: None,
         }),
         result => result,
     }
@@ -35,6 +36,7 @@ mod alab_bootstrap_account_unit_tests {
         assert!(account.account_state.account.is_none());
         assert!(account.account_state.requires_openai_auth);
         assert!(account.workspace_routing.is_none());
+        assert!(account.user_id.is_none());
         Ok(())
     }
 

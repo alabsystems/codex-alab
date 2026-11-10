@@ -10,7 +10,7 @@ pub(crate) enum ExecPublication {
     Consumed,
     Pending {
         sender: ThreadId,
-        message_id: ResponseItemId,
+        scope_id: uuid::Uuid,
     },
 }
 
@@ -28,7 +28,8 @@ impl MessageDelivery {
                 }
                 ExecPublication::Pending {
                     sender: publication.input.sender,
-                    message_id: publication.input.message_id.clone(),
+                    scope_id: uuid::Uuid::parse_str(publication.input.data.level_id())
+                        .map_err(|_| "message publication has a nonportable scope identity")?,
                 }
             }
         };
@@ -38,11 +39,10 @@ impl MessageDelivery {
     pub(crate) fn restore_exec(saved: ExecPublication) -> Self {
         let publication = match saved {
             ExecPublication::Consumed => None,
-            ExecPublication::Pending { sender, message_id } => Some(MessagePublication {
+            ExecPublication::Pending { sender, scope_id } => Some(MessagePublication {
                 input: MessageLifecycleInput {
                     sender,
-                    data: ExtensionData::new(message_id.to_string()),
-                    message_id,
+                    data: ExtensionData::new(scope_id.to_string()),
                 },
                 observers: Box::default(),
             }),
@@ -72,8 +72,7 @@ mod tests {
     fn observer_state_is_not_silently_discarded_or_republished() {
         let observer = Arc::new(Observer::default());
         let observers: Vec<Arc<dyn MessageLifecycleContributor>> = vec![observer.clone()];
-        let delivery =
-            MessageDelivery::publish(ThreadId::new(), ResponseItemId::new("mail"), &observers);
+        let delivery = MessageDelivery::publish(ThreadId::new(), &observers);
         assert_eq!(observer.0.load(Ordering::SeqCst), 1);
         assert!(delivery.capture_exec().is_err());
         assert_eq!(observer.0.load(Ordering::SeqCst), 1);

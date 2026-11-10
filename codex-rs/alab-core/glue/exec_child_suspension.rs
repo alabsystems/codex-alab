@@ -24,6 +24,8 @@ type StopResult = std::result::Result<Option<ExecRecoveryOptions>, String>;
 pub struct ExecPreparedChild {
     session: Arc<Session>,
     context: Arc<TurnContext>,
+    turn_state: Arc<tokio::sync::Mutex<crate::state::TurnState>>,
+    native_done: Arc<tokio::sync::Notify>,
     outcome: Arc<OnceLock<tokio::sync::watch::Receiver<Option<StopResult>>>>,
 }
 
@@ -58,11 +60,14 @@ impl ExecPreparedChild {
                 "child suspension requires its own drained tree barrier",
             ));
         }
-        let context = {
+        let (context, turn_state, native_done) = {
             let active = session.active_turn.lock().await;
-            let task = active
+            let active = active
                 .as_ref()
-                .and_then(|turn| turn.task.as_ref())
+                .ok_or_else(|| refused("child suspension requires an active turn"))?;
+            let task = active
+                .task
+                .as_ref()
                 .ok_or_else(|| refused("child suspension requires an active turn"))?;
             if (task.kind != TaskKind::Regular
                 && !crate::tasks::review_recovery::capture_ready(task.kind, &task.turn_context))
@@ -70,7 +75,11 @@ impl ExecPreparedChild {
             {
                 return Err(refused("child suspension requires a live regular turn"));
             }
-            Arc::clone(&task.turn_context)
+            (
+                Arc::clone(&task.turn_context),
+                Arc::clone(&active.turn_state),
+                Arc::clone(&task.done),
+            )
         };
         exec_input_state::validate_session_input(&session, &context.sub_id, false)
             .await
@@ -101,6 +110,8 @@ impl ExecPreparedChild {
         Ok(Self {
             session,
             context,
+            turn_state,
+            native_done,
             outcome: Arc::new(OnceLock::new()),
         })
     }
@@ -143,27 +154,45 @@ impl ExecPreparedChild {
 
     async fn stop(self) -> Result<Option<ExecRecoveryOptions>> {
         let session = &self.session;
-        let mut turn = {
-            let mut active = session.active_turn.lock().await;
-            let Some(task) = active.as_ref().and_then(|turn| turn.task.as_ref()) else {
-                return Ok(None);
-            };
-            if !Arc::ptr_eq(&task.turn_context, &self.context)
-                || (task.kind != TaskKind::Regular
-                    && !crate::tasks::review_recovery::suspension_ready(
-                        task.kind,
-                        &task.turn_context,
-                    ))
-                || task.cancellation_token.is_cancelled()
+        let mut turn = loop {
+            // Native completion removes the task before it clears ActiveTurn.
+            // Register first so completion between inspection and waiting is not lost.
+            let finished = self.native_done.notified();
+            tokio::pin!(finished);
+            finished.as_mut().enable();
             {
-                return Err(refused("prepared child task changed before suspension"));
+                let mut active = session.active_turn.lock().await;
+                let Some(current) = active.as_ref() else {
+                    return Ok(None);
+                };
+                if !Arc::ptr_eq(&current.turn_state, &self.turn_state) {
+                    return Err(refused("prepared child task changed before suspension"));
+                }
+                if let Some(task) = current.task.as_ref() {
+                    if !Arc::ptr_eq(&task.turn_context, &self.context)
+                        || (task.kind != TaskKind::Regular
+                            && !crate::tasks::review_recovery::suspension_ready(
+                                task.kind,
+                                &task.turn_context,
+                            ))
+                        || task.cancellation_token.is_cancelled()
+                    {
+                        return Err(refused("prepared child task changed before suspension"));
+                    }
+                    // Mark before removal so accepted input belongs to the stopped
+                    // original turn. This does not create missing ephemeral history.
+                    session.services.thread_extension_data.insert(HeadlessExec);
+                    break active
+                        .take()
+                        .ok_or_else(|| refused("active child disappeared during suspension"))?;
+                }
+                if current.finishing.is_none() {
+                    return Err(refused("prepared child task changed before suspension"));
+                }
             }
-            // Mark before removal so accepted input belongs to the stopped
-            // original turn. This does not create missing ephemeral history.
-            session.services.thread_extension_data.insert(HeadlessExec);
-            active
-                .take()
-                .ok_or_else(|| refused("active child disappeared during suspension"))?
+            // Keep custody through this exact task's native finalization. No
+            // active-turn guard is held while its completion signal is awaited.
+            finished.await;
         };
         let task = turn
             .task
@@ -233,6 +262,123 @@ mod tests {
             .await;
         session.emit_turn_started(&context, TaskKind::Regular).await;
         (session, turn)
+    }
+
+    struct CompletingTask(Arc<tokio::sync::Notify>);
+
+    impl SessionTask for CompletingTask {
+        fn kind(&self) -> TaskKind {
+            TaskKind::Regular
+        }
+        fn span_name(&self) -> &'static str {
+            "exec_child_natural_completion_test"
+        }
+        async fn run(
+            self: Arc<Self>,
+            _session: Arc<Session>,
+            _ctx: Arc<TurnContext>,
+            _input: Vec<TurnInput>,
+            _token: CancellationToken,
+        ) -> SessionTaskResult {
+            self.0.notified().await;
+            Ok(None)
+        }
+    }
+
+    struct NativeCompletionGate {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Semaphore,
+    }
+
+    impl codex_extension_api::TurnLifecycleContributor for NativeCompletionGate {
+        fn on_turn_stop<'a>(
+            &'a self,
+            _input: codex_extension_api::TurnStopInput<'a>,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                self.entered.notify_one();
+                self.release
+                    .acquire()
+                    .await
+                    .expect("completion released")
+                    .forget();
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn naturally_finishing_child_waits_for_native_completion_before_becoming_idle() {
+        let (mut session, context) = crate::session::tests::make_session_and_context().await;
+        let completion = Arc::new(NativeCompletionGate {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        let mut extensions =
+            codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
+        extensions.turn_lifecycle_contributor(completion.clone());
+        session.services.extensions = Arc::new(extensions.build());
+        session.services.thread_extension_data.insert(HeadlessExec);
+        let session = Arc::new(session);
+        let context = Arc::new(context);
+        let finish = Arc::new(tokio::sync::Notify::new());
+        session
+            .spawn_task(
+                Arc::clone(&context),
+                Vec::new(),
+                CompletingTask(Arc::clone(&finish)),
+            )
+            .await;
+        session.emit_turn_started(&context, TaskKind::Regular).await;
+        let mut seal = session
+            .services
+            .local_agent_runtime
+            .seal_exec_tree_starts()
+            .await
+            .unwrap();
+        let prepared = ExecPreparedChild::prepare(Arc::clone(&session), &seal)
+            .await
+            .unwrap();
+        seal.commit();
+
+        // Native completion removes the task before it records the terminal
+        // event and clears ActiveTurn. Hold that real transition open.
+        finish.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), completion.entered.notified())
+            .await
+            .expect("native completion reached its stop callback");
+        {
+            let active = session.active_turn.lock().await;
+            assert!(
+                active
+                    .as_ref()
+                    .is_some_and(|turn| turn.task.is_none() && turn.finishing.is_some())
+            );
+        }
+        let waiting = prepared.suspend(&seal);
+        tokio::pin!(waiting);
+        let premature = tokio::time::timeout(Duration::from_millis(100), waiting.as_mut()).await;
+        completion.release.add_permits(1);
+        assert!(
+            premature.is_err(),
+            "completion was reported while the native turn was still active"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), waiting)
+                .await
+                .expect("native completion settled")
+                .unwrap()
+                .is_none()
+        );
+        assert!(session.active_turn.lock().await.is_none());
+        let history = super::super::ephemeral::history(&session).unwrap();
+        assert!(history.items.iter().any(|item| matches!(item,
+            codex_history::RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::TurnComplete(event)) if event.turn_id == context.sub_id)));
+        assert!(!history.items.iter().any(|item| matches!(
+            item,
+            codex_history::RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::TurnAborted(
+                _
+            ))
+        )));
     }
 
     #[tokio::test]

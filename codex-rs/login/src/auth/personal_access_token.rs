@@ -23,6 +23,7 @@ struct PersonalAccessTokenMetadata {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct PersonalAccessTokenAuth {
+    pub alab_epoch: crate::auth::AlabSourceSnapshot, // ALAB(accounts): runtime-only source provenance.
     access_token: String,
     metadata: PersonalAccessTokenMetadata,
 }
@@ -120,6 +121,7 @@ async fn hydrate_personal_access_token(
             ))
         })?;
     Ok(PersonalAccessTokenAuth {
+        alab_epoch: Default::default(), // ALAB(accounts): cache publication binds this snapshot.
         access_token: access_token.to_string(),
         metadata,
     })

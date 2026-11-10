@@ -42,6 +42,7 @@ pub(crate) use asset_pack::builtin_spritesheet_path;
 #[cfg(test)]
 pub(crate) use asset_pack::write_test_pack;
 pub(crate) use image_protocol::ImageProtocol;
+pub(crate) use image_protocol::KittyPlacement;
 pub(crate) use image_protocol::PetImageSupport;
 #[cfg(test)]
 pub(crate) use image_protocol::PetImageUnsupportedReason;
@@ -132,7 +133,9 @@ pub(crate) fn render_ambient_pet_image(
     request: Option<AmbientPetDraw>,
 ) -> std::result::Result<(), PetImageRenderError> {
     let Some(request) = alab_kitty::render(writer, state, request)? else { return Ok(()); }; // ALAB(pet-perf): inside aterm a frame is sent once, then only placed
-    render_pet_image(writer, state, /*image_id*/ 0xC0DE, request)
+    render_pet_image(
+        writer, state, /*image_id*/ 0xC0DE, /*pane_slot*/ 254, request,
+    )
 }
 
 pub(crate) fn render_pet_picker_preview_image(
@@ -140,13 +143,15 @@ pub(crate) fn render_pet_picker_preview_image(
     state: &mut PetImageRenderState,
     request: Option<AmbientPetDraw>,
 ) -> std::result::Result<(), PetImageRenderError> {
-    render_pet_image(writer, state, /*image_id*/ 0xC0DF, request)
+    render_pet_image(
+        writer, state, /*image_id*/ 0xC0DF, /*pane_slot*/ 255, request,
+    )
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct PetImageRenderState {
     last_sixel_clear_area: Option<SixelClearArea>,
-    last_protocol: Option<image_protocol::ImageProtocol>,
+    last_kitty_id: Option<u32>,
     alab: alab_kitty::Stored, // ALAB(pet-perf): the frames aterm holds for the ambient pet
 }
 
@@ -154,16 +159,16 @@ fn render_pet_image(
     writer: &mut impl Write,
     state: &mut PetImageRenderState,
     image_id: u32,
+    pane_slot: u32,
     request: Option<AmbientPetDraw>,
 ) -> std::result::Result<(), PetImageRenderError> {
-    use crossterm::cursor::MoveTo;
     use crossterm::cursor::RestorePosition;
     use crossterm::cursor::SavePosition;
     use crossterm::queue;
     use image_protocol::ImageProtocol;
 
     let Some(request) = request else {
-        if state.last_protocol.take().is_some_and(is_kitty_protocol) {
+        if let Some(image_id) = state.last_kitty_id.take() {
             write!(writer, "{}", image_protocol::kitty_delete_image(image_id))?;
         }
         if let Some(area) = state.last_sixel_clear_area.take() {
@@ -175,40 +180,41 @@ fn render_pet_image(
         return Ok(());
     };
 
-    if state.last_protocol.take().is_some_and(is_kitty_protocol)
-        || is_kitty_protocol(request.protocol)
-    {
-        write!(writer, "{}", image_protocol::kitty_delete_image(image_id))?;
+    let pane_base = crate::tui::tmux_fullscreen_image_base();
+    let image_id = pane_base.map_or(image_id, |base| base + pane_slot);
+    let placement = if pane_base.is_some() {
+        KittyPlacement::Virtual(image_id)
+    } else {
+        KittyPlacement::Cursor(image_id)
+    };
+    let current_id = is_kitty_protocol(request.protocol).then_some(image_id);
+    if let Some(id) = std::mem::replace(&mut state.last_kitty_id, current_id).or(current_id) {
+        write!(writer, "{}", image_protocol::kitty_delete_image(id))?;
     }
-    state.last_protocol = Some(request.protocol);
-
     let payload = match request.protocol {
-        ImageProtocol::Kitty => AmbientPetPayload::Text(
-            image_protocol::kitty_transmit_png_with_id(
-                &request.frame,
-                request.columns,
-                request.rows,
-                Some(image_id),
-            )
-            .map_err(PetImageRenderError::Asset)?,
-        ),
-        ImageProtocol::KittyLocalFile => AmbientPetPayload::Text(
-            image_protocol::kitty_transmit_png_file_with_id(
-                &request.frame,
-                request.columns,
-                request.rows,
-                Some(image_id),
-            )
-            .map_err(PetImageRenderError::Asset)?,
-        ),
+        ImageProtocol::Kitty => image_protocol::kitty_transmit_png_with_id(
+            &request.frame,
+            request.columns,
+            request.rows,
+            placement,
+        )
+        .map_err(PetImageRenderError::Asset)?
+        .into_bytes(),
+        ImageProtocol::KittyLocalFile => image_protocol::kitty_transmit_png_file_with_id(
+            &request.frame,
+            request.columns,
+            request.rows,
+            placement,
+        )
+        .map_err(PetImageRenderError::Asset)?
+        .into_bytes(),
         ImageProtocol::Sixel => {
             let path =
                 image_protocol::sixel_frame(&request.frame, &request.sixel_dir, request.height_px)
                     .map_err(PetImageRenderError::Asset)?;
-            let sixel = std::fs::read(&path)
+            std::fs::read(&path)
                 .with_context(|| format!("read {}", path.display()))
-                .map_err(PetImageRenderError::Asset)?;
-            AmbientPetPayload::Bytes(sixel)
+                .map_err(PetImageRenderError::Asset)?
         }
     };
 
@@ -227,19 +233,10 @@ fn render_pet_image(
         clear_sixel_area(writer, area)?;
         state.last_sixel_clear_area = Some(area);
     }
-    queue!(writer, MoveTo(request.x, request.y))?;
-    match payload {
-        AmbientPetPayload::Text(payload) => write!(writer, "{payload}")?,
-        AmbientPetPayload::Bytes(payload) => writer.write_all(&payload)?,
-    }
+    placement.draw(writer, request.area(), &payload)?;
     queue!(writer, RestorePosition)?;
     writer.flush()?;
     Ok(())
-}
-
-enum AmbientPetPayload {
-    Text(String),
-    Bytes(Vec<u8>),
 }
 
 fn is_kitty_protocol(protocol: image_protocol::ImageProtocol) -> bool {
@@ -487,7 +484,7 @@ mod tests {
 
         let mut writer = FailingWriter;
         let mut state = PetImageRenderState {
-            last_protocol: Some(ImageProtocol::Kitty),
+            last_kitty_id: Some(0xC0DE),
             ..Default::default()
         };
 

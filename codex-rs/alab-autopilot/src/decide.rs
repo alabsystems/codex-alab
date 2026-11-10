@@ -231,6 +231,10 @@ pub struct Texts {
     pub land_nudge: String,
     /// Land's answer to a question.
     pub land_answer: String,
+    /// LAND'S TEXT FOR A QUESTION BOX'S NOTES (`answer-land@v1`, [`crate::answer`]): aterm's
+    /// `land_question_text`, which it sends bare (a free-text answer takes no standing rules),
+    /// else [`words::LAND_QUESTION_TEXT`].
+    pub land_question: String,
     /// The NEEDS YOU hint appended after an answer.
     pub needs_hint: String,
     /// The ack appended once per new set of needs.
@@ -250,6 +254,7 @@ impl Default for Texts {
             land: words::LAND.to_string(),
             land_nudge: words::LAND_NUDGE.to_string(),
             land_answer: words::LAND_ANSWER.to_string(),
+            land_question: words::LAND_QUESTION_TEXT.to_string(),
             needs_hint: needs::NEEDS_HINT.to_string(),
             needs_ack: needs::NEEDS_ACK.to_string(),
             from_aterm: false,
@@ -304,8 +309,11 @@ impl Texts {
             land: text("land_text", fallback.land),
             land_nudge: text("land_nudge_text", fallback.land_nudge),
             land_answer: text("land_answer_text", fallback.land_answer),
+            land_question: text("land_question_text", fallback.land_question),
             needs_hint: text("needs_hint_text", fallback.needs_hint),
             needs_ack: text("needs_ack_text", fallback.needs_ack),
+            // `land_question_text` is no act text here: it comes bare whatever rules stand, so
+            // it says nothing of whether aterm composed its act texts with them.
             from_aterm: [
                 "done_check_text",
                 "land_text",

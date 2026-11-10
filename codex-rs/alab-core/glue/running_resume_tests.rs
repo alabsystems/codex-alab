@@ -187,6 +187,7 @@ async fn first_input_resume(active: bool, history_mode: ThreadHistoryMode) {
                     ..Default::default()
                 })),
                 RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+                    content_token_count: None,
                     thread_id,
                     turn_id: "first-turn".to_owned(),
                     item: TurnItem::UserMessage(UserMessageItem {

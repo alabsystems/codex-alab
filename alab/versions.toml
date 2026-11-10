@@ -39,3 +39,15 @@ version = "0.2.0"
 baseline = "0.167.0"
 baseline_commit = "086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a"
 date = "2026-11-07"
+
+[[release]]
+version = "0.3.0"
+baseline = "0.167.0"
+baseline_commit = "086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a"
+date = "2026-11-10"
+
+[[release]]
+version = "0.4.0"
+baseline = "0.167.1"
+baseline_commit = "0a94398fa60c4fac0e7659e4213a0a36e613dd46"
+date = "2026-11-10"

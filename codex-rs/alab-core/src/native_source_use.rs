@@ -241,7 +241,26 @@ impl ParentUseRef {
             .map(ParentUseLease)
     }
 }
+/// Observes cleanup without retaining an activity/use owner or authorizing work.
+#[derive(Clone)]
+pub struct EndObservation(Arc<State>);
+impl EndObservation {
+    pub async fn ended(&self) -> io::Result<()> {
+        loop {
+            let changed = self.0.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.0.progress.lock().map_err(|_| unavailable())?.ended {
+                return Ok(());
+            }
+            changed.await;
+        }
+    }
+}
 impl ParentUseLease {
+    pub(crate) fn observe_end(&self) -> EndObservation {
+        EndObservation(Arc::clone(&self.0.0))
+    }
     pub(crate) fn settled(&self) -> bool {
         self.0
             .0
@@ -487,6 +506,9 @@ mod tests {
         started: Notify,
         release: Notify,
         closes: AtomicU64,
+        hold_end: AtomicBool,
+        end_started: Notify,
+        end_release: Notify,
         closed: Mutex<Vec<String>>,
     }
     impl Member for Peer {
@@ -545,7 +567,13 @@ mod tests {
             })
         }
         fn end_use<'a>(&'a self, _: &'a UseReceipt) -> UnitFuture<'a> {
-            Box::pin(async { Ok(()) })
+            Box::pin(async move {
+                self.end_started.notify_one();
+                if self.hold_end.load(Ordering::Acquire) {
+                    self.end_release.notified().await;
+                }
+                Ok(())
+            })
         }
     }
     fn peer() -> Arc<Peer> {
@@ -555,6 +583,9 @@ mod tests {
             started: Notify::new(),
             release: Notify::new(),
             closes: AtomicU64::new(0),
+            hold_end: AtomicBool::new(false),
+            end_started: Notify::new(),
+            end_release: Notify::new(),
             closed: Mutex::new(Vec::new()),
         })
     }
@@ -611,5 +642,25 @@ mod tests {
         )
         .unwrap();
         assert!(!format!("{receipt:?}").contains(&"c".repeat(64)));
+    }
+    #[tokio::test]
+    async fn cleanup_observation_waits_for_last_child_and_actual_end_ack_without_owning_use() {
+        let peer = peer();
+        peer.hold_end.store(true, Ordering::Release);
+        let root = ParentUseLease::start(peer.clone(), "2".repeat(32)).unwrap();
+        peer.started.notified().await;
+        peer.release.notify_one();
+        root.ready().await.unwrap();
+        let child = root.clone();
+        let observer = root.observe_end();
+        drop(root);
+        let settled = observer.ended();
+        tokio::pin!(settled);
+        tokio::select! { _ = &mut settled => panic!("actual child still owns native use"), _ = tokio::task::yield_now() => {} }
+        drop(child);
+        peer.end_started.notified().await;
+        tokio::select! { _ = &mut settled => panic!("End has no native ACK yet"), _ = tokio::task::yield_now() => {} }
+        peer.end_release.notify_one();
+        settled.await.unwrap();
     }
 }

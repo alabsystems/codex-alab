@@ -6,12 +6,15 @@ CODEX_HOME, a mock Responses server, and the FAKE aterm (alab-aterm's `fake_ater
 as its aterm session. Never a real aterm, never ~/.codex.
 
 1. Two copies of one codex build (`cp -c`: two inodes), a twin symlink naming copy A, and
-   codex launched as `codex` through PATH (its launch path is the twin).
+   codex launched as `codex` through PATH (its launch path is the twin). With
+   --next-codex, use two distinct package executables and verify version/byte
+   identities instead; retain their package-relative resources.
 2. The session's Autopilot word is Land (FOREVER LAND, aterm owner direction 2026-10-19:
    "if landing LAND EVERYTHING INTO REMOTE MAIN NO EXCEPTIONS"; under Cruise the task never
    ends, so nothing would leave the re-exec quiet). The fake proves codex-alab's claim; a
    person's first turn asks a `request_user_input` question; the TUI's overlay is answered
-   by codex-alab with its recommended option, and the model's next request carries that
+   by codex-alab under Land with Land's text in its notes (`answer-land@v1`; this fake sends
+   no `land_question_text`, so codex-alab's copy), and the model's next request carries that
    answer (it reached core); codex-alab then types the land instruction (2 min after the
    person's turn, which worked under min_work: the short streak's back-off), the reply defends
    `Nothing left:` with no need, the repository probe finds nothing (the work folder is no
@@ -26,6 +29,7 @@ usage: native.py --codex target/debug/codex --fake target/debug/examples/fake_at
 import argparse
 import ctypes  # noqa: F401  (exe_of)
 import http.server
+import hashlib
 import json
 import os
 import pty
@@ -303,10 +307,15 @@ def wait(what, done, timeout=90):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--codex", required=True)
+    ap.add_argument("--next-codex", help="a distinct next-version package executable for actual version-transition verification")
+    ap.add_argument("--starting-question-mode", choices=("land", "recommended"), default="land",
+                    help="expected starting-version answer contract; recommended requires --next-codex")
     ap.add_argument("--fake", required=True)
     ap.add_argument("--scratch")
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
+    if args.starting_question_mode == "recommended" and not args.next_codex:
+        ap.error("--starting-question-mode recommended requires a distinct --next-codex")
     scratch = args.scratch or tempfile.mkdtemp(prefix="alab-smoke-")
     os.makedirs(scratch, exist_ok=True)
     print("scratch:", scratch)
@@ -321,12 +330,28 @@ def main():
     b = os.path.join(scratch, "store", "b", "bin", "codex")
     for d in (home, work, xdg, twin_dir, os.path.dirname(a), os.path.dirname(b)):
         os.makedirs(d, exist_ok=True)
-    # Build A is the given binary itself (a symlink to it); build B a copy (another inode).
+    # Preserve package-relative resources for a real next-version executable.
+    # Without --next-codex, retain the original two-inode same-build probe.
     if not os.path.lexists(a):
         os.symlink(os.path.realpath(args.codex), a)
-    if not os.path.exists(b):
-        subprocess.run(["cp", "-c", args.codex, b], check=True)
+    if not os.path.lexists(b):
+        if args.next_codex:
+            os.symlink(os.path.realpath(args.next_codex), b)
+        else:
+            subprocess.run(["cp", "-c", args.codex, b], check=True)
     a = os.path.realpath(a)
+    b = os.path.realpath(b)
+    def image(path):
+        with open(path, "rb") as f:
+            digest = hashlib.file_digest(f, "sha256").hexdigest()
+        version = subprocess.check_output(
+            [path, "--version"], text=True, env={**os.environ, "CODEX_HOME": home}
+        ).strip()
+        return {"path": path, "sha256": digest, "version": version}
+    before_image, next_image = image(a), image(b)
+    if args.next_codex:
+        assert before_image["sha256"] != next_image["sha256"], "next-version bytes must differ"
+        assert before_image["version"] != next_image["version"], "next-version identity must differ"
     assert os.stat(a).st_ino != os.stat(b).st_ino
     twin = os.path.join(twin_dir, "codex")
     if os.path.lexists(twin):
@@ -389,7 +414,17 @@ def main():
             if item.get("type") == "function_call_output" and item.get("call_id") == "call_q1"
         ]
         print("2. the question's answer reached core and the model:", outputs[0].get("output"))
-        assert "In memory (Recommended)" in json.dumps(outputs[0]), outputs[0]
+        if args.starting_question_mode == "recommended":
+            # The published 0.2 starting image predates Land-specific question answers.
+            # Verify its exact supported contract before exercising the handoff.
+            assert json.loads(outputs[0]["output"]) == {
+                "answers": {"cache": {"answers": ["In memory (Recommended)"]}}
+            }, outputs[0]
+            expected_answer_rule = "answer-recommended@v1"
+        else:
+            # alab-autopilot `words::LAND_QUESTION_TEXT`: the current-image control.
+            assert "take the option that lands all of this work on remote main" in json.dumps(outputs[0]), outputs[0]
+            expected_answer_rule = "answer-land@v1"
         # The person's turn worked under codex-alab's min_work (2 min), so the land instruction
         # that answers it is paced by the short streak, as aterm paces every act: it goes 2 min
         # after that turn ends (decide_tests a_persons_short_turn_backs_the_continue_off). The
@@ -397,7 +432,7 @@ def main():
         wait("the task is landed", lambda: "landed@v1" in fake.state()["acts"], timeout=300)
         acts = fake.state()["acts"]
         print("   acts:", acts)
-        assert "answer-recommended@v1" in acts, acts
+        assert expected_answer_rule in acts, acts
         assert "land@v1" in acts, acts
 
         record_path = os.path.join(home, "alab", "sessions", "%d.json" % pid)
@@ -405,6 +440,7 @@ def main():
              and json.load(open(record_path)).get("resumeArgv"))
         record = json.load(open(record_path))
         print("3. record before:", {k: record[k] for k in ("execGeneration", "launchArgv0", "exe", "resumeArgv", "status")})
+        before_session = record["sessionId"]
         before_requests = len(mock.requests)
 
         nxt = twin + ".next"
@@ -419,6 +455,8 @@ def main():
              and json.load(open(record_path)).get("execGeneration") == 1
              and json.load(open(record_path)).get("status") != "upgrading")
         record = json.load(open(record_path))
+        assert record["sessionId"] == before_session, "the conversation changed during live update"
+        assert record["displayedThreadId"] == before_session, "the resumed conversation is not displayed"
         print("   record after:", {k: record[k] for k in ("execGeneration", "status", "sessionId", "exe")})
         wait("the new image's claim is proven", lambda: (fake.state()["claim"] or {}).get("proven_pid") == pid)
         print("5. claim proven again:", fake.state()["claim"])
@@ -429,6 +467,22 @@ def main():
         ]
         assert not typed, "nothing is typed after the re-exec (a landed task)"
         print("   nothing typed after the re-exec;", len(mock.requests) - before_requests, "side request(s)")
+        receipt = {
+            "schema": "alab.native-live-update.v1",
+            "startingQuestionMode": args.starting_question_mode,
+            "startingAnswerRule": expected_answer_rule,
+            "before": before_image, "next": next_image,
+            "pid": pid, "loadedExecutable": exe_of(pid),
+            "sessionIdBefore": before_session, "sessionIdAfter": record["sessionId"],
+            "execGeneration": record["execGeneration"],
+            "claimProven": fake.state()["claim"]["proven_pid"] == pid,
+            "noPostLandingTyping": not typed,
+            "distinctVersion": before_image["version"] != next_image["version"],
+        }
+        assert image(a) == before_image and image(b) == next_image, "package bytes changed during probe"
+        with open(os.path.join(scratch, "live-update-receipt.json"), "w") as f:
+            json.dump(receipt, f, indent=2)
+            f.write("\n")
         print("SMOKE OK")
     finally:
         try:

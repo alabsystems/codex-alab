@@ -4,6 +4,7 @@
 //! updates both the on-disk cache and the bundle observed by future config loads.
 //! One-shot network loads can disable disk-cache reads and writes.
 
+#[path = "../../alab-core/glue/cloud_destination_service.rs"] mod alab_destination; // ALAB(accounts): explicit B reads do not reuse a permanent startup observation.
 use crate::backend::BundleClient;
 use crate::backend::BundleRequestError;
 use crate::backend::RetryableFailureKind;

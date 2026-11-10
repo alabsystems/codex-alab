@@ -15,6 +15,7 @@ use codex_thread_store::ThreadStoreError;
 use codex_thread_store::ThreadStoreResult;
 use serde::Deserialize;
 use serde::Serialize;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 #[path = "exec_memory_codec.rs"]
@@ -81,7 +82,7 @@ impl ExecEphemeralHistory {
             return Err("memory recovery requires a fresh ephemeral runtime".into());
         }
         let context =
-            crate::context_manager::ContextManager::restore_exec_context(self.context.clone())?;
+            crate::context_manager::ContextManager::prepare_exec_context(self.context.clone())?;
         let items = self.restore_for(thread, turn)?;
         options.initial_history =
             codex_history::InitialHistory::Resumed(codex_history::ResumedHistory {
@@ -177,7 +178,7 @@ impl crate::CodexThread {
     }
 }
 
-struct RestoreContext(crate::context_manager::ContextManager);
+struct RestoreContext(crate::context_manager::PreparedExecContext);
 
 pub(crate) async fn restore_context_if_pending(session: &Session) {
     // This existing startup boundary runs before any task starts. Establish
@@ -197,7 +198,7 @@ pub(crate) async fn restore_context_if_pending(session: &Session) {
         .thread_extension_data
         .remove::<RestoreContext>()
     {
-        session.state.lock().await.history = context.0.clone();
+        session.state.lock().await.history = context.0.bind(Arc::clone(&session.item_id_generator));
     }
 }
 

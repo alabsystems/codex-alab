@@ -680,8 +680,10 @@ async fn process_sse_with_treatment(
                 let error = error.into_api_error();
                 if matches!(
                     error,
-                    ApiError::FlexUnavailable | ApiError::ResponseIncomplete(_)
-                ) || alab_capacity::emit_immediately(&error) { // ALAB(capacity): a known capacity failure must not wait for EOF or lose advice at idle timeout.
+                    ApiError::FlexUnavailable
+                        | ApiError::SessionBudgetExceeded
+                        | ApiError::ResponseIncomplete(_)
+                ) || alab_capacity::emit_immediately(&error) { // ALAB(capacity): emit known capacity failures before EOF or idle timeout.
                     let _ = tx_event.send(Err(error)).await;
                     return;
                 }

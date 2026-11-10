@@ -264,7 +264,7 @@ impl<'a> Painter<'a> {
                         }
                     }
                 }
-                Style::Ribbon => {
+                Style::Ribbon | Style::Codex => {
                     let wave = (c as f64 * 2.0 * std::f64::consts::PI / 16.0).sin() > 0.3;
                     let off = usize::from(wave);
                     let t = column_t(c, trail);
@@ -909,12 +909,12 @@ fn merge(spans: Vec<Span<'static>>) -> Line<'static> {
 // themes; the banner checks its own (light-theme rescue, per-depth mapping), as upstream's
 // `terminal_palette::{rgb_color, indexed_color}` do.
 #[allow(clippy::disallowed_methods)]
-fn rgb_color((r, g, b): (u8, u8, u8)) -> Color {
+pub(super) fn rgb_color((r, g, b): (u8, u8, u8)) -> Color {
     Color::Rgb(r, g, b)
 }
 
 #[allow(clippy::disallowed_methods)]
-fn indexed_color(index: u8) -> Color {
+pub(super) fn indexed_color(index: u8) -> Color {
     Color::Indexed(index)
 }
 

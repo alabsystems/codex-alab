@@ -20,6 +20,10 @@ use codex_alab_tui::session::ProgramState;
 use codex_alab_tui::turns;
 
 #[cfg(test)]
+#[path = "goal_interrupt_tests.rs"]
+mod goal_interrupt_tests;
+
+#[cfg(test)]
 #[path = "daybreak_recovery_tests.rs"]
 mod daybreak_recovery_tests;
 #[cfg(test)]

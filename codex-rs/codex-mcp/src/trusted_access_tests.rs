@@ -1,3 +1,5 @@
+#[path = "../../alab-core/glue/mcp_trusted_access_fixture.rs"] mod alab_fixture; // ALAB(accounts): fixture readiness follows actual HTTP admission, not one poll.
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -257,7 +259,7 @@ async fn rejects_auth_without_a_nonempty_account_id() -> anyhow::Result<()> {
             serde_json::to_vec(&json!({
                 "auth_mode": "chatgpt",
                 "tokens": {
-                    "id_token": "header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF91c2VyX2lkIjoidXNlci1hIn19.signature",
+                    "id_token": "header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF91c2VyX2lkIjoidXNlci1hIn19.signature", // ALAB(publish): public upstream synthetic token. gitleaks:allow
                     "access_token": "synthetic-access-token",
                     "refresh_token": "synthetic-refresh-token",
                     "account_id": account_id
@@ -447,6 +449,7 @@ async fn returns_unknown_at_the_lookup_deadline() {
     let lookup = context.add_context(/*meta*/ None);
     tokio::pin!(lookup);
 
+    alab_fixture::until_requested(&client.response_gate.as_ref().expect("gated response").0, lookup.as_mut()).await; // ALAB(accounts): native credential preparation may suspend before HTTP; keep the original lookup deadline.
     assert!(futures::poll!(lookup.as_mut()).is_pending());
     assert_eq!(client.requests.lock().expect("recorded requests").len(), 1);
     tokio::time::advance(Duration::from_millis(2_499)).await;

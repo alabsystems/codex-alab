@@ -8,6 +8,7 @@ use codex_utils_cli::collect_config_overrides;
 
 mod command;
 mod config;
+#[path = "../../alab-core/glue/executor_startup.rs"] mod alab_startup; // ALAB(accounts): bound native configuration/credential preparation at the executor startup boundary.
 mod exec_server_auth;
 mod exec_server_credential;
 mod exec_server_telemetry;

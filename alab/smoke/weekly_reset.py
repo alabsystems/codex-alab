@@ -33,15 +33,25 @@ ACCOUNT = "weekly-smoke-account"
 USER = "weekly-smoke-user"
 COMMAND_TIMEOUT_SECONDS = 120
 GUARD_PATH = Path(__file__).resolve().parents[1] / "command_guard.py"
-TWO_CREDITS = ("repeated-same-cycle", "stale-credit-ledger", "selected-no-credit")
-TWO_TOOLS = ("repeated-same-cycle", "stale-credit-ledger", "unused-pending")
+OUTAGE_CASES = ("usage-outage", "credit-list-outage")
+DEADLINE_OUTAGE_CASES = ("usage-outage-deadline", "credit-list-outage-deadline")
+PROPAGATION_CASES = ("propagating-reset", "lost-ack-propagation")
+TWO_CREDITS = ("stale-allowance-credit", *PROPAGATION_CASES, "repeated-same-cycle", "stale-credit-ledger", "selected-no-credit")
+TWO_TOOLS = ("shared-credit", "repeated-same-cycle", "stale-credit-ledger", "unused-pending")
 PREFLIGHT_CASES = ("preflight-five-hour", "preflight-weekly")
-SUCCESS_CASES = ("recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit", *PREFLIGHT_CASES)
-CASE_NAMES = (*SUCCESS_CASES, "stale-credit-ledger", "stale-restored", "identity-mismatch", "no-credit", "near-reset", "unrelated-provider")
+SUCCESS_CASES = ("spent-retry-deadline", *DEADLINE_OUTAGE_CASES, "stale-allowance-credit", *OUTAGE_CASES, "shared-credit", "natural-reset", "committed-ack", "stale-reset-credit", *PROPAGATION_CASES, "near-reset", "late-credit", "recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit", *PREFLIGHT_CASES)
+CASE_NAMES = (*SUCCESS_CASES, "stale-credit-ledger", "stale-restored", "identity-mismatch", "no-credit", "unrelated-provider")
 
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 def write_json(path, value):
     with path.open("x") as handle:
@@ -170,8 +180,9 @@ def jwt():
 class Mock:
     def __init__(self, name):
         self.name = name
-        self.reset = int(time.time()) + (4 * 60 if name == "near-reset" else 24 * 3600)
-        self.credit = name != "no-credit"
+        reset_delay = 90 if name == "natural-reset" else 4 * 60 if name == "near-reset" else 24 * 3600
+        self.reset = int(time.time()) + reset_delay
+        self.credit = name not in ("no-credit", "late-credit", "natural-reset")
         self.consumed = name == "unused-pending"
         self.requests = []
         self.models = []
@@ -182,10 +193,32 @@ class Mock:
         self.account_key = None
         self.spent = []
         self.declined = []
+        self.wall_usage_reads = 0
+        self.propagation_reads = 0
+        self.partial_receipt_path = None
+        self.receipt_dir = None
+        self.stale_allowance_reads = 0
 
     def usage(self):
         preflight = self.name in PREFLIGHT_CASES
         healthy = self.consumed or (not preflight and len(self.models) < 2)
+        if len(self.models) >= 2:
+            self.wall_usage_reads += 1
+        reset = self.reset
+        if self.name == "stale-allowance-credit" and len(self.models) >= 3 and len(self.spent) == 1:
+            self.stale_allowance_reads += 1
+            healthy = self.stale_allowance_reads == 1
+            if not healthy:
+                self.consumed = False
+        if self.name == "natural-reset" and self.wall_usage_reads >= 2:
+            healthy = True
+            reset += 604800
+        if self.name == "stale-reset-credit" and self.wall_usage_reads == 1:
+            reset = int(time.time()) - 60
+        if self.name in PROPAGATION_CASES and self.consumed:
+            self.propagation_reads += 1
+            healthy = self.propagation_reads >= (4 if self.name == "lost-ack-propagation" else 3)
+            reset += 3600
         available = int(self.credit and not self.consumed)
         if self.name in TWO_CREDITS:
             available = 2 - len(self.spent) - len(self.declined)
@@ -200,7 +233,7 @@ class Mock:
                         "reset_after_seconds": 3600, "reset_at": int(time.time()) + 3600},
                     "secondary_window": {"used_percent": 0 if healthy or self.name == "preflight-five-hour" else (95 if preflight else 100),
                         "limit_window_seconds": 604800,
-                        "reset_after_seconds": self.reset - int(time.time()), "reset_at": self.reset}},
+                        "reset_after_seconds": reset - int(time.time()), "reset_at": reset}},
                 "rate_limit_reset_credits": {"available_count": available}}
 
     def reply(self, method, path, body):
@@ -217,6 +250,10 @@ class Mock:
                                 "content": [{"type": "output_text", "text": ANSWER}]}
                         return 200, response("preflight-completed", item), "text/event-stream"
                 if number == 1:
+                    if self.name == "committed-ack":
+                        receipt = json.loads(self.partial_receipt_path.read_text())
+                        require(receipt["consumed"] is True and receipt["retry_released"] is True,
+                                "first model request preceded settlement of the committed receipt")
                     item = {"type": "function_call", "call_id": CALL_ID, "name": "update_plan",
                             "arguments": json.dumps({"plan": [{"step": PLAN, "status": "completed"}]})}
                     return 200, response("weekly-plan", item), "text/event-stream"
@@ -229,26 +266,81 @@ class Mock:
                                 {"step": PLAN, "status": "completed"},
                                 {"step": PLAN2, "status": "completed"}]})}
                     return 200, response("weekly-second-plan", item), "text/event-stream"
-                if (number == 2 or (number == 3 and self.name == "stale-restored")
+                if (number == 2 or (number == 3 and self.name in ("stale-restored", "stale-allowance-credit", "spent-retry-deadline"))
                         or (number == 4 and self.name in TWO_TOOLS)
                         or (number == 5 and self.name == "stale-credit-ledger")):
                     if number in (4, 5):
                         self.consumed = False
+                    if number == 4 and self.name == "shared-credit":
+                        # A peer settles a fresh credit while this turn is sampling.
+                        # Its account receipt must not consume this turn's retry.
+                        state = json.loads((self.receipt_dir / "state.json").read_text())
+                        generation = state["next_generation"]
+                        peer_credit = "peer-earned-credit"
+                        key = hashlib.sha256(
+                            f"alab/weekly-reset/v3/{self.account_key}/{self.reset}/{peer_credit}/{generation}".encode()).hexdigest()
+                        peer_path = self.receipt_dir / ("credit-" + hashlib.sha256(
+                            peer_credit.encode()).hexdigest() + ".json")
+                        write_json(peer_path, {"id": peer_credit, "consumed": True,
+                                               "retry_released": True})
+                        peer_path.chmod(0o600)
+                        state["next_generation"] = generation + 1
+                        state["current"] = {"credit": peer_credit, "cycle": self.reset,
+                            "key": key, "generation": generation, "outcome": "consumed"}
+                        peer_state = self.receipt_dir / "peer-state.json"
+                        write_json(peer_state, state)
+                        peer_state.chmod(0o600)
+                        peer_state.replace(self.receipt_dir / "state.json")
+                        self.consumed = True
+                        record["peerResetCredit"] = peer_credit
                     if number == 3:
+                        if self.name == "spent-retry-deadline":
+                            self.reset = int(time.time()) + 3
                         self.checked.set()
+                    if number == 2 and self.name in DEADLINE_OUTAGE_CASES:
+                        self.reset = int(time.time()) + 3
+                    elif number == 2 and self.name == "natural-reset":
+                        # Backend restoration is observed on the paced second
+                        # poll, before the original wall deadline takes over.
+                        self.reset = int(time.time()) + 90
                     record["quotaResetUnix"] = self.reset
                     return 429, json.dumps({"error": {"type": "usage_limit_reached",
                         "message": "Fixture weekly quota exhausted", "resets_at": self.reset}}).encode(), "application/json"
-                if (number == 3 or (number == 5 and self.name in TWO_TOOLS)) and self.consumed:
+                naturally_restored = self.name == "natural-reset" and self.wall_usage_reads >= 2
+                if self.name in DEADLINE_OUTAGE_CASES:
+                    record["serverUnix"] = int(time.time())
+                    naturally_restored = record["serverUnix"] >= self.reset
+                if ((number == 3 or (number == 5 and self.name in TWO_TOOLS)
+                     or (number == 4 and self.name in ("stale-allowance-credit", "spent-retry-deadline")))
+                        and (self.consumed or naturally_restored)):
+                    if self.name == "spent-retry-deadline":
+                        record["serverUnix"] = int(time.time())
+                        require(record["serverUnix"] >= self.reset,
+                                "native retry ran before its original reset deadline")
                     item = {"type": "message", "role": "assistant", "id": "weekly-answer",
                             "content": [{"type": "output_text", "text": ANSWER}]}
                     return 200, response("weekly-recovered", item), "text/event-stream"
                 return 403, b'{"error":{"message":"Unexpected model retry"}}', "application/json"
             if method == "GET" and path == "/backend-api/wham/usage":
                 value = self.usage()
+                if ((self.name == "usage-outage" and self.wall_usage_reads == 1)
+                        or (self.name == "usage-outage-deadline" and len(self.models) >= 2)):
+                    record["status"] = 503
+                    record["response"] = {"error": "temporary usage service outage"}
+                    return 503, json.dumps(record["response"]).encode(), "application/json"
                 if len(self.models) >= 2 and self.name != "stale-restored":
                     self.checked.set()
             elif method == "GET" and path == "/backend-api/wham/rate-limit-reset-credits":
+                if ((self.name == "credit-list-outage" and sum(
+                        request["path"] == path for request in self.requests) == 1)
+                        or (self.name == "credit-list-outage-deadline" and len(self.models) >= 2)):
+                    record["status"] = 503
+                    record["response"] = {"error": "temporary credit service outage"}
+                    return 503, json.dumps(record["response"]).encode(), "application/json"
+                if self.name == "late-credit" and sum(
+                        request["path"].endswith("/rate-limit-reset-credits")
+                        for request in self.requests) >= 2:
+                    self.credit = True
                 value = {"available_count": int(self.credit), "credits": []}
                 if self.credit:
                     value["credits"] = [{"id": "earned-weekly-credit", "reset_type": "codex_rate_limits",
@@ -268,6 +360,12 @@ class Mock:
                             "pending redemption did not retain the original key")
                     record["response"] = {"code": "already_redeemed", "windows_reset": 2}
                     return 200, json.dumps(record["response"]).encode(), "application/json"
+                if self.name == "lost-ack-propagation" and self.consumed:
+                    previous = next(request for request in self.requests[:-1]
+                                    if request["path"].endswith("/consume"))
+                    require(body == previous["body"], "uncertain reset changed its original key or credit")
+                    record["response"] = {"code": "already_redeemed", "windows_reset": 2}
+                    return 200, json.dumps(record["response"]).encode(), "application/json"
                 require(self.name in (*SUCCESS_CASES, "stale-restored", "stale-credit-ledger"),
                         "ineligible case attempted to consume a credit")
                 require(not self.consumed and self.credit, "credit consumed twice")
@@ -278,8 +376,10 @@ class Mock:
                 require(isinstance(body["redeem_request_id"], str)
                         and re.fullmatch(r"[0-9a-f]{64}", body["redeem_request_id"]),
                         "missing stable SHA256 redeem ID")
-                if self.name in (*TWO_TOOLS, "selected-no-credit"):
+                if self.name in (*TWO_TOOLS, "selected-no-credit", "committed-ack"):
                     generation = (1 if self.name == "unused-pending" else len(self.spent) + len(self.declined) + 1)
+                    if self.name == "committed-ack":
+                        generation += 1
                     expected_key = hashlib.sha256(
                         f"alab/weekly-reset/v3/{self.account_key}/{self.reset}/{expected_credit}/{generation}".encode()).hexdigest()
                     require(body["redeem_request_id"] == expected_key, "credit-specific stable key missing")
@@ -290,7 +390,7 @@ class Mock:
                 self.consumed = True
                 self.spent.append(body["credit_id"])
                 value = {"code": "reset", "windows_reset": 2}
-                if self.name == "lost-ack":
+                if self.name in ("lost-ack", "lost-ack-propagation"):
                     record["droppedResponse"] = True
                     return None, b"", "application/json"
             else:
@@ -374,13 +474,34 @@ def case(executable, output, name):
 
     def cancel_after_check(child, stdout):
         nonlocal cancelled
-        # Observe the native wait armed after reset recovery declined. This is
-        # evidence that the full consume path settled, rather than a timed guess.
+        # A request appearing in the server log does not prove its response
+        # reached recovery. A second paced poll witnesses a completed wait loop.
+        retained = name in ("no-credit", "stale-credit-ledger", "stale-restored")
+
+        def retained_wait():
+            if not retained:
+                return False
+            with mock.lock:
+                expected_models, expected_consumes = {"stale-restored": (3, 1),
+                    "stale-credit-ledger": (5, 2)}.get(name, (2, 0))
+                if (not mock.checked.is_set() or len(mock.models) != expected_models
+                        or sum(request["path"].endswith("/consume") for request in mock.requests)
+                        != expected_consumes):
+                    return False
+                last_model = max(request["at"] for request in mock.requests
+                                 if request["path"] == "/v1/responses")
+                endpoint = "/usage" if name == "stale-restored" else "/rate-limit-reset-credits"
+                polls = [request for request in mock.requests
+                         if request["path"].endswith(endpoint)
+                         and request["at"] > last_model]
+                return len(polls) >= 2 and polls[-1]["at"] - polls[0]["at"] >= 29
+
         deadline = time.monotonic() + 60
         buffer = b""
-        while b"Waiting for account quota" not in buffer:
+        while not (retained_wait() if retained else b"Waiting for account quota" in buffer):
             remaining = deadline - time.monotonic()
-            require(remaining > 0, "native quota wait notification missing")
+            require(remaining > 0, "retained recovery did not make a paced second poll" if retained
+                    else "native quota wait notification missing")
             ready, _, _ = select.select([child.stdout], [], [], min(remaining, 1))
             if ready:
                 data = os.read(child.stdout.fileno(), 65536)
@@ -409,18 +530,22 @@ def case(executable, output, name):
         base = f"http://127.0.0.1:{server.server_port}/backend-api"
         account_key = hashlib.sha256(f"{base}\0{ACCOUNT}\0{USER}".encode()).hexdigest()
         mock.account_key = account_key
-        if name in ("pending-old-cycle", "unused-pending"):
-            cycle = mock.old_cycle if name == "pending-old-cycle" else mock.reset
-            credit = "previous-earned-credit" if name == "pending-old-cycle" else "earned-weekly-credit"
+        mock.receipt_dir = root / "codex-home" / ("weekly-reset-" + account_key + ".d")
+        if name in ("pending-old-cycle", "unused-pending", "committed-ack"):
+            cycle = mock.old_cycle if name in ("pending-old-cycle", "committed-ack") else mock.reset
+            credit = "previous-earned-credit" if name in ("pending-old-cycle", "committed-ack") else "earned-weekly-credit"
             mock.old_key = hashlib.sha256(
                 f"alab/weekly-reset/v3/{account_key}/{cycle}/{credit}/1".encode()).hexdigest()
             receipt = root / "codex-home" / ("weekly-reset-" + account_key + ".d")
             receipt.mkdir(mode=0o700)
-            state = {"version": 1, "next_generation": 2, "current": {"credit": credit,
-                "cycle": cycle, "key": mock.old_key, "generation": 1, "outcome": "pending"}}
+            state = {"version": 2 if name == "committed-ack" else 1,
+                "next_generation": 2, "current": {"credit": credit,
+                "cycle": cycle, "key": mock.old_key, "generation": 1,
+                "outcome": "awaiting_ack" if name == "committed-ack" else "pending"}}
             write_json(receipt / "state.json", state)
             credit_file = receipt / ("credit-" + hashlib.sha256(credit.encode()).hexdigest() + ".json")
-            write_json(credit_file, {"id": credit, "consumed": False, "retry_released": False})
+            mock.partial_receipt_path = credit_file
+            write_json(credit_file, {"id": credit, "consumed": name == "committed-ack", "retry_released": False})
             (receipt / "state.json").chmod(0o600)
             credit_file.chmod(0o600)
         arguments = ["exec", "--json", "--color", "never", "--skip-git-repo-check",
@@ -459,11 +584,139 @@ def case(executable, output, name):
                 "automatic weekly quota check missing")
     consumes = [request for request in mock.requests if request["path"].endswith("/consume")]
     if name in SUCCESS_CASES:
-        expected_models = 2 if name in PREFLIGHT_CASES else (5 if name in TWO_TOOLS else 3)
+        expected_models = 2 if name in PREFLIGHT_CASES else (4 if name in ("stale-allowance-credit", "spent-retry-deadline") else 5 if name in TWO_TOOLS else 3)
         require(code == 0 and len(mock.models) == expected_models, "weekly reset did not recover")
-        expected_consumes = 2 if name in ("pending-old-cycle", "repeated-same-cycle", "selected-no-credit") else 1
-        require(len(consumes) == expected_consumes and mock.consumed,
+        expected_consumes = 2 if name in ("stale-allowance-credit", "lost-ack-propagation", "pending-old-cycle", "repeated-same-cycle", "selected-no-credit") else 1
+        if name == "natural-reset" or name in DEADLINE_OUTAGE_CASES:
+            expected_consumes = 0
+        require(len(consumes) == expected_consumes
+                and (mock.consumed or name == "natural-reset" or name in DEADLINE_OUTAGE_CASES),
                 "earned credit not consumed exactly once after pending reconciliation")
+        if name in DEADLINE_OUTAGE_CASES:
+            models = [request for request in mock.requests if request["path"] == "/v1/responses"]
+            failures = [request for request in mock.requests if request.get("status") == 503]
+            require(models[-1]["serverUnix"] >= models[-2]["quotaResetUnix"],
+                    "outage retried the model before the native reset deadline")
+            require(models[-1]["at"] - models[-2]["at"] < 20,
+                    "backend outage held the native deadline until another polling interval")
+            require(failures and all(models[-2]["at"] < request["at"] < models[-1]["at"]
+                                     for request in failures),
+                    "fixture did not retain the backend outage through reset recovery")
+            require(not mock.spent and not mock.consumed,
+                    "native reset deadline spent an earned credit")
+        if name == "spent-retry-deadline":
+            models = [request for request in mock.requests if request["path"] == "/v1/responses"]
+            require(models[-1]["serverUnix"] >= models[-2]["quotaResetUnix"],
+                    "spent-grant wait stranded the native reset deadline")
+            require(mock.models[2]["input"] == mock.models[3]["input"],
+                    "native deadline handoff lost the retained request")
+        if name == "stale-allowance-credit":
+            denied_at = [request["at"] for request in mock.requests if "quotaResetUnix" in request][-1]
+            reads = [request for request in mock.requests if request["path"].endswith("/usage")
+                     and denied_at < request["at"] < consumes[1]["at"]]
+            require(len(reads) == 2 and reads[1]["at"] - reads[0]["at"] >= 29,
+                    "spent retry did not retain a paced usage poll")
+            require(reads[0]["response"]["rate_limit"]["allowed"] is True
+                    and reads[1]["response"]["rate_limit"]["allowed"] is False,
+                    "fixture did not reconcile stale healthy usage with current exhaustion")
+            require([request["body"]["credit_id"] for request in consumes]
+                    == ["earned-weekly-credit", "earned-weekly-credit-2"],
+                    "current exhaustion did not redeem the next earned credit")
+            require(mock.models[2]["input"] == mock.models[3]["input"],
+                    "retained turn changed while stale usage converged")
+        if name in OUTAGE_CASES:
+            failures = [request for request in mock.requests if request.get("status") == 503]
+            require(len(failures) == 1, "fixture did not inject one transient outage")
+            failed = failures[0]
+            retry = next(request for request in mock.requests
+                         if request["path"] == failed["path"] and request["at"] > failed["at"])
+            require(retry["at"] - failed["at"] >= 29,
+                    "transient endpoint failure did not retain a paced poll")
+            if name == "usage-outage":
+                require(retry["response"]["rate_limit"]["allowed"] is False,
+                        "usage outage retry did not verify current exhaustion")
+                require(all(request["at"] > retry["at"] for request in mock.requests
+                            if request["path"].endswith("/rate-limit-reset-credits")),
+                        "failed usage authorized a credit listing")
+            else:
+                require(retry["response"]["available_count"] == 1,
+                        "credit outage retry did not return a usable credit")
+            require(consumes[0]["at"] > retry["at"],
+                    "failed endpoint response authorized a redemption")
+        if name == "shared-credit":
+            peer = [request for request in mock.requests if "peerResetCredit" in request]
+            require(len(peer) == 1 and mock.spent == ["earned-weekly-credit"],
+                    "shared reset must resume without redeeming the peer's credit")
+            require(consumes[0]["at"] < peer[0]["at"],
+                    "fixture did not settle the shared reset after the turn's first retry")
+            peer_usage = [request for request in mock.requests
+                          if request["path"].endswith("/usage") and request["at"] > peer[0]["at"]]
+            retried = [request for request in mock.requests if request["path"] == "/v1/responses"][-1]
+            require(any(request["response"]["rate_limit"]["allowed"] is True
+                        and request["at"] < retried["at"] for request in peer_usage),
+                    "shared retry did not verify fresh restored allowance")
+        if name == "natural-reset":
+            usage = [request for request in mock.requests
+                     if request["path"].endswith("/usage")
+                     and request["at"] > next(request["at"] for request in mock.requests
+                                              if "quotaResetUnix" in request)]
+            lists = [request for request in mock.requests
+                     if request["path"].endswith("/rate-limit-reset-credits")]
+            require(len(usage) == 2 and usage[1]["at"] - usage[0]["at"] >= 29,
+                    "natural reset did not retain a paced usage poll")
+            require(usage[0]["response"]["rate_limit"]["allowed"] is False
+                    and usage[1]["response"]["rate_limit"]["allowed"] is True,
+                    "fixture did not restore the exhausted allowance")
+            require(len(lists) == 1 and lists[0]["response"]["available_count"] == 0,
+                    "natural reset fixture offered or queried another credit")
+            require(not mock.spent and not mock.consumed,
+                    "natural reset was mistaken for a credit redemption")
+        if name == "committed-ack":
+            require(consumes[0]["body"]["credit_id"] == "earned-weekly-credit"
+                    and consumes[0]["body"]["redeem_request_id"] != mock.old_key,
+                    "committed receipt was replayed instead of selecting the fresh credit")
+        if name == "late-credit":
+            lists = [request for request in mock.requests
+                     if request["path"].endswith("/rate-limit-reset-credits")]
+            require(len(lists) == 2 and lists[1]["at"] - lists[0]["at"] >= 29,
+                    "late credit did not require a paced second poll")
+            require(lists[0]["response"]["available_count"] == 0
+                    and lists[1]["response"]["available_count"] == 1,
+                    "fixture did not grant a new credit after the first check")
+        if name == "stale-reset-credit":
+            denied = [request for request in mock.requests
+                      if request["path"].endswith("/usage")
+                      and request.get("response", {}).get("rate_limit", {}).get("allowed") is False]
+            lists = [request for request in mock.requests
+                     if request["path"].endswith("/rate-limit-reset-credits")]
+            require(len(denied) == 2 and denied[1]["at"] - denied[0]["at"] >= 29,
+                    "stale reset did not retain a paced usage poll")
+            require(denied[0]["response"]["rate_limit"]["secondary_window"]["reset_after_seconds"] < 0
+                    and denied[1]["response"]["rate_limit"]["secondary_window"]["reset_after_seconds"] > 0,
+                    "fixture did not advance stale usage to a fresh cycle")
+            require(len(lists) == 1 and lists[0]["at"] > denied[1]["at"]
+                    and consumes[0]["at"] > lists[0]["at"],
+                    "stale usage authorized a credit list or redemption")
+        if name in PROPAGATION_CASES:
+            denied = [request for request in mock.requests
+                      if request["path"].endswith("/usage") and request["at"] > consumes[0]["at"]
+                      and request.get("response", {}).get("rate_limit", {}).get("allowed") is False]
+            require(len(denied) == (3 if name == "lost-ack-propagation" else 2)
+                    and mock.spent == ["earned-weekly-credit"],
+                    "delayed usage propagation spent an additional reset")
+            require(all(request["response"]["rate_limit"]["secondary_window"]["reset_at"] > mock.reset
+                        for request in denied), "fixture did not advance the reset while usage lagged")
+            retried = [request for request in mock.requests if request["path"] == "/v1/responses"][-1]
+            require(retried["at"] - consumes[0]["at"] >= 59,
+                    "sampler resumed before the two paced propagation polls")
+        if name == "lost-ack-propagation":
+            require(consumes[0].get("droppedResponse") is True
+                    and consumes[1]["response"]["code"] == "already_redeemed"
+                    and consumes[0]["body"] == consumes[1]["body"],
+                    "lost acknowledgement did not reconcile the exact same reset")
+            require(sum(request["path"].endswith("/rate-limit-reset-credits")
+                        for request in mock.requests) == 1,
+                    "uncertain recent reset queried another credit while usage lagged")
         if name == "pending-old-cycle":
             require(consumes[0]["body"] == {"redeem_request_id": mock.old_key,
                     "credit_id": "previous-earned-credit"}, "older pending key was abandoned")
@@ -474,6 +727,11 @@ def case(executable, output, name):
         if name == "lost-ack":
             require(consumes[0].get("droppedResponse") is True,
                     "consume acknowledgement was not actually dropped")
+            ledger = json.loads((root / "codex-home" / ("weekly-reset-" + account_key + ".d")
+                                 / "state.json").read_text())
+            require(ledger["version"] == 2 and ledger["current"]["outcome"] == "restored_pending"
+                    and ledger["current"]["key"] == consumes[0]["body"]["redeem_request_id"],
+                    "healthy allowance did not preserve the uncertain receipt and its restoration witness")
         if name == "selected-no-credit":
             require(consumes[0].get("response", {}).get("code") == "no_credit"
                     and consumes[1].get("response", {}).get("code") == "reset"
@@ -515,9 +773,11 @@ def case(executable, output, name):
                 "completed plan outputs missing")
         require(types.count("turn.completed") == 1 and "turn.failed" not in types, "native turn failed")
         require(any(event.get("item", {}).get("text") == ANSWER for event in events), "reply missing")
-        require(any(request["path"].endswith("/usage")
+        restored_after = consumes[-1]["at"] if consumes else next(
+            request["at"] for request in mock.requests if "quotaResetUnix" in request)
+        require(name in DEADLINE_OUTAGE_CASES or any(request["path"].endswith("/usage")
                     and request.get("response", {}).get("rate_limit", {}).get("allowed") is True
-                    and request["at"] > consumes[-1]["at"] for request in mock.requests),
+                    and request["at"] > restored_after for request in mock.requests),
                 "restored usage was not verified")
         plans = [event for event in events if event.get("item", {}).get("type") == "todo_list"]
         expected_plan = [{"text": PLAN, "completed": True}]
@@ -563,9 +823,14 @@ def main():
     parser.add_argument("--case", action="append", choices=CASE_NAMES,
                         help="Run selected cases only; repeat to retain a subset after a fixture failure")
     args = parser.parse_args()
+    selected = list(args.case or CASE_NAMES)
+    if len(selected) != len(set(selected)):
+        parser.error("--case must not repeat a case")
     output = args.output.absolute()
     output.mkdir(parents=True, exist_ok=False)
-    report = {"passed": False, "scope": "isolated fake ChatGPT auth and loopback only; no compilation"}
+    report = {"passed": False, "fullSuite": False, "requestedCases": selected,
+              "cases": [], "scope": "isolated fake ChatGPT auth and loopback only; no compilation"}
+    interrupted = None
     try:
         if args.package:
             package = args.package.resolve(strict=True)
@@ -574,16 +839,26 @@ def main():
         else:
             executable = args.codex.resolve(strict=True)
         require(executable.is_file(), "Codex executable missing")
-        report.update(executable=str(executable), binarySha256=hashlib.sha256(executable.read_bytes()).hexdigest())
-        report["cases"] = []
-        for name in args.case or CASE_NAMES:
+        report.update(executable=str(executable), binarySha256=file_sha256(executable))
+        for name in selected:
+            report["failedCase"] = name
             report["cases"].append(case(executable, output, name))
+        del report["failedCase"]
         report["passed"] = True
+        report["fullSuite"] = set(selected) == set(CASE_NAMES)
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
-    report["probeSha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    except (KeyboardInterrupt, SystemExit) as error:
+        # case/run have already unwound their child and server cleanup. Keep
+        # incomplete evidence without converting cancellation into a normal exit.
+        interrupted = error
+        report["interrupted"] = True
+        report["error"] = f"{type(error).__name__}: {error}"
+    report["probeSha256"] = file_sha256(Path(__file__))
     write_json(output / "result.json", report)
     print(json.dumps(report, indent=2))
+    if interrupted is not None:
+        raise interrupted
     return 0 if report["passed"] else 1
 
 

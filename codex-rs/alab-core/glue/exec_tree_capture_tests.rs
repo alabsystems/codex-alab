@@ -394,7 +394,7 @@ impl SessionTask for CompletingDelegate {
             _ = token.cancelled() => Ok(None),
             result = finish => {
                 result.unwrap();
-                Ok(Some(serde_json::json!({"findings":[],"overall_correctness":"correct","overall_explanation":"completed while frozen","overall_confidence_score":1.0}).to_string()))
+                Ok(Some(crate::tasks::alab_test_output::completed(serde_json::json!({"findings":[],"overall_correctness":"correct","overall_explanation":"completed while frozen","overall_confidence_score":1.0}).to_string())))
             }
         }
     }
@@ -459,6 +459,7 @@ impl SessionTask for ReviewCaptureTask {
             .send_event(
                 &child_context,
                 EventMsg::AgentMessage(codex_protocol::protocol::AgentMessageEvent {
+                    moderation: None,
                     message: "retained review work".into(),
                     phase: None,
                     memory_citation: None,

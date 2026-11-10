@@ -182,7 +182,11 @@ async fn submitted_or_queued_work_defers_landing_without_consuming_the_point() {
         input(&h, pending, queued);
         evaluate(&h).await;
         if on_its_way {
-            assert!(h.rt.timer_pending(), "looked at again: {:?}", h.sup.journal());
+            assert!(
+                h.rt.timer_pending(),
+                "looked at again: {:?}",
+                h.sup.journal()
+            );
             Autopilot::cancel_timer(&h.rt).await;
             assert_eq!(landing_waits(&h), 1, "{:?}", h.sup.journal());
             provisional(&h, &before).await;

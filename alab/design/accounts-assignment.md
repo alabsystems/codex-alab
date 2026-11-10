@@ -83,6 +83,7 @@ bounded to 16 KiB and has exactly:
 | `source_grant`, `target_grant` | Private immutable grant-binding hashes, never refresh-token hashes |
 | `source_provider`, `target_provider` | Validated OAuth authority bindings described below |
 | `source_fedramp`, `target_fedramp` | Actual source/destination realm booleans |
+| `target_refresh_endpoint` | Exact validated native refresh endpoint, for checking each manager's effective override |
 
 The four grant/provider bindings, principal hashes, pool revision and target
 reference are lowercase 64-character hex. Assignment is canonical decimal and
@@ -90,6 +91,12 @@ realms are JSON booleans. Unknown, duplicate or missing fields are refused.
 The SDK matches the immutable prepared operation and checks every registered
 manager's actual login-mode and effective workspace constraints. Account labels,
 email addresses and public readiness are not policy evidence.
+
+The SDK pins this read to the native instance epoch captured by the actual
+prepared-operation channel. A replacement native instance cannot satisfy the
+preview with an otherwise matching operation. The private result retains the
+pool revision, expected assignment (including truthful startup zero), and
+target reference; it does not install a host or authorize credential loading.
 
 A provider binding is SHA-256 over the UTF-8 domain
 `aterm/codex-assignment-provider/v1` followed by a zero byte, then the validated

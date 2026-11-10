@@ -82,7 +82,7 @@ impl InputMetadata {
         turn: &str,
         mut input: Vec<TurnInput>,
     ) -> Result<Prepared, String> {
-        if self.version != 3 || self.thread != thread || self.turn != turn {
+        if self.version != 4 || self.thread != thread || self.turn != turn {
             return Err("accepted input belongs to another runtime or turn".into());
         }
         if self.turn_count > input.len()
@@ -170,7 +170,7 @@ pub(super) async fn capture(
     );
     Ok((
         InputMetadata {
-            version: 3,
+            version: 4,
             thread: session.thread_id,
             turn: turn.into(),
             turn_count,
@@ -385,14 +385,13 @@ mod tests {
     use crate::agent_communication::ExecPublication;
     use crate::agent_communication::MessageDelivery;
     use codex_protocol::AgentPath;
-    use codex_protocol::ResponseItemId;
     use codex_protocol::protocol::InterAgentCommunication;
 
     fn metadata(thread: ThreadId, turn: &str, tools: u64) -> InputMetadata {
         let mut accounting = TurnAccounting::default().capture().unwrap();
         accounting.tool_calls = tools;
         InputMetadata {
-            version: 3,
+            version: 4,
             thread,
             turn: turn.into(),
             turn_count: 1,
@@ -407,7 +406,7 @@ mod tests {
     fn fixture() -> (ExecInputBatch, ThreadId, ThreadId) {
         let root = ThreadId::new();
         let child = ThreadId::new();
-        let delivery = MessageDelivery::publish(root, ResponseItemId::new("shared"), &[]);
+        let delivery = MessageDelivery::publish(root, &[]);
         let mail = TurnInput::InterAgentCommunication(crate::PendingAgentMessage::new(
             InterAgentCommunication::new(
                 AgentPath::root(),

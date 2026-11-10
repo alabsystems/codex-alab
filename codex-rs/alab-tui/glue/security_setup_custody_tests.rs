@@ -3,11 +3,9 @@
 
 //! Real prefetch and App admission against gated HTTP and an isolated notice service.
 
-use crate::app::tests::disconnect::serve_reconnect_requests;
 use crate::app::tests::make_test_app_with_channels;
 use crate::app_event::AppEvent;
 use crate::app_server_session::AppServerSession;
-use crate::app_server_session::ThreadParamsMode;
 use crate::security_setup::Identity;
 use crate::security_setup::alab_notices::Delivery;
 use crate::security_setup::alab_notices::Fetched;
@@ -42,7 +40,6 @@ use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
 
 type Result<T> = color_eyre::eyre::Result<T>;
 
@@ -111,18 +108,49 @@ async fn bounded<T>(future: impl Future<Output = T>) -> T {
 }
 
 async fn request(listener: &TcpListener) -> Result<TcpStream> {
-    let (stream, _) = listener.accept().await?;
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).await?;
-    assert!(line.starts_with("GET /wham/security-setup "));
     loop {
-        line.clear();
-        if reader.read_line(&mut line).await? == 0 || line == "\r\n" {
-            break;
+        let (stream, _) = listener.accept().await?;
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await?;
+        let plugins = line.starts_with("GET /ps/plugins/installed?");
+        let accounts = line.starts_with("GET /api/codex/accounts/check ");
+        assert!(
+            plugins || accounts || line.starts_with("GET /wham/security-setup "),
+            "unexpected fixture request: {line:?}"
+        );
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).await? == 0 || line == "\r\n" {
+                break;
+            }
+        }
+        let stream = reader.into_inner();
+        if plugins {
+            // The real embedded server also reads its startup plugin inventory.
+            // Keep that independent of the reminder's response/order gate.
+            response(
+                stream,
+                200,
+                json!({
+                    "plugins": [], "pagination": {"next_page_token": null}
+                }),
+            )
+            .await?;
+        } else if accounts {
+            // No workspace routing override in this isolated synthetic service.
+            response(
+                stream,
+                200,
+                json!({
+                    "accounts": [], "default_account_id": null
+                }),
+            )
+            .await?;
+        } else {
+            return Ok(stream);
         }
     }
-    Ok(reader.into_inner())
 }
 
 async fn response(mut stream: TcpStream, status: u16, body: serde_json::Value) -> Result<()> {
@@ -145,26 +173,24 @@ fn notice() -> RoutedNotice {
     }
 }
 
-async fn auth_server() -> Result<(AppServerSession, JoinHandle<Result<Vec<String>>>)> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let endpoint = crate::resolve_remote_addr(&format!("ws://{}", listener.local_addr()?))?;
-    let task = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await?;
-        serve_reconnect_requests(tokio_tungstenite::accept_async(stream).await?, |request| {
-            assert_eq!(request.method, "getAuthStatus");
-            std::future::ready(Some(json!({"result": {
-                "authMethod": "chatgpt", "authToken": "fixture-token",
-                "requiresOpenaiAuth": true
-            }})))
-        })
-        .await
-    });
-    let server = AppServerSession::new(
-        crate::backend_id::BackendId::new(),
-        crate::connect_remote_app_server(endpoint).await?,
-        ThreadParamsMode::Embedded,
-    );
-    Ok((server, task))
+async fn auth_server(config: &crate::legacy_core::config::Config) -> Result<AppServerSession> {
+    // Reminder HTTP now belongs to app-server. Exercise its real account handler,
+    // keeping the loopback response gates and the App settlement guards intact.
+    // The handler reloads user configuration, so persist the synthetic service
+    // route rather than relying on a field changed only in the startup snapshot.
+    let path = config.codex_home.join("config.toml");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut document = contents.parse::<toml_edit::DocumentMut>()?;
+    document["chatgpt_base_url"] = toml_edit::value(config.chatgpt_base_url.clone());
+    document["cli_auth_credentials_store"] = toml_edit::value("file");
+    std::fs::write(path, document.to_string())?;
+    let mut config = config.clone();
+    config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
+    Box::pin(crate::start_embedded_app_server_for_picker(&config)).await
 }
 
 #[tokio::test]
@@ -227,7 +253,7 @@ async fn old_empty_fetch_cannot_settle_a_newer_accepted_notice() -> Result<()> {
             old.await??;
             Result::Ok(())
         });
-        let (mut server, daemon) = auth_server().await?;
+        let mut server = auth_server(&app.config).await?;
         let mut tui = crate::tui::test_support::make_test_tui()?;
         let old = crate::security_setup::prefetch_using(
             &app.config,
@@ -267,7 +293,6 @@ async fn old_empty_fetch_cannot_settle_a_newer_accepted_notice() -> Result<()> {
             .request_lines(&format!("messages live need=later tag={TAG}"))
             .await?;
         server.shutdown().await?;
-        daemon.await??;
         transport.client.close();
         assert_eq!(*routed_events.borrow(), 1);
         assert!(live.lines.iter().any(|line| {
@@ -287,6 +312,7 @@ enum EmptyCase {
     Refused,
     TimedOut,
     InitiallyAbsent,
+    ForeignServer,
 }
 
 #[tokio::test]
@@ -317,6 +343,12 @@ async fn a_timed_out_fetch_preserves_the_notice() -> Result<()> {
 #[tokio::test]
 async fn an_empty_fetch_without_an_observed_entry_cannot_settle_a_new_one() -> Result<()> {
     empty_fetch(EmptyCase::InitiallyAbsent).await
+}
+
+#[tokio::test]
+async fn another_servers_successful_empty_fetch_cannot_settle_the_observed_identity() -> Result<()>
+{
+    empty_fetch(EmptyCase::ForeignServer).await
 }
 
 async fn empty_fetch(case: EmptyCase) -> Result<()> {
@@ -373,7 +405,23 @@ async fn empty_fetch(case: EmptyCase) -> Result<()> {
             }
             result
         });
-        let (mut server, daemon) = auth_server().await?;
+        let foreign_home = matches!(case, EmptyCase::ForeignServer)
+            .then(tempfile::tempdir)
+            .transpose()?;
+        let mut server_config = app.config.clone();
+        if let Some(home) = foreign_home.as_ref() {
+            server_config.codex_home =
+                codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(home.path())?;
+            write_chatgpt_auth(
+                &server_config.codex_home,
+                ChatGptAuthFixture::new("foreign-server-fixture-token")
+                    .account_id("other-fixture-account")
+                    .chatgpt_user_id("other-fixture-user"),
+                AuthCredentialsStoreMode::File,
+            )
+            .expect("write the independent server identity");
+        }
+        let mut server = auth_server(&server_config).await?;
         let mut tui = crate::tui::test_support::make_test_tui()?;
         let fetch = crate::security_setup::prefetch_using(
             &app.config,
@@ -416,13 +464,12 @@ async fn empty_fetch(case: EmptyCase) -> Result<()> {
                     .request_lines(&format!("messages live need=later tag={TAG}"))
                     .await?;
                 server.shutdown().await?;
-                daemon.await??;
                 transport.client.close();
                 assert_eq!(transport.settlements.load(Ordering::SeqCst), 0);
                 assert_eq!(live.lines.len(), 1);
                 return Ok(());
             }
-            EmptyCase::Current | EmptyCase::Refused => {}
+            EmptyCase::Current | EmptyCase::Refused | EmptyCase::ForeignServer => {}
         }
         release.send(()).unwrap();
         fetch.await?;
@@ -435,7 +482,6 @@ async fn empty_fetch(case: EmptyCase) -> Result<()> {
             .request_lines(&format!("messages live need=later tag={TAG}"))
             .await?;
         server.shutdown().await?;
-        daemon.await??;
         transport.client.close();
         let attempts = usize::from(matches!(case, EmptyCase::Current | EmptyCase::Restated));
         assert_eq!(transport.settlements.load(Ordering::SeqCst), attempts);
@@ -476,7 +522,7 @@ async fn app_awaits_settlement_and_rechecks_identity_for_queued_results() -> Res
         let identity = Identity { account: notice().account, user: notice().user };
         assert!(matches!(transport.client.notice_later(&later(&notice())).await?, LaterOutcome::Taken { .. }));
         let observed = transport.observe(identity.clone()).await.expect("open initial entry");
-        let (mut server, daemon) = auth_server().await?;
+        let mut server = auth_server(&app.config).await?;
         let mut tui = crate::tui::test_support::make_test_tui()?;
         let request_id = app.chat_widget.security_setup_request_id;
         let mut handling = Box::pin(app.handle_event(
@@ -524,7 +570,6 @@ async fn app_awaits_settlement_and_rechecks_identity_for_queued_results() -> Res
         }
         let live = transport.client.request_lines(&format!("messages live need=later tag={TAG}")).await?;
         server.shutdown().await?;
-        daemon.await??;
         transport.client.close();
         assert_eq!(transport.settlements.load(Ordering::SeqCst), 1);
         assert_eq!(*routed_events.borrow(), 1);

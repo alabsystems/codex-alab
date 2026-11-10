@@ -2,20 +2,11 @@
 //! The server owns eligibility, rollout and cutoff copy. Reads never block a turn;
 //! no reminder analytics are sent. Unknown or unavailable state produces no notice.
 
-use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::app_server_session::AppServerSession;
 use crate::legacy_core::config::Config;
-use codex_app_server_protocol::AuthMode;
-use codex_app_server_protocol::ClientRequest;
-use codex_app_server_protocol::GetAuthStatusParams;
-use codex_app_server_protocol::GetAuthStatusResponse;
-use codex_app_server_protocol::RequestId;
-use codex_http_client::ClientRouteClass;
-use codex_http_client::RouteAwareClientPool;
 use codex_login::CodexAuth;
 use serde::Deserialize;
-use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -31,10 +22,6 @@ pub(crate) struct Action {
     pub url: String,
 }
 
-#[derive(Deserialize)]
-struct Response {
-    notice: Option<Notice>,
-}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Identity {
     pub account: String,
@@ -77,101 +64,8 @@ pub(crate) fn prefetch(
     let _ = prefetch_using(config, server, tx, request_id, Default::default()); // ALAB(notices): keep reminder delivery scoped to its fetch
 }
 
-pub(crate) fn prefetch_using(
-    config: &Config,
-    server: &AppServerSession,
-    tx: AppEventSender,
-    request_id: Uuid,
-    delivery: alab_notices::Delivery,
-) -> Option<tokio::task::JoinHandle<()>> {
-    if config.model_provider_id != "openai" || server.uses_remote_workspace() {
-        return None;
-    }
-    let config = config.clone();
-    let request_handle = server.request_handle();
-    Some(tokio::spawn(async move {
-        let result = tokio::time::timeout(Duration::from_secs(3), async {
-            // Saved credentials must match the connected server, which may use external auth.
-            let status: GetAuthStatusResponse = request_handle
-                .request_typed(ClientRequest::GetAuthStatus {
-                    request_id: RequestId::String(Uuid::new_v4().to_string()),
-                    params: GetAuthStatusParams {
-                        include_token: Some(true),
-                        refresh_token: Some(false),
-                    },
-                })
-                .await
-                .ok()?;
-            let auth = config
-                .auth_config()
-                .load_auth(/*enable_codex_api_key_env*/ false)
-                .await
-                .ok()
-                .flatten()?;
-            if !matches!(auth, CodexAuth::Chatgpt(_)) || auth.is_fedramp_account() {
-                return None;
-            }
-            let saved_token = auth.get_token().ok()?;
-            if status.auth_method != Some(AuthMode::Chatgpt)
-                || status.auth_token.as_deref() != Some(saved_token.as_str())
-            {
-                return None;
-            }
-            let identity = Identity::from_auth(&auth)?;
-            let observed = delivery.observe(&identity).await; // ALAB(notices): settlement must name the entry and revision from before HTTP
-            let client = RouteAwareClientPool::new_without_redirects(
-                config.http_client_factory(),
-                ClientRouteClass::Api,
-            );
-            let response = client
-                .get(format!(
-                    "{}/wham/security-setup",
-                    config.chatgpt_base_url.trim_end_matches('/')
-                ))
-                .headers(
-                    codex_model_provider::auth_provider_from_auth(&auth)
-                        .to_auth_headers()
-                        .ok()?,
-                )
-                .header(
-                    "User-Agent",
-                    codex_login::default_client::get_codex_user_agent(),
-                )
-                .send()
-                .await
-                .ok()?;
-            if !response.status().is_success() {
-                return None;
-            }
-            let notice = response.json::<Response>().await.ok()?.notice;
-            if notice.as_ref().is_some_and(|notice| !notice.valid()) {
-                return None;
-            }
-            let current = config
-                .auth_config()
-                .load_auth(/*enable_codex_api_key_env*/ false)
-                .await
-                .ok()
-                .flatten()?;
-            if Identity::from_auth(&current).as_ref() != Some(&identity) {
-                tracing::debug!("security setup identity changed during fetch");
-                return None;
-            }
-            Some((identity, notice, observed))
-        })
-        .await
-        .ok()
-        .flatten();
-        if let Some((identity, notice, observed)) = result {
-            tracing::debug!("security setup response ready");
-            tx.send(AppEvent::SecuritySetupLoaded {
-                request_id,
-                identity,
-                notice: alab_notices::Fetched::new(notice, observed, delivery), // ALAB(notices): App's request guard admits all reminder mutations
-            });
-        }
-    }))
-}
+pub(crate) use alab_notices::prefetch_using; // ALAB(notices): observe and settle app-server results under App request custody.
+
 #[path = "../../alab-tui/glue/security_setup.rs"] pub(crate) mod alab_notices; // ALAB(notices): the account-security notice's routing lives in codex-rs/alab-tui
 
 #[cfg(test)]

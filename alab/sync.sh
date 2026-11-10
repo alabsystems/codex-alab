@@ -380,7 +380,7 @@ commit_sync_merge() {
 # The check failed. If it was the build (check.sh exit 2), build the pristine upstream
 # commit with the same toolchain: when that fails too, the fault is the toolchain's.
 check_failed() {
-  local rc="$1" target pristine scratch_home pristine_rc=0
+  local rc="$1" target pristine scratch_home pristine_rc=0 config config_args=() vendor_read=()
   target="$(cat "$(state_path target)" 2>/dev/null || true)"
   if [[ "${rc}" -eq 2 && -n "${target}" ]]; then
     pristine="$(alab_pristine "${wt}" "${target}")" || exit_with 4 "the pristine upstream revision could not be resolved"
@@ -390,15 +390,24 @@ pristine upstream ${target:0:9} could not be checked out at ${pristine} to tell 
 lane fault. Fix that, then alab/sync.sh --continue"
     # It builds and runs what check.sh step 2 does, so a binary that builds but cannot run
     # counts, in the pristine tree's own target dir (lib.sh, alab_pristine).
-    # Contained, as check.sh is (run_check).
+    # Contained, as check.sh is (run_check), and with the crates the merge's alab/vendor
+    # carries for the toolchain, as check.sh builds pristine upstream (lib.sh,
+    # alab_pristine_config): without them upstream alone does not build under Trust at all.
+    config="$(alab_pristine_config "${wt}")" || exit_with 4 "the toolchain sources ${wt}/alab/vendor carries could not be named"
+    if [[ -n "${config}" ]]; then
+      config_args=(--config "${config}")
+      vendor_read=(--read "${wt}/alab/vendor")
+    fi
     scratch_home="$(mktemp -d "${TMPDIR:-/tmp}/alab-pristine-home.XXXXXX")"
     alab_build_target_ready "${pristine}/codex-rs" "${pristine}/codex-rs/target" >/dev/null \
       || exit_with 4 "the pristine target could not be prepared; no build started"
     (cd "${pristine}/codex-rs" && export CARGO_TARGET_DIR="${pristine}/codex-rs/target" \
       CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CODEX_HOME="${scratch_home}" \
-      && alab_contained --pristine "${pristine}" --read "${alab_library_root}/alab" "${CARGO_TARGET_DIR}" "${scratch_home}" -- \
+      && alab_contained --pristine "${pristine}" --read "${alab_library_root}/alab" ${vendor_read[@]+"${vendor_read[@]}"} \
+        "${CARGO_TARGET_DIR}" "${scratch_home}" -- \
         /bin/bash -c '. "$1/alab/lib.sh"; shift; alab_build_command "$@"' \
-        alab-pristine-disk "${alab_library_root}" "${cargo}" --unverified run --quiet --locked -p codex-cli --bin codex -- --version) || pristine_rc=$?
+        alab-pristine-disk "${alab_library_root}" "${cargo}" --unverified run --quiet --locked \
+        ${config_args[@]+"${config_args[@]}"} -p codex-cli --bin codex -- --version) || pristine_rc=$?
     if [[ "${pristine_rc}" -ne 0 ]]; then
       rm -rf "${scratch_home:?}"
       [[ "${pristine_rc}" -ne 75 ]] || exit_with 75 "disk resource stop during pristine build: no compiler verdict; free room, then alab/sync.sh --continue"
@@ -460,12 +469,24 @@ then alab/sync.sh --continue"
   in_wt commit --quiet -m "alab(sync): merge main's concurrent commits"
 }
 
+sync_fetch() {
+  local tags=()
+  [[ "$1" != upstream ]] || tags+=('+refs/tags/rust-v*:refs/upstream-tags/rust-v*')
+  "${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${repo_root}/alab/github.py" --repo "${repo_root}" \
+    fetch "$1" "refs/heads/main:refs/remotes/$1/main" ${tags[@]+"${tags[@]}"}
+}
+
+sync_push() {
+  "${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${repo_root}/alab/github_push.py" \
+    --repo "${wt}" --expected "$1" origin
+}
+
 push_main() {
   local before report rc delay=1
   while :; do
     before="$(git rev-parse origin/main)"
     rc=0
-    report="$(LC_ALL=C in_wt push --porcelain origin HEAD:refs/heads/main)" || rc=$?
+    report="$(sync_push "${before}")" || rc=$?
     [[ -z "${report}" ]] || printf '%s\n' "${report}"
     [[ "${rc}" -ne 0 ]] || return 0
     # A remote hook, authentication failure or transport error is not evidence of a race,
@@ -475,7 +496,7 @@ push_main() {
       END { exit !race }' <<<"${report}"; then
       alab_die "push refused (above), not a proven concurrent update of main"
     fi
-    git fetch --quiet origin || alab_die "fetching origin after the push race failed (above)"
+    sync_fetch origin || alab_die "fetching origin after the push race failed (above)"
     [[ "$(git rev-parse origin/main)" != "${before}" ]] \
       || alab_die "push refused (above), but origin/main did not advance"
     git merge-base --is-ancestor "${before}" origin/main \
@@ -576,7 +597,7 @@ the fix or discard it, then alab/sync.sh --continue"
   fi
   before="$(git rev-parse --short origin/main)"
   push_main
-  git fetch --quiet origin
+  sync_fetch origin
   rm -f "$(state_path target)" "$(state_path stop)"
   # A main nobody has checked out follows along; a checked-out main is its owner's to pull.
   if git worktree list --porcelain | has_line '^branch refs/heads/main$'; then
@@ -747,10 +768,10 @@ esac
 
 # mode=start
 take_lock
-git fetch --quiet upstream || alab_die "fetching upstream failed (above). If git rejected a \
+sync_fetch upstream || alab_die "fetching upstream failed (above). If git rejected a \
 non-fast-forward update of upstream/main, upstream rewrote its history: a person decides how \
 ALab's layer moves onto it (alab/README.md, 'If upstream rewrites history')"
-git fetch --quiet origin
+sync_fetch origin
 git rev-parse -q --verify origin/main >/dev/null || alab_die "origin has no main branch to sync"
 target="$(git rev-parse --verify "${ref}^{commit}")" || alab_die "no such upstream revision '${ref}'"
 # A release tag is cut off upstream main (version bump, cherry-picks): merged here, its

@@ -18,8 +18,8 @@ use codex_alab_aterm::Client;
 
 use crate::login::KIND;
 use crate::login::WHY;
-use crate::waiting::clear_stale;
 use crate::login::during_with;
+use crate::waiting::clear_stale;
 
 async fn fake() -> (tempfile::TempDir, FakeAterm) {
     let dir = tempfile::tempdir().expect("scratch dir");

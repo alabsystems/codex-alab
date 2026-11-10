@@ -1886,6 +1886,64 @@ fn no_rules_stand_where_aterm_sends_its_act_texts_bare() {
     );
 }
 
+/// LAND'S QUESTION TEXT IS aterm'S OWN KEY, AND NO ACT TEXT (aterm's `harness policy` sends
+/// `land_question_text` bare, after its act texts): a reply that carries it gives the question
+/// box's Land text its words; one without it, codex-alab's copy. A reply that carries it and no
+/// act text still leaves an owner's `continue_text` the one copy of the standing rules an answer
+/// types, as an older aterm's reply does. MUTANTS: the key read as `land_answer_text`, and the key
+/// counted among the act texts (`Texts::from_aterm`), which drops those rules.
+#[test]
+fn land_question_text_is_aterms_own_key_and_no_act_text() {
+    let t = Timing::default();
+    let now = Instant::now();
+    let reply = |more: &str| {
+        let line = format!(
+            "OK gen=1 effective=on why=enabled continue=true \
+             continue_text=Keep%20going%20(standing%20rules:%20commit%20often) \
+             answer_questions=true questions=recommended answer_text=Pick%20one. \
+             retry_api_errors=true continue_per_hour=0{more}"
+        );
+        match codex_alab_aterm::policy::PolicyAnswer::parse(&line) {
+            codex_alab_aterm::policy::PolicyAnswer::Supported(reply) => {
+                Policy::from_harness(&reply)
+            }
+            other => panic!("a supported reply: {other:?}"),
+        }
+    };
+    let sent = reply(
+        " done_check_text=DEFEND%20IT land_text=LAND%20IT land_nudge_text=NUDGE%20IT \
+         land_answer_text=ANSWER%20IT land_question_text=LAND%20QUESTION",
+    );
+    assert_eq!(sent.texts.land_question, "LAND QUESTION");
+    assert_eq!(sent.texts.land_answer, "ANSWER IT");
+    let older = reply("");
+    assert_eq!(older.texts.land_question, words::LAND_QUESTION_TEXT);
+
+    let alone = reply(" land_question_text=LAND%20QUESTION");
+    assert_eq!(alone.texts.land_question, "LAND QUESTION");
+    let mut asked = ThreadState::default();
+    asked.observe_turn_end(
+        end(
+            now,
+            "Should I use the parser in src/a.rs or write a new one?",
+            5 * MIN,
+        ),
+        &t,
+    );
+    let answer = |p: &Policy| {
+        typed(&decide(&asked, p, &t, now, NO_JITTER))
+            .map(|(_, text)| text.to_string())
+            .unwrap_or_else(|| panic!("an answer"))
+    };
+    let ruled = format!(
+        "{} (standing rules: commit often)",
+        act_words("Pick one.", &[NEEDS_HINT])
+    );
+    assert_eq!(answer(&alone), ruled);
+    // The control: the same rules under an older aterm's reply.
+    assert_eq!(answer(&older), ruled);
+}
+
 /// CRUISE'S DONE CHECK ASKS aterm'S SIX KINDS OF WORK IN TURN (aterm's `done_check_words(n)`,
 /// `TurnEndState::checks`): where the `harness policy` reply sends `done_check_angles` beside its
 /// first angle's act, each done claim typed gets the next angle, the seventh the first again,

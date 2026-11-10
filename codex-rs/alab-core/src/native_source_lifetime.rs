@@ -18,6 +18,11 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+#[path = "native_source_preload.rs"]
+mod preload_actor;
+pub use preload_actor::ReboundPreparation;
+pub use preload_actor::ReboundReady;
+
 #[derive(Clone, PartialEq, Eq)]
 struct Scope {
     slot: String,
@@ -48,44 +53,54 @@ enum Kind {
 struct State {
     registration: Option<String>,
     preload_operation: Option<String>,
-    attempted_preload_operation: Option<String>,
+    attempted_preload: Option<crate::native_preload::Body>,
+    flight: Option<Arc<preload_actor::Flight>>,
     snapshot: Option<(crate::managed_auth::Revision, Generations)>,
     kind: Option<Kind>,
     reader: bool,
     preloaded: Option<crate::managed_auth::Revision>,
-    preload_use: Option<crate::native_source_use::ParentUseLease>,
+    seal_occurrence: Arc<()>,
 }
 struct Inner {
     allocation: Allocation,
     state: Mutex<State>,
     ready: AtomicBool,
+    ready_work: std::sync::atomic::AtomicU64,
     active: AtomicBool,
     domain: std::sync::OnceLock<Arc<crate::assignment::Domain>>,
     changed: tokio::sync::Notify,
+    retiring: AtomicBool,
+    retirement: crate::native_reader_retirement::Owner,
+    preload_order: crate::native_preload::Order,
+    // Serial admission stays owned by the spawned PRELOAD actor through completion.
+    preload_creation: tokio::sync::Semaphore,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
-        // This is the LAST storage/snapshot/body/WS lease, not merely a Weak manager.
-        // Without a runtime, EOF remains Unknown; it never impersonates retirement.
-        if tokio::runtime::Handle::try_current().is_err() {
-            return;
-        }
+        // Last actual storage/snapshot/body ownership captures immutable cleanup.
+        // An observer retains metadata, not this Lifetime or an activity lease.
         let (attempt, registration) = match self.state.get_mut() {
             Ok(state) => (
-                state.attempted_preload_operation.clone(),
-                if state.attempted_preload_operation == state.preload_operation {
+                state.flight.as_ref().map(|flight| flight.attempt.clone()),
+                if state
+                    .attempted_preload
+                    .as_ref()
+                    .map(|attempt| &attempt.operation)
+                    == state.preload_operation.as_ref()
+                {
                     state.registration.clone()
                 } else {
                     None
                 },
             ),
-            Err(_) => return,
+            Err(_) => {
+                self.retirement.fail();
+                return;
+            }
         };
-        let _ = crate::native_source_retirement::start(
-            Arc::clone(&self.allocation.member),
-            attempt,
-            registration,
-        );
+        if self.retirement.capture(attempt, registration).is_err() {
+            self.retirement.fail();
+        }
     }
 }
 
@@ -102,8 +117,16 @@ impl std::fmt::Debug for Lifetime {
 #[derive(Clone)]
 pub struct MemberIncarnation(std::sync::Weak<Inner>);
 impl MemberIncarnation {
+    /// Liveness metadata only, never a Ready or source-use permission.
+    pub fn live(&self) -> bool {
+        self.upgrade().is_some_and(|member| member.live())
+    }
     pub(crate) fn upgrade(&self) -> Option<Lifetime> {
         self.0.upgrade().map(Lifetime)
+    }
+    pub fn reader_still_loaded(&self, loaded: &ReaderLoaded) -> bool {
+        self.upgrade()
+            .is_some_and(|member| member.reader_still_loaded(loaded))
     }
 }
 impl PartialEq for MemberIncarnation {
@@ -117,25 +140,139 @@ impl std::fmt::Debug for MemberIncarnation {
         f.write_str("NativeMemberIncarnation(<private>)")
     }
 }
+/// Exact loaded direct-reader observation, not manager AuthChangeState or a use lease.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ReaderLoaded {
+    member: MemberIncarnation,
+    registration: String,
+    kind: ReaderKind,
+}
+#[derive(Clone, PartialEq, Eq)]
+enum ReaderKind {
+    Managed {
+        scope: Scope,
+        revision: crate::managed_auth::Revision,
+        operation: String,
+    },
+    Unrelated(NoNativeReader),
+}
+impl ReaderLoaded {
+    pub fn no_native_reader(&self) -> Option<NoNativeReader> {
+        match &self.kind {
+            ReaderKind::Unrelated(kind) => Some(*kind),
+            ReaderKind::Managed { .. } => None,
+        }
+    }
+}
 impl Lifetime {
     pub fn new(allocation: Allocation) -> io::Result<Self> {
         if !crate::managed_auth::valid_hex(&allocation.operation, 32)
             || !crate::managed_auth::valid_hex(allocation.member.id(), 32)
             || !allocation.member.live()
         {
+            if allocation.target.is_some() {
+                crate::native_target::retire_unused(allocation);
+            }
             return Err(unavailable());
         }
-        Ok(Self(Arc::new(Inner {
+        let retirement = match allocation.target.as_ref() {
+            Some(destination) => crate::native_reader_retirement::Owner::with_target(
+                allocation.member.clone(),
+                destination.clone(),
+                allocation.operation.clone(),
+            ),
+            None => crate::native_reader_retirement::Owner::new(allocation.member.clone()),
+        };
+        let member = Self(Arc::new(Inner {
             allocation,
             state: Mutex::default(),
             ready: AtomicBool::new(false),
+            ready_work: std::sync::atomic::AtomicU64::new(0),
             active: AtomicBool::new(false),
             domain: std::sync::OnceLock::new(),
             changed: tokio::sync::Notify::new(),
-        })))
+            retiring: AtomicBool::new(false),
+            retirement,
+            preload_order: Default::default(),
+            preload_creation: tokio::sync::Semaphore::new(1),
+        }));
+        crate::native_source_launch::destination_member_created(&member)?;
+        Ok(member)
+    }
+    pub(crate) fn constructor_operation(&self) -> &str {
+        &self.0.allocation.operation
+    }
+    pub(crate) fn target_role(&self) -> Option<Arc<dyn crate::native_target::Destination>> {
+        self.0.allocation.target.as_ref().map(Arc::clone)
     }
     pub fn incarnation(&self) -> MemberIncarnation {
         MemberIncarnation(Arc::downgrade(&self.0))
+    }
+    pub fn reader_loaded(&self) -> io::Result<ReaderLoaded> {
+        let state = self.0.state.lock().map_err(|_| unavailable())?;
+        if !self.ready() {
+            return Err(unavailable());
+        }
+        let registration = state.registration.clone().ok_or_else(unavailable)?;
+        let kind = match (&state.kind, state.reader) {
+            (Some(Kind::Managed(scope)), true) => ReaderKind::Managed {
+                scope: scope.clone(),
+                revision: state.preloaded.clone().ok_or_else(unavailable)?,
+                operation: state.preload_operation.clone().ok_or_else(unavailable)?,
+            },
+            (Some(Kind::Unrelated(kind)), false) => ReaderKind::Unrelated(*kind),
+            _ => return Err(unavailable()),
+        };
+        Ok(ReaderLoaded {
+            member: self.incarnation(),
+            registration,
+            kind,
+        })
+    }
+    pub fn reader_still_loaded(&self, loaded: &ReaderLoaded) -> bool {
+        self.reader_loaded().is_ok_and(|current| current == *loaded)
+    }
+    pub async fn reader_changed(&self, loaded: &ReaderLoaded) {
+        loop {
+            let changed = self.0.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if !self.reader_still_loaded(loaded) {
+                return;
+            }
+            tokio::select! { _ = changed => {}, _ = self.0.allocation.member.closed() => return }
+        }
+    }
+    /// Negative debug fault on this exact retained member. It neither retries
+    /// a connection nor changes Ready/retirement/native-use observations.
+    #[cfg(debug_assertions)]
+    pub fn debug_close_work(&self) -> io::Result<()> {
+        self.0.allocation.member.debug_close_work()
+    }
+    pub fn retirement_observer(&self) -> crate::native_reader_retirement::Observer {
+        self.0.retirement.observer(self.incarnation())
+    }
+    pub(crate) fn retire_reader(&self) -> io::Result<crate::native_reader_retirement::Observer> {
+        self.0.retiring.store(true, Ordering::Release);
+        self.seal();
+        let state = self.0.state.lock().map_err(|_| unavailable())?;
+        self.0.retirement.capture(
+            state.flight.as_ref().map(|flight| flight.attempt.clone()),
+            if state
+                .attempted_preload
+                .as_ref()
+                .map(|attempt| &attempt.operation)
+                == state.preload_operation.as_ref()
+            {
+                state.registration.clone()
+            } else {
+                None
+            },
+        )?;
+        Ok(self.retirement_observer())
+    }
+    pub fn domain(&self) -> Option<Arc<crate::assignment::Domain>> {
+        self.0.domain.get().cloned()
     }
     pub fn member(&self) -> &str {
         self.0.allocation.member.id()
@@ -147,7 +284,11 @@ impl Lifetime {
     /// Scope admission only. A new credential-consuming request also needs the exact
     /// current read snapshot through source_use(); this is not a fresh-Ready proof.
     pub fn ready(&self) -> bool {
-        self.live() && self.0.ready.load(Ordering::Acquire)
+        self.live()
+            && !self.0.retiring.load(Ordering::Acquire)
+            && self.0.ready.load(Ordering::Acquire)
+            && self.0.ready_work.load(Ordering::Acquire)
+                == self.0.allocation.member.work_incarnation()
     }
     pub fn unrelated_kind(&self) -> io::Result<Option<NoNativeReader>> {
         let state = self.0.state.lock().map_err(|_| unavailable())?;
@@ -158,8 +299,17 @@ impl Lifetime {
     }
     /// Stop new credential extraction and derived admissions without deleting storage.
     pub fn seal(&self) {
-        self.0.ready.store(false, Ordering::Release);
-        self.0.active.store(false, Ordering::Release);
+        // Serialize revocation with retained-Ready recovery publication. Poison
+        // still closes access and prevents any subsequent recovery commit.
+        let state = self.0.state.lock();
+        if let Ok(mut state) = state {
+            state.seal_occurrence = Arc::new(());
+            self.0.ready.store(false, Ordering::Release);
+            self.0.active.store(false, Ordering::Release);
+        } else {
+            self.0.ready.store(false, Ordering::Release);
+            self.0.active.store(false, Ordering::Release);
+        }
         self.0.changed.notify_waiters();
     }
     pub fn attach_domain(&self, domain: Arc<crate::assignment::Domain>) -> io::Result<()> {
@@ -237,94 +387,67 @@ impl Lifetime {
     }
 
     pub async fn preload(&self, operation: &str, borrow: Option<&Borrow>) -> io::Result<Preload> {
-        if !self.live() {
-            return Err(unavailable());
-        }
-        // Capture actual admitted work before contextual preload resets descriptive Ready.
-        let parent_use = if self.ready() && borrow.is_none() {
-            match crate::assignment::current_activity() {
-                Some(activity) => activity.native_use_for(self)?,
-                None => None,
-            }
-        } else {
-            let pending = self
-                .0
-                .state
-                .lock()
-                .map_err(|_| unavailable())?
-                .preload_use
-                .clone();
-            match (pending, self.0.allocation.parent_use.as_ref()) {
-                (Some(parent), _) => Some(parent),
-                (None, Some(parent)) => Some(parent.upgrade().ok_or_else(unavailable)?),
-                (None, None) => None,
-            }
-        };
-        let receipt = match parent_use.as_ref() {
-            Some(parent) => Some(parent.ready().await?),
-            None => None,
-        };
-        if !crate::managed_auth::valid_hex(operation, 32) {
-            return Err(unavailable());
-        }
-        self.0.ready.store(false, Ordering::Release);
-        // Save BEFORE first send: a lost acknowledgement cannot reuse the previous registration.
-        self.0
-            .state
-            .lock()
-            .map_err(|_| unavailable())?
-            .attempted_preload_operation = Some(operation.to_owned());
-        let preload = match receipt.as_ref() {
-            Some(receipt) => {
-                self.0
-                    .allocation
-                    .member
-                    .preload_use(operation, receipt)
-                    .await?
-            }
-            None => self.0.allocation.member.preload(operation, borrow).await?,
-        };
-        preload.validate(operation)?;
-        let kind = Kind::Managed(Scope::from(&preload.source));
-        let mut state = self.0.state.lock().map_err(|_| unavailable())?;
-        if state.attempted_preload_operation.as_deref() != Some(operation) {
-            return Err(unavailable());
-        }
-        if state
-            .kind
-            .as_ref()
-            .is_some_and(|previous| previous != &kind)
-            || !self.live()
-        {
-            return Err(unavailable());
-        }
-        if state.preloaded.as_ref().is_some_and(|previous| {
-            preload.source.revision.generation < previous.generation
-                || (preload.source.revision.generation == previous.generation
-                    && preload.source.revision.digest != previous.digest)
-        }) {
-            return Err(unavailable());
-        }
-        state.snapshot = None;
-        state.preloaded = Some(preload.source.revision.clone());
-        state.kind = Some(kind);
-        state.registration = Some(preload.registration.clone());
-        state.preload_operation = Some(operation.to_owned());
-        state.preload_use = parent_use;
-        Ok(preload)
+        preload_actor::observe(self, operation, borrow).await
+    }
+    /// Explicit constructor-owned source-only rebound; no HTTP use is minted.
+    pub async fn rebound_preload(&self, operation: &str) -> io::Result<Preload> {
+        preload_actor::observe_rebound(self, operation).await
+    }
+    pub async fn prepare_loaded_ready(
+        &self,
+        source: &Source,
+        generations: &Generations,
+    ) -> io::Result<ReboundPreparation> {
+        preload_actor::prepare_loaded_ready(self, source, generations).await
+    }
+    /// Repair the exact pending observation, retaining its original operation,
+    /// sequence and source role. This is not a new scope or a refresh grant.
+    pub async fn resample_preload(
+        &self,
+        previous: crate::native_preload::Predecessor,
+    ) -> io::Result<crate::native_preload::Resample> {
+        preload_actor::resample(self, previous).await
     }
     /// Storage may read after authenticated preload while the native constructor gate
     /// remains held. A derived request must additionally require ready().
+    /// Replay only the retained actual report. A committed hint is not an ACK.
+    pub async fn resume_preload_completion(&self) -> io::Result<()> {
+        preload_actor::resume_completion(self).await
+    }
+    pub async fn resume_source_ready(
+        &self,
+        source: &Source,
+        generations: &Generations,
+    ) -> io::Result<()> {
+        preload_actor::resume_source_completion(self, source, generations).await
+    }
+    /// Rebind only a previously published exact manager snapshot. Native ACK
+    /// precedes the caller's separately guarded synchronous cache validation.
+    pub async fn prepare_rebound_ready(
+        &self,
+        source: &Source,
+        generations: &Generations,
+    ) -> io::Result<ReboundPreparation> {
+        preload_actor::prepare_rebound_ready(self, source, generations).await
+    }
+    /// Actual frozen completion metadata, not a native Ready acknowledgment.
+    pub fn retained_preload_completion(&self) -> io::Result<Option<Loaded>> {
+        preload_actor::retained_completion(self)
+    }
     pub fn permits_storage(&self, source: &Source) -> io::Result<()> {
         source.validate()?;
         let state = self.0.state.lock().map_err(|_| unavailable())?;
-        if !self.live() || state.kind.as_ref() != Some(&Kind::Managed(Scope::from(source))) {
+        if self.0.retiring.load(Ordering::Acquire)
+            || !self.live()
+            || state.kind.as_ref() != Some(&Kind::Managed(Scope::from(source)))
+        {
             return Err(unavailable());
         }
         Ok(())
     }
     pub fn permits_revision(&self, revision: &crate::managed_auth::Revision) -> io::Result<()> {
-        if !self.live()
+        if self.0.retiring.load(Ordering::Acquire)
+            || !self.live()
             || self
                 .0
                 .state
@@ -343,31 +466,21 @@ impl Lifetime {
         operation: &str,
         registration: &str,
         loaded: &Loaded,
-    ) -> io::Result<crate::native_source::ReadyReceipt> {
-        let parent = self
+    ) -> io::Result<()> {
+        let flight = self
             .0
             .state
             .lock()
             .map_err(|_| unavailable())?
-            .preload_use
-            .clone();
-        match parent {
-            Some(parent) => {
-                let receipt = parent.ready().await?;
-                self.0
-                    .allocation
-                    .member
-                    .ready_use(operation, registration, loaded, &receipt)
-                    .await
-            }
-            None => {
-                self.0
-                    .allocation
-                    .member
-                    .ready(operation, Some(registration), loaded)
-                    .await
-            }
+            .flight
+            .clone()
+            .ok_or_else(unavailable)?;
+        if flight.body().operation != operation {
+            return Err(unavailable());
         }
+        flight
+            .complete(Arc::downgrade(&self.0), registration.into(), loaded.clone())
+            .await
     }
     /// Registered refresh always uses actual admitted native work. There is no
     /// legacy refresh fallback when this member exists.
@@ -376,20 +489,19 @@ impl Lifetime {
         slot: &str,
         digest: &str,
     ) -> io::Result<crate::managed_auth::Revision> {
-        let pending = {
+        {
             let state = self.0.state.lock().map_err(|_| unavailable())?;
-            if !matches!(state.kind.as_ref(), Some(Kind::Managed(scope)) if scope.slot == slot) {
+            if state.reader
+                || !matches!(state.kind.as_ref(), Some(Kind::Managed(scope)) if scope.slot == slot)
+            {
                 return Err(unavailable());
             }
-            state.preload_use.clone()
-        };
-        let parent = match pending {
-            Some(parent) => parent,
-            None => crate::assignment::current_activity()
-                .ok_or_else(unavailable)?
-                .native_use_for(self)?
-                .ok_or_else(unavailable)?,
-        };
+        }
+        // Captured PRELOAD completion is not new HTTP/refresh permission.
+        let parent = crate::assignment::current_activity()
+            .ok_or_else(unavailable)?
+            .native_use_for(self)?
+            .ok_or_else(unavailable)?;
         let receipt = parent.ready().await?;
         let host = MemberRefresh {
             member: Arc::clone(&self.0.allocation.member),
@@ -413,32 +525,17 @@ impl Lifetime {
                 state.preload_operation.clone().ok_or_else(unavailable)?,
             )
         };
-        let receipt = self
-            .complete_preload(
-                &operation,
-                &registration,
-                &Loaded::Source {
-                    source: Box::new(source.clone()),
-                    generations: generations.clone(),
-                },
-            )
-            .await?;
-        receipt.validate(Some(&registration))?;
-        self.permits_storage(source)?;
-        let mut state = self.0.state.lock().map_err(|_| unavailable())?;
-        if state.registration.as_deref() != Some(&registration)
-            || state.preload_operation.as_deref() != Some(&operation)
-            || state.preloaded.as_ref() != Some(&source.revision)
-        {
-            return Err(unavailable());
-        }
-        state.snapshot = Some((source.revision.clone(), generations));
-        state.preload_use = None;
-        self.0.active.store(true, Ordering::Release);
-        self.0.ready.store(true, Ordering::Release);
-        Ok(())
+        self.complete_preload(
+            &operation,
+            &registration,
+            &Loaded::Source {
+                source: Box::new(source.clone()),
+                generations,
+            },
+        )
+        .await
     }
-    /// A direct reader owns real native source exclusion without fabricating manager counters.
+    /// Direct-reader completion uses no manager counters.
     pub async fn reader_ready(&self, source: &Source) -> io::Result<()> {
         self.permits_storage(source)?;
         let (registration, operation) = {
@@ -451,29 +548,14 @@ impl Lifetime {
                 state.preload_operation.clone().ok_or_else(unavailable)?,
             )
         };
-        let receipt = self
-            .complete_preload(
-                &operation,
-                &registration,
-                &Loaded::ReaderSource {
-                    source: Box::new(source.clone()),
-                },
-            )
-            .await?;
-        receipt.validate(Some(&registration))?;
-        self.permits_storage(source)?;
-        let mut state = self.0.state.lock().map_err(|_| unavailable())?;
-        if state.registration.as_deref() != Some(&registration)
-            || state.preload_operation.as_deref() != Some(&operation)
-            || state.preloaded.as_ref() != Some(&source.revision)
-        {
-            return Err(unavailable());
-        }
-        state.reader = true;
-        state.preload_use = None;
-        self.0.active.store(true, Ordering::Release);
-        self.0.ready.store(true, Ordering::Release);
-        Ok(())
+        self.complete_preload(
+            &operation,
+            &registration,
+            &Loaded::ReaderSource {
+                source: Box::new(source.clone()),
+            },
+        )
+        .await
     }
 
     /// Admit a new derived request using the actual current native/doc/AuthState
@@ -488,10 +570,37 @@ impl Lifetime {
         }
         Ok(SourceUse(self.clone()))
     }
+    /// Describe an actual destination Ready snapshot. This is not a resource
+    /// completion or ACK; the native endpoint independently checks this record.
+    pub fn target_report(
+        &self,
+        source: &Source,
+        generations: Generations,
+        boundary: &str,
+    ) -> io::Result<crate::native_target::ResourceReport> {
+        self.permits_storage(source)?;
+        let target = self.0.allocation.target.as_ref().ok_or_else(unavailable)?;
+        let state = self.0.state.lock().map_err(|_| unavailable())?;
+        if !self.ready()
+            || state.reader
+            || state.snapshot.as_ref() != Some(&(source.revision.clone(), generations.clone()))
+        {
+            return Err(unavailable());
+        }
+        crate::native_target::ResourceReport::from_loaded(
+            target.context(),
+            self.member().into(),
+            state.registration.clone().ok_or_else(unavailable)?,
+            boundary.into(),
+            source.clone(),
+            generations,
+        )
+    }
     pub async fn unrelated_ready(&self, kind: NoNativeReader) -> io::Result<()> {
         {
             let state = self.0.state.lock().map_err(|_| unavailable())?;
-            if !self.live()
+            if self.0.retiring.load(Ordering::Acquire)
+                || !self.live()
                 || state
                     .kind
                     .as_ref()
@@ -500,6 +609,8 @@ impl Lifetime {
                 return Err(unavailable());
             }
         }
+        self.0.allocation.member.reconcile_work().await?;
+        let work = self.0.allocation.member.work_incarnation();
         let receipt = self
             .0
             .allocation
@@ -511,8 +622,12 @@ impl Lifetime {
             )
             .await?;
         receipt.validate(None)?;
+        if work != self.0.allocation.member.work_incarnation() {
+            return Err(unavailable());
+        }
         let mut state = self.0.state.lock().map_err(|_| unavailable())?;
-        if !self.live()
+        if self.0.retiring.load(Ordering::Acquire)
+            || !self.live()
             || state
                 .kind
                 .as_ref()
@@ -523,6 +638,7 @@ impl Lifetime {
         state.kind = Some(Kind::Unrelated(kind));
         state.registration = Some(receipt.registration);
         self.0.active.store(true, Ordering::Release);
+        self.0.ready_work.store(work, Ordering::Release);
         self.0.ready.store(true, Ordering::Release);
         Ok(())
     }
@@ -551,13 +667,8 @@ impl Lifetime {
             .registration
             .clone()
             .ok_or_else(unavailable)?;
-        let receipt = self
-            .0
-            .allocation
-            .member
-            .ready(operation, Some(&registration), &Loaded::PolicyUnavailable)
-            .await?;
-        receipt.validate(Some(&registration))
+        self.complete_preload(operation, &registration, &Loaded::PolicyUnavailable)
+            .await
     }
 }
 
@@ -626,11 +737,31 @@ impl PartialEq for NetworkScope {
 }
 impl Eq for NetworkScope {}
 impl NetworkScope {
+    pub(crate) fn preserves_grant(&self) -> bool {
+        matches!(&self.identity, NetworkIdentity::Managed(..))
+    }
+    /// Retained exact native-admitted constructor linkage, not metadata equality.
+    pub(crate) fn derived_from_scope(&self, parent: &Self) -> bool {
+        self.lifetime.0.allocation.derived_parent.as_ref() == Some(&parent.lifetime.incarnation())
+            && matches!((&self.identity, &parent.identity),
+                (NetworkIdentity::Managed(actual, _), NetworkIdentity::Managed(expected, _)) if actual == expected)
+    }
+    pub(crate) fn belongs_to(&self, domain: &Arc<crate::assignment::Domain>) -> bool {
+        Arc::ptr_eq(&self.domain, domain)
+    }
+    pub(crate) fn member_is(&self, member: &Lifetime) -> bool {
+        self.lifetime.same(member)
+    }
     pub fn acquire(&self) -> io::Result<NetworkUse> {
-        let current = crate::assignment::current_activity();
+        self.acquire_for(crate::assignment::current_activity())
+    }
+    pub(crate) fn acquire_for(
+        &self,
+        current: Option<crate::assignment::Activity>,
+    ) -> io::Result<NetworkUse> {
         let resource = self
             .domain
-            .admit_current_resource()
+            .admit_resource(current.as_ref())
             .or_else(|error| match current.as_ref() {
                 Some(parent) => self
                     .domain
@@ -729,10 +860,12 @@ mod tests {
 
     struct Native {
         live: AtomicBool,
+        work: std::sync::atomic::AtomicU64,
         ready: Mutex<Vec<(String, Option<Generations>)>>,
         retired: AtomicUsize,
         retirements: Mutex<Vec<crate::native_source::Retirement>>,
         refreshes: Mutex<Vec<crate::managed_auth::Request>>,
+        preload_lost: tokio::sync::Notify,
         changed: tokio::sync::Notify,
         use_serial: Arc<tokio::sync::Semaphore>,
         use_next: std::sync::atomic::AtomicU64,
@@ -742,6 +875,9 @@ mod tests {
         end_blocked: AtomicBool,
         end_started: tokio::sync::Notify,
         end_release: tokio::sync::Notify,
+        retire_blocked: AtomicBool,
+        retire_started: tokio::sync::Notify,
+        retire_release: tokio::sync::Notify,
     }
     fn source() -> Source {
         Source {
@@ -759,15 +895,42 @@ mod tests {
         }
     }
     impl Member for Native {
+        fn rebound_ready_owned<'a>(
+            &'a self,
+            attempt: &'a crate::native_preload::Body,
+            registration: &'a str,
+            loaded: &'a Loaded,
+        ) -> crate::native_source::ReboundReadyFuture<'a> {
+            Box::pin(async move {
+                self.ready_owned(attempt, registration, loaded)
+                    .await
+                    .map(crate::native_source::ReboundReadyOutcome::Ready)
+            })
+        }
+        fn rebound_preload_owned<'a>(
+            &'a self,
+            attempt: &'a crate::native_preload::Body,
+        ) -> PreloadFuture<'a> {
+            self.preload_owned(attempt, None)
+        }
+        fn work_incarnation(&self) -> u64 {
+            self.work.load(Ordering::Acquire)
+        }
         fn id(&self) -> &str {
             "11111111111111111111111111111111"
         }
         fn live(&self) -> bool {
             self.live.load(Ordering::Acquire)
         }
-        fn preload<'a>(&'a self, operation: &'a str, _: Option<&'a Borrow>) -> PreloadFuture<'a> {
+        fn preload_owned<'a>(
+            &'a self,
+            attempt: &'a crate::native_preload::Body,
+            _: Option<&'a Borrow>,
+        ) -> PreloadFuture<'a> {
             Box::pin(async move {
+                let operation = attempt.operation.as_str();
                 if operation == "7".repeat(32) {
+                    self.preload_lost.notify_one();
                     return Err(std::io::ErrorKind::ConnectionReset.into());
                 }
                 let mut source = source();
@@ -785,26 +948,64 @@ mod tests {
                         "2".repeat(32)
                     },
                     source,
+                    sequence: attempt.sequence.clone(),
                 })
             })
         }
-        fn preload_use<'a>(
+        fn preload_owned_use<'a>(
             &'a self,
-            operation: &'a str,
+            attempt: &'a crate::native_preload::Body,
             receipt: &'a crate::native_source_use::UseReceipt,
         ) -> PreloadFuture<'a> {
             assert_eq!(receipt.member(), self.id());
-            self.preload(operation, None)
+            self.preload_owned(attempt, None)
         }
-        fn ready_use<'a>(
+        fn resample_owned_use<'a>(
             &'a self,
-            operation: &'a str,
+            attempt: &'a crate::native_preload::Body,
+            previous: &'a crate::native_preload::Predecessor,
+            receipt: &'a crate::native_source_use::UseReceipt,
+        ) -> crate::native_source::ResampleFuture<'a> {
+            Box::pin(async move {
+                assert_eq!(receipt.member(), self.id());
+                attempt.validate()?;
+                assert_eq!(previous.registration, "2".repeat(32));
+                assert_eq!(previous.revision, source().revision);
+                let mut fresh = source();
+                fresh.operation = attempt.operation.clone();
+                fresh.revision = Revision {
+                    generation: 10,
+                    digest: "9".repeat(64),
+                };
+                Ok(crate::native_preload::Resample::Preload(Preload {
+                    registration: "3".repeat(32),
+                    sequence: attempt.sequence.clone(),
+                    source: fresh,
+                }))
+            })
+        }
+        fn ready_owned<'a>(
+            &'a self,
+            attempt: &'a crate::native_preload::Body,
+            registration: &'a str,
+            loaded: &'a Loaded,
+        ) -> crate::native_source::OwnedReadyFuture<'a> {
+            Box::pin(async move {
+                let receipt = self
+                    .ready(&attempt.operation, Some(registration), loaded)
+                    .await?;
+                crate::native_preload::Ready::from_native(attempt.clone(), receipt.registration)
+            })
+        }
+        fn ready_owned_use<'a>(
+            &'a self,
+            attempt: &'a crate::native_preload::Body,
             registration: &'a str,
             loaded: &'a Loaded,
             receipt: &'a crate::native_source_use::UseReceipt,
-        ) -> ReadyFuture<'a> {
+        ) -> crate::native_source::OwnedReadyFuture<'a> {
             assert_eq!(receipt.member(), self.id());
-            self.ready(operation, Some(registration), loaded)
+            self.ready_owned(attempt, registration, loaded)
         }
         fn ready<'a>(
             &'a self,
@@ -904,6 +1105,10 @@ mod tests {
         }
         fn retire<'a>(&'a self, _: Option<&'a str>) -> UnitFuture<'a> {
             Box::pin(async move {
+                self.retire_started.notify_one();
+                if self.retire_blocked.load(Ordering::Acquire) {
+                    self.retire_release.notified().await;
+                }
                 self.retired.fetch_add(1, Ordering::Relaxed);
                 self.changed.notify_one();
                 Ok(())
@@ -917,11 +1122,13 @@ mod tests {
         parent_use: Option<crate::native_source_use::ParentUseRef>,
     ) -> (Lifetime, Arc<Native>) {
         let native = Arc::new(Native {
+            work: std::sync::atomic::AtomicU64::new(0),
             live: AtomicBool::new(true),
             ready: Mutex::default(),
             retired: AtomicUsize::new(0),
             retirements: Mutex::default(),
             refreshes: Mutex::default(),
+            preload_lost: Default::default(),
             changed: Default::default(),
             use_serial: Arc::new(tokio::sync::Semaphore::new(1)),
             use_next: std::sync::atomic::AtomicU64::new(0),
@@ -931,14 +1138,37 @@ mod tests {
             end_blocked: AtomicBool::new(false),
             end_started: tokio::sync::Notify::new(),
             end_release: tokio::sync::Notify::new(),
+            retire_blocked: AtomicBool::new(false),
+            retire_started: tokio::sync::Notify::new(),
+            retire_release: tokio::sync::Notify::new(),
         });
         let lifetime = Lifetime::new(Allocation {
+            target: None,
+            derived_parent: None,
             parent_use,
             operation: "a".repeat(32),
             member: native.clone(),
         })
         .unwrap();
         (lifetime, native)
+    }
+    // An already loaded member needs real new-work admission before another
+    // PRELOAD. Its captured completion remains owned after this activity ends.
+    async fn admitted_preload(lifetime: &Lifetime, operation: &str) -> Preload {
+        let domain = match lifetime.domain() {
+            Some(domain) => domain,
+            None => {
+                let domain = Arc::new(crate::assignment::Domain::default());
+                lifetime.attach_domain(domain.clone()).unwrap();
+                domain
+            }
+        };
+        domain
+            .admit_work(None)
+            .unwrap()
+            .scope(lifetime.preload(operation, None))
+            .await
+            .unwrap()
     }
     #[tokio::test]
     async fn same_scope_refresh_updates_actual_readiness_without_replacing_its_lifetime() {
@@ -981,7 +1211,11 @@ mod tests {
                 .await
                 .is_err()
         );
-        let renewed = lifetime.preload(&refreshed.operation, None).await.unwrap();
+        assert!(
+            lifetime.preload(&refreshed.operation, None).await.is_err(),
+            "post-Ready reads require actual admitted work"
+        );
+        let renewed = admitted_preload(&lifetime, &refreshed.operation).await;
         assert_eq!(renewed.source.revision, refreshed.revision);
         lifetime
             .source_ready(
@@ -1136,7 +1370,7 @@ mod tests {
         lifetime.reader_ready(&preload.source).await.unwrap();
         let old_factory = lifetime.network_scope().unwrap();
         let old_response = old_factory.acquire().unwrap();
-        let fresh = lifetime.preload(&"8".repeat(32), None).await.unwrap();
+        let fresh = admitted_preload(&lifetime, &"8".repeat(32)).await;
         assert!(old_response.live());
         assert!(old_factory.acquire().is_err());
         let fresh_factory = lifetime.network_scope().unwrap();
@@ -1326,14 +1560,19 @@ mod tests {
             "no new nonce before an actual Ready repair"
         );
         assert_eq!(native.use_begins.load(Ordering::Relaxed), 1);
-        // A real native-authorized repair is supplied independently. This does not
-        // claim the separate native member-repair frontdoor is implemented.
-        let repaired = lifetime.preload(&"8".repeat(32), None).await.unwrap();
+        // Separate, actually admitted same-source work supplies a fresh
+        // PRELOAD/Ready. The settled original activity cannot mint a repair cap
+        // or claim the separate cap-free member-repair frontdoor exists.
+        let repaired = admitted_preload(&lifetime, &"8".repeat(32)).await;
         lifetime.reader_ready(&repaired.source).await.unwrap();
         let next = root.native_use_for(&lifetime).unwrap().unwrap();
         assert!(!next.same(&old));
         next.ready().await.unwrap();
-        assert_eq!(native.use_begins.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            native.use_begins.load(Ordering::Relaxed),
+            3,
+            "closed original, admitted repair, then repaired original activity"
+        );
         drop(old);
         drop(same);
         drop(next);
@@ -1345,7 +1584,31 @@ mod tests {
         let (lifetime, native) = lifetime();
         let first = lifetime.preload(&"b".repeat(32), None).await.unwrap();
         lifetime.reader_ready(&first.source).await.unwrap();
-        assert!(lifetime.preload(&"7".repeat(32), None).await.is_err());
+        let domain = Arc::new(crate::assignment::Domain::default());
+        lifetime.attach_domain(domain.clone()).unwrap();
+        let root = domain.admit_work(None).unwrap();
+        {
+            let operation = "7".repeat(32);
+            let pending = root.clone().scope(lifetime.preload(&operation, None));
+            tokio::pin!(pending);
+            tokio::select! {
+                _ = native.preload_lost.notified() => {},
+                _ = &mut pending => panic!("lost ACK keeps its owned admission"),
+            }
+            // Explicit retirement cancels further read admission; it does not infer
+            // a registration from the lost reply or erase the accepted attempt.
+            native.retire_blocked.store(true, Ordering::Release);
+            lifetime.retire_reader().unwrap();
+            assert!(pending.await.is_err());
+        }
+        drop(root);
+        wait_settled(&domain).await;
+        assert_eq!(
+            native.retired.load(Ordering::Acquire),
+            0,
+            "local retirement is not native Closed"
+        );
+        native.retire_release.notify_one();
         drop(lifetime);
         native.changed.notified().await;
         let requests = native.retirements.lock().unwrap();
@@ -1358,12 +1621,103 @@ mod tests {
         requests[0].validate().unwrap();
     }
     #[tokio::test]
+    async fn rebound_ack_ticket_cannot_publish_after_seal_or_retirement() {
+        for retiring in [false, true] {
+            let (lifetime, native) = lifetime();
+            let initial = lifetime.preload(&"b".repeat(32), None).await.unwrap();
+            let generations = Generations {
+                auth: 1,
+                owner: 2,
+                source: 3,
+                login: 4,
+            };
+            lifetime
+                .source_ready(&initial.source, generations.clone())
+                .await
+                .unwrap();
+            native.work.fetch_add(1, Ordering::AcqRel);
+            assert!(!lifetime.ready());
+            let acknowledged = lifetime
+                .prepare_rebound_ready(&initial.source, &generations)
+                .await
+                .unwrap();
+            let ReboundPreparation::Ready(acknowledged) = acknowledged else {
+                panic!("same source ACK")
+            };
+            assert!(
+                !lifetime.ready(),
+                "native ACK alone cannot publish credential readiness"
+            );
+            if retiring {
+                lifetime.retire_reader().unwrap();
+            } else {
+                lifetime.seal();
+            }
+            assert!(acknowledged.commit().is_err());
+            assert!(!lifetime.ready());
+        }
+    }
+    #[tokio::test]
+    async fn actual_loaded_ack_is_read_history_until_guarded_publication_and_cannot_cross_seal() {
+        let (lifetime, native) = lifetime();
+        let first = lifetime.preload(&"b".repeat(32), None).await.unwrap();
+        let old = Generations {
+            auth: 1,
+            owner: 2,
+            source: 3,
+            login: 4,
+        };
+        lifetime
+            .source_ready(&first.source, old.clone())
+            .await
+            .unwrap();
+        native.work.fetch_add(1, Ordering::AcqRel);
+        let current = lifetime.rebound_preload(&"8".repeat(32)).await.unwrap();
+        let loaded = Generations { auth: 2, ..old };
+        let ReboundPreparation::Ready(ack) = lifetime
+            .prepare_loaded_ready(&current.source, &loaded)
+            .await
+            .unwrap()
+        else {
+            panic!("same physical source")
+        };
+        assert!(!lifetime.ready());
+        assert!(
+            lifetime.native_use_seed().is_err(),
+            "actual ACK history cannot admit HTTP use"
+        );
+        let ReboundPreparation::Ready(rechecked) = lifetime
+            .prepare_rebound_ready(&current.source, &loaded)
+            .await
+            .unwrap()
+        else {
+            panic!("same physical source")
+        };
+        assert!(!lifetime.ready());
+        lifetime.seal();
+        assert!(ack.commit().is_err());
+        assert!(rechecked.commit().is_err());
+        assert!(
+            lifetime.rebound_preload(&"c".repeat(32)).await.is_err(),
+            "a sealed factory cannot turn ACK history into read admission"
+        );
+    }
+    #[tokio::test]
     async fn registered_refresh_requires_actual_activity_and_reloads_new_ready_in_same_use() {
         let (lifetime, native) = lifetime();
         let domain = Arc::new(crate::assignment::Domain::default());
         lifetime.attach_domain(domain.clone()).unwrap();
         let initial = lifetime.preload(&"b".repeat(32), None).await.unwrap();
-        lifetime.reader_ready(&initial.source).await.unwrap();
+        let generations = Generations {
+            auth: 1,
+            owner: 2,
+            source: 3,
+            login: 4,
+        };
+        lifetime
+            .source_ready(&initial.source, generations.clone())
+            .await
+            .unwrap();
         assert!(
             lifetime
                 .refresh(&initial.source.slot, &initial.source.revision.digest)
@@ -1387,8 +1741,44 @@ mod tests {
                     .await
                     .unwrap();
                 assert_eq!(revision.generation, 10);
-                let fresh = lifetime.preload(&"8".repeat(32), None).await.unwrap();
-                lifetime.reader_ready(&fresh.source).await.unwrap();
+                // Neither a foreign registration nor a changed old revision can
+                // convert owner publication into fresh credential read authority.
+                let predecessor = crate::native_preload::Predecessor {
+                    registration: registered.registration.clone(),
+                    revision: registered.source.revision.clone(),
+                };
+                let mut foreign = predecessor.clone();
+                foreign.registration = "f".repeat(32);
+                assert!(lifetime.resample_preload(foreign).await.is_err());
+                let mut changed = predecessor;
+                changed.revision.generation += 1;
+                assert!(lifetime.resample_preload(changed).await.is_err());
+                assert!(!lifetime.ready());
+                let fresh = match lifetime
+                    .resample_preload(crate::native_preload::Predecessor {
+                        registration: registered.registration.clone(),
+                        revision: registered.source.revision.clone(),
+                    })
+                    .await
+                    .unwrap()
+                {
+                    crate::native_preload::Resample::Preload(fresh) => fresh,
+                    _ => panic!("only a native resample grants a new read"),
+                };
+                assert_eq!(fresh.source.operation, registered.source.operation);
+                assert_eq!(fresh.sequence, registered.sequence);
+                assert_ne!(fresh.registration, registered.registration);
+                assert_eq!(fresh.source.revision, revision);
+                lifetime
+                    .source_ready(
+                        &fresh.source,
+                        Generations {
+                            auth: 2,
+                            ..generations.clone()
+                        },
+                    )
+                    .await
+                    .unwrap();
                 assert!(lifetime.ready());
             })
             .await;
@@ -1403,5 +1793,185 @@ mod tests {
         assert_eq!(requests[0].expected_digest, initial.source.revision.digest);
         drop(root);
         wait_settled(&domain).await;
+    }
+    #[tokio::test]
+    async fn reader_loaded_observation_is_exact_to_preload_and_member_incarnation() {
+        let (reader, _) = lifetime();
+        let first = reader.preload(&"b".repeat(32), None).await.unwrap();
+        assert!(reader.reader_loaded().is_err());
+        reader.reader_ready(&first.source).await.unwrap();
+        let loaded = reader.reader_loaded().unwrap();
+        assert!(reader.reader_still_loaded(&loaded));
+        let (other, _) = lifetime();
+        let same = other.preload(&"b".repeat(32), None).await.unwrap();
+        other.reader_ready(&same.source).await.unwrap();
+        assert!(!other.reader_still_loaded(&loaded));
+        let fresh = admitted_preload(&reader, &"8".repeat(32)).await;
+        assert!(!reader.reader_still_loaded(&loaded));
+        reader.reader_ready(&fresh.source).await.unwrap();
+        assert!(reader.ready());
+        assert!(
+            !reader.reader_still_loaded(&loaded),
+            "same-grant Ready cannot revive an older direct snapshot"
+        );
+        assert!(reader.reader_still_loaded(&reader.reader_loaded().unwrap()));
+    }
+    struct CatalogReader {
+        identity: MemberIncarnation,
+        loaded: ReaderLoaded,
+        observer: crate::native_reader_retirement::Observer,
+    }
+    impl crate::manager_catalog::ReaderBackend for CatalogReader {
+        fn identity(&self) -> &MemberIncarnation {
+            &self.identity
+        }
+        fn loaded(&self) -> Result<ReaderLoaded, crate::assignment::Refused> {
+            if !self.identity.reader_still_loaded(&self.loaded) {
+                return Err(crate::assignment::Refused::Unavailable);
+            }
+            Ok(self.loaded.clone())
+        }
+        fn retirement(&self) -> crate::native_reader_retirement::Observer {
+            self.observer.clone()
+        }
+        fn check_target(
+            &self,
+            _: &crate::assignment_service::Target,
+        ) -> Result<(), crate::assignment::Refused> {
+            Err(crate::assignment::Refused::Unavailable)
+        }
+    }
+    async fn catalog_reader() -> (
+        Arc<crate::manager_catalog::Registry>,
+        Lifetime,
+        Arc<Native>,
+        Arc<crate::manager_catalog::Record>,
+    ) {
+        let registry = Arc::new(crate::manager_catalog::Registry::default());
+        let factory = registry.factory(None).unwrap();
+        let (reader, native) = lifetime();
+        reader.attach_domain(factory.domain()).unwrap();
+        let preload = reader.preload(&"b".repeat(32), None).await.unwrap();
+        reader.reader_ready(&preload.source).await.unwrap();
+        let record = factory.record().clone();
+        record
+            .attach_reader(Arc::new(CatalogReader {
+                identity: reader.incarnation(),
+                loaded: reader.reader_loaded().unwrap(),
+                observer: reader.retirement_observer(),
+            }))
+            .unwrap();
+        factory.complete().unwrap();
+        assert!(
+            record.backend().unwrap().is_none(),
+            "reader has no manager backend/counters"
+        );
+        assert!(native.ready.lock().unwrap()[0].1.is_none());
+        (registry, reader, native, record)
+    }
+    #[tokio::test]
+    async fn reader_catalog_drains_body_and_end_ack_then_revokes_cache_and_waits_native_closed() {
+        let (registry, reader, native, record) = catalog_reader().await;
+        native.end_blocked.store(true, Ordering::Release);
+        native.retire_blocked.store(true, Ordering::Release);
+        let cached_factory = reader.network_scope().unwrap();
+        let body = cached_factory.acquire().unwrap();
+        body.prepare().await.unwrap();
+        let clone = body.clone();
+        let seal = registry.seal().unwrap();
+        let draining = tokio::spawn(async move { seal.drain_resources().await });
+        let mut draining = Box::pin(draining);
+        drop(body);
+        tokio::select! { _ = &mut draining => panic!("last body clone still owns reader activity"), _ = tokio::task::yield_now() => {} }
+        drop(clone);
+        native.end_started.notified().await;
+        assert_eq!(native.retired.load(Ordering::Acquire), 0);
+        tokio::select! { _ = &mut draining => panic!("native End is not acknowledged"), _ = tokio::task::yield_now() => {} }
+        native.end_release.notify_one();
+        native.retire_started.notified().await;
+        assert!(!reader.ready());
+        assert!(
+            cached_factory.acquire().is_err(),
+            "cached factory owns no continuing admission"
+        );
+        assert_eq!(record.role().unwrap(), crate::manager_catalog::Role::Reader);
+        assert_eq!(registry.compact_retired_readers().unwrap(), 0);
+        tokio::select! { _ = &mut draining => panic!("native retirement is not Closed"), _ = tokio::task::yield_now() => {} }
+        native.retire_release.notify_one();
+        draining.await.unwrap().unwrap();
+        assert_eq!(
+            record.phase().unwrap(),
+            crate::manager_catalog::Phase::Retired
+        );
+        assert_eq!(registry.compact_retired_readers().unwrap(), 1);
+        drop(cached_factory);
+        drop(reader);
+        tokio::task::yield_now().await;
+        assert_eq!(
+            native.retired.load(Ordering::Acquire),
+            1,
+            "Drop cannot issue another retirement"
+        );
+    }
+    #[tokio::test]
+    async fn lost_reader_domain_remains_unknown_until_its_exact_native_closed_proof() {
+        let (registry, reader, native, record) = catalog_reader().await;
+        native.retire_blocked.store(true, Ordering::Release);
+        drop(reader);
+        native.retire_started.notified().await;
+        assert!(record.domain().is_none());
+        let seal = registry.seal().unwrap();
+        assert!(seal.preflight_census().is_err());
+        assert_eq!(
+            record.phase().unwrap(),
+            crate::manager_catalog::Phase::Unknown
+        );
+        assert_eq!(registry.compact_retired_readers().unwrap(), 0);
+        native.retire_release.notify_one();
+        record.reader_retired().await.unwrap();
+        assert_eq!(registry.compact_retired_readers().unwrap(), 1);
+        seal.cancel_before_effects().unwrap();
+        assert!(registry.factory(None).unwrap().admitted());
+    }
+    #[tokio::test]
+    async fn reader_catalog_rejects_cleanup_observation_from_another_real_incarnation() {
+        let registry = Arc::new(crate::manager_catalog::Registry::default());
+        let factory = registry.factory(None).unwrap();
+        let (other, _) = lifetime();
+        let (reader, _) = lifetime();
+        reader.attach_domain(factory.domain()).unwrap();
+        let preload = reader.preload(&"b".repeat(32), None).await.unwrap();
+        reader.reader_ready(&preload.source).await.unwrap();
+        assert!(
+            factory
+                .record()
+                .attach_reader(Arc::new(CatalogReader {
+                    identity: reader.incarnation(),
+                    loaded: reader.reader_loaded().unwrap(),
+                    observer: other.retirement_observer(),
+                }))
+                .is_err()
+        );
+        assert_eq!(
+            factory.record().role().unwrap(),
+            crate::manager_catalog::Role::Unresolved
+        );
+        assert!(factory.record().backend().unwrap().is_none());
+        assert!(factory.record().reader_snapshot().unwrap().is_none());
+    }
+    #[tokio::test]
+    async fn replacing_work_channel_cannot_revive_previous_reader_ready() {
+        let (member, native) = lifetime();
+        let packet = member.preload(&"b".repeat(32), None).await.unwrap();
+        member.reader_ready(&packet.source).await.unwrap();
+        assert!(member.ready());
+        assert!(member.reader_loaded().is_ok());
+        native.work.fetch_add(1, Ordering::AcqRel);
+        assert!(!member.ready());
+        assert!(member.reader_loaded().is_err());
+        // Only the exact owned native completion can qualify this channel.
+        member.reader_ready(&packet.source).await.unwrap();
+        assert!(member.ready());
+        assert!(member.reader_loaded().is_ok());
     }
 }

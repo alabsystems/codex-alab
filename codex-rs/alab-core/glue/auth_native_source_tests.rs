@@ -307,6 +307,24 @@ async fn native_source_child() {
             .await
             .unwrap();
         assert!(pinned.generation > before.generation);
+        assert!(
+            !selected_manager
+                .auth_cached()
+                .unwrap()
+                .alab_credential_epoch()
+                .legacy_snapshot_export(),
+            "known native storage is not the nonactivated legacy export contract"
+        );
+        assert!(
+            selected_manager
+                .auth_cached()
+                .unwrap()
+                .alab_credential_epoch()
+                .network_policy()
+                .unwrap()
+                .unwrap()
+                .alab_requires_credential_destination()
+        );
         assert_eq!(pinned.owner_generation, before.owner_generation);
         assert_eq!(pinned.source_generation, before.source_generation);
         assert_eq!(pinned.login_generation, before.login_generation);
@@ -504,12 +522,16 @@ async fn native_source_child() {
                 selected_manager.refresh_lock.try_acquire().is_err(),
                 "refresh cannot cross native commit and source publication"
             );
+            let unavailable = selected.with_extension("temporarily-unavailable");
+            std::fs::rename(&selected, &unavailable).unwrap();
+            let observed = selected_manager
+                .alab_rebind_native_source_fenced(&proof.operation, &fence, &permit)
+                .await;
+            std::fs::rename(&unavailable, &selected).unwrap();
             assert_eq!(
-                selected_manager
-                    .alab_rebind_native_source_fenced(&proof.operation, &fence, &permit)
-                    .await
-                    .unwrap(),
-                after
+                observed.unwrap(),
+                after,
+                "same-operation observation does not reopen or reread B"
             );
             let foreign = manager(&home, None).await;
             assert!(

@@ -62,8 +62,14 @@ fn packaged(style: Style, depth: Depth, theme: Theme) -> Banner {
 /// Every banner the switch can produce, packaged or bare, under every harness, at every width
 /// from 0 to 240.
 fn every_banner() -> impl Iterator<Item = (String, u16, Vec<Line<'static>>)> {
-    STYLES.into_iter().flat_map(|style| {
-        DEPTHS.into_iter().flat_map(move |depth| {
+    banners_for_depths(&DEPTHS)
+}
+
+fn banners_for_depths(
+    depths: &'static [Depth],
+) -> impl Iterator<Item = (String, u16, Vec<Line<'static>>)> {
+    STYLES.into_iter().flat_map(move |style| {
+        depths.iter().copied().flat_map(move |depth| {
             themes().into_iter().flat_map(move |(theme_name, theme)| {
                 [
                     ("packaged", packaged(style, depth, theme)),
@@ -149,10 +155,7 @@ fn palette_is_aterms() {
 
 #[test]
 fn mono_sets_no_colour() {
-    for (case, w, lines) in every_banner() {
-        if !case.contains("Mono") {
-            continue;
-        }
+    for (case, w, lines) in banners_for_depths(&[Depth::Mono]) {
         for line in &lines {
             assert_eq!(line.style.fg, None);
             assert_eq!(line.style.bg, None);
@@ -385,7 +388,7 @@ fn decide_precedence() {
     for on in ["on", "1", "true", "yes", "ON", " yes\n"] {
         assert_eq!(
             decide(Some(on), false, false),
-            Some(Style::Ribbon),
+            Some(Style::Codex),
             "{on:?}"
         );
     }
@@ -396,7 +399,7 @@ fn decide_precedence() {
     for ignored in [None, Some(""), Some("nyan"), Some("2")] {
         assert_eq!(
             decide(ignored, true, false),
-            Some(Style::Ribbon),
+            Some(Style::Codex),
             "{ignored:?}"
         );
         assert_eq!(decide(ignored, false, false), None, "{ignored:?}");

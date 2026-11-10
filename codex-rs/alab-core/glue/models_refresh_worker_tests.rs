@@ -153,12 +153,32 @@ async fn fixture() -> (tempfile::TempDir, Arc<ModelCatalog>, Arc<Calls>) {
     )
     .await
     .unwrap_or_else(|err| panic!("auth manager: {err}"));
+    let startup = codex_core::build_startup_models(
+        &config,
+        auth_manager,
+        uuid::Uuid::new_v4().to_string(),
+        codex_core::test_support::fixed_model_catalog(models_manager),
+    );
+    let thread_manager = Arc::new(codex_core::ThreadManager::new(
+        &config,
+        startup,
+        codex_core::CodexAppsToolsCache::default(),
+        codex_protocol::protocol::SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        codex_extension_api::empty_extension_registry(),
+        Arc::new(codex_core::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        codex_core::passthrough_image_store(),
+        codex_core::ThreadStoreBuilder::from_config(&config, /*state_db*/ None).build(),
+        /*agent_graph_store*/ None,
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    ));
     let catalog = Arc::new(ModelCatalog::new(
         config_manager,
         Some(config.cwd.to_path_buf()),
         config,
-        models_manager,
-        auth_manager,
+        thread_manager,
     ));
     (codex_home, catalog, calls)
 }

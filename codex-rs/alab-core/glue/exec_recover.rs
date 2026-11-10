@@ -192,6 +192,7 @@ impl State {
                     turn_id: request.options.turn().to_owned(),
                     thread_settings: request.options.thread_settings(),
                     trace: None,
+                    prompt_cache_ttl: None,
                     cyber_access_program: None,
                 },
                 init,

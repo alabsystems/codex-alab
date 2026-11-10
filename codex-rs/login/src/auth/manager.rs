@@ -41,6 +41,7 @@ use codex_agent_identity::ChatGptEnvironment;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::ModelProviderAuthInfo;
+use codex_workload_identity::ApiTokenMetadata;
 
 use super::access_token::CodexAccessToken;
 use super::access_token::classify_codex_access_token;
@@ -54,6 +55,7 @@ use super::agent_identity::require_agent_identity_authapi_base_url;
 use super::agent_identity::verified_record_from_jwt;
 use super::api_key::is_fedramp_api_key;
 use super::change_state::AuthChangeState;
+use super::change_state::AuthOwner;
 use super::change_state::same_login;
 use super::change_state::same_owner;
 use super::external_bearer::BearerTokenRefresher;
@@ -196,10 +198,20 @@ impl PartialEq for CodexAuth {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ApiKeyAuth {
-    api_key: String,
-    alab_source: Option<codex_alab_core::native_source_lifetime::Lifetime>, // ALAB(accounts): direct API snapshots retain their native unrelated-source membership.
+    pub(super) api_key: String,
+    pub(super) alab_epoch: crate::auth::AlabSourceSnapshot, // ALAB(accounts): native provenance remains attached to credential snapshots.
+    pub(super) alab_source: Option<codex_alab_core::native_source_lifetime::Lifetime>, // ALAB(accounts): direct API snapshots retain their native unrelated-source membership.
+    pub(super) workload_identity: Option<ApiTokenMetadata>,
+}
+
+impl Debug for ApiKeyAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyAuth")
+            .field("api_key", &"[redacted]")
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +227,7 @@ pub struct ChatgptAuthTokens {
 
 #[derive(Debug, Clone)]
 struct ChatgptAuthState {
+    alab_epoch: crate::auth::AlabSourceSnapshot, // ALAB(accounts): clones retain their original source epoch, not mutable manager selection.
     auth_dot_json: Arc<Mutex<Option<AuthDotJson>>>,
     client: HttpClient,
 }
@@ -301,6 +314,18 @@ pub trait ExternalAuth: Send + Sync {
     /// Maps a provider error into the retry policy used by external-auth reload and recovery.
     fn classify_error(&self, error: std::io::Error) -> RefreshTokenError {
         RefreshTokenError::Transient(error)
+    }
+}
+
+struct FixedApiKeyAuth(CodexAuth);
+
+impl ExternalAuth for FixedApiKeyAuth {
+    fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async { Ok(self.0.clone()) })
+    }
+
+    fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
+        self.resolve()
     }
 }
 
@@ -454,6 +479,7 @@ impl CodexAuth {
             }
         };
         let state = ChatgptAuthState {
+            alab_epoch: Default::default(), // ALAB(accounts): the admitted cache publication attaches the actual epoch.
             auth_dot_json: Arc::new(Mutex::new(Some(auth_dot_json))),
             client,
         };
@@ -621,6 +647,14 @@ impl CodexAuth {
             | Self::PersonalAccessToken(_)
             | Self::BedrockApiKey(_)
             | Self::BedrockAccessKeys(_) => None,
+        }
+    }
+
+    pub(super) fn api_workload_identity(&self) -> Option<&ApiTokenMetadata> {
+        if let Self::ApiKey(auth) = self {
+            auth.workload_identity.as_ref()
+        } else {
+            None
         }
     }
 
@@ -887,6 +921,7 @@ impl CodexAuth {
         };
 
         let state = ChatgptAuthState {
+            alab_epoch: Default::default(), // ALAB(accounts): the admitted cache publication attaches the actual epoch.
             auth_dot_json: Arc::new(Mutex::new(Some(auth_dot_json))),
             client: create_client(),
         };
@@ -911,6 +946,7 @@ impl CodexAuth {
             chatgpt_plan_type,
         )?;
         let state = ChatgptAuthState {
+            alab_epoch: Default::default(), // ALAB(accounts): the admitted cache publication attaches the actual epoch.
             auth_dot_json: Arc::new(Mutex::new(Some(auth_dot_json))),
             client: create_client(),
         };
@@ -919,8 +955,10 @@ impl CodexAuth {
 
     pub fn from_api_key(api_key: &str) -> Self {
         Self::ApiKey(ApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): the admitted cache publication attaches the actual epoch.
             api_key: api_key.to_owned(),
             alab_source: None, // ALAB(accounts): constructor admission attaches actual native membership when required.
+            workload_identity: None,
         })
     }
 }
@@ -2210,7 +2248,8 @@ pub struct AuthManager {
     inner: RwLock<CachedAuth>,
     auth_change_tx: watch::Sender<u64>,
     auth_change_state_tx: watch::Sender<AuthChangeState>,
-    alab_assignment_domain: Arc<codex_alab_core::assignment::Domain>, // ALAB(accounts): every clone of this manager shares one process-session barrier.
+    alab_context_host: Option<codex_alab_core::context_host::Host<AuthManager>>, // ALAB(accounts): a host selects real epochs and owns no credential state.
+    alab_assignment_domain: Arc<codex_alab_core::manager_source_epoch::Owner>, // ALAB(accounts): every clone of this manager shares one process-session barrier.
     alab_source_member: RwLock<Option<codex_alab_core::native_source_lifetime::Lifetime>>, // ALAB(accounts): storage and derived uses retain their issued native member.
     alab_native_source: RwLock<alab_native_source::State>, // ALAB(accounts): a manager owns its native source independently of startup environment.
     workspace_routing_resolver: OnceLock<Weak<dyn WorkspaceRoutingResolver>>,
@@ -2230,6 +2269,8 @@ pub struct AuthManager {
     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
     workload_identity_selected: bool,
     auth_route_config: AuthRouteConfig,
+    // Provider credentials follow the primary account's policy without owning its lifecycle.
+    owns_network_policy: bool,
     allowed_auth_modes: RwLock<Option<Vec<AuthMode>>>,
 }
 
@@ -2307,11 +2348,13 @@ fn default_agent_identity_authapi_base_url() -> Option<String> {
 impl AuthManager {
     /// Returns the application policy associated with this account owner.
     pub fn application_network_policy(&self) -> codex_http_client::NetworkPolicy {
+        if let Some(policy) = self.alab_host_policy() { return policy; } // ALAB(accounts): select the real current epoch before default access.
         self.alab_native_network_policy(self.auth_route_config.application_network_policy().clone()) // ALAB(accounts): content transports capture the actual native member/source revision.
     }
 
     /// Creates content clients bound to the account currently owned by this manager.
     pub fn http_client_factory(&self) -> HttpClientFactory {
+        if let Some(factory) = self.alab_host_factory() { return factory; } // ALAB(accounts): select the real current epoch before default access.
         self.auth_route_config
             .http_client_factory()
             .clone()
@@ -2352,6 +2395,7 @@ impl AuthManager {
         enable_codex_api_key_env: bool,
         allowed_auth_modes: Option<Vec<AuthMode>>,
     ) -> Self {
+        alab_manager_catalog::construct(async move { // ALAB(accounts): constructor ownership precedes credential loading.
         let alab_selected = alab_native_member::selected_source(); // ALAB(accounts): factory-local configured scope never changes another manager.
         let alab_initial = alab_native_member::Initial::begin().await; // ALAB(accounts): allocate before any credential load.
         let managed_auth = alab_initial
@@ -2380,7 +2424,8 @@ impl AuthManager {
             }),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
-            alab_assignment_domain: Arc::default(), // ALAB(accounts): activity coordination is separate from auth owner generations.
+            alab_context_host: None, // ALAB(accounts): this is a real credential epoch, not a host facade.
+            alab_assignment_domain: Arc::new(codex_alab_core::manager_source_epoch::Owner::new(alab_manager_catalog::domain())), // ALAB(accounts): activity coordination is separate from auth owner generations.
             alab_source_member: RwLock::new(None), // ALAB(accounts): constructor completion installs actual membership before cache exposure.
             alab_native_source: RwLock::new(alab_native_source::State::default()), // ALAB(accounts): native selection starts unset.
             workspace_routing_resolver: OnceLock::new(),
@@ -2399,10 +2444,12 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config,
+            owns_network_policy: true,
             allowed_auth_modes: RwLock::new(allowed_auth_modes),
         };
         alab_initial.finish(&manager, alab_selected).await; // ALAB(accounts): real source/cache counters precede native Ready.
         manager
+        }).await // ALAB(accounts): local factory admission surrounds every initial credential reader.
     }
 
     /// Create an AuthManager with a specific CodexAuth, for testing only.
@@ -2412,23 +2459,69 @@ impl AuthManager {
 
     /// Create an AuthManager with an optional CodexAuth, for testing only.
     pub(crate) fn from_optional_auth_for_testing(auth: Option<CodexAuth>) -> Arc<Self> {
+        Self::from_cached_auth(
+            auth,
+            /*external_auth*/ None,
+            AuthRuntimeConfig {
+                codex_home: PathBuf::from("non-existent"),
+                auth_route_config: crate::test_support::transport_default_auth_route_config(),
+            },
+            /*owns_network_policy*/ true,
+        )
+    }
+
+    /// An explicitly selected API key with no ambient auth-storage or refresh fallback.
+    pub fn from_api_key(api_key: &str, runtime: AuthRuntimeConfig) -> Arc<Self> {
+        let auth = CodexAuth::from_api_key(api_key);
+        Self::from_cached_auth(
+            Some(auth.clone()),
+            Some(Arc::new(FixedApiKeyAuth(auth))),
+            runtime,
+            /*owns_network_policy*/ false,
+        )
+    }
+
+    /// Give a command-backed credential source the caller's storage and network context.
+    pub fn external_bearer_with_runtime(
+        config: ModelProviderAuthInfo,
+        runtime: AuthRuntimeConfig,
+    ) -> Arc<Self> {
+        Self::from_cached_auth(
+            /*auth*/ None,
+            Some(Arc::new(BearerTokenRefresher::new(config, HashMap::new()))),
+            runtime,
+            /*owns_network_policy*/ false,
+        )
+    }
+
+    fn from_cached_auth(
+        auth: Option<CodexAuth>,
+        external_auth: Option<Arc<dyn ExternalAuth>>,
+        runtime: AuthRuntimeConfig,
+        owns_network_policy: bool,
+    ) -> Arc<Self> {
         let cached = CachedAuth {
             auth,
             permanent_refresh_failure: None,
         };
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
 
-        Arc::new(Self {
-            codex_home: PathBuf::from("non-existent"),
+        alab_manager_catalog::attach(Arc::new(Self { // ALAB(accounts): factory policy remains in the actual manager census.
+            codex_home: runtime.codex_home,
             inner: RwLock::new(cached),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
-            alab_assignment_domain: Arc::default(), // ALAB(accounts): activity coordination is separate from auth owner generations.
+            alab_context_host: None, // ALAB(accounts): this is a real credential epoch, not a host facade.
+            alab_assignment_domain: Arc::new(codex_alab_core::manager_source_epoch::Owner::new(alab_manager_catalog::domain())), // ALAB(accounts): activity coordination is separate from auth owner generations.
             alab_source_member: RwLock::new(None), // ALAB(accounts): constructor completion installs actual membership before cache exposure.
             alab_native_source: RwLock::new(alab_native_source::State::default()), // ALAB(accounts): native selection starts unset.
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env: false,
-            auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+            auth_credentials_store_mode: if external_auth.is_some() {
+                AuthCredentialsStoreMode::Ephemeral
+            } else {
+                AuthCredentialsStoreMode::File
+            },
             keyring_backend_kind: AuthKeyringBackendKind::default(),
             forced_login_method: None,
             forced_chatgpt_workspace_id: RwLock::new(None),
@@ -2439,11 +2532,12 @@ impl AuthManager {
             unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
-            external_auth: RwLock::new(None),
+            external_auth: RwLock::new(external_auth),
             workload_identity_selected: false,
             allowed_auth_modes: RwLock::new(None),
-            auth_route_config: crate::test_support::transport_default_auth_route_config(),
-        })
+            auth_route_config: runtime.auth_route_config,
+            owns_network_policy,
+        }))
     }
 
     /// Create an AuthManager with a specific CodexAuth and codex home, for testing only.
@@ -2453,12 +2547,13 @@ impl AuthManager {
             permanent_refresh_failure: None,
         };
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
-        Arc::new(Self {
+        alab_manager_catalog::attach(Arc::new(Self { // ALAB(accounts): actual factory policy remains in the process census.
             codex_home,
             inner: RwLock::new(cached),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
-            alab_assignment_domain: Arc::default(), // ALAB(accounts): activity coordination is separate from auth owner generations.
+            alab_context_host: None, // ALAB(accounts): this is a real credential epoch, not a host facade.
+            alab_assignment_domain: Arc::new(codex_alab_core::manager_source_epoch::Owner::new(alab_manager_catalog::domain())), // ALAB(accounts): activity coordination is separate from auth owner generations.
             alab_source_member: RwLock::new(None), // ALAB(accounts): constructor completion installs actual membership before cache exposure.
             alab_native_source: RwLock::new(alab_native_source::State::default()), // ALAB(accounts): native selection starts unset.
             workspace_routing_resolver: OnceLock::new(),
@@ -2478,7 +2573,8 @@ impl AuthManager {
             workload_identity_selected: false,
             allowed_auth_modes: RwLock::new(None),
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
-        })
+            owns_network_policy: true,
+        }))
     }
 
     /// Create an AuthManager with a specific CodexAuth and Agent Identity AuthAPI base URL, for testing only.
@@ -2492,12 +2588,13 @@ impl AuthManager {
             permanent_refresh_failure: None,
         };
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
-        Arc::new(Self {
+        alab_manager_catalog::attach(Arc::new(Self { // ALAB(accounts): actual factory policy remains in the process census.
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(cached),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
-            alab_assignment_domain: Arc::default(), // ALAB(accounts): activity coordination is separate from auth owner generations.
+            alab_context_host: None, // ALAB(accounts): this is a real credential epoch, not a host facade.
+            alab_assignment_domain: Arc::new(codex_alab_core::manager_source_epoch::Owner::new(alab_manager_catalog::domain())), // ALAB(accounts): activity coordination is separate from auth owner generations.
             alab_source_member: RwLock::new(None), // ALAB(accounts): constructor completion installs actual membership before cache exposure.
             alab_native_source: RwLock::new(alab_native_source::State::default()), // ALAB(accounts): native selection starts unset.
             workspace_routing_resolver: OnceLock::new(),
@@ -2521,7 +2618,8 @@ impl AuthManager {
             workload_identity_selected: false,
             allowed_auth_modes: RwLock::new(None),
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
-        })
+            owns_network_policy: true,
+        }))
     }
 
     pub fn external_bearer_only(config: ModelProviderAuthInfo) -> Arc<Self> {
@@ -2535,7 +2633,7 @@ impl AuthManager {
         env: HashMap<String, OsString>,
     ) -> Arc<Self> {
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
-        Arc::new(Self {
+        alab_manager_catalog::attach(Arc::new(Self { // ALAB(accounts): actual factory policy remains in the process census.
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(CachedAuth {
                 auth: None,
@@ -2543,7 +2641,8 @@ impl AuthManager {
             }),
             auth_change_tx,
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
-            alab_assignment_domain: Arc::default(), // ALAB(accounts): activity coordination is separate from auth owner generations.
+            alab_context_host: None, // ALAB(accounts): this is a real credential epoch, not a host facade.
+            alab_assignment_domain: Arc::new(codex_alab_core::manager_source_epoch::Owner::new(alab_manager_catalog::domain())), // ALAB(accounts): activity coordination is separate from auth owner generations.
             alab_source_member: RwLock::new(None), // ALAB(accounts): constructor completion installs actual membership before cache exposure.
             alab_native_source: RwLock::new(alab_native_source::State::default()), // ALAB(accounts): native selection starts unset.
             workspace_routing_resolver: OnceLock::new(),
@@ -2562,25 +2661,26 @@ impl AuthManager {
             external_auth: RwLock::new(Some(Arc::new(BearerTokenRefresher::new(config, env)))),
             workload_identity_selected: false,
             allowed_auth_modes: RwLock::new(None),
+            owns_network_policy: false,
             // External bearer auth refreshes by running the provider's command and never makes
             // auth-owned HTTP requests, so this route is intentionally inert.
             auth_route_config: AuthRouteConfig::from_http_client_factory(HttpClientFactory::new(
                 OutboundProxyPolicy::ReqwestDefault,
             )),
-        })
+        }))
     }
 
     /// Current cached auth (clone) without attempting a refresh.
     pub fn auth_cached(&self) -> Option<CodexAuth> {
-        if !self.alab_member_cache_available() { return None; } // ALAB(accounts): EOF/unfinished native membership never exposes cached credentials.
-        self.inner
-            .read()
-            .ok()
-            .and_then(|cached| cached.auth.clone())
+        alab_context_host::option!(self, auth_cached()); // ALAB(accounts): select the real current epoch before default access.
+        if !self.alab_catalog_cache_available() { return None; } // ALAB(accounts): deferred managers never expose the inner cache.
+        self.alab_member_cache_snapshot().map(|snapshot| snapshot.auth) // ALAB(accounts): clone under coherent Source/cache/exact-native-member guards.
     }
 
     /// Current revisions if the selected credential still belongs to this manager's source.
     pub fn auth_change_state_for(&self, expected: &CodexAuth) -> Option<AuthChangeState> {
+        self.alab_host_expected(expected).ok()?; // ALAB(accounts): a retained A request cannot act on current B.
+        alab_context_host::option!(self, auth_change_state_for(expected)); // ALAB(accounts): select the real current epoch before default access.
         let cached = self.inner.read().ok()?;
         if !super::source::same_source(cached.auth.as_ref(), Some(expected)) {
             return None;
@@ -2588,17 +2688,35 @@ impl AuthManager {
         Some(*self.auth_change_state_tx.borrow())
     }
 
+    /// Identify this credential source's current account owner without refreshing auth.
+    pub fn auth_owner(self: &Arc<Self>) -> AuthOwner {
+        AuthOwner::new(
+            Arc::clone(self),
+            self.auth_change_state_tx.borrow().owner_generation,
+        )
+    }
+
+    /// Retain the owner of a selected credential, rejecting a changed source.
+    pub fn auth_owner_for(self: &Arc<Self>, expected: &CodexAuth) -> Option<AuthOwner> {
+        let state = self.auth_change_state_for(expected)?;
+        Some(AuthOwner::new(Arc::clone(self), state.owner_generation))
+    }
+
     /// Subscribes to cached auth changes that can affect request recovery.
     pub fn auth_change_receiver(&self) -> watch::Receiver<u64> {
+        alab_context_host::metadata!(self, auth_change_receiver()); // ALAB(accounts): select the real current epoch before default access.
         self.auth_change_tx.subscribe()
     }
 
     /// Subscribes to credential and owner revisions published together, including when changes coalesce.
     pub fn auth_change_state_receiver(&self) -> watch::Receiver<AuthChangeState> {
+        alab_context_host::metadata!(self, auth_change_state_receiver()); // ALAB(accounts): select the real current epoch before default access.
         self.auth_change_state_tx.subscribe()
     }
 
     pub fn refresh_failure_for_auth(&self, auth: &CodexAuth) -> Option<RefreshTokenFailedError> {
+        self.alab_host_expected(auth).ok()?; // ALAB(accounts): a retained A request cannot act on current B.
+        alab_context_host::option!(self, refresh_failure_for_auth(auth)); // ALAB(accounts): select the real current epoch before default access.
         self.inner.read().ok().and_then(|cached| {
             cached
                 .permanent_refresh_failure
@@ -2612,6 +2730,8 @@ impl AuthManager {
     /// Cancellation retains the record so callers can withhold an uncertain generation.
     /// Waiting for the refresh guard or reloading storage does not mark a credential.
     pub fn is_chatgpt_refresh_unsettled(&self, auth: &CodexAuth) -> std::io::Result<bool> {
+        self.alab_host_expected(auth)?; // ALAB(accounts): a retained A request cannot act on current B.
+        alab_context_host::io!(self, is_chatgpt_refresh_unsettled(auth)); // ALAB(accounts): select the real current epoch before default access.
         let unsettled = self
             .unsettled_chatgpt_refresh
             .lock()
@@ -2630,8 +2750,10 @@ impl AuthManager {
     /// a guarded reload and then refreshes only if the on-disk auth is unchanged.
     #[instrument(level = "trace", skip_all)]
     pub async fn auth(&self) -> Option<CodexAuth> {
+        alab_context_host::async_option!(self, auth()); // ALAB(accounts): select the real current epoch before default access.
+        Box::pin(self.alab_catalog_ensure()).await.ok()?; // ALAB(accounts): deferred construction settles before any credential use.
         if self.has_external_auth() {
-            self.reload().await;
+            self.reload_inner().await.ok()?;
             return self.auth_cached();
         }
 
@@ -2648,9 +2770,12 @@ impl AuthManager {
     /// Refreshes auth, then captures credentials and their account-bound factory together.
     /// The auth read lock prevents an identity change between the two snapshots.
     pub async fn auth_with_http_client_factory(&self) -> Option<(CodexAuth, HttpClientFactory)> {
-        self.auth().await;
-        let cached = self.inner.read().ok()?;
-        Some((cached.auth.clone()?, self.http_client_factory()))
+        alab_context_host::async_option!(self, auth_with_http_client_factory()); // ALAB(accounts): select the real current epoch before default access.
+        self.auth().await?;
+        if !self.alab_catalog_cache_available() { return None; } // ALAB(accounts): deferred auth never exposes the inner cache through a paired factory.
+        let snapshot = self.alab_member_cache_snapshot()?; // ALAB(accounts): the pair uses the same atomic native membership capture as auth_cached.
+        let factory = snapshot.auth.alab_bind_http_client_factory(self.http_client_factory()).ok()?; // ALAB(accounts): bind the credential's captured epoch under the same cache read lock.
+        Some((snapshot.auth, factory))
     }
 
     pub async fn agent_identity_auth(
@@ -2658,6 +2783,7 @@ impl AuthManager {
         policy: AgentIdentityAuthPolicy,
         session_source: SessionSource,
     ) -> std::io::Result<Option<AgentIdentityAuth>> {
+        alab_context_host::async_result!(self, agent_identity_auth(policy, session_source)); // ALAB(accounts): select the real current epoch before default access.
         let Some(auth) = self.auth().await else {
             return Ok(None);
         };
@@ -2721,6 +2847,7 @@ impl AuthManager {
     pub async fn lease_account_oauth_grant(
         self: &Arc<Self>,
     ) -> std::io::Result<Option<AccountOAuthGrantLease>> {
+        alab_context_host::async_result!(self, lease_account_oauth_grant()); // ALAB(accounts): select the real current epoch before default access.
         let permit = Arc::clone(&self.refresh_lock)
             .acquire_owned()
             .await
@@ -2736,6 +2863,7 @@ impl AuthManager {
     pub async fn account_oauth_grant(
         self: &Arc<Self>,
     ) -> std::io::Result<Option<AccountOAuthGrant>> {
+        alab_context_host::async_result!(self, account_oauth_grant()); // ALAB(accounts): select the real current epoch before default access.
         let login_generation = self.auth_change_state_tx.borrow().login_generation;
         let Some(tokens) = self.read_account_grant_tokens().await? else {
             return Ok(None);
@@ -2754,6 +2882,8 @@ impl AuthManager {
     /// Checks the persisted account owner without requiring an EMA-eligible account grant.
     /// Dedicated enterprise credentials still belong to this account login.
     pub async fn account_login_is_current(&self, expected: &CodexAuth) -> std::io::Result<bool> {
+        self.alab_host_expected(expected)?; // ALAB(accounts): a retained A request cannot act on current B.
+        alab_context_host::async_result!(self, account_login_is_current(expected)); // ALAB(accounts): select the real current epoch before default access.
         if !matches!(expected, CodexAuth::Chatgpt(_)) {
             return Ok(self.auth_cached().is_some_and(|current| {
                 !matches!(current, CodexAuth::Chatgpt(_))
@@ -2788,7 +2918,7 @@ impl AuthManager {
     }
 
     async fn read_persisted_account_tokens(&self) -> std::io::Result<Option<TokenData>> {
-        if let Some(result) = self.alab_native_account_tokens().await { return result; } // ALAB(accounts): grant inspection reads the selected Bound source, never startup A.
+        if let Some(result) = alab_native_source::boxed_native(self.alab_native_account_tokens()).await { return result; } // ALAB(accounts): grant inspection reads the selected Bound source, never startup A.
         let home = self.codex_home.clone();
         let mode = self.auth_credentials_store_mode;
         let backend = self.keyring_backend_kind;
@@ -2850,16 +2980,21 @@ impl AuthManager {
 
     /// Reloads auth from the active source. Returns whether the auth value changed.
     pub async fn reload(&self) -> bool {
-        if self.alab_native_overridden() { return self.alab_native_reload().await.unwrap_or(false); } // ALAB(accounts): a failed selected-source read retains the cached owner.
+        alab_context_host::async_bool!(self, reload()); // ALAB(accounts): select the real current epoch before default access.
+        self.reload_inner().await.unwrap_or(false)
+    }
+
+    async fn reload_inner(&self) -> Result<bool, RefreshTokenError> {
+        if self.alab_native_overridden() { return alab_native_source::boxed_native(self.alab_native_reload()).await.map_err(Into::into); } // ALAB(accounts): preserve native read failures through the shared reload result.
         tracing::info!("Reloading auth");
         loop {
             let generation = self.auth_change_state_tx.borrow().generation;
-            let new_auth = self.load_auth(/*cached_auth*/ None).await.ok().flatten();
+            let new_auth = self.load_auth(/*cached_auth*/ None).await?;
             if let Some(publication) = self.publish_reloaded_auth(generation, new_auth) {
-                return publication.changed;
+                return Ok(publication.changed);
             }
             if self.inner.is_poisoned() {
-                return false;
+                return Ok(false);
             }
         }
     }
@@ -2867,6 +3002,7 @@ impl AuthManager {
     /// Pins the stored credential kind before any subsequent load or hydration.
     /// This prevents a running client from silently acquiring a different kind of secret.
     pub fn restrict_auth_modes(&self, mut modes: Vec<AuthMode>) -> std::io::Result<()> {
+        alab_context_host::io!(self, restrict_auth_modes(modes)); // ALAB(accounts): select the real current epoch before default access.
         let mut allowed = self
             .allowed_auth_modes
             .write()
@@ -2881,10 +3017,20 @@ impl AuthManager {
     /// Reloads stored credentials without hiding storage or hydration failures.
     /// Failed loads retain the last known owner so a temporary outage does not
     /// invalidate application network policy as if the user had logged out.
-    /// Callers must serialize reload and refresh and reject cached headers on error.
+    /// Leaves host-provided credentials alone and serializes with token refresh.
+    /// Callers must reject cached headers on error.
     pub async fn reload_with_cached_auth(&self) -> std::io::Result<bool> {
+        alab_context_host::async_result!(self, reload_with_cached_auth()); // ALAB(accounts): select the real current epoch before default access.
+        let _refresh_guard = self
+            .refresh_lock
+            .acquire()
+            .await
+            .map_err(std::io::Error::other)?;
         loop {
             let generation = self.auth_change_state_tx.borrow().generation;
+            if self.has_external_auth() {
+                return Ok(false);
+            }
             let cached = self.auth_cached();
             let new_auth = self.try_load_managed_auth(cached.as_ref()).await?;
             if let Some(publication) = self.publish_reloaded_auth(generation, new_auth) {
@@ -2939,7 +3085,10 @@ impl AuthManager {
         match (a, b) {
             (None, None) => true,
             (Some(a), Some(b)) => match (a.api_auth_mode(), b.api_auth_mode()) {
-                (AuthMode::ApiKey, AuthMode::ApiKey) => a.api_key() == b.api_key(),
+                (AuthMode::ApiKey, AuthMode::ApiKey) => {
+                    a.api_key() == b.api_key()
+                        && a.api_workload_identity() == b.api_workload_identity()
+                }
                 (AuthMode::Chatgpt, AuthMode::Chatgpt) => {
                     a.get_current_auth_json() == b.get_current_auth_json()
                 }
@@ -2992,8 +3141,8 @@ impl AuthManager {
     async fn load_auth(
         &self,
         cached_auth: Option<&CodexAuth>,
-    ) -> std::io::Result<Option<CodexAuth>> {
-        if let Some(result) = self.alab_native_load(cached_auth).await { return result; } // ALAB(accounts): a selected source never falls back to startup credentials.
+    ) -> Result<Option<CodexAuth>, RefreshTokenError> {
+        if let Some(result) = alab_native_source::boxed_native(self.alab_native_load(cached_auth)).await { return result.map_err(Into::into); } // ALAB(accounts): a selected source never falls back to startup credentials.
         if let Some(external_auth) = self.external_auth_provider() {
             let cached_auth = self.auth_cached();
             if cached_auth
@@ -3002,8 +3151,8 @@ impl AuthManager {
             {
                 return Ok(cached_auth);
             }
-            let auth = match self.resolve_external_auth(external_auth.as_ref()).await {
-                Ok(auth) => Some(auth),
+            return match self.resolve_external_auth(external_auth.as_ref()).await {
+                Ok(auth) => Ok(Some(auth)),
                 Err(err) => {
                     tracing::error!("Failed to resolve external auth: {err}");
                     match err {
@@ -3011,24 +3160,35 @@ impl AuthManager {
                             if let Some(auth) = cached_auth.as_ref() {
                                 self.record_permanent_refresh_failure_if_unchanged(auth, &error);
                             }
-                            cached_auth
+                            Ok(cached_auth)
                         }
-                        RefreshTokenError::Transient(_) => None,
-                        RefreshTokenError::Policy(_) => cached_auth,
+                        // A temporary provider outage is not a logout. Preserve the identity
+                        // only while its cached credentials still satisfy the current policy.
+                        RefreshTokenError::Transient(_) => Ok(cached_auth.filter(|auth| {
+                            validate_auth_restrictions(
+                                Some(&self.allowed_login_methods()),
+                                self.effective_chatgpt_workspaces().as_deref(),
+                                auth,
+                            )
+                            .is_ok()
+                        })),
+                        RefreshTokenError::Policy(_) => Ok(cached_auth),
                     }
                 }
             };
-            return Ok(auth);
         }
 
-        self.try_load_managed_auth(cached_auth).await
+        self.try_load_managed_auth(cached_auth)
+            .await
+            .map_err(RefreshTokenError::Transient)
     }
 
     async fn try_load_managed_auth(
         &self,
         cached_auth: Option<&CodexAuth>,
     ) -> std::io::Result<Option<CodexAuth>> {
-        if let Some(result) = self.alab_native_storage_load(cached_auth).await { return result; } // ALAB(accounts): guarded reload uses this manager's explicit source.
+        Box::pin(self.alab_catalog_ensure()).await?; // ALAB(accounts): guarded reload cannot bypass deferred constructor admission.
+        if let Some(result) = alab_native_source::boxed_native(self.alab_native_storage_load(cached_auth)).await { return result; } // ALAB(accounts): guarded reload uses this manager's explicit source.
         let allowed_auth_modes = self
             .allowed_auth_modes
             .read()
@@ -3094,13 +3254,14 @@ impl AuthManager {
 
     fn set_cached_auth_locked(&self, guard: &mut CachedAuth, new_auth: Option<CodexAuth>) -> bool {
         let previous = guard.auth.as_ref();
+        let alab_publication = self.alab_catalog_auth_publication(previous, new_auth.as_ref()); // ALAB(accounts): auth cache and immutable source epoch publish under one writer.
         let changed = !AuthManager::auths_equal(previous, new_auth.as_ref());
         let auth_changed_for_refresh = !Self::auths_equal_for_refresh(previous, new_auth.as_ref());
         let owner_changed = auth_changed_for_refresh && !same_owner(previous, new_auth.as_ref());
         let source_changed =
             auth_changed_for_refresh && !super::source::same_source(previous, new_auth.as_ref());
         let login_changed = auth_changed_for_refresh && !same_login(previous, new_auth.as_ref());
-        if owner_changed {
+        if owner_changed && self.owns_network_policy {
             self.auth_route_config
                 .application_network_policy()
                 .invalidate();
@@ -3124,6 +3285,8 @@ impl AuthManager {
             });
             self.auth_change_tx.send_modify(|revision| *revision += 1);
         }
+        if let Some(publication) = alab_publication { let _ = publication.finish(); } // ALAB(accounts): unknown publication stays fenced; refresh counters do not replace source identity.
+        self.alab_bind_cached_epoch(&mut guard.auth); // ALAB(accounts): runtime snapshot metadata publishes with the actual document.
         tracing::info!(
             auth_changed_for_refresh,
             "Reloaded auth, changed: {changed}"
@@ -3135,6 +3298,7 @@ impl AuthManager {
         &self,
         external_auth: Arc<dyn ExternalAuth>,
     ) -> Result<(), RefreshTokenError> {
+        alab_context_host::async_result!(self, set_external_auth(external_auth)); // ALAB(accounts): select the real current epoch before default access.
         let _assignment_mutation = self.alab_admit_source_mutation()?; // ALAB(accounts): explicit auth changes drain before a source boundary, never race its commit.
         if self.alab_native_overridden() { return Err(codex_alab_core::managed_auth::unavailable().into()); } // ALAB(accounts): an external provider cannot replace a selected native source.
         if self.workload_identity_selected {
@@ -3162,6 +3326,7 @@ impl AuthManager {
     }
 
     pub fn clear_external_auth(&self) {
+        alab_context_host::metadata!(self, clear_external_auth()); // ALAB(accounts): select the real current epoch before default access.
         if self.workload_identity_selected {
             return;
         }
@@ -3173,14 +3338,22 @@ impl AuthManager {
     }
 
     pub fn set_forced_chatgpt_workspace_id(&self, workspace_id: Option<Vec<String>>) {
+        alab_context_host::metadata!(self, set_forced_chatgpt_workspace_id(workspace_id)); // ALAB(accounts): select the real current epoch before default access.
+        // Fence reloads that validated credentials before this policy change.
+        let Ok(_auth_guard) = self.inner.write() else {
+            return;
+        };
         if let Ok(mut guard) = self.forced_chatgpt_workspace_id.write()
             && *guard != workspace_id
         {
             *guard = workspace_id;
+            self.auth_change_state_tx
+                .send_modify(|state| state.generation += 1);
         }
     }
 
     pub fn forced_chatgpt_workspace_id(&self) -> Option<Vec<String>> {
+        alab_context_host::metadata!(self, forced_chatgpt_workspace_id()); // ALAB(accounts): select the real current epoch before default access.
         self.forced_chatgpt_workspace_id
             .read()
             .ok()
@@ -3188,11 +3361,13 @@ impl AuthManager {
     }
 
     pub fn effective_chatgpt_workspaces(&self) -> Option<Vec<String>> {
+        alab_context_host::metadata!(self, effective_chatgpt_workspaces()); // ALAB(accounts): select the real current epoch before default access.
         self.managed_auth_policy
             .effective_chatgpt_workspaces(self.forced_chatgpt_workspace_id().as_deref())
     }
 
     pub fn is_login_method_allowed(&self, method: ForcedLoginMethod) -> bool {
+        alab_context_host::metadata!(self, is_login_method_allowed(method)); // ALAB(accounts): select the real current epoch before default access.
         self.managed_auth_policy.allows_login_method(
             method,
             self.forced_login_method,
@@ -3202,6 +3377,7 @@ impl AuthManager {
 
     /// Returns the login methods permitted by the current effective authentication policy.
     pub fn allowed_login_methods(&self) -> Vec<ForcedLoginMethod> {
+        alab_context_host::metadata!(self, allowed_login_methods()); // ALAB(accounts): select the real current epoch before default access.
         self.managed_auth_policy.allowed_login_methods(
             self.forced_login_method,
             self.forced_chatgpt_workspace_id().as_deref(),
@@ -3209,25 +3385,30 @@ impl AuthManager {
     }
 
     pub fn has_external_auth(&self) -> bool {
+        alab_context_host::metadata!(self, has_external_auth()); // ALAB(accounts): select the real current epoch before default access.
         self.external_auth_provider().is_some()
     }
 
     pub fn is_workload_identity_selected(&self) -> bool {
+        alab_context_host::metadata!(self, is_workload_identity_selected()); // ALAB(accounts): select the real current epoch before default access.
         self.workload_identity_selected
     }
 
     pub fn is_external_chatgpt_auth_active(&self) -> bool {
+        alab_context_host::metadata!(self, is_external_chatgpt_auth_active()); // ALAB(accounts): select the real current epoch before default access.
         self.auth_cached()
             .as_ref()
             .is_some_and(CodexAuth::is_external_chatgpt_tokens)
     }
 
     pub fn codex_api_key_env_enabled(&self) -> bool {
+        alab_context_host::metadata!(self, codex_api_key_env_enabled()); // ALAB(accounts): select the real current epoch before default access.
         self.enable_codex_api_key_env
     }
 
     /// Returns policy only; independent credential managers own their own state and lifecycle.
     pub fn runtime_config(&self) -> AuthRuntimeConfig {
+        alab_context_host::metadata!(self, runtime_config()); // ALAB(accounts): select the real current epoch before default access.
         AuthRuntimeConfig {
             codex_home: self.codex_home.clone(),
             auth_route_config: self.auth_route_config.clone(),
@@ -3244,7 +3425,7 @@ impl AuthManager {
         keyring_backend_kind: AuthKeyringBackendKind,
         auth_route_config: AuthRouteConfig,
     ) -> Arc<Self> {
-        Arc::new(
+        alab_context_host::facade(alab_manager_catalog::attach(Arc::new(
             Self::new(
                 codex_home,
                 enable_codex_api_key_env,
@@ -3255,7 +3436,7 @@ impl AuthManager {
                 auth_route_config,
             )
             .await,
-        )
+        ))) // ALAB(accounts): the facade owns no cache/member; its real epoch is registered.
     }
 
     /// Builds a shared manager and activates process-configured workload identity when selected.
@@ -3312,6 +3493,7 @@ impl AuthManager {
         enable_codex_api_key_env: bool,
         allowed_auth_modes: Option<Vec<AuthMode>>,
     ) -> Result<Arc<Self>, AuthManagerInitializationError> {
+        alab_manager_catalog::shared(async move { // ALAB(accounts): admission precedes process configuration credential readers.
         codex_alab_core::native_source_launch::enter().await.map_err(RefreshTokenError::from)?; // ALAB(accounts): constructor proof precedes workload credentials/configuration.
         let external_auth = WorkloadIdentityExternalAuth::from_process_config(&auth_config)?;
         let mut manager = alab_native_member::configured_source( // ALAB(accounts): the actual workload selection scopes this constructor only.
@@ -3319,16 +3501,18 @@ impl AuthManager {
             Self::new_from_auth_config(auth_config, enable_codex_api_key_env, allowed_auth_modes),
         ).await;
         manager.workload_identity_selected = external_auth.is_some();
-        let manager = Arc::new(manager);
+        let manager = alab_manager_catalog::attach(Arc::new(manager)); // ALAB(accounts): all shared managers expose their own policy to the process census.
         if let Some(external_auth) = external_auth {
             manager
                 .install_external_auth(Arc::new(external_auth))
                 .await?;
         }
-        Ok(manager)
+        Ok(alab_context_host::facade(manager))
+        }).await // ALAB(accounts): workload credential resolution belongs to the same admitted factory.
     }
 
     pub fn unauthorized_recovery(self: &Arc<Self>) -> UnauthorizedRecovery {
+        alab_context_host::metadata!(self, unauthorized_recovery()); // ALAB(accounts): select the real current epoch before default access.
         UnauthorizedRecovery::new(Arc::clone(self))
     }
 
@@ -3363,6 +3547,7 @@ impl AuthManager {
     /// performs a guarded reload: if the stored token differs from the cached
     /// token, reuse it; otherwise, ask the token authority to refresh.
     pub async fn refresh_token(&self) -> Result<(), RefreshTokenError> {
+        alab_context_host::async_result!(self, refresh_token()); // ALAB(accounts): select the real current epoch before default access.
         self.refresh_token_with_reason(RefreshReason::Forced, /*expected_auth*/ None)
             .await
     }
@@ -3373,6 +3558,8 @@ impl AuthManager {
         &self,
         expected_auth: &CodexAuth,
     ) -> Result<(), RefreshTokenError> {
+        self.alab_host_expected(expected_auth)?; // ALAB(accounts): a retained A request cannot act on current B.
+        alab_context_host::async_result!(self, refresh_token_if_unchanged(expected_auth)); // ALAB(accounts): select the real current epoch before default access.
         self.refresh_token_with_reason(RefreshReason::Forced, Some(expected_auth))
             .await
     }
@@ -3429,6 +3616,8 @@ impl AuthManager {
     /// it and update the shared cache. If the token refresh fails, returns the
     /// error to the caller.
     pub async fn refresh_token_from_authority(&self) -> Result<(), RefreshTokenError> {
+        alab_context_host::async_result!(self, refresh_token_from_authority()); // ALAB(accounts): select the real current epoch before default access.
+        Box::pin(self.alab_catalog_ensure()).await.map_err(RefreshTokenError::Transient)?; // ALAB(accounts): recover exact acknowledged native work before a cache miss can hide refresh.
         self.refresh_token_from_authority_with_reason(RefreshReason::Forced)
             .await
     }
@@ -3503,6 +3692,7 @@ impl AuthManager {
     /// if none were present. On success, reloads the in-memory auth cache so
     /// callers immediately observe the unauthenticated state.
     pub async fn logout(&self) -> std::io::Result<bool> {
+        alab_context_host::async_result!(self, logout()); // ALAB(accounts): select the real current epoch before default access.
         let _assignment_mutation = self.alab_admit_source_mutation()?; // ALAB(accounts): logout cannot race a pending native source assignment.
         if self.alab_native_overridden() || self.alab_has_native_member() { self.ensure_logout_allowed()?; return self.alab_native_detach(); } // ALAB(accounts): detach this consumer without deleting the host's shared grant.
         self.ensure_logout_allowed()?;
@@ -3519,6 +3709,7 @@ impl AuthManager {
     }
 
     pub async fn logout_with_revoke(&self) -> std::io::Result<bool> {
+        alab_context_host::async_result!(self, logout_with_revoke()); // ALAB(accounts): select the real current epoch before default access.
         let _assignment_mutation = self.alab_admit_source_mutation()?; // ALAB(accounts): retain auth-change admission through all revocation and cache updates.
         if self.alab_native_overridden() || self.alab_has_native_member() { self.ensure_logout_allowed()?; return self.alab_native_detach(); } // ALAB(accounts): session logout never revokes another consumer's refresh lineage.
         self.ensure_logout_allowed()?;
@@ -3553,15 +3744,18 @@ impl AuthManager {
 
     /// Returns the precise kind of credentials backing the current authentication.
     pub fn get_api_auth_mode(&self) -> Option<AuthMode> {
+        alab_context_host::option!(self, get_api_auth_mode()); // ALAB(accounts): select the real current epoch before default access.
         self.auth_cached().as_ref().map(CodexAuth::api_auth_mode)
     }
 
     /// Returns the effective backend auth mode for the current authentication.
     pub fn auth_mode(&self) -> Option<AuthMode> {
+        alab_context_host::option!(self, auth_mode()); // ALAB(accounts): select the real current epoch before default access.
         self.auth_cached().as_ref().map(CodexAuth::auth_mode)
     }
 
     pub fn current_auth_uses_codex_backend(&self) -> bool {
+        alab_context_host::metadata!(self, current_auth_uses_codex_backend()); // ALAB(accounts): select the real current epoch before default access.
         self.get_api_auth_mode()
             .is_some_and(AuthMode::uses_codex_backend)
     }
@@ -3741,6 +3935,7 @@ fn auth_config_from(config: &impl AuthManagerConfig) -> AuthConfig {
 }
 
 pub use alab_native_source::NativeSourceFence; // ALAB(accounts): the consumer holds real refresh exclusion across native commit.
+#[path = "../../../alab-core/glue/auth_context_host.rs"] mod alab_context_host; // ALAB(accounts): default access selects real epochs; captured clients never retarget.
 #[path = "../../../alab-core/glue/auth_native_member.rs"] mod alab_native_member; // ALAB(accounts): actual constructor source completion and per-manager lifetimes.
 #[path = "../../../alab-core/glue/auth_native_source.rs"] mod alab_native_source; // ALAB(accounts): private native storage and real auth-state publication live in ALab.
 
@@ -3760,3 +3955,15 @@ mod account_user_id_tests;
 #[path = "source_tests.rs"]
 mod source_tests;
 #[path = "../../../alab-core/glue/auth_refresh_lock.rs"] mod alab_auth_refresh_lock; // ALAB(auth-refresh-lock): the refresh's cross-process login lock and re-read live in ALab's layer
+
+#[path = "../../../alab-core/glue/auth_manager_catalog.rs"] mod alab_manager_catalog; // ALAB(accounts): process-local constructor admission and manager census.
+#[path = "../../../alab-core/glue/auth_reader_catalog.rs"] mod alab_reader_catalog; // ALAB(accounts): direct readers retain distinct loaded and terminal cleanup evidence.
+
+#[path = "../../../alab-core/glue/auth_epoch_snapshot.rs"] mod alab_epoch_snapshot; // ALAB(accounts): source epochs travel with actual credential snapshots.
+
+pub use alab_epoch_snapshot::Snapshot as AlabSourceSnapshot; // ALAB(accounts): serde-skipped runtime credential provenance.
+#[path = "../../../alab-core/glue/auth_destination_epoch.rs"] mod alab_destination_epoch; // ALAB(accounts): destination resources use a separate real manager and retained old census.
+pub use alab_destination_epoch::DestinationEpoch as AlabDestinationEpoch; // ALAB(accounts): resource owners receive an actual separate destination context.
+pub use alab_destination_epoch::PreparedDestination as AlabPreparedDestination; // ALAB(accounts): policy evidence is captured before retiring source readers.
+pub use alab_destination_epoch::DestinationResourceContext as AlabDestinationResourceContext; // ALAB(accounts): owned mailbox resource context has no publication or turn authority.
+pub use alab_destination_epoch::{DestinationAckObservation as AlabDestinationAckObservation, DestinationAppliedProof as AlabDestinationAppliedProof}; // ALAB(accounts): native ACK history is distinct from current resource readiness.

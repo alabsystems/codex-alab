@@ -1,0 +1,943 @@
+{
+  "schema": 1,
+  "objective": "Integrate every remote branch and preserved feature variant into a coherent qualified release on remote main, then build, publish and verify distribution.",
+  "remote_snapshot": "2026-11-10",
+  "integration_base": "ba6fdb2b605cc2662d0d3ccaed64953187bb0f45",
+  "candidate_at_inventory": "9d457516982704df9b07df48dff745ca2b20f08b",
+  "qualification": "Historical composition inventory, not a release receipt. The full native gate on ed67548040 failed hooked-library qualification; see coherent-native-followup-2026-11-10.md. Final exact-source gate and signed publication remain required.",
+  "release": "not published",
+  "remote_branches": [
+    {
+      "name": "alab/contained-check",
+      "sha": "b48f9b4a64397775f5821fd0565464430ef90e48",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "merge": "9d457516982704df9b07df48dff745ca2b20f08b",
+      "reason": "Integrated pristine dependency overrides; retained newer capacity alias rejection, capsule subprocess isolation and daemon socket bounds. All 16 cache-registration tests pass; native qualification pending."
+    },
+    {
+      "name": "alab/exchange-evidence-s0",
+      "sha": "4d1e1bf775d5e608eeacbf63ba320ee62865bbc5",
+      "commits_absent_from_candidate": 0,
+      "disposition": "reviewed_integration_present_pending_qualification",
+      "reason": "The isolated Python native-runner fixture import remains in test_unit_runner_native.py; subsequent native-boundary correction is covered by the complete tooling suite on 601faacc45."
+    },
+    {
+      "name": "alab/needs",
+      "sha": "cb4001bdfe4acc493cadefc243c3f3dc24b1176d",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "merge": "2ae91a072125696388d660f13a0af1889d5a9626",
+      "reason": "Clause-aware attention parsing merged without conflict."
+    },
+    {
+      "name": "alab/overlay",
+      "sha": "fafb39b78376c0da4ecd8d8dfc0f84dac3a0a916",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "merge": "5585f9cf5d743a56a6111fb05fdebab3b0eaba71",
+      "reason": "Land-specific question answers merged with current goal behavior."
+    },
+    {
+      "name": "alab/recovery-main-20261022T2152",
+      "sha": "bf40a8465b0ffd91ce4081e8a3501ecbd5315772",
+      "commits_absent_from_candidate": 0,
+      "disposition": "superseded_implementation_retained_pending_qualification",
+      "reason": "Reviewed all 13 non-merge topic commits. Current source has the same intended behaviors with newer identity, wake-deadline, typed-capacity and lifecycle safeguards; see recovery-branch-composition-2026-11-10.md. Retain current implementations instead of restoring obsolete snapshots."
+    },
+    {
+      "name": "alab/review-account-recovery",
+      "sha": "7abe53d9d9e0ca11ea284f79188c96ce5f8204f5",
+      "commits_absent_from_candidate": 0,
+      "disposition": "reviewed_integration_present_pending_qualification",
+      "reason": "Historical account-recovery evidence and explicit limits remain in AUTH-FLEET-2026-11-05.md. Its terminal change removes an empty heading; it activates no capability."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-locked",
+      "sha": "648f79dd823571d601376699a1d48d65d4b28a20",
+      "commits_absent_from_candidate": 0,
+      "disposition": "superseded_merge_resolution_pending_qualification",
+      "reason": "Only its intermediate sync merge object was absent. All non-merge history and upstream source are already included through the final preserved sync; retain the final resolution plus current source-ownership adaptation, not earlier compiler/schema/fixture snapshots."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native1",
+      "sha": "1c175e136d1a4a8389a26b3680f61a945f4361aa",
+      "commits_absent_from_candidate": 0,
+      "disposition": "superseded_merge_resolution_pending_qualification",
+      "reason": "Only its intermediate sync merge object was absent. All non-merge history and upstream source are already included through the final preserved sync; retain the final resolution plus current source-ownership adaptation, not earlier compiler/schema/fixture snapshots."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native10",
+      "sha": "8baf5aa184067e786cda504fa49c21ca0bcd2b36",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "reason": "Included through the final preserved sync merge 694dcfe831 and its source-ownership adaptation. Earlier stack regression must be retested on this actual candidate."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native11",
+      "sha": "0f86e8441cb5bfab8c106dff5f4e24db8474b067",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "reason": "Included through the final preserved sync merge 694dcfe831 and its source-ownership adaptation. Earlier stack regression must be retested on this actual candidate."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native12",
+      "sha": "0672f656e9d27f6aac518e9a6f1bab5fa7c4d4f2",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "reason": "Included through the final preserved sync merge 694dcfe831 and its source-ownership adaptation. Earlier stack regression must be retested on this actual candidate."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native13",
+      "sha": "4952b57d3c37f5c00bfbcbcd07b7ebb17185c71d",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "reason": "Included through the final preserved sync merge 694dcfe831 and its source-ownership adaptation. Earlier stack regression must be retested on this actual candidate."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native14",
+      "sha": "eb3a425248e558cda7d4f00dcb79a4bda5bf7585",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "reason": "Included through the final preserved sync merge 694dcfe831 and its source-ownership adaptation. Earlier stack regression must be retested on this actual candidate."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native2",
+      "sha": "247b6bcb274a3fc9f190f1c63ba04f323e81067e",
+      "commits_absent_from_candidate": 0,
+      "disposition": "superseded_merge_resolution_pending_qualification",
+      "reason": "Only its intermediate sync merge object was absent. All non-merge history and upstream source are already included through the final preserved sync; retain the final resolution plus current source-ownership adaptation, not earlier compiler/schema/fixture snapshots."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native3",
+      "sha": "072025a8d2c3e098f22dbff6994e3ee0c7b8ccba",
+      "commits_absent_from_candidate": 0,
+      "disposition": "superseded_merge_resolution_pending_qualification",
+      "reason": "Only its intermediate sync merge object was absent. All non-merge history and upstream source are already included through the final preserved sync; retain the final resolution plus current source-ownership adaptation, not earlier compiler/schema/fixture snapshots."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native4",
+      "sha": "be4b5cd9445b9616d2f8558b3a7651d870ddfd93",
+      "commits_absent_from_candidate": 0,
+      "disposition": "superseded_merge_resolution_pending_qualification",
+      "reason": "Only its intermediate sync merge object was absent. All non-merge history and upstream source are already included through the final preserved sync; retain the final resolution plus current source-ownership adaptation, not earlier compiler/schema/fixture snapshots."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native5",
+      "sha": "c8e3d0a85bc2fcac7035f610a43a3e824680cab8",
+      "commits_absent_from_candidate": 0,
+      "disposition": "superseded_merge_resolution_pending_qualification",
+      "reason": "Only its intermediate sync merge object was absent. All non-merge history and upstream source are already included through the final preserved sync; retain the final resolution plus current source-ownership adaptation, not earlier compiler/schema/fixture snapshots."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native6",
+      "sha": "42053c406d0c548ee5ed4f1c7c325758289e4904",
+      "commits_absent_from_candidate": 0,
+      "disposition": "superseded_merge_resolution_pending_qualification",
+      "reason": "Only its intermediate sync merge object was absent. All non-merge history and upstream source are already included through the final preserved sync; retain the final resolution plus current source-ownership adaptation, not earlier compiler/schema/fixture snapshots."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native7",
+      "sha": "62dac5f5758586fc46ff83eac0a101863f7e1792",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "reason": "Included through the final preserved sync merge 694dcfe831 and its source-ownership adaptation. Earlier stack regression must be retested on this actual candidate."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native8",
+      "sha": "c526aa9e6ea4349ccf6d6713fe563b3cdda149c4",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "reason": "Included through the final preserved sync merge 694dcfe831 and its source-ownership adaptation. Earlier stack regression must be retested on this actual candidate."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-native9",
+      "sha": "c98702d3cdc4e1a9770097fd79ddf606f2bb1949",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "reason": "Included through the final preserved sync merge 694dcfe831 and its source-ownership adaptation. Earlier stack regression must be retested on this actual candidate."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-preserved",
+      "sha": "bc4271966c12c4aab4678b45fed2791d65e834d7",
+      "commits_absent_from_candidate": 0,
+      "disposition": "integrated_pending_qualification",
+      "reason": "Included through the final preserved sync merge 694dcfe831 and its source-ownership adaptation. Earlier stack regression must be retested on this actual candidate."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-schemas",
+      "sha": "360abaa99ea50f8edc4dd3d51d48b6d24a39499e",
+      "commits_absent_from_candidate": 0,
+      "disposition": "superseded_merge_resolution_pending_qualification",
+      "reason": "Only its intermediate sync merge object was absent. All non-merge history and upstream source are already included through the final preserved sync; retain the final resolution plus current source-ownership adaptation, not earlier compiler/schema/fixture snapshots."
+    },
+    {
+      "name": "alab/sync-cce9d3228b5d-validation",
+      "sha": "4b2fc7814ded57e1b2ad99170b51f2771cc1180b",
+      "commits_absent_from_candidate": 0,
+      "disposition": "superseded_merge_resolution_pending_qualification",
+      "reason": "Only its intermediate sync merge object was absent. All non-merge history and upstream source are already included through the final preserved sync; retain the final resolution plus current source-ownership adaptation, not earlier compiler/schema/fixture snapshots."
+    },
+    {
+      "name": "fix/s30b4-auto-reset",
+      "sha": "0657a119223e0d9f84e39ff4104c4b8a8423e283",
+      "commits_absent_from_candidate": 0,
+      "disposition": "reviewed_integration_present_pending_qualification",
+      "reason": "Historical packaged/runtime adoption evidence remains in QUOTA-RECOVERY.md, explicitly scoped to the tested package and session. The combined CLI separately passed all 27 earned-reset smoke cases on ed67548040."
+    },
+    {
+      "name": "main",
+      "sha": "ba6fdb2b605cc2662d0d3ccaed64953187bb0f45",
+      "commits_absent_from_candidate": 0,
+      "disposition": "base",
+      "reason": "Starting authoritative remote main."
+    },
+    {
+      "name": "readiness/project-compiler-20261106",
+      "sha": "be90d963ed9c8b002e9238172f41fa46ec35089d",
+      "commits_absent_from_candidate": 0,
+      "disposition": "reviewed_integration_present_pending_qualification",
+      "reason": "Native selected-root compiler recording remains in package.sh with the selected-execution-root negative control in test_project_toolchain.py. All current tooling tests passed on 601faacc45."
+    }
+  ],
+  "preserved_variants": [
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-appserver-config-adapter",
+      "sha": "160f282b4dcbf10541ae10e691624d2a10955e0a",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): advance destination policy when source becomes ineligible",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "08810063e7c7a0d26f715a78015ea24e219052fc",
+        "3dc8ffcc9702c06247526fed46b83f9a414f02fe",
+        "160f282b4dcbf10541ae10e691624d2a10955e0a"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-assignment",
+      "sha": "5ef583ff0d72d90aefa8f15e167c57e7ce66139d",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): use accepted atomic checked update API",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "5ef583ff0d72d90aefa8f15e167c57e7ce66139d"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-config-preparer",
+      "sha": "b4c5c3479224ad92842f02175644e95605917177",
+      "disposition": "reconciled_variant_pending_qualification",
+      "reason": "Explicit non-equivalent-patch review in preserved-variant-composition-2026-11-10.md; retain current integrated implementations and archived development evidence.",
+      "tip_subject": "alab(accounts): join owned configuration jobs before session stopped",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "e4ed1ef17f3540deab1639c2c6bff29060056b95",
+        "f2f79494c9245e601f450c840cf4e110086fb33b",
+        "ea3e05ed4543d25584967b4caba1b68d9789b953",
+        "2dc3b4fc3a315ab8ce97c256cc82b140339643d4"
+      ],
+      "non_equivalent_patch_ids": [
+        "b4c5c3479224ad92842f02175644e95605917177"
+      ]
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-deferred-source-reselection-fix",
+      "sha": "47d2749e800cc40185ff110cd3babc8471f5a9d3",
+      "disposition": "reconciled_variant_pending_qualification",
+      "reason": "Explicit non-equivalent-patch review in preserved-variant-composition-2026-11-10.md; retain current integrated implementations and archived development evidence.",
+      "tip_subject": "alab(accounts): verify actual source publication beyond reload kind equality",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "47d2749e800cc40185ff110cd3babc8471f5a9d3"
+      ],
+      "non_equivalent_patch_ids": [
+        "0714cc08875652687423c578c5ca3d2b8fd29a34",
+        "5c0b31353e9f519050772d79193025c76a368f75",
+        "3da30a3356a267540c22960922eb4d7e654aa9e7",
+        "d939d63346d7f88551dc8760d9f9277e35a91387",
+        "887dc69563fea0c0d848e6948e481f4afd47aad1",
+        "9b53e9a8ef165a328c645b389264b5f5057d417a"
+      ]
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-destination-config-owner-audit",
+      "sha": "9b53e9a8ef165a328c645b389264b5f5057d417a",
+      "disposition": "reconciled_variant_pending_qualification",
+      "reason": "Explicit non-equivalent-patch review in preserved-variant-composition-2026-11-10.md; retain current integrated implementations and archived development evidence.",
+      "tip_subject": "alab(accounts): preflight and coalesce complete participant configuration",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "9b53e9a8ef165a328c645b389264b5f5057d417a"
+      ],
+      "non_equivalent_patch_ids": [
+        "0714cc08875652687423c578c5ca3d2b8fd29a34",
+        "5c0b31353e9f519050772d79193025c76a368f75",
+        "3da30a3356a267540c22960922eb4d7e654aa9e7",
+        "d939d63346d7f88551dc8760d9f9277e35a91387",
+        "887dc69563fea0c0d848e6948e481f4afd47aad1"
+      ]
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-enrollment",
+      "sha": "9f4310575d130b151845e825f0eecf7b05a5fd45",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): enroll configured accounts through native operations",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "9f4310575d130b151845e825f0eecf7b05a5fd45"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-lifetime-feedback",
+      "sha": "12571795750c394d221f19be1b1b8f2563b8dc04",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): exercise owned preload admission in lifetime fixtures",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "12571795750c394d221f19be1b1b8f2563b8dc04"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-policy-doc-root",
+      "sha": "43d78bf473405314af4d2f746be9d8134b2c1da8",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): specify separate destination config and requirements ownership",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "43d78bf473405314af4d2f746be9d8134b2c1da8"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-reader-fixture-feedback",
+      "sha": "54ae0560dada0017b8cd25132f31ee90fcfbcb68",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): observe exact reader admission in lifetime fixtures",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "54ae0560dada0017b8cd25132f31ee90fcfbcb68"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/accounts-view",
+      "sha": "171766f47f1221e6c299bd73801e4479ec9e7276",
+      "disposition": "reconciled_variant_pending_qualification",
+      "reason": "Explicit non-equivalent-patch review in preserved-variant-composition-2026-11-10.md; retain current integrated implementations and archived development evidence.",
+      "tip_subject": "alab(accounts): inspect native subscription pools in /accounts",
+      "patch_equivalent_commits_on_pre_archive_main": [],
+      "non_equivalent_patch_ids": [
+        "171766f47f1221e6c299bd73801e4479ec9e7276"
+      ]
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/active-stop-controller",
+      "sha": "3930eaea860a71cc6ed1ba28293abfed167a02e1",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): qualify active native cancellation after vendor exit",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "92bdf9cb747c7e73b2b330d086e5bf1f491bcebb",
+        "0021c58e381c2e5ad09e1663ba8c5ef80dac67be",
+        "c496c7aee2b3fe4521ad36828a4ea29fa1a68f70",
+        "3617f12f994c5969fabb006eac061f911fded111",
+        "e96ed908b795304dd737a1f26d7ae3ca0ac0bd06",
+        "eeeab828f531b7bddcc3441f9df8b2f05c1c741e",
+        "e6d509aa60b5509de064592211fd7e6b6657d362",
+        "a4e1d0712e1292ff3b0d845d55cdc38891a841fc",
+        "4dec746050cccaa64551703260e79f26655cc398",
+        "137ac13fe8eeebfe5441dc285b527f7d4f4c618c",
+        "3930eaea860a71cc6ed1ba28293abfed167a02e1"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/assignment-reconcile-guardian",
+      "sha": "21305a55aee458d8de607325b27803e4f94a5cdb",
+      "disposition": "reconciled_variant_pending_qualification",
+      "reason": "Explicit non-equivalent-patch review in preserved-variant-composition-2026-11-10.md; retain current integrated implementations and archived development evidence.",
+      "tip_subject": "alab(accounts): keep fixture waiting frames free of settled sequence fields",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "21305a55aee458d8de607325b27803e4f94a5cdb"
+      ],
+      "non_equivalent_patch_ids": [
+        "6b027dc78f0d11a787e60249f13b77166f36aeee",
+        "38e9e8cf3cf46a8f9fc0e7bf9779a7285563d41b",
+        "ddda87cd8834671141b718d47df78700be129c7c",
+        "eca9cdaf08e722be274669b18a8bbbf0410cbb43",
+        "30630711f6dc4b103dc03206f96e87b5f5dfdb11",
+        "45c7e2068a30c7a707e467a6ce265be8612f9e7d",
+        "c331bafc86f82625080f2ab3ff11f8b2ff4d5711",
+        "8a0c378baa73bffbed39aa90f6522ccb1956159e"
+      ]
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-admission-fence",
+      "sha": "72e4e7a8187c6e769d4f16a44aae7b2509ce096b",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(renewal): fence admission after local database waits",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "72e4e7a8187c6e769d4f16a44aae7b2509ce096b"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-bound-stop",
+      "sha": "58f4fc259f8ce4f6c307e11bf2bf83defca22719",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(renewal): bind typed auth stops to the original goal",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "58f4fc259f8ce4f6c307e11bf2bf83defca22719"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-consume-retry",
+      "sha": "2e6cbff2ab8f08698540cd292a4741ce795fa8d9",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): reconcile terminal renewal custody independently of acting policy",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "10645bb5e14f7e11c4a84708fe57a3ea652200eb",
+        "49374aab29562afe8b91c0df1e61518dec8b436b",
+        "b4b25d9413e1d6b4bc9837341fea10a8c55d7572",
+        "2e6cbff2ab8f08698540cd292a4741ce795fa8d9"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-final-composition",
+      "sha": "86a93f34bb60b82f2bbe14035499f795fcb44539",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): prove pre-signal owner cancellation without redundant RPCs",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "1a4bf990a780c6dfd499b9b343d55d57c90e92fd",
+        "86a93f34bb60b82f2bbe14035499f795fcb44539"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-http-lint-fixes",
+      "sha": "daa85404c82f0c7b2c4c12016833ab2cc20443fa",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): bound auth scope layouts and close host failure paths",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "daa85404c82f0c7b2c4c12016833ab2cc20443fa"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-native-commit-fence",
+      "sha": "1953b778d0453c71a25795a954e3fe81c623323f",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): preserve native readiness authority until commit",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "1953b778d0453c71a25795a954e3fe81c623323f"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-observation-fix",
+      "sha": "82e8fcd73ffa947a27bc7af43e92069e85eadc07",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): observe missing credentials without granting execution",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "82e8fcd73ffa947a27bc7af43e92069e85eadc07"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/auth-retirement-review",
+      "sha": "531cfe730d1624ddf1a5ff11b696dd8564e2c93e",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(renewal): scope raw SQLite construction to proof fixtures",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "19afaee3aafe23f90c784ba386eb782ac1ec6ab5",
+        "01a8fd8ab6201a6bffb2271f5a6f7ecab355e953",
+        "de190ccd381e7aa0fb9cba5f9779148269a916a5",
+        "c503fb7c240fcea1d7be8c0dce2c281b08c494cf",
+        "5caea5398aea72f70a35dfb2079811d62cb17a1a",
+        "909cc4734e4876825c30e723b0404a6689a7e33f",
+        "531cfe730d1624ddf1a5ff11b696dd8564e2c93e"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/core-owned-lint-prepare-review",
+      "sha": "ec2d54a1f04e418ac713a2b414d98d7c3b1ab8f9",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): preserve metadata in permanently closed context hosts",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "17e77433d3e52671821348c9d7a089c393931385",
+        "ec2d54a1f04e418ac713a2b414d98d7c3b1ab8f9"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/debug-source-eof",
+      "sha": "640f8e9925bd31bb4725f5c83ab80969cb5fabcf",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): recover exact native Ready after work EOF",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "06bf18a33f4eb57286c237c1dff5d47e0fcfe56a",
+        "640f8e9925bd31bb4725f5c83ab80969cb5fabcf"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/debug-source-proof",
+      "sha": "c2d94b7aebb0de0417545225fcdeaa96c84659b5",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): add an isolated native source qualification child",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "c2d94b7aebb0de0417545225fcdeaa96c84659b5"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/dispatcher-scope-frame-prepare-review",
+      "sha": "fa8c5898ac8c80bae5f1addcdc32c81eb85e1b93",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): erase dispatcher before activity polling",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "fa8c5898ac8c80bae5f1addcdc32c81eb85e1b93"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/exec-tree-capture-frame-prepare-review",
+      "sha": "790edef85af8c56ed6a9696cc46e0c1fa3ea3fe2",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): erase startup futures at public producer boundaries",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "790edef85af8c56ed6a9696cc46e0c1fa3ea3fe2"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/headless-quota-resume",
+      "sha": "ca167863437f238f4ae082fccbdd9f6712744306",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(quota): bind headless recovery to the executing host",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "ca167863437f238f4ae082fccbdd9f6712744306"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/login-back-fixture-baselines",
+      "sha": "4c53e20b11c0537f0d20f3f413c358441dbab7a1",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(renewal): measure login file reads after initial reconciliation",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "4c53e20b11c0537f0d20f3f413c358441dbab7a1"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/login-lifetime-fixture-review",
+      "sha": "6fdd33e44e9acbbaf72f5de3ed3f66904f5ae201",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): reject foreign refresh resampling predecessors",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "32c28c9b10409b8a87f86fc8893392fa14dad516",
+        "6fdd33e44e9acbbaf72f5de3ed3f66904f5ae201"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/login-watch-fixtures",
+      "sha": "a0dcdc26592843c2486229f3cf2182fc685a7687",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(renewal): retain paired native recovery qualification cases",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "3d7caa68ff3482b0f3b06b1c89f32f8f8692309c",
+        "a0dcdc26592843c2486229f3cf2182fc685a7687"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/native-member-cache-fence",
+      "sha": "ae7e7943d65c9c3ec797ae3c6912e77e2d7c6bf0",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): atomically capture exact native cached credentials",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "ae7e7943d65c9c3ec797ae3c6912e77e2d7c6bf0"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/native-member-scope-tests",
+      "sha": "3a7b81c1cad87a877b27dc2b480808fd110c5711",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): distinguish transplanted and constructed native scopes",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "3a7b81c1cad87a877b27dc2b480808fd110c5711"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/native-source-rebound",
+      "sha": "5c5b75f3a9141ebce054e1cc56879c7d8eb933cc",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): recover source work through explicit native rebound custody",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "5c5b75f3a9141ebce054e1cc56879c7d8eb933cc"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/postsignal-controller",
+      "sha": "137ac13fe8eeebfe5441dc285b527f7d4f4c618c",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): qualify durable completed plan custody across native restart",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "92bdf9cb747c7e73b2b330d086e5bf1f491bcebb",
+        "0021c58e381c2e5ad09e1663ba8c5ef80dac67be",
+        "c496c7aee2b3fe4521ad36828a4ea29fa1a68f70",
+        "3617f12f994c5969fabb006eac061f911fded111",
+        "e96ed908b795304dd737a1f26d7ae3ca0ac0bd06",
+        "eeeab828f531b7bddcc3441f9df8b2f05c1c741e",
+        "e6d509aa60b5509de064592211fd7e6b6657d362",
+        "a4e1d0712e1292ff3b0d845d55cdc38891a841fc",
+        "4dec746050cccaa64551703260e79f26655cc398",
+        "137ac13fe8eeebfe5441dc285b527f7d4f4c618c"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/preload-configuration-lint",
+      "sha": "2343bdc801bae84e28f22c4494b9b2bcaaafeed4",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): retain operation admission through worker reply",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "08733ad43ecab3ac4bc4b435d071744b69b61640",
+        "2343bdc801bae84e28f22c4494b9b2bcaaafeed4"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/remove-unused-destination-model-builder",
+      "sha": "e82d55c81c2d719be31fc0f7b5b5cc9ffd2f5352",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): remove unused staged model reconstruction",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "e82d55c81c2d719be31fc0f7b5b5cc9ffd2f5352"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-case-budgets",
+      "sha": "e53dafba8c5c4017b34d167f1c97f938b6c41481",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): bound paired cases by explicit causal observation budgets",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "e53dafba8c5c4017b34d167f1c97f938b6c41481"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-grace-clock",
+      "sha": "eb2e82cc7aafdcdf16a4ac2a39ffe1b04bf99de6",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): budget both real grace intervals in native fixture",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "92bdf9cb747c7e73b2b330d086e5bf1f491bcebb",
+        "0021c58e381c2e5ad09e1663ba8c5ef80dac67be",
+        "c496c7aee2b3fe4521ad36828a4ea29fa1a68f70",
+        "3617f12f994c5969fabb006eac061f911fded111",
+        "e96ed908b795304dd737a1f26d7ae3ca0ac0bd06",
+        "eeeab828f531b7bddcc3441f9df8b2f05c1c741e",
+        "e6d509aa60b5509de064592211fd7e6b6657d362",
+        "a4e1d0712e1292ff3b0d845d55cdc38891a841fc",
+        "4dec746050cccaa64551703260e79f26655cc398",
+        "137ac13fe8eeebfe5441dc285b527f7d4f4c618c",
+        "3930eaea860a71cc6ed1ba28293abfed167a02e1",
+        "eb2e82cc7aafdcdf16a4ac2a39ffe1b04bf99de6"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-grace-full-clock",
+      "sha": "4db52ca28f565fc6da7a664b7910c5dcf4a4c909",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): budget all measured real grace policy phases",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "11cd67bdb27a02c80620485f3a9bf29240b8512a",
+        "4db52ca28f565fc6da7a664b7910c5dcf4a4c909"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-launcher-path",
+      "sha": "11cd67bdb27a02c80620485f3a9bf29240b8512a",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): bind launcher fault checkpoints to actual inherited HOME",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "11cd67bdb27a02c80620485f3a9bf29240b8512a"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-ordinary-owed",
+      "sha": "a0a85748681a5dbfbf9ff750946ea40dacc86f9d",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): distinguish completed native custody from paced waits",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "11cd67bdb27a02c80620485f3a9bf29240b8512a",
+        "a0a85748681a5dbfbf9ff750946ea40dacc86f9d"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-plan-oracle",
+      "sha": "53d97e9ed90d46b907d7298fb16d00b3896e6fde",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): qualify durable completed plan custody across native restart",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "92bdf9cb747c7e73b2b330d086e5bf1f491bcebb",
+        "0021c58e381c2e5ad09e1663ba8c5ef80dac67be",
+        "c496c7aee2b3fe4521ad36828a4ea29fa1a68f70",
+        "3617f12f994c5969fabb006eac061f911fded111",
+        "e96ed908b795304dd737a1f26d7ae3ca0ac0bd06",
+        "eeeab828f531b7bddcc3441f9df8b2f05c1c741e",
+        "e6d509aa60b5509de064592211fd7e6b6657d362",
+        "a4e1d0712e1292ff3b0d845d55cdc38891a841fc",
+        "53d97e9ed90d46b907d7298fb16d00b3896e6fde"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-post-clock",
+      "sha": "c194cfcd1765cf6d58bc56eb2de9567df89553e0",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): allow observed successor policy check after continuation",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "92bdf9cb747c7e73b2b330d086e5bf1f491bcebb",
+        "0021c58e381c2e5ad09e1663ba8c5ef80dac67be",
+        "c496c7aee2b3fe4521ad36828a4ea29fa1a68f70",
+        "3617f12f994c5969fabb006eac061f911fded111",
+        "e96ed908b795304dd737a1f26d7ae3ca0ac0bd06",
+        "eeeab828f531b7bddcc3441f9df8b2f05c1c741e",
+        "e6d509aa60b5509de064592211fd7e6b6657d362",
+        "a4e1d0712e1292ff3b0d845d55cdc38891a841fc",
+        "4dec746050cccaa64551703260e79f26655cc398",
+        "137ac13fe8eeebfe5441dc285b527f7d4f4c618c",
+        "3930eaea860a71cc6ed1ba28293abfed167a02e1",
+        "eb2e82cc7aafdcdf16a4ac2a39ffe1b04bf99de6",
+        "c194cfcd1765cf6d58bc56eb2de9567df89553e0"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-repeat-fixture",
+      "sha": "de669fac4c49cf2d8a0bdaac0fbad2c26b82b797",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(renewal): retain sanitized source lifecycle snapshots",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "51564189ef64936307e0dfd2372d7a3d6fc8d08e",
+        "de669fac4c49cf2d8a0bdaac0fbad2c26b82b797"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-request-attribution",
+      "sha": "75e3da2795cfc9eb875a570b5417ed0b66bb7744",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): attribute native fixture title requests separately",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "92bdf9cb747c7e73b2b330d086e5bf1f491bcebb",
+        "0021c58e381c2e5ad09e1663ba8c5ef80dac67be",
+        "c496c7aee2b3fe4521ad36828a4ea29fa1a68f70",
+        "3617f12f994c5969fabb006eac061f911fded111",
+        "e96ed908b795304dd737a1f26d7ae3ca0ac0bd06",
+        "75e3da2795cfc9eb875a570b5417ed0b66bb7744"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-rollback-scope",
+      "sha": "feefe84b6abee2a35868440a8f42e128abb0b681",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): retain captured auth path in rollback record callback",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "11cd67bdb27a02c80620485f3a9bf29240b8512a",
+        "feefe84b6abee2a35868440a8f42e128abb0b681"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-stop-oracle",
+      "sha": "0923dec497ce47899f79c161a9649d3f7b5d04a4",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): prove pre-signal owner cancellation without redundant RPCs",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "92bdf9cb747c7e73b2b330d086e5bf1f491bcebb",
+        "0021c58e381c2e5ad09e1663ba8c5ef80dac67be",
+        "c496c7aee2b3fe4521ad36828a4ea29fa1a68f70",
+        "3617f12f994c5969fabb006eac061f911fded111",
+        "e96ed908b795304dd737a1f26d7ae3ca0ac0bd06",
+        "eeeab828f531b7bddcc3441f9df8b2f05c1c741e",
+        "e6d509aa60b5509de064592211fd7e6b6657d362",
+        "a4e1d0712e1292ff3b0d845d55cdc38891a841fc",
+        "4dec746050cccaa64551703260e79f26655cc398",
+        "137ac13fe8eeebfe5441dc285b527f7d4f4c618c",
+        "3930eaea860a71cc6ed1ba28293abfed167a02e1",
+        "0923dec497ce47899f79c161a9649d3f7b5d04a4"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/renewal-wire-contract",
+      "sha": "0fbb87d8c7b7fe629fce2daa71f6fcd000542420",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(auth): match native renewal handoff wire contract",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "0fbb87d8c7b7fe629fce2daa71f6fcd000542420"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/session-startup-phases",
+      "sha": "7c6325c369c9f8a2f6c77438eb9ee88819a188d0",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): separate startup preparation and initialization poll frames",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "7c6325c369c9f8a2f6c77438eb9ee88819a188d0"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/session-startup-poll-stack",
+      "sha": "863f2703de7bb46f1668efd5aa4c8debb9d7733a",
+      "disposition": "reconciled_variant_pending_qualification",
+      "reason": "Explicit non-equivalent-patch review in preserved-variant-composition-2026-11-10.md; retain current integrated implementations and archived development evidence.",
+      "tip_subject": "alab(accounts): separate startup future construction from polling",
+      "patch_equivalent_commits_on_pre_archive_main": [],
+      "non_equivalent_patch_ids": [
+        "863f2703de7bb46f1668efd5aa4c8debb9d7733a"
+      ]
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/source-rebound-failure-prepare-review",
+      "sha": "32a8e80c040bea46221cbff4e7371698230d02b3",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): identify native member subprocess failures",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "32a8e80c040bea46221cbff4e7371698230d02b3"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/startup-submission-construction",
+      "sha": "907060eca718a4f8f69ac9ca1052f575c8757115",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): isolate submission-loop future construction",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "907060eca718a4f8f69ac9ca1052f575c8757115"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2a5fc4d54c/alab/submission-loop-frame-prepare-review",
+      "sha": "8c2b05b10ab89d6decfe3220181b3102d7fb4f46",
+      "disposition": "patch_equivalent_integration_present_pending_qualification",
+      "reason": "All original non-merge patches have equivalents in pre-archive main; current qualification must still exercise the integrated behavior.",
+      "tip_subject": "alab(accounts): erase submission futures before task wrappers",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "8c2b05b10ab89d6decfe3220181b3102d7fb4f46"
+      ],
+      "non_equivalent_patch_ids": []
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/2cd4d30c78/working-files",
+      "sha": "53e34005710be252a435f258f7467f549bc075b8",
+      "disposition": "reconciled_variant_pending_qualification",
+      "reason": "Explicit non-equivalent-patch review in preserved-variant-composition-2026-11-10.md; retain current integrated implementations and archived development evidence.",
+      "tip_subject": "Preserve local working files before disk recovery",
+      "patch_equivalent_commits_on_pre_archive_main": [],
+      "non_equivalent_patch_ids": [
+        "53e34005710be252a435f258f7467f549bc075b8"
+      ]
+    },
+    {
+      "name": "preserve/20261109-disk-emergency/e171867ef5/working-files",
+      "sha": "3047bfa2b7ea716553ef23b1ac83f4e7b93d0fbc",
+      "disposition": "reconciled_variant_pending_qualification",
+      "reason": "Explicit non-equivalent-patch review in preserved-variant-composition-2026-11-10.md; retain current integrated implementations and archived development evidence.",
+      "tip_subject": "Preserve local working files before disk recovery",
+      "patch_equivalent_commits_on_pre_archive_main": [
+        "5ef583ff0d72d90aefa8f15e167c57e7ce66139d"
+      ],
+      "non_equivalent_patch_ids": [
+        "3047bfa2b7ea716553ef23b1ac83f4e7b93d0fbc"
+      ]
+    }
+  ],
+  "preservation_comparison_base": "faf104c11323e30daf127ecda02716d08e25a519",
+  "preservation_review": "Compare with pre-archive main, never the archive merge. Qualification of the resulting candidate remains pending.",
+  "qualification_checks": {
+    "cache_registration": {
+      "passed": 16,
+      "failed": 0
+    },
+    "contained_budget": {
+      "passed": 8,
+      "failed": 0
+    },
+    "feature_inventory": {
+      "passed": 1,
+      "failed": 0
+    },
+    "upstream_intake": {
+      "passed": 6,
+      "failed": 0
+    },
+    "canonical_native_gate": "ed67548040: CLI built and ran; 1852 ALab tests passed, 4 ignored; Tippy found zero ALab diagnostics. Hooked-library qualification failed; candidate corrections require a new complete gate.",
+    "native_publisher": "built successfully; project admission authenticated Trust 15698",
+    "tooling_suite": {
+      "source": "601faacc45194ac7799f82dd479a59a44f733c32",
+      "tests": 550,
+      "skipped": 7,
+      "result": "passed"
+    }
+  }
+}

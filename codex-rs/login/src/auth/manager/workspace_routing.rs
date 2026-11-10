@@ -57,6 +57,7 @@ pub trait WorkspaceRoutingResolver: Send + Sync {
 impl AuthManager {
     /// Installs the app-server's routing owner before accepting model requests.
     pub fn set_workspace_routing_resolver(&self, resolver: Weak<dyn WorkspaceRoutingResolver>) {
+        super::alab_context_host::metadata!(self, set_workspace_routing_resolver(resolver)); // ALAB(accounts): routing belongs to the captured real epoch.
         assert!(self.workspace_routing_resolver.set(resolver).is_ok());
     }
 
@@ -66,6 +67,8 @@ impl AuthManager {
         auth: &CodexAuth,
         request: WorkspaceRoutingRequest,
     ) -> io::Result<Option<WorkspaceRouting>> {
+        self.alab_host_expected(auth)?; // ALAB(accounts): A discovery may not route through current B.
+        super::alab_context_host::async_result!(self, workspace_routing(auth, request)); // ALAB(accounts): select the real routing owner.
         let Some(resolver) = self.workspace_routing_resolver.get() else {
             return Ok(None);
         };

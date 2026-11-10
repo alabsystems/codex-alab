@@ -29,7 +29,7 @@ MAX_LOCAL_REFS = 8192
 
 
 class Refused(Exception):
-    pass
+    native_error = None
 
 
 def git(repo, *args, data=None, codes=(0,)):
@@ -136,7 +136,9 @@ class Agh:
             empty = (error.get("status") == 409 and error.get("message") == "Git Repository is empty.")
             if absent and typed and (missing or empty):
                 return None
-            raise Refused("Agh read failed (exit " + str(done.returncode) + "): " + text.strip())
+            failure = Refused("Agh request failed (exit " + str(done.returncode) + "): " + text.strip())
+            failure.native_error = error if typed else None
+            raise failure
         return done.stdout
 
     def api(self, path, *, anonymous=False, absent=False, all_pages=False):

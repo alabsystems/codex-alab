@@ -23,15 +23,20 @@ fn chatgpt_auth(user: &str, workspace: &str, token: &str) -> CodexAuth {
 
 #[test]
 fn auth_owner_generation_distinguishes_refreshes_from_identity_changes() {
-    let mut manager = AuthManager::from_optional_auth_for_testing(/*auth*/ None);
     let controller = NetworkPolicyController::default();
     let policy = controller.policy();
-    Arc::get_mut(&mut manager).unwrap().auth_route_config =
-        AuthRouteConfig::from_http_client_factory(
-            manager
-                .http_client_factory()
-                .with_network_policy(policy.clone()),
-        );
+    // ALAB(manager-catalog): configure fixtures before publishing the manager's weak catalog handle.
+    let manager = super::alab_manager_catalog::fixture::configured(
+        {
+            let policy = policy.clone();
+            move |manager| {
+                manager.auth_route_config = AuthRouteConfig::from_http_client_factory(
+                    manager.http_client_factory().with_network_policy(policy),
+                );
+            }
+        },
+        || AuthManager::from_optional_auth_for_testing(/*auth*/ None),
+    );
     let endpoint = "https://example.com/".parse().unwrap();
     let mut changes = manager.auth_change_state_receiver();
     let mut legacy_changes = manager.auth_change_receiver();
@@ -68,9 +73,58 @@ fn auth_owner_generation_distinguishes_refreshes_from_identity_changes() {
     }
 }
 
+#[test]
+fn api_workload_identity_changes_retire_previous_owner() {
+    let identity = ApiTokenMetadata {
+        api_organization_id: "organization".into(),
+        api_project_id: "project".into(),
+        user_id: "service-account".into(),
+    };
+    let auth = |workload_identity| {
+        CodexAuth::ApiKey(ApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent fixture credentials start without runtime source provenance.
+            api_key: "same-bearer".into(),
+            alab_source: None, // ALAB(accounts): native constructor admission attaches source membership separately.
+            workload_identity,
+        })
+    };
+    for replacement in [
+        None,
+        Some(ApiTokenMetadata {
+            api_organization_id: "another-organization".into(),
+            ..identity.clone()
+        }),
+        Some(ApiTokenMetadata {
+            api_project_id: "another-project".into(),
+            ..identity.clone()
+        }),
+        Some(ApiTokenMetadata {
+            user_id: "another-service-account".into(),
+            ..identity.clone()
+        }),
+    ] {
+        let previous = auth(Some(identity.clone()));
+        let current = auth(replacement);
+        for (previous, current) in [(previous.clone(), current.clone()), (current, previous)] {
+            let manager = AuthManager::from_auth_for_testing(previous);
+            let before = *manager.auth_change_state_receiver().borrow();
+            manager.set_cached_auth(Some(current));
+            assert_eq!(
+                *manager.auth_change_state_receiver().borrow(),
+                AuthChangeState {
+                    generation: before.generation + 1,
+                    owner_generation: before.owner_generation + 1,
+                    source_generation: before.source_generation + 1,
+                    login_generation: before.login_generation + 1,
+                }
+            );
+        }
+    }
+}
+
 #[tokio::test]
 #[serial_test::serial(codex_auth_env)]
-async fn auth_refresh_read_failure_is_transient_and_preserves_network_permit() {
+async fn auth_reload_and_refresh_read_failure_preserves_network_permit() {
     let home = tempfile::tempdir().unwrap();
     let storage = FileAuthStorage::new(home.path().to_path_buf());
     let initial = chatgpt_auth("user-a", "workspace-a", "token-1");
@@ -120,9 +174,15 @@ async fn auth_refresh_read_failure_is_transient_and_preserves_network_permit() {
         jwt_auth.as_str(),
     ] {
         std::fs::write(home.path().join("auth.json"), contents).unwrap();
+        let reload_error = manager.reload_with_cached_auth().await.unwrap_err();
         let error = manager.refresh_token().await.unwrap_err();
         assert!(matches!(error, RefreshTokenError::Transient(_)));
-        for formatted in [error.to_string(), format!("{error:?}")] {
+        for formatted in [
+            reload_error.to_string(),
+            format!("{reload_error:?}"),
+            error.to_string(),
+            format!("{error:?}"),
+        ] {
             assert!(
                 !formatted.contains("private-credential-value"),
                 "{formatted}"
@@ -187,15 +247,20 @@ async fn auth_owner_generation_preserves_logout_and_switches_when_coalesced() {
 
 #[tokio::test]
 async fn captured_credentials_are_revoked_if_account_changes_before_client_construction() {
-    let mut manager = AuthManager::from_optional_auth_for_testing(/*auth*/ None);
     let controller = NetworkPolicyController::default();
     let policy = controller.policy();
-    Arc::get_mut(&mut manager).unwrap().auth_route_config =
-        AuthRouteConfig::from_http_client_factory(
-            manager
-                .http_client_factory()
-                .with_network_policy(policy.clone()),
-        );
+    // ALAB(manager-catalog): configure fixtures before publishing the manager's weak catalog handle.
+    let manager = super::alab_manager_catalog::fixture::configured(
+        {
+            let policy = policy.clone();
+            move |manager| {
+                manager.auth_route_config = AuthRouteConfig::from_http_client_factory(
+                    manager.http_client_factory().with_network_policy(policy),
+                );
+            }
+        },
+        || AuthManager::from_optional_auth_for_testing(/*auth*/ None),
+    );
     let initial = chatgpt_auth("user-a", "workspace-a", "token-a");
     manager.set_cached_auth(Some(initial.clone()));
     assert!(controller.publish(policy.revision(), DestinationPolicy::Unrestricted));

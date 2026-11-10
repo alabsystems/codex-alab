@@ -565,7 +565,19 @@ async fn nothing_is_sent_without_a_proven_claim() {
     assert_eq!(needs_requests(&h), 0, "{:?}", h.fake.requests());
     // NEGATIVE CONTROL: the other holder's claim goes.
     h.fake.clear_claim();
-    wait_until("the claim is proven and acted under", || h.sup.acting()).await;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while !h.sup.acting() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "claim recovery hang detector: {error}; journal: {:?}; requests: {:?}",
+            h.sup.journal(),
+            h.fake.requests()
+        )
+    });
     assert!(
         h.fake
             .wait_for(|fake| fake.needs_told() == Some(owned(&THREE)))

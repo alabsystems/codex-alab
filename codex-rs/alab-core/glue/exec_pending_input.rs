@@ -65,7 +65,7 @@ impl ExecPendingInputs {
                     } => SavedInput::User {
                         content: content.clone(),
                         client_id: client_id.clone(),
-                        metadata: *metadata,
+                        metadata: metadata.clone(),
                     },
                     TurnInput::FunctionCallOutput(item) => SavedInput::FunctionOutput {
                         item: MemoryItem::capture(item)?,
@@ -268,11 +268,7 @@ mod tests {
 
     #[test]
     fn duplicated_deliveries_keep_shared_consumption_without_touching_the_source() {
-        let delivery = MessageDelivery::publish(
-            codex_protocol::ThreadId::new(),
-            codex_protocol::ResponseItemId::new("mail"),
-            &[],
-        );
+        let delivery = MessageDelivery::publish(codex_protocol::ThreadId::new(), &[]);
         let pending = PendingAgentMessage::new(mail(), Some(delivery.clone()));
         let source = vec![
             TurnInput::InterAgentCommunication(pending.clone()),
@@ -321,9 +317,10 @@ mod tests {
     #[test]
     fn different_threads_keep_shared_delivery_identity_without_merging_distinct_deliveries() {
         let sender = codex_protocol::ThreadId::new();
-        let id = codex_protocol::ResponseItemId::new("same-visible-id");
-        let shared = MessageDelivery::publish(sender, id.clone(), &[]);
-        let distinct = MessageDelivery::publish(sender, id, &[]);
+        let shared = MessageDelivery::publish(sender, &[]);
+        // A distinct publication may carry the same visible scope. Deduplication
+        // must follow the live delivery owner, not equality of its serialized ID.
+        let distinct = MessageDelivery::restore_exec(shared.capture_exec().unwrap().1);
         let first = vec![TurnInput::InterAgentCommunication(
             PendingAgentMessage::new(mail(), Some(shared.clone())),
         )];

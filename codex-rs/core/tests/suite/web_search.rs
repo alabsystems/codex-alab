@@ -101,6 +101,7 @@ async fn amazon_bedrock_web_search_uses_text_only_hosted_tools() {
         .await;
 
         let auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             api_key: "dummy".to_string(),
             region: "us-east-1".to_string(),
         });
@@ -163,6 +164,7 @@ async fn amazon_bedrock_runtime_preserves_cross_region_models_without_web_search
         )
         .await;
         let auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             api_key: "dummy".to_string(),
             region: "us-east-1".to_string(),
         });
@@ -227,6 +229,7 @@ async fn amazon_bedrock_web_search_is_disabled_when_managed_requirements_prohibi
         .await;
 
         let auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             api_key: "dummy".to_string(),
             region: "us-east-1".to_string(),
         });

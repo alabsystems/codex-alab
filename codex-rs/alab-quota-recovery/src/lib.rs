@@ -33,6 +33,7 @@ pub async fn recover_weekly(
     _: codex_http_client::HttpClientFactory,
     _: &str,
     _: &State,
+    _: Option<i64>,
 ) -> bool {
     false
 }

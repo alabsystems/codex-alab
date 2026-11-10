@@ -489,6 +489,7 @@ async fn responses_lite_does_not_expose_standalone_web_search_for_bedrock_provid
     .await;
 
     let auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+        alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
         api_key: "dummy".to_string(),
         region: "us-east-1".to_string(),
     });

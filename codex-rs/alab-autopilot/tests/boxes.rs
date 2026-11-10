@@ -242,6 +242,64 @@ async fn a_question_box_is_answered_after_the_grace_and_recorded_once_the_tui_to
     );
 }
 
+/// UNDER LAND THE OVERLAY GETS LAND'S TEXT (CONTRACT §5 "question overlay", aterm
+/// `answer-land@v1`): with the session's Autopilot `land` and aterm's reply carrying
+/// `land_question_text`, the same box is answered with that text in its notes, recorded as
+/// `answer-land@v1` (an act aterm takes from codex-alab, `acts::is_question_rule`), and the band
+/// is told `chose land`. NEGATIVE CONTROL: under Cruise the box takes its recommended option
+/// (the test above). MUTANT: `Priority::of` without its Land arm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn under_land_the_question_box_gets_lands_text_and_rule() {
+    const LAND_TEXT: &str = "Decide yourself: land it (aterm's land_question_text).";
+    let h = harness(Mode::Current, &[("land_question_text", LAND_TEXT)]).await;
+    h.fake.set_status("autopilot", "land");
+    assert!(
+        h.fake
+            .wait_for(|f| f.claim().is_some_and(|c| c.proven_pid.is_some()))
+            .await
+    );
+    // A new generation, so the policy and the Autopilot word are read again.
+    h.fake.set_policy_key("answer_text", "Pick one.");
+    wait_until("the supervisor reads Land and its question text", || {
+        h.sup.policy().is_some_and(|p| {
+            p.autopilot == codex_alab_autopilot::decide::Mode::Land
+                && p.texts.land_question == LAND_TEXT
+                && p.answer_text.as_deref() == Some("Pick one.")
+        })
+    })
+    .await;
+    h.shared.report_box(question_box());
+    wait_until("the answer is posted", || h.shared.box_answer_pending()).await;
+    assert_eq!(
+        take(&h, "call-1"),
+        BoxAnswer::Question {
+            id: "call-1".to_string(),
+            answers: vec![("cache".to_string(), Choice::Note(LAND_TEXT.to_string()))],
+        }
+    );
+    assert!(
+        h.fake
+            .wait_for(|f| f.acts().iter().any(|a| a == "answer-land@v1"))
+            .await,
+        "the act is recorded: {:?}",
+        h.sup.journal()
+    );
+    assert!(
+        !h.fake.acts().iter().any(|a| a == "answer-recommended@v1"),
+        "{:?}",
+        h.fake.acts()
+    );
+    assert!(
+        h.fake
+            .wait_for(|f| f
+                .stories()
+                .contains(&("chose".to_string(), "land".to_string())))
+            .await,
+        "the band is told the choice: {:?}",
+        h.fake.stories()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_plan_box_is_answered_under_approve_all() {
     let h = harness(Mode::Current, &[]).await;

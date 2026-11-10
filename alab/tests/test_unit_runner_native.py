@@ -59,7 +59,14 @@ class NativeRunnerTests(unittest.TestCase):
                                CARGO_BIN_EXE_context_helper="/unchanged helper path")
         if os.environ.get("ALAB_CARGO_HOME"):
             cls.environment.update(CARGO_HOME=os.environ["ALAB_CARGO_HOME"], TARGO_HOME=os.environ["ALAB_CARGO_HOME"])
-        cls.cargo = os.environ.get("ALAB_NATIVE_CARGO", "targo")
+        # Invoke native admission directly. The native exec prefix installs the
+        # controlled input after Cargo/frontends, at the actual runner boundary.
+        command = os.environ.get("ALAB_NATIVE_CARGO_COMMAND")
+        cls.cargo = (json.loads(command) if command else
+                     [os.environ.get("ALAB_NATIVE_CARGO", "targo")])
+        if (not isinstance(cls.cargo, list) or not cls.cargo or
+                any(not isinstance(word, str) or not word for word in cls.cargo)):
+            raise RuntimeError("ALAB_NATIVE_CARGO_COMMAND must be a nonempty JSON array of strings")
         cls.invocations = 0
         cls.evidence = Path(os.environ["ALAB_UNIT_NATIVE_EVIDENCE"]) if os.environ.get("ALAB_UNIT_NATIVE_EVIDENCE") else None
         if cls.evidence:
@@ -92,7 +99,7 @@ class NativeRunnerTests(unittest.TestCase):
 
     @classmethod
     def run_cargo(cls, *arguments):
-        result = subprocess.run([cls.cargo, *arguments], cwd=cls.root / "codex-rs", env=cls.environment,
+        result = subprocess.run([*cls.cargo, *arguments], cwd=cls.root / "codex-rs", env=cls.environment,
                                 capture_output=True, preexec_fn=cls.inherited_signals, timeout=60)
         if cls.evidence:
             cls.invocations += 1

@@ -495,7 +495,11 @@ async fn a_suspended_host_is_read_again_until_it_resumes() {
         .await,
     );
     assert!(why.contains("why=hold"), "{why}");
-    assert_eq!(policy_reads(&aterm), before + 1, "CONTROL: a hold is read once");
+    assert_eq!(
+        policy_reads(&aterm),
+        before + 1,
+        "CONTROL: a hold is read once"
+    );
 
     let (_old_dir, old) = fake(Mode::Old).await;
     let why = shown(
@@ -509,7 +513,11 @@ async fn a_suspended_host_is_read_again_until_it_resumes() {
         .await,
     );
     assert!(why.contains("no harness policy"), "{why}");
-    assert_eq!(policy_reads(&old), 1, "CONTROL: an older aterm is read once");
+    assert_eq!(
+        policy_reads(&old),
+        1,
+        "CONTROL: an older aterm is read once"
+    );
 }
 
 /// A policy read aterm does not answer is made again, and trusts once aterm answers; one that

@@ -280,6 +280,7 @@ fn refused_durable_admission_preserves_input_then_recovers_the_same_native_id() 
             turn_id: wall.clone(),
             thread_settings: Default::default(),
             trace: None,
+            prompt_cache_ttl: None,
             cyber_access_program: None,
         };
         assert!(

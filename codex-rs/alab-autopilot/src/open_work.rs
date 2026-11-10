@@ -4589,9 +4589,10 @@ fn question_open(s: &str, rest: &str, leftover: bool) -> bool {
 
 /// Whether the row `st` stands open in the sentence `s` (`line` runs on to
 /// the end of its line, `prior` is the line before it) under Land: not quoted, no part of a file's name
-/// (`TODO.md`), not a description (`do not merge`, `a warm cache is
-/// skipped`, a past state: `the test that was waiting for review`, `the
-/// previously skipped test`, [`described`]), not settled (`the pending PR
+/// (`TODO.md`), not opened on the `YOU` of a NEEDS YOU token its clause has for subject
+/// (`NEEDS YOU can be lost.`, [`needs::token_you`]: no `you can` asks the person there), not a
+/// description (`do not merge`, `a warm cache is skipped`, a past state: `the test that was
+/// waiting for review`, `the previously skipped test`, [`described`]), not settled (`the pending PR
 /// was merged`, [`settled`]) and not denied (`nothing is pending, deferred
 /// or parked`, [`denied`]) — then as its family reads it ([`Reads`]).
 /// WHATEVER BLOCKS IT: no blocker, decision, slowness or reason excuses a
@@ -4606,7 +4607,7 @@ fn land_open(
     stands: &[Stand<'_>],
 ) -> bool {
     let (at, end) = (st.at, st.end());
-    if quoted(s, at) || in_path(s, at, end) || nil_item(s, at, end) {
+    if quoted(s, at) || in_path(s, at, end) || nil_item(s, at, end) || needs::token_you(s, at) {
         return false;
     }
     if matches!(st.reads(), Reads::Exception) {

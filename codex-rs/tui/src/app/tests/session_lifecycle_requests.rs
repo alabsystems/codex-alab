@@ -20,6 +20,7 @@ use codex_app_server_protocol::ThreadItemsListCursor;
 use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_app_server_protocol::ThreadStatus;
+use codex_context_fragments::side_conversation_boundary;
 use codex_protocol::AgentPath;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
@@ -42,6 +43,546 @@ use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Error as WebSocketError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::error::ProtocolError;
+
+#[tokio::test]
+async fn cloud_skips_skills_refresh_and_ignores_stale_local_result() -> Result<()> {
+    use futures::FutureExt;
+
+    let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+    let id = ThreadId::new();
+    let cwd = app.config.cwd.to_path_buf();
+    app.enqueue_primary_thread_session(test_thread_session(id, cwd.clone()), Vec::new())
+        .await?;
+    let refresh = std::iter::from_fn(|| ops.try_recv().ok())
+        .find(|op| matches!(op, Op::ListSkills { .. }))
+        .expect("session configuration queues a skills refresh");
+
+    let (client, mut commands, _events) =
+        codex_app_server_client::CloudClient::channel(/*capacity*/ 1);
+    let mut server = AppServerSession::new(
+        crate::backend_id::BackendId::new(),
+        codex_app_server_client::AppServerClient::Cloud(client),
+        crate::ThreadParamsMode::Cloud,
+    );
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    while events.try_recv().is_ok() {}
+    for event in [
+        AppEvent::CodexOp(refresh),
+        AppEvent::SkillsListLoaded {
+            cwd,
+            result: Err("stale local skills refresh".into()),
+        },
+    ] {
+        Box::pin(app.handle_event(&mut tui, &mut server, event))
+            .now_or_never()
+            .expect("Cloud should not wait for a skills response")?;
+    }
+    assert!(events.is_empty());
+    assert!(commands.try_recv().is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn cloud_enter_recovers_drafts_from_server_receipts() -> Result<()> {
+    use codex_app_server_client::CloudOperation;
+    use codex_app_server_client::CloudUserMessageReceipt::Duplicate;
+    use codex_app_server_client::CloudUserMessageReceipt::Started;
+    use codex_app_server_client::CloudUserMessageReceipt::Steered;
+
+    let turn = test_turn("actual", TurnStatus::InProgress, Vec::new());
+    let mut rendered_receipts = Vec::new();
+    for (label, receipt) in [
+        ("Started", Some(Ok(Started(turn.clone())))),
+        ("Steered", Some(Ok(Steered(turn.clone())))),
+        ("Unconfirmed", None),
+        (
+            "Rejected",
+            Some(Err(JSONRPCErrorError {
+                code: -32602,
+                message: "reply stream closed before submission".into(),
+                data: None,
+            })),
+        ),
+        ("Duplicate", Some(Ok(Duplicate { turn_id: None }))),
+    ] {
+        let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+        let id = ThreadId::new();
+        app.enqueue_primary_thread_session(
+            test_thread_session(id, app.config.cwd.to_path_buf()),
+            Vec::new(),
+        )
+        .await?;
+        app.ensure_thread_channel(id)
+            .store
+            .lock()
+            .await
+            .set_active_turn_id("stale".into());
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(id, "stale"),
+            /*replay_kind*/ None,
+        );
+        while events.try_recv().is_ok() {}
+        app.chat_widget.apply_external_edit("follow up".into());
+        app.chat_widget
+            .handle_key_event(KeyEvent::from(KeyCode::Enter));
+        let op = next_user_turn_op(&mut ops);
+        let Op::UserTurn {
+            client_user_message_id,
+            items,
+            ..
+        } = &op
+        else {
+            unreachable!()
+        };
+        let expected = (Some(client_user_message_id.clone()), items.clone());
+
+        let (client, mut commands, _events) =
+            codex_app_server_client::CloudClient::channel(/*capacity*/ 1);
+        let mut server = AppServerSession::new(
+            crate::backend_id::BackendId::new(),
+            codex_app_server_client::AppServerClient::Cloud(client),
+            crate::ThreadParamsMode::Cloud,
+        );
+        let rejected = matches!(receipt, Some(Err(_)));
+        let admitted = matches!(receipt, Some(Ok(Started(_) | Steered(_))));
+        let steered = matches!(receipt, Some(Ok(Steered(_))));
+        let (result, ()) = tokio::join!(app.submit_thread_op(&mut server, id, op), async {
+            let command = commands.recv().await.unwrap();
+            let CloudOperation::SubmitUserMessage(params) = command.operation else {
+                panic!("Enter must start or steer")
+            };
+            assert_eq!(params.thread_id, id.to_string());
+            assert_eq!((params.client_user_message_id, params.input), expected);
+            if let Some(receipt) = receipt {
+                command
+                    .response
+                    .send(Ok(receipt.map(|r| serde_json::to_value(r).unwrap())))
+                    .unwrap();
+            }
+        });
+        result?;
+        if !rejected {
+            app.chat_widget.handle_server_notification(
+                turn_completed_notification(id, "stale", TurnStatus::Interrupted),
+                /*replay_kind*/ None,
+            );
+            assert_eq!(app.chat_widget.composer_text_with_pending(), "");
+        }
+        if admitted {
+            app.chat_widget.handle_server_notification(
+                turn_started_notification(id, "actual"),
+                /*replay_kind*/ None,
+            );
+        }
+        if steered {
+            app.chat_widget.handle_server_notification(
+                turn_completed_notification(id, "actual", TurnStatus::Interrupted),
+                /*replay_kind*/ None,
+            );
+        }
+        let history = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event {
+                AppEvent::InsertHistoryCell(cell) => {
+                    Some(lines_to_single_string(&cell.display_lines(/*width*/ 80)))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let composer =
+            normalize_snapshot_paths(render_bottom_popup(&app.chat_widget, /*width*/ 80));
+        rendered_receipts.push(format!("── {label} ──\n{history}\n{composer}"));
+        assert!(
+            !std::iter::from_fn(|| ops.try_recv().ok()).any(|op| matches!(op, Op::UserTurn { .. }))
+        );
+    }
+    insta::assert_snapshot!("cloud_composer_receipts", rendered_receipts.join("\n\n"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
+    use crate::app::agents_overview::tests::overview_thread;
+    use crate::app_server_session::user_message_submission::UserMessageAdmission;
+    use codex_app_server_client::CloudOperation;
+    use codex_app_server_protocol::ItemCompletedNotification;
+
+    let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+    let [original, other] = [ThreadId::new(), ThreadId::new()];
+    app.app_server_target = AppServerTarget::Remote {
+        endpoint: crate::resolve_remote_addr("ws://127.0.0.1:1")?,
+    };
+    app.enqueue_primary_thread_session(
+        test_thread_session(original, app.config.cwd.to_path_buf()),
+        Vec::new(),
+    )
+    .await?;
+
+    let turn_id = "finished-turn";
+    let mut client_ids = Vec::new();
+    for _ in 0..2 {
+        app.chat_widget.apply_external_edit("same text".into());
+        app.chat_widget
+            .handle_key_event(KeyEvent::from(KeyCode::Enter));
+        let op = next_user_turn_op(&mut ops);
+        let Op::UserTurn {
+            client_user_message_id,
+            ..
+        } = &op
+        else {
+            unreachable!();
+        };
+        app.chat_widget.user_message_admitted(
+            UserMessageAdmission::Steered(turn_id.into()),
+            &op,
+            client_user_message_id,
+        );
+        client_ids.push(client_user_message_id.clone());
+    }
+    let [confirmed_id, unmatched_id]: [String; 2] = client_ids.try_into().unwrap();
+    let user_item = |client_id: String| ThreadItemPayload::UserMessage {
+        id: format!("item-{client_id}"),
+        client_id: Some(client_id),
+        content: vec![UserInput::Text {
+            text: "same text".into(),
+            text_elements: Vec::new(),
+        }],
+    };
+    let mut original_thread = overview_thread(
+        original,
+        /*parent_thread_id*/ None,
+        "Original",
+        ThreadStatus::Idle,
+    );
+    original_thread.cwd = app.config.cwd.clone();
+    original_thread.turns = vec![test_turn(
+        turn_id,
+        TurnStatus::Completed,
+        vec![user_item(confirmed_id)],
+    )];
+    let mut other_thread = overview_thread(
+        other,
+        /*parent_thread_id*/ None,
+        "Other",
+        ThreadStatus::Idle,
+    );
+    other_thread.cwd = app.config.cwd.clone();
+
+    let (client, mut commands, _server_events) =
+        codex_app_server_client::CloudClient::channel(/*capacity*/ 1);
+    let mut server = AppServerSession::new(
+        crate::backend_id::BackendId::new(),
+        codex_app_server_client::AppServerClient::Cloud(client),
+        crate::ThreadParamsMode::Cloud,
+    );
+    let backend_id = server.backend_id();
+    let serve = tokio::spawn(async move {
+        let mut resumed_threads = Vec::new();
+        while let Some(command) = commands.recv().await {
+            let reply = match command.operation {
+                CloudOperation::Request(request) => match *request {
+                    ClientRequest::ThreadRead { params, .. } => {
+                        let mut thread = if params.thread_id == original.to_string() {
+                            original_thread.clone()
+                        } else {
+                            other_thread.clone()
+                        };
+                        if !params.include_turns {
+                            thread.turns.clear();
+                        }
+                        Ok(serde_json::json!({"thread": thread}))
+                    }
+                    ClientRequest::ThreadResume { params, .. } => {
+                        let thread = if params.thread_id == original.to_string() {
+                            &original_thread
+                        } else {
+                            &other_thread
+                        };
+                        resumed_threads.push(params.thread_id);
+                        Ok(serde_json::json!({
+                            "thread": thread,
+                            "model": "gpt-5.5",
+                            "modelProvider": thread.model_provider,
+                            "cwd": thread.cwd,
+                            "approvalPolicy": "never",
+                            "approvalsReviewer": "user",
+                            "sandbox": {"type": "readOnly"},
+                        }))
+                    }
+                    ClientRequest::ThreadUnsubscribe { .. } => {
+                        Ok(serde_json::json!({"status": "unsubscribed"}))
+                    }
+                    ClientRequest::ThreadLoadedList { .. } => {
+                        Ok(serde_json::json!({"data": [], "nextCursor": null}))
+                    }
+                    ClientRequest::ThreadGoalGet { .. } => Ok(serde_json::json!({"goal": null})),
+                    ClientRequest::TurnStart { .. } | ClientRequest::TurnSteer { .. } => {
+                        panic!("resuming must not send a turn")
+                    }
+                    _ => Err(JSONRPCErrorError {
+                        code: -32601,
+                        message: "unsupported by the resume test".into(),
+                        data: None,
+                    }),
+                },
+                CloudOperation::SubmitUserMessage(_) => panic!("resuming must not send a message"),
+                CloudOperation::Shutdown => {
+                    command
+                        .response
+                        .send(Ok(Ok(serde_json::Value::Null)))
+                        .unwrap();
+                    break;
+                }
+                _ => panic!("unexpected Cloud operation while resuming"),
+            };
+            command.response.send(Ok(reply)).unwrap();
+        }
+        resumed_threads
+    });
+
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    while events.try_recv().is_ok() {}
+    for thread_id in [other, original] {
+        app.apply_resume_picker_selection(
+            &mut tui,
+            &mut server,
+            SessionSelection::Resume(SessionTarget {
+                backend_id,
+                path: None,
+                thread_id,
+                cwd: None,
+                history_mode: None,
+            }),
+        )
+        .await?;
+        assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
+    }
+
+    assert_eq!(app.chat_widget.queued_user_message_texts(), ["same text"]);
+    assert!(
+        app.chat_widget
+            .capture_thread_input_state()
+            .is_some_and(|input| input.has_unconfirmed_messages())
+    );
+    assert!(
+        !std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| { matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })) })
+    );
+    app.chat_widget.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+            original.to_string(),
+            turn_id.into(),
+            user_item(unmatched_id),
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 1,
+        )),
+        /*replay_kind*/ None,
+    );
+    assert!(app.chat_widget.queued_user_message_texts().is_empty());
+    server.shutdown().await?;
+    assert_eq!(serve.await?, [other.to_string(), original.to_string()]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn conventional_steer_defers_review_and_holds_a_lost_reply() -> Result<()> {
+    use codex_app_server_client::CloudOperation;
+    use codex_app_server_protocol::ItemCompletedNotification;
+    use codex_app_server_protocol::NonSteerableTurnKind;
+
+    for review_active in [true, false] {
+        let (mut app, _events, mut ops) = make_test_app_with_channels().await;
+        let id = ThreadId::new();
+        app.enqueue_primary_thread_session(
+            test_thread_session(id, app.config.cwd.to_path_buf()),
+            Vec::new(),
+        )
+        .await?;
+        let turn_id = "active";
+        app.ensure_thread_channel(id)
+            .store
+            .lock()
+            .await
+            .set_active_turn_id(turn_id.into());
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(id, turn_id),
+            /*replay_kind*/ None,
+        );
+        app.chat_widget.apply_external_edit("first".into());
+        app.chat_widget.handle_key_event(KeyCode::Enter.into());
+        let op = next_user_turn_op(&mut ops);
+        let Op::UserTurn {
+            client_user_message_id,
+            items,
+            ..
+        } = &op
+        else {
+            unreachable!();
+        };
+        let (client_id, input) = (Some(client_user_message_id.clone()), items.clone());
+        if review_active {
+            app.chat_widget.apply_external_edit("second".into());
+            app.chat_widget.handle_key_event(KeyCode::Tab.into());
+        }
+
+        let (client, mut commands, _server_events) =
+            codex_app_server_client::CloudClient::channel(/*capacity*/ 1);
+        let mut server = AppServerSession::new(
+            crate::backend_id::BackendId::new(),
+            codex_app_server_client::AppServerClient::Cloud(client),
+            crate::ThreadParamsMode::Embedded,
+        );
+        let (result, ()) = tokio::join!(app.submit_thread_op(&mut server, id, op), async {
+            let command = commands.recv().await.unwrap();
+            let CloudOperation::Request(request) = command.operation else {
+                panic!("expected conventional steer");
+            };
+            let ClientRequest::TurnSteer { params, .. } = *request else {
+                panic!("expected turn/steer");
+            };
+            assert_eq!(params.expected_turn_id, turn_id);
+            assert_eq!(
+                (params.client_user_message_id, params.input),
+                (client_id.clone(), input.clone())
+            );
+            if review_active {
+                let message = "cannot steer a review turn";
+                let error = AppServerTurnError {
+                    message: message.into(),
+                    codex_error_info: Some(AppServerCodexErrorInfo::ActiveTurnNotSteerable {
+                        turn_kind: NonSteerableTurnKind::Review,
+                    }),
+                    additional_details: None,
+                    misalignment: None,
+                };
+                command
+                    .response
+                    .send(Ok(Err(JSONRPCErrorError {
+                        code: -32600,
+                        message: message.into(),
+                        data: Some(serde_json::to_value(error).unwrap()),
+                    })))
+                    .unwrap();
+            }
+        });
+        result?;
+        if review_active {
+            assert_eq!(
+                app.chat_widget.queued_user_message_texts(),
+                ["first", "second"]
+            );
+            assert_eq!(
+                app.active_turn_id_for_thread(id).await.as_deref(),
+                Some(turn_id)
+            );
+        } else {
+            app.chat_widget.handle_server_notification(
+                turn_completed_notification(id, turn_id, TurnStatus::Interrupted),
+                /*replay_kind*/ None,
+            );
+            assert_eq!(app.chat_widget.composer_text_with_pending(), "");
+            for client_id in [None, client_id] {
+                let confirmed = client_id.is_some();
+                assert_eq!(app.chat_widget.queued_user_message_texts(), ["first"]);
+                app.chat_widget.handle_server_notification(
+                    ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+                        id.to_string(),
+                        turn_id.into(),
+                        ThreadItemPayload::UserMessage {
+                            id: format!("user-item-{confirmed}"),
+                            client_id,
+                            content: input.clone(),
+                        },
+                        /*started_at_ms*/ None,
+                        /*completed_at_ms*/ 1,
+                    )),
+                    /*replay_kind*/ None,
+                );
+            }
+            assert!(app.chat_widget.queued_user_message_texts().is_empty());
+        }
+        assert!(commands.try_recv().is_err());
+        assert!(
+            !std::iter::from_fn(|| ops.try_recv().ok()).any(|op| matches!(op, Op::UserTurn { .. }))
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn queued_start_rejection_restores_the_draft() -> Result<()> {
+    use crate::ThreadParamsMode;
+    use codex_app_server_client::CloudOperation;
+
+    for (mode, code, message) in [
+        (ThreadParamsMode::Embedded, -32600, "input was rejected"),
+        (ThreadParamsMode::Embedded, -32001, "server overloaded"),
+        (
+            ThreadParamsMode::Cloud,
+            -32602,
+            "Prepare local images before sending them to Cloud.",
+        ),
+    ] {
+        let (mut app, _events, mut ops) = make_test_app_with_channels().await;
+        let id = ThreadId::new();
+        app.enqueue_primary_thread_session(
+            test_thread_session(id, app.config.cwd.to_path_buf()),
+            Vec::new(),
+        )
+        .await?;
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(id, "before-queue"),
+            /*replay_kind*/ None,
+        );
+        app.chat_widget.apply_external_edit("queued draft".into());
+        app.chat_widget.handle_key_event(KeyCode::Tab.into());
+        app.chat_widget.handle_server_notification(
+            turn_completed_notification(id, "before-queue", TurnStatus::Completed),
+            /*replay_kind*/ None,
+        );
+        let op = next_user_turn_op(&mut ops);
+        let Op::UserTurn {
+            cloud_submission: crate::app_command::CloudSubmissionIntent::StartIfIdle,
+            client_user_message_id,
+            items,
+            ..
+        } = &op
+        else {
+            panic!("expected the deferred draft");
+        };
+        let expected = (Some(client_user_message_id.clone()), items.clone());
+        let (client, mut commands, _server_events) =
+            codex_app_server_client::CloudClient::channel(/*capacity*/ 1);
+        let mut server = AppServerSession::new(
+            crate::backend_id::BackendId::new(),
+            codex_app_server_client::AppServerClient::Cloud(client),
+            mode,
+        );
+        let (result, ()) = tokio::join!(app.submit_thread_op(&mut server, id, op), async {
+            let command = commands.recv().await.unwrap();
+            let CloudOperation::Request(request) = command.operation else {
+                panic!("queued draft must use typed turn/start");
+            };
+            let ClientRequest::TurnStart { params, .. } = *request else {
+                panic!("expected turn/start");
+            };
+            assert_eq!((params.client_user_message_id, params.input), expected);
+            command
+                .response
+                .send(Ok(Err(JSONRPCErrorError {
+                    code,
+                    message: message.into(),
+                    data: None,
+                })))
+                .unwrap();
+        });
+        result?;
+        assert_eq!(app.chat_widget.composer_text_with_pending(), "queued draft");
+        assert!(app.chat_widget.queued_user_message_texts().is_empty());
+        assert!(commands.try_recv().is_err());
+    }
+    Ok(())
+}
 
 pub(super) type RecordedRequests = Arc<Mutex<Vec<JSONRPCRequest>>>;
 pub(super) type RecordingAppServer = (AppServerSession, RecordedRequests, JoinHandle<Result<()>>);
@@ -340,6 +881,7 @@ async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()>
     app.harness_overrides.cwd = Some(app.config.cwd.to_path_buf());
     requests.lock().expect("request recorder lock").clear();
     let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.backend_preference_context.local_cwd = None;
     app.resume_target_session(
         &mut tui,
         &mut app_server,
@@ -352,6 +894,10 @@ async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()>
         },
     )
     .await?;
+    assert_eq!(
+        app.backend_preference_context.local_cwd.as_deref(),
+        Some(app.chat_widget.config_ref().cwd.as_path()),
+    );
     assert_eq!(recorded_params(&requests, "thread/resume").len(), 1);
     assert!(recorded_params(&requests, "thread/unsubscribe").is_empty());
     assert!(!app.chat_widget.is_external_writer_view());
@@ -885,7 +1431,6 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                 }
             }
         }
-        crate::app::alab_startup_fixture::proxy_loop_ended(Path::new(&codex_home)); // ALAB(startup-test-fixture): observe the socket-loop end separately from backend drain.
         embedded.shutdown().await?;
         Ok(())
     });
@@ -944,6 +1489,49 @@ async fn make_history_test_app() -> Result<(Box<App>, tempfile::TempDir)> {
     app.config.codex_home = codex_home.path().to_path_buf().abs();
     app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
     Ok((app, codex_home))
+}
+
+#[tokio::test]
+async fn cloud_resume_with_current_directory_needs_no_cwd_override() -> Result<()> {
+    use codex_config::types::ResumeCwdMode;
+
+    let (mut app, codex_home) = make_history_test_app().await?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "[tui]\nresume_cwd = 'current'\n",
+    )?;
+    app.launch_cwd = codex_home.path().to_path_buf();
+    let mut backend_settings = app.backend_settings();
+    backend_settings.target = AppServerTarget::Cloud;
+    let (client, _commands, _events) =
+        codex_app_server_client::CloudClient::channel(/*capacity*/ 1);
+    let mut server = AppServerSession::new(
+        crate::backend_id::BackendId::new(),
+        codex_app_server_client::AppServerClient::Cloud(client),
+        crate::app_server_session::ThreadParamsMode::Cloud,
+    );
+    let session = SessionTarget {
+        backend_id: server.backend_id(),
+        path: None,
+        thread_id: ThreadId::new(),
+        cwd: Some(test_path_buf("/workspace")),
+        history_mode: None,
+    };
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    let (config, local_settings) = Box::pin(app.resume_config_for_target(
+        &mut tui,
+        &mut server,
+        &session,
+        super::super::resume_preparation::ResumeSource::Backend(&backend_settings),
+    ))
+    .await
+    .map_err(|_| color_eyre::eyre::eyre!("Cloud resume should allow its own workspace"))?;
+    assert_eq!(
+        (config.cwd, local_settings.tui.resume_cwd),
+        (app.config.cwd.clone(), Some(ResumeCwdMode::Current))
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -1211,7 +1799,7 @@ async fn external_transport_registers_dynamic_tools_and_finds_task_mentions() ->
     }
     let target_id = started.session.thread_id;
     app_server
-        .thread_inject_items(target_id, vec![App::side_boundary_prompt_item()])
+        .thread_inject_items(target_id, vec![side_conversation_boundary()])
         .await?;
     crate::init_state_db_for_app_server_target(&app.config, &crate::AppServerTarget::Embedded)
         .await?
@@ -2493,6 +3081,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
     ];
     items.extend((0..97).map(|index| {
         TurnItem::AgentMessage(AgentMessageItem {
+            moderation: None,
             id: format!("review-output-{index}"),
             content: vec![AgentMessageContent::Text {
                 text: format!("review output {index}"),
@@ -2521,6 +3110,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
     }))
     .chain(items.into_iter().map(|item| {
         EventMsg::ItemCompleted(ItemCompletedEvent {
+            content_token_count: None,
             thread_id,
             turn_id: "cross-page-review-turn".to_string(),
             item,
@@ -2593,6 +3183,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
                 cursor: Some(ThreadItemsListCursor::Opaque(cursor.clone())),
                 limit: Some(crate::app_server_session::HISTORY_ITEM_PAGE_LIMIT),
                 sort_direction: Some(SortDirection::Desc),
+                defer_output: None,
             },
         })
         .await?;
@@ -2685,9 +3276,11 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
     }))
     .chain((0..305).map(|index| {
         EventMsg::ItemCompleted(ItemCompletedEvent {
+            content_token_count: None,
             thread_id,
             turn_id: "multi-page-turn".to_string(),
             item: TurnItem::AgentMessage(AgentMessageItem {
+                moderation: None,
                 id: format!("history-item-{index}"),
                 content: vec![AgentMessageContent::Text {
                     text: format!("history output {index}"),
@@ -3101,9 +3694,11 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
     }))
     .chain((0..120).map(|index| {
         EventMsg::ItemCompleted(ItemCompletedEvent {
+            content_token_count: None,
             thread_id,
             turn_id: "scrollback-pagination-turn".to_string(),
             item: TurnItem::AgentMessage(AgentMessageItem {
+                moderation: None,
                 id: format!("scrollback-item-{index}"),
                 content: vec![AgentMessageContent::Text {
                     text: format!("scrollback output {index}"),
@@ -4667,7 +5262,7 @@ async fn changing_directory_preserves_project_trust_permissions_history_and_hook
 }
 
 #[test]
-fn fresh_session_applies_requested_name() -> Result<()> {
+fn fresh_session_keeps_its_name_and_draft_when_cycling_backends() -> Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
     std::thread::Builder::new()
@@ -4682,6 +5277,43 @@ fn fresh_session_applies_requested_name() -> Result<()> {
                 let codex_home = tempdir()?;
                 app.config.codex_home = codex_home.path().to_path_buf().abs();
                 app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                app.config.cli_auth_credentials_store_mode = codex_login::AuthCredentialsStoreMode::File;
+                app.local_settings.user_config_path = codex_home.path().join("config.toml").abs();
+                let local_project = tempdir()?;
+                std::fs::create_dir(local_project.path().join(".git"))?;
+                std::fs::write(local_project.path().join(".git/HEAD"), "ref: refs/heads/main\n")?;
+                app.launch_cwd = local_project.path().to_path_buf();
+                app.config.cwd = local_project.path().abs();
+                app.backend_preference_context =
+                    super::super::backend_selection::BackendPreferenceContext::new(&app.config, Some(app.launch_cwd.clone()));
+                let write_user = |user: &str| {
+                    app_test_support::write_chatgpt_auth(
+                        codex_home.path(),
+                        app_test_support::ChatGptAuthFixture::new("test-token")
+                            .chatgpt_user_id(user)
+                            .plan_type("plus"),
+                        codex_login::AuthCredentialsStoreMode::File,
+                    )
+                    .expect("write preference user")
+                };
+                write_user("user-a");
+                let project_key = codex_config::loader::project_trust_key(local_project.path());
+                let mut expected_defaults = std::collections::BTreeMap::from([
+                    (project_key.clone(), std::collections::BTreeMap::from([
+                        ("chatgpt:user-b".to_string(), "local".to_string()),
+                    ])),
+                    ("other-project".to_string(), std::collections::BTreeMap::from([
+                        ("chatgpt:user-a".to_string(), "remote.other".to_string()),
+                    ])),
+                ]);
+                app.local_settings.tui.default_hosts = expected_defaults.clone();
+                std::fs::write(
+                    &app.local_settings.user_config_path,
+                    toml::to_string(&serde_json::json!({
+                        "projects": { (project_key.clone()): { "trust_level": "trusted" } },
+                        "tui": { "default_hosts": expected_defaults },
+                    }))?,
+                )?;
                 let (mut app_server, requests, proxy) = start_recording_app_server(
                     &app.config,
                     /*blocked_thread_list*/ None,
@@ -4689,6 +5321,10 @@ fn fresh_session_applies_requested_name() -> Result<()> {
                 )
                 .await?;
                 let mut tui = crate::tui::test_support::make_test_tui()?;
+                let init = app.chatwidget_init_for_forked_or_resumed_thread(
+                    &mut tui, app.config.clone(), /*initial_user_message*/ None,
+                );
+                app.replace_chat_widget(ChatWidget::new_with_app_event(init));
 
                 app.start_fresh_session(
                     &mut tui,
@@ -4703,6 +5339,7 @@ fn fresh_session_applies_requested_name() -> Result<()> {
                     .chat_widget
                     .thread_id()
                     .expect("fresh session should have a thread id");
+                assert!(app.agents_overview.blank_sessions.contains_key(&thread_id));
                 assert_eq!(app.chat_widget.thread_name(), Some("Add User".to_string()));
                 assert!(
                     requests
@@ -4716,8 +5353,134 @@ fn fresh_session_applies_requested_name() -> Result<()> {
                     .thread_read(thread_id, /*include_turns*/ false)
                     .await?;
                 assert_eq!(thread.name.as_deref(), Some("Add User"));
+                // Deliver the metadata notification that populates Command Center.
+                app.track_agents_overview_notification(&ServerNotification::ThreadStarted(
+                    codex_app_server_protocol::ThreadStartedNotification { thread: thread.clone() },
+                ));
+                let retained_thread = ThreadId::new();
+                let mut retained = thread;
+                retained.id = retained_thread.to_string();
+                retained.name = Some("Other conversation".to_string());
+                app.agents_overview.threads.insert(retained_thread, Some(retained));
 
-                app_server.shutdown().await?;
+                app.chat_widget.insert_str("unsent draft");
+                app.agents_overview.pending_usage = Some((thread_id, uuid::Uuid::new_v4()));
+                app.agents_overview.usage_disabled = true;
+                let cwd = tempdir()?;
+                let mut settings = app.backend_settings();
+                settings.config.cwd = cwd.path().to_path_buf().abs();
+                let other = crate::start_embedded_app_server_for_picker(&settings.config).await?;
+                let destination = other.backend_id();
+                let source = app_server.backend_id();
+                let mut backends = crate::app::backend_sessions::BackendSessions::from_initial(
+                    app_server,
+                    vec![other],
+                );
+                backends.settings.insert(destination, settings);
+                backends.set_preference_key(source, "local");
+                backends.set_preference_key(destination, "remote.work");
+                assert_eq!(app.other_new_session_backend(&backends).await, None);
+                app.handle_event(
+                    &mut tui,
+                    backends.session_at_mut(backends.displayed),
+                    AppEvent::ChooseNewSessionCheckout { name: None },
+                ).await?;
+                assert!(render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("Use current Git worktree"));
+                app.chat_widget.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                assert_eq!(app.current_displayed_thread_id(), Some(thread_id));
+                assert_eq!(recorded_params(&requests, "thread/start").len(), 1);
+                let preference_path = app.local_settings.user_config_path.clone();
+                let saved_defaults = || -> Result<std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>> {
+                    let saved: toml::Value =
+                        toml::from_str(&std::fs::read_to_string(&preference_path)?)?;
+                    Ok(saved["tui"]["default_hosts"].clone().try_into()?)
+                };
+                assert!(app.can_cycle_conversation_backend());
+                app.start_new_session_on_other_backend(
+                    &mut tui,
+                    &mut backends,
+                    destination,
+                    crate::app::backend_selection::NewBackendSession::CarryDraft,
+                )
+                .await
+                .expect("switch the named conversation with its draft");
+                assert_eq!(backends.displayed_owner(), destination);
+                expected_defaults.get_mut(&project_key).unwrap().insert(
+                    "chatgpt:user-a".to_string(), "remote.work".to_string(),
+                );
+                assert_eq!(saved_defaults()?, expected_defaults);
+                assert_eq!(app.local_settings.tui.default_hosts, expected_defaults);
+                write_user("user-b");
+                assert_eq!(app.other_new_session_backend(&backends).await, Some(source));
+                write_user("user-a");
+                assert_eq!(app.other_new_session_backend(&backends).await, None);
+
+                assert_eq!(app.agents_overview.pending_usage, None);
+                assert!(!app.agents_overview.usage_disabled);
+                assert_eq!(app.config.cwd.as_path(), cwd.path());
+                assert_eq!(app.chat_widget.thread_name().as_deref(), Some("Add User"));
+                assert_eq!(app.chat_widget.composer_text_with_pending(), "unsent draft");
+                let destination_thread = app.chat_widget.thread_id().expect("destination thread");
+                assert_ne!(destination_thread, thread_id);
+                let view = app.agents_overview_view(
+                    app.agents_overview.threads.values().flatten().cloned().collect(),
+                    /*selected_thread_id*/ None,
+                );
+                assert_eq!(view.thread_ids(), vec![retained_thread]);
+                insta::assert_debug_snapshot!(view.thread_ids().into_iter().map(|id| {
+                    app.agents_overview.threads[&id].as_ref().unwrap().name.as_deref().unwrap()
+                }).collect::<Vec<_>>(), @r#"
+                [
+                    "Other conversation",
+                ]
+                "#);
+                assert!(!app.agents_overview.blank_sessions.contains_key(&thread_id));
+                assert!(!app.agents_overview.input_states.contains_key(&thread_id));
+                assert!(!app.thread_event_channels.contains_key(&thread_id));
+                assert_eq!(
+                    recorded_params(&requests, "thread/unsubscribe"),
+                    vec![serde_json::json!({"threadId": thread_id.to_string()})]
+                );
+                app.start_new_session_on_other_backend(
+                    &mut tui,
+                    &mut backends,
+                    source,
+                    crate::app::backend_selection::NewBackendSession::CarryDraft,
+                )
+                .await
+                .expect("switch back with the draft");
+                assert_eq!(backends.displayed_owner(), source);
+                expected_defaults.get_mut(&project_key).unwrap().insert(
+                    "chatgpt:user-a".to_string(), "local".to_string(),
+                );
+                assert_eq!(saved_defaults()?, expected_defaults);
+
+                assert_eq!(app.chat_widget.composer_text_with_pending(), "unsent draft");
+                assert!(
+                    !app.agents_overview
+                        .blank_sessions
+                        .contains_key(&destination_thread)
+                );
+                assert!(
+                    !app.agents_overview
+                        .input_states
+                        .contains_key(&destination_thread)
+                );
+                assert!(!app.thread_event_channels.contains_key(&destination_thread));
+                // An automatic fresh session may use another connection without changing
+                // the user's last explicit choice.
+                app.start_new_session_on_other_backend(
+                    &mut tui,
+                    &mut backends,
+                    destination,
+                    crate::app::backend_selection::NewBackendSession::Fresh { name: None },
+                )
+                .await
+                .expect("start without an explicit default change");
+                assert_eq!(saved_defaults()?, expected_defaults);
+                assert_eq!(app.local_settings.tui.default_hosts, expected_defaults);
+                assert_eq!(app.new_thread_host_preference().await, Some("local"));
+                backends.shutdown().await?;
                 proxy.await??;
                 Ok(())
             })
@@ -5181,6 +5944,7 @@ async fn command_center_read_only_open_requests_and_failure_preservation() -> Re
                         collaboration_mode_kind: Default::default(),
                     }),
                     EventMsg::ItemCompleted(ItemCompletedEvent {
+                        content_token_count: None,
                         thread_id,
                         turn_id: format!("saved-turn-{index}"),
                         item: TurnItem::UserMessage(UserMessageItem::new(&[CoreUserInput::Text {
@@ -5191,9 +5955,11 @@ async fn command_center_read_only_open_requests_and_failure_preservation() -> Re
                         completed_at_ms: 0,
                     }),
                     EventMsg::ItemCompleted(ItemCompletedEvent {
+                        content_token_count: None,
                         thread_id,
                         turn_id: format!("saved-turn-{index}"),
                         item: TurnItem::AgentMessage(AgentMessageItem {
+                            moderation: None,
                             id: format!("saved-answer-{index}"),
                             content: vec![AgentMessageContent::Text {
                                 text: "Saved final answer".to_string(),

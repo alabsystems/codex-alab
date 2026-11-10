@@ -1654,6 +1654,7 @@ async fn turn_on(h: &Harness, store: &ExtensionData, id: &str, ours: bool, text:
     });
     h.autopilot.on_item_completed(store, &turn, &opened).await;
     let reply = TurnItem::AgentMessage(AgentMessageItem {
+        moderation: None,
         id: "agent-1".to_string(),
         content: vec![AgentMessageContent::Text {
             text: text.to_string(),
@@ -3022,6 +3023,7 @@ async fn wake_turn(h: &Harness, id: &str, during: impl FnOnce(), said: &[&str]) 
             MessagePhase::Commentary
         };
         let reply = TurnItem::AgentMessage(AgentMessageItem {
+            moderation: None,
             id: format!("agent-{i}"),
             content: vec![AgentMessageContent::Text {
                 text: (*text).to_string(),

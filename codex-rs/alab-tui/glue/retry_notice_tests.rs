@@ -268,6 +268,7 @@ async fn actual_content_and_item_progress_restore_the_previous_status() {
             thread_id: thread_id(&chat),
             turn_id: TURN.into(),
             completed_at_ms: 0,
+            content_token_count: None,
             item: ThreadItem::untimed(
                 codex_app_server_protocol::ThreadItemPayload::ContextCompaction {
                     id: "compact".into(),

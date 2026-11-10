@@ -51,7 +51,9 @@ impl SessionTask for CompletedTask {
         _token: CancellationToken,
     ) -> SessionTaskResult {
         self.0.notified().await;
-        Ok(Some("original child completed".into()))
+        Ok(Some(crate::tasks::alab_test_output::completed(
+            "original child completed",
+        )))
     }
 }
 
@@ -533,6 +535,7 @@ async fn check_restore_memory(
                     turn_id: child_turn,
                     thread_settings: Default::default(),
                     trace: None,
+                    prompt_cache_ttl: None,
                     cyber_access_program: None,
                 },
                 unadmitted

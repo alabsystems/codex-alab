@@ -5,7 +5,7 @@
 //! hooks in codex-tui. Each answer holds only in the codex binary
 //! ([`codex_alab_core::active`]); everywhere else, upstream's tests included, it is
 //! upstream's behavior. Config does most of the rest (`codex-rs/alab-core/defaults.toml`).
-//! [`banner`] is the rainbow kitty launch banner's renderer; its codex-tui cell lives in
+//! [`banner`] is the Codex welcome card's renderer; its codex-tui cell lives in
 //! `glue/banner_cell.rs` and its composer border's codex side in `glue/composer_border.rs`
 //! (both off under codex-tui's own tests unless a glue test forces them).
 
@@ -23,6 +23,7 @@ pub mod boxes;
 pub mod context;
 pub mod daemon_packages;
 pub mod enrollment_ui;
+pub mod goal_interrupt;
 pub mod identity;
 pub mod interface;
 pub mod life;

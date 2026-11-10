@@ -1505,25 +1505,26 @@ fn a_same_key_replacement_keeps_its_own_selected_act() {
 #[test]
 fn fresh_native_or_policy_changes_reject_queued_upgrade_and_preserve_only_unsuperseded_acts() {
     native_test(|| async {
-        tokio::time::timeout(Duration::from_secs(60), async {
-            for change in [
-                "none",
-                "draft",
-                "turn",
-                "turn-hup",
-                "turn-ended",
-                "turn-ended-hup",
-                "thread",
-                "policy",
-                "cancel",
-                "hup",
-                "term-stop",
-                "int-stop",
-                "normal-stop",
-                "write-failed",
-                "write-input",
-                "no-carry",
-            ] {
+        for change in [
+            "none",
+            "draft",
+            "turn",
+            "turn-hup",
+            "turn-ended",
+            "turn-ended-hup",
+            "thread",
+            "policy",
+            "cancel",
+            "hup",
+            "term-stop",
+            "int-stop",
+            "normal-stop",
+            "write-failed",
+            "write-input",
+            "no-carry",
+        ] {
+            // Keep the existing hang bound for each independently isolated fixture.
+            tokio::time::timeout(Duration::from_secs(60), async {
                 let mut h = Harness::new().await;
                 if change == "no-carry" {
                     Autopilot::cancel_timer(&h.rt).await;
@@ -1575,7 +1576,7 @@ fn fresh_native_or_policy_changes_reject_queued_upgrade_and_preserve_only_unsupe
                         .shutdown_and_wait()
                         .await
                         .expect("native shutdown");
-                    continue;
+                    return;
                 }
                 let request = tokio::select! {
                     request = h.requests.recv() => request.unwrap_or_else(|| {
@@ -1743,10 +1744,10 @@ fn fresh_native_or_policy_changes_reject_queued_upgrade_and_preserve_only_unsupe
                     .shutdown_and_wait()
                     .await
                     .unwrap_or_else(|err| panic!("{err}"));
-            }
-        })
-        .await
-        .unwrap_or_else(|err| panic!("handoff hang detector: {err}"));
+            })
+            .await
+            .unwrap_or_else(|err| panic!("handoff hang detector ({change}): {err}"));
+        }
     });
 }
 
@@ -1874,8 +1875,8 @@ fn explicit_off_persists_the_end_of_recovery_before_a_remote_release_answers() {
 #[test]
 fn the_park_at_an_off_writes_its_record_with_the_thread_list_let_go() {
     native_test(|| async {
-        tokio::time::timeout(Duration::from_secs(120), async {
-            for at_turn_end in [false, true] {
+        for at_turn_end in [false, true] {
+            tokio::time::timeout(Duration::from_secs(60), async {
                 let h = Harness::new().await;
                 let flushes = Arc::new(AtomicUsize::new(0));
                 let under_threads = Arc::new(AtomicBool::new(false));
@@ -1939,9 +1940,11 @@ fn the_park_at_an_off_writes_its_record_with_the_thread_list_let_go() {
                     .shutdown_and_wait()
                     .await
                     .unwrap_or_else(|err| panic!("{err}"));
-            }
-        })
-        .await
-        .unwrap_or_else(|err| panic!("park flush hang detector: {err}"));
+            })
+            .await
+            .unwrap_or_else(|err| {
+                panic!("at_turn_end={at_turn_end}: park flush hang detector: {err}")
+            });
+        }
     });
 }

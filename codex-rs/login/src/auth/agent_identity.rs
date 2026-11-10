@@ -116,6 +116,7 @@ impl RetryableAgentIdentityRegistrationError {
 
 #[derive(Clone, Debug)]
 pub struct AgentIdentityAuth {
+    pub alab_epoch: crate::auth::AlabSourceSnapshot, // ALAB(accounts): runtime-only source provenance.
     record: Arc<AgentIdentityAuthRecord>,
 }
 
@@ -148,6 +149,7 @@ impl AgentIdentityAuth {
             );
         }
         Ok(Self {
+            alab_epoch: Default::default(), // ALAB(accounts): cache publication binds this snapshot.
             record: Arc::new(record),
         })
     }
@@ -166,6 +168,7 @@ impl AgentIdentityAuth {
     fn from_initialized_record(mut record: AgentIdentityAuthRecord, run_task_id: String) -> Self {
         record.task_id = Some(run_task_id);
         Self {
+            alab_epoch: Default::default(), // ALAB(accounts): cache publication binds this snapshot.
             record: Arc::new(record),
         }
     }
@@ -570,7 +573,7 @@ mod tests {
         })
     }
 
-    const TEST_AGENT_IDENTITY_RSA_PRIVATE_KEY_PEM: &[u8] = br#"-----BEGIN PRIVATE KEY-----
+    const TEST_AGENT_IDENTITY_RSA_PRIVATE_KEY_PEM: &[u8] = /* ALAB(publish): public upstream synthetic fixture. gitleaks:allow */ br#"-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDWpAXYypOsYAwO
 bvBduMk/mxaoYDze0AZSzaSzLuIlcsl2EKDgC3AabhIWXh/qTGEJLOU3VB1e5mO9
 FPbBlmIZSL3FQTbyt/hYutPFKfCou5PLmScw/TzILS3/RhT8UY9kxxZvXiEbTki9

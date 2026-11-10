@@ -397,6 +397,7 @@ fn message(text: &str) -> TurnItem {
 /// The agent's answer, as core completes its item.
 fn answer(text: &str) -> TurnItem {
     TurnItem::AgentMessage(codex_protocol::items::AgentMessageItem {
+        moderation: None,
         id: "the agent's answer".into(),
         content: vec![codex_protocol::items::AgentMessageContent::Text { text: text.into() }],
         phase: None,

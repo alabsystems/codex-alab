@@ -19,6 +19,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::io;
 
+#[path = "assignment_target.rs"]
+mod target;
+pub use target::target_at;
+
 fn unavailable() -> io::Error {
     io::Error::other("Native account assignment must be reconciled.")
 }

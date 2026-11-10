@@ -598,6 +598,11 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
     else {
         return false;
     };
+    // Recovery can keep polling until an earned reset arrives. Keep the exact
+    // authenticated request observable during that wait, before the later quota
+    // retry path is reached; cancellation or restoration drops this lease.
+    let _quota_observation =
+        crate::session::alab_exec_recovery_options::quota_observation::publish(sess, turn);
     codex_alab_quota_recovery::recover_weekly(
         &sess.services.auth_manager,
         &turn.config.codex_home,
@@ -605,6 +610,7 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
         turn.config.http_client_factory(),
         &turn.sub_id,
         &state,
+        details.resets_at.as_ref().map(chrono::DateTime::timestamp),
     )
     .await
 }

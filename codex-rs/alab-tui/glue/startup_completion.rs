@@ -1,7 +1,7 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! Test-only startup and shutdown witnesses for the current-thread startup fixtures.
+//! Test-only startup witnesses for the current-thread startup fixtures.
 //! The returned scope outlives App::run and holds no app-server client or request handle.
 
 use super::App;
@@ -9,12 +9,10 @@ use super::AppExitInfo;
 use super::ExitReason;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
-use crate::app_server_session::AppServerSession;
 use crate::legacy_core::config::Config;
 use codex_protocol::ThreadId;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
-use color_eyre::eyre::eyre;
 use std::cell::RefCell;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -23,46 +21,38 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 
 struct Observer {
     home: PathBuf,
-    proxy_home: PathBuf,
     attached: Option<oneshot::Sender<ThreadId>>,
-    closed: Option<oneshot::Sender<()>>,
 }
 
 thread_local! {
     static OBSERVER: RefCell<Option<Observer>> = const { RefCell::new(None) };
 }
 
-/// One current-thread fixture owns this observation until its proxy has drained.
+/// One current-thread fixture owns this observation until its scope ends.
 /// This is deliberately !Send: another test/runtime cannot adopt the scope.
 pub(super) struct StartupWitness {
     home: PathBuf,
     attached: oneshot::Receiver<ThreadId>,
-    closed: oneshot::Receiver<()>,
     _same_thread: PhantomData<Rc<()>>,
 }
 
 impl StartupWitness {
-    fn observe(home: &Path, proxy_home: &Path) -> Self {
+    fn observe(home: &Path) -> Self {
         let (attached_tx, attached) = oneshot::channel();
-        let (closed_tx, closed) = oneshot::channel();
         OBSERVER.with(|slot| {
             let mut slot = slot.borrow_mut();
             assert!(slot.is_none(), "one startup observer per fixture thread");
             *slot = Some(Observer {
                 home: home.to_path_buf(),
-                proxy_home: proxy_home.to_path_buf(),
                 attached: Some(attached_tx),
-                closed: Some(closed_tx),
             });
         });
         Self {
             home: home.to_path_buf(),
             attached,
-            closed,
             _same_thread: PhantomData,
         }
     }
@@ -96,35 +86,10 @@ impl StartupWitness {
         assert!(matches!(exit.exit_reason, ExitReason::UserRequested));
         Ok(())
     }
-
-    pub(super) async fn until_proxy_drained(
-        mut self,
-        mut proxy: JoinHandle<Result<()>>,
-    ) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(60), async {
-            tokio::select! {
-                biased;
-                closed = &mut self.closed => closed.wrap_err("proxy close observer was dropped"),
-                result = &mut proxy => {
-                    result??;
-                    Err(eyre!("proxy exited without its socket-loop witness"))
-                }
-            }
-        })
-        .await
-        .wrap_err("recording proxy did not finish its client socket loop")??;
-        tokio::time::timeout(Duration::from_secs(60), proxy)
-            .await
-            .wrap_err("embedded server did not drain after the proxy socket loop")???;
-        Ok(())
-    }
 }
 
-pub(super) fn observe(server: &AppServerSession, config: &Config) -> StartupWitness {
-    let proxy_home = server
-        .server_codex_home()
-        .expect("recording proxy advertises its own codex home");
-    StartupWitness::observe(config.codex_home.as_path(), Path::new(proxy_home))
+pub(super) fn observe(config: &Config) -> StartupWitness {
+    StartupWitness::observe(config.codex_home.as_path())
 }
 
 impl Drop for StartupWitness {
@@ -178,22 +143,6 @@ fn attached(
     })
 }
 
-/// The recording proxy finished its socket loop; backend drain still follows.
-pub(super) fn proxy_loop_ended(home: &Path) {
-    proxy_closed(home);
-}
-
-fn proxy_closed(home: &Path) {
-    OBSERVER.with(|slot| {
-        if let Some(observer) = slot.borrow_mut().as_mut()
-            && observer.proxy_home == home
-            && let Some(sender) = observer.closed.take()
-        {
-            let _ = sender.send(());
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,7 +153,7 @@ mod tests {
         let home = Path::new("/fixture/current");
         let id = ThreadId::new();
         let other = ThreadId::new();
-        let mut witness = StartupWitness::observe(home, home);
+        let mut witness = StartupWitness::observe(home);
         for (source, started, pending, primary, displayed) in [
             (home, Some(id), true, Some(id), Some(id)),
             (home, None, false, Some(id), Some(id)),
@@ -224,20 +173,5 @@ mod tests {
         }
         attached(home, Some(id), false, Some(id), Some(id));
         assert_eq!(witness.attached.try_recv(), Ok(id));
-    }
-
-    #[test]
-    fn shutdown_observation_survives_return_and_excludes_the_previous_home() {
-        fn begin(home: &Path) -> StartupWitness {
-            StartupWitness::observe(Path::new("/fixture/client"), home)
-        }
-        let old = Path::new("/fixture/old");
-        drop(begin(old));
-        let current = Path::new("/fixture/current");
-        let mut witness = begin(current);
-        proxy_closed(old);
-        assert_eq!(witness.closed.try_recv(), Err(TryRecvError::Empty));
-        proxy_closed(current);
-        assert_eq!(witness.closed.try_recv(), Ok(()));
     }
 }

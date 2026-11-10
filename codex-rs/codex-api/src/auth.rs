@@ -32,6 +32,7 @@ impl From<AuthError> for TransportError {
 /// Header-only providers can implement `add_auth_headers`; providers that sign
 /// complete requests can override `apply_auth`.
 pub trait AuthProvider: Send + Sync {
+    fn alab_source_policy(&self) -> Result<Option<codex_http_client::NetworkPolicy>, AuthError> { Ok(None) } // ALAB(accounts): absent source policy is unknown coverage, not NoNativeReader.
     /// Adds any auth headers that are available without request body access.
     ///
     /// Implementations should be cheap and non-blocking. This method is also

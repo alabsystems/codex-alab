@@ -20,6 +20,13 @@ fn identity_of_build(
     auth: Option<&CodexAuth>,
     build: Option<&str>, // ALAB(model-poll): the build, or None for upstream's identity
 ) -> CoreResult<String> {
+    // Provider bearer overrides replace the login credential and its account metadata.
+    let auth =
+        if provider_info.env_key.is_some() || provider_info.experimental_bearer_token.is_some() {
+            None
+        } else {
+            auth
+        };
     let mut api_provider = resolve_api_provider(provider_info, auth)?;
     let mut digest = Sha256::new();
     // Length-prefix every field to avoid ambiguity between adjacent values.

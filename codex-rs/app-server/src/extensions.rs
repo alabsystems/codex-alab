@@ -85,7 +85,7 @@ pub(crate) fn thread_extensions(
         codex_queue_extension::install(&mut builder, queue_service);
     }
     codex_history_notes_extension::install(&mut builder, auth_manager.clone());
-    codex_core::install_agent_message_board(&mut builder, thread_manager.clone());
+    crate::install_agent_message_board(&mut builder, thread_manager.clone());
     codex_alab_autopilot::install(&mut builder, thread_manager.clone(), goal_service.clone()); // ALAB(autopilot): native autopilot under a proven aterm claim; before guardian_v2 so approvals reach it (here, not after goals: the goal block moves goal_service)
     if let Some(state_db) = state_db {
         codex_goal_extension::install_with_backend(

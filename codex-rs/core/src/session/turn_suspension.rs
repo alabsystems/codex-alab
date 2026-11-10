@@ -49,6 +49,9 @@ pub(super) async fn suspend_turn_and_shutdown(
         CodexErr::Fatal("accepted root turn suspension had no running task".to_string())
     })?;
     let turn_id = task.turn_context.sub_id.clone();
+    // A suspended task emits no terminal outcome.
+    drop(task.outcome_handoff);
+    let alab_cleanup = super::alab_assignment::suspension_cleanup(&task.turn_context); // ALAB(accounts): observe the exact removed turn, never a process/account census.
     // Normal shutdown records a terminal turn event, preventing another worker from
     // recovering this turn under its original ID. Cancel the task without that event.
     super::alab_exec_recovery_options::transfer::mark(&task.turn_context); // ALAB(exec-transfer): distinguish an account handoff from a user abort.
@@ -76,6 +79,15 @@ pub(super) async fn suspend_turn_and_shutdown(
             let _ = task_handle.await;
         }
     }
+    // Save any initial input the task had not claimed so a new worker can recover the turn.
+    let recorded = session
+        .record_pending_initial_input(
+            &task.turn_context,
+            &turn.turn_state,
+            task.pending_initial_input,
+            /*abort_reason*/ None,
+        )
+        .await;
     // Pending accepted input and interactive waiters live only in this process. Input
     // is retained for native exec; other callers retain the ordinary shutdown behavior.
     super::input_queue::exec_input_state::freeze(session, &turn, &turn_id).await; // ALAB(exec-input): keep accepted data before the removed turn is dropped.
@@ -89,7 +101,9 @@ pub(super) async fn suspend_turn_and_shutdown(
     // If either persistence step fails, do not report success: the current worker
     // retains ownership until worker-failure recovery can take responsibility.
     handlers::shutdown_session_runtime(session).await;
+    Box::pin(super::alab_assignment::finish_suspension_cleanup(alab_cleanup)).await?; // ALAB(accounts): ordinary suspension waits its owned native End ACK, not unrelated managers.
     persistence.finish(&turn_id).await?; // ALAB(exec-ephemeral): stopped producers retain the same unfinished turn.
+    recorded?;
     // Announce completion only after extension cleanup and writer closure so a
     // replacement worker cannot write the same thread concurrently.
     session

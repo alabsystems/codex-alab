@@ -171,9 +171,12 @@ impl Registration {
                 session,
                 io,
                 SessionSource::Internal(InternalSessionSource::Review),
-                None,
             )
             .await?;
+        let (created, acceptance) = created;
+        if let Some(accepted) = acceptance {
+            accepted.await;
+        }
         let thread = created.thread;
         let result = thread.io.clone();
         watch_private_lifetime(&self.manager, &thread);

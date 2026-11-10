@@ -95,11 +95,14 @@ impl std::fmt::Debug for Borrow {
 pub struct Preload {
     pub registration: String,
     pub source: Source,
+    pub sequence: crate::native_preload::Sequence,
 }
 impl Preload {
-    pub fn validate(&self, operation: &str) -> io::Result<()> {
+    pub fn validate(&self, attempt: &crate::native_preload::Body) -> io::Result<()> {
         self.source.validate()?;
-        if self.source.operation != operation || !valid_hex(&self.registration, 32) {
+        attempt.validate()?;
+        if self.source.operation != attempt.operation || self.sequence != attempt.sequence
+            || !valid_hex(&self.registration, 32) {
             return Err(unavailable());
         }
         Ok(())
@@ -127,6 +130,7 @@ pub enum NoNativeReader {
 }
 
 /// A no-cache observation is explicit; it cannot be represented by fabricated source generations.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Loaded {
     /// A verified direct reader has no manager AuthChangeState counters.
     ReaderSource {
@@ -168,6 +172,15 @@ impl std::fmt::Debug for ReadyReceipt {
 }
 
 pub type ReadyFuture<'a> = Pin<Box<dyn Future<Output = io::Result<ReadyReceipt>> + Send + 'a>>;
+pub type ResampleFuture<'a> = Pin<Box<dyn Future<Output = io::Result<crate::native_preload::Resample>> + Send + 'a>>;
+
+/// An authenticated negative source observation grants no readiness.
+pub enum ReboundReadyOutcome {
+    Ready(crate::native_preload::Ready),
+    SourceChanged,
+}
+pub type ReboundReadyFuture<'a> = Pin<Box<dyn Future<Output = io::Result<ReboundReadyOutcome>> + Send + 'a>>;
+pub type OwnedReadyFuture<'a> = Pin<Box<dyn Future<Output = io::Result<crate::native_preload::Ready>> + Send + 'a>>;
 
 pub type MemberFuture<'a> = Pin<Box<dyn Future<Output = io::Result<Arc<dyn Member>>> + Send + 'a>>;
 pub type PreloadFuture<'a> = Pin<Box<dyn Future<Output = io::Result<Preload>> + Send + 'a>>;
@@ -179,11 +192,13 @@ pub type UnitFuture<'a> = Pin<Box<dyn Future<Output = io::Result<()>> + Send + '
 pub struct Retirement {
     pub operation: String,
     pub preload_operation: Option<String>,
+    pub preload_sequence: Option<crate::native_preload::Sequence>,
     pub registration: Option<String>,
 }
 impl Retirement {
     pub fn validate(&self) -> io::Result<()> {
         if !valid_hex(&self.operation, 32)
+            || self.preload_operation.is_some() != self.preload_sequence.is_some()
             || self
                 .preload_operation
                 .as_ref()
@@ -207,8 +222,54 @@ impl std::fmt::Debug for Retirement {
 /// One native-issued member on a retained authenticated connection. Storage, auth-derived
 /// HTTP bodies and WebSockets share its lifetime. EOF is Unknown, never implicit retirement.
 pub trait Member: Send + Sync {
+    /// Isolated debug qualification fault: close only this member's own work
+    /// connection. Refusal is the default; this grants no source or readiness.
+    #[cfg(debug_assertions)]
+    fn debug_close_work(&self) -> io::Result<()> {
+        Err(unavailable())
+    }
+    /// Resource initialization is reported on the actual destination member's
+    /// work channel, never selected by matching another manager's counters.
+    fn target_resource_ready<'a>(
+        &'a self,
+        _operation: &'a str,
+        _report: &'a crate::native_target::ResourceReport,
+    ) -> crate::native_target::ResourceFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
     fn id(&self) -> &str;
-    fn preload<'a>(&'a self, operation: &'a str, borrow: Option<&'a Borrow>) -> PreloadFuture<'a>;
+    /// Local transport replacement is a negative fence, never native readiness.
+    fn work_incarnation(&self) -> u64 { 0 }
+    /// Existing-only metadata recovery. It cannot allocate or make a source Ready.
+    fn reconcile_work(&self) -> UnitFuture<'_> { Box::pin(async { Ok(()) }) }
+    /// Physical rebound completion is distinct from historical READY correlation.
+    fn rebound_ready_owned<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _registration: &'a str, _loaded: &'a Loaded) -> ReboundReadyFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
+    /// Source-only constructor recovery. It never creates HTTP/use admission.
+    fn rebound_preload_owned<'a>(&'a self, _attempt: &'a crate::native_preload::Body) -> PreloadFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
+    fn preload_owned<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _borrow: Option<&'a Borrow>) -> PreloadFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
+    fn preload_owned_use<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _use_receipt: &'a crate::native_source_use::UseReceipt) -> PreloadFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
+    fn resample_owned<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _previous: &'a crate::native_preload::Predecessor, _borrow: Option<&'a Borrow>) -> ResampleFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
+    fn resample_owned_use<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _previous: &'a crate::native_preload::Predecessor, _use_receipt: &'a crate::native_source_use::UseReceipt) -> ResampleFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
+    fn ready_owned<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _registration: &'a str, _loaded: &'a Loaded) -> OwnedReadyFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
+    fn ready_owned_use<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _registration: &'a str, _loaded: &'a Loaded, _use_receipt: &'a crate::native_source_use::UseReceipt) -> OwnedReadyFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
+
+    fn preload<'a>(&'a self, _operation: &'a str, _borrow: Option<&'a Borrow>) -> PreloadFuture<'a> { Box::pin(async { Err(unavailable()) }) }
     fn ready<'a>(
         &'a self,
         operation: &'a str,
@@ -287,6 +348,13 @@ pub trait Member: Send + Sync {
 pub type SourceFuture<'a> = Pin<Box<dyn Future<Output = io::Result<Source>> + Send + 'a>>;
 
 pub trait Host: Send + Sync {
+    /// Resolve an actual Installed role. An assignment preview cannot create it.
+    fn target_context<'a>(
+        &'a self,
+        _assignment: &'a str,
+    ) -> crate::native_target::DestinationFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
     /// Read the current bound source on an authenticated native connection.
     fn source<'a>(&'a self, operation: &'a str) -> SourceFuture<'a>;
     fn open_member<'a>(&'a self, _open_nonce: &'a str) -> MemberFuture<'a> {
@@ -295,6 +363,23 @@ pub trait Host: Send + Sync {
 }
 
 static HOST: OnceLock<Arc<dyn Host>> = OnceLock::new();
+
+pub async fn target_context(
+    assignment: &str,
+) -> io::Result<Box<dyn crate::native_target::Destination>> {
+    if !valid_hex(assignment, 32) {
+        return Err(unavailable());
+    }
+    let target = HOST
+        .get()
+        .ok_or_else(unavailable)?
+        .target_context(assignment)
+        .await?;
+    if target.context().assignment() != assignment {
+        return Err(unavailable());
+    }
+    Ok(target)
+}
 
 pub fn install(host: Arc<dyn Host>) {
     let _ = HOST.set(host);

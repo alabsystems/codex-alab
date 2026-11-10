@@ -444,7 +444,11 @@ async fn the_plan_box_at_a_turns_end_keeps_the_report_at_rest() {
     frame(&mut chat, &mut upstream);
     assert!(chat.has_active_view(), "the plan box stands");
     let bytes = scope.take();
-    assert_eq!(turns::aterm_turns(&bytes), 1, "the planning turn only: {bytes:?}");
+    assert_eq!(
+        turns::aterm_turns(&bytes),
+        1,
+        "the planning turn only: {bytes:?}"
+    );
     assert!(
         bytes.ends_with(&turns::sequence(ProgramState::Done).unwrap()),
         "the turn's done, at rest: {bytes:?}"

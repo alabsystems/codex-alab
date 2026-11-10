@@ -114,6 +114,8 @@ impl AuthManager {
         session_id: &str,
         workspace_id: &str,
     ) -> io::Result<()> {
+        super::alab_context_host::io!(self, validate_workspace_switch(session_id, workspace_id)); // ALAB(accounts): validate the real current epoch.
+        self.alab_native_workspace_switch()?; // ALAB(accounts): native-owned refresh grants cannot be consumed by local exchange.
         if workspace_id.trim().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -156,6 +158,7 @@ impl AuthManager {
         session_id: &str,
         workspace_id: &str,
     ) -> io::Result<WorkspaceSwitch> {
+        super::alab_context_host::async_result!(self, switch_workspace(session_id, workspace_id)); // ALAB(accounts): exchange ownership is captured before the operation.
         self.validate_workspace_switch(session_id, workspace_id)?;
         self.auth().await;
         let _guard = self
@@ -228,6 +231,7 @@ impl AuthManager {
 
     /// Restores a rejected workspace change only while its credentials are still current.
     pub async fn rollback_workspace_switch(&self, switched: WorkspaceSwitch) -> io::Result<()> {
+        self.alab_real_epoch()?; // ALAB(accounts): rollback requires its captured real owner, never current-host selection.
         let _guard = self
             .refresh_lock
             .acquire()

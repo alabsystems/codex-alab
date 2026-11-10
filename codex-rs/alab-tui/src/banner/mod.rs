@@ -1,28 +1,19 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! The rainbow kitty launch banner: aterm's codex kitty riding aterm's spectrum, drawn once per
-//! process above codex's session header.
+//! A compact Codex launch strip inspired by aterm's Claude harness presentation.
 //!
-//! This module only renders: it knows nothing of codex-tui. `codex-rs/alab-tui/glue/
-//! banner_cell.rs`, compiled into codex-tui with `#[path]` (codex's `HistoryCell` is
-//! `pub(crate)`), wraps a [`Banner`] and upstream's session header in one history cell, part 0
-//! of the launch `SessionInfoCell`. [`blossom_stage`] keeps codex's empty-state blossom on
-//! screen under the longer transcript. The composer's top border is rendered separately by
-//! [`crate::interface::render`] through `glue/composer_border.rs`.
-//!
-//! One block: the kitty on a short ribbon, with the text beside it in the same five rows: the
-//! wordmark and build, the owner's tagline, what [`claims::CLAIMS`] measured against upstream
-//! codex, and the upstream source the build is based on. The art is a pixel canvas, two pixels
-//! per cell row (`▀`/`▄`/`█`, top pixel in the foreground, bottom in the background), redrawn
-//! for every width so it never wraps: each line is at most `width - 1` columns. Narrower, the
-//! ribbon goes first, then the claims shorten and the upstream line goes, then the text stands
-//! alone without the kitty, down to the wordmark alone, then nothing. Transparent pixels set no
-//! colour, so the terminal's own background shows through (aterm's "sky, never a slab"). Every
-//! row opens with two spaces, in line with upstream's `>_ OpenAI Codex` header.
+//! One rainbow frame holds a large mint prompt mark at the left, OpenAI Codex identity
+//! and session facts in the middle, and a full-body kitty with its striped rainbow in
+//! the right sky. The ALab signature closes the strip. Narrow layouts shed the art
+//! before truncating facts; very narrow terminals use plain branding and metadata.
+//! The palette follows terminal depth and background, including monochrome. Raw
+//! scrollback and export retain upstream's header text. The existing explicit ribbon
+//! and stripes styles and composer tinting retain their own renderers.
 
 pub mod claims;
 pub mod palette;
+mod codex;
 mod render;
 pub(crate) mod sprite;
 
@@ -46,12 +37,14 @@ pub fn stamped_upstream() -> Option<String> {
         .then(version::upstream)
 }
 
-/// Which trail the kitty rides.
+/// The opening banner design.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Style {
     /// aterm's sweep: one spectrum position per column, red at the kitty, violet at the tail.
-    #[default]
     Ribbon,
+    /// OpenAI Codex welcome card with a terminal prompt emblem.
+    #[default]
+    Codex,
     /// Classic Nyan: seven one-pixel bands, red on top, stepping a pixel every eight columns.
     Stripes,
 }
@@ -139,9 +132,31 @@ impl Banner {
         self
     }
 
+    /// Whether the launch cell should integrate its metadata into this card.
+    pub fn is_codex(&self) -> bool {
+        self.style == Style::Codex
+    }
+
+    /// One welcome card, including the session metadata supplied by the TUI.
+    pub fn session_lines(
+        &self,
+        width: u16,
+        harness: Option<Harness>,
+        details: Vec<Line<'static>>,
+    ) -> Vec<Line<'static>> {
+        let mode = match harness {
+            Some(Harness::On(mode)) => Some(mode),
+            _ => None,
+        };
+        codex::render_session(self, width, mode, details)
+    }
+
     /// The banner's lines at `width` columns; each is at most `width - 1` columns wide. Below 13
     /// columns there are none.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+        if self.style == Style::Codex {
+            return codex::render(self, width, None);
+        }
         render::render(self, usize::from(width))
     }
 
@@ -153,6 +168,9 @@ impl Banner {
             Some(Harness::On(mode)) => Some(mode),
             Some(Harness::Unsupervised) | None => None,
         };
+        if self.style == Style::Codex {
+            return codex::render(self, width, mode);
+        }
         render::render_with_harness(self, usize::from(width), mode)
     }
 }
@@ -248,7 +266,7 @@ pub(crate) fn readable_text(rgb: palette::Rgb, ansi16: Color, depth: Depth, them
 /// Whether to draw the banner, and in which style. First match wins:
 /// 1. `suppressed` (upstream's own unit tests) → off;
 /// 2. `ALAB_BANNER` (`env`), trimmed, any case: `off|0|false|no` → off, `on|1|true|yes` → the
-///    default style, `ribbon|stripes` → that style; an explicit value beats rule 3, and anything
+///    default style, `codex|ribbon|stripes` → that style; an explicit value beats rule 3, and anything
 ///    else is ignored;
 /// 3. upstream's welcome-artwork predicate (`tui.animations && tui.effects.welcome`, which
 ///    already honours reduced motion and screen readers) → the default style, else off.
@@ -259,6 +277,7 @@ pub fn decide(env: Option<&str>, welcome: bool, suppressed: bool) -> Option<Styl
     match env.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
         Some("off" | "0" | "false" | "no") => None,
         Some("on" | "1" | "true" | "yes") => Some(Style::default()),
+        Some("codex") => Some(Style::Codex),
         Some("ribbon") => Some(Style::Ribbon),
         Some("stripes") => Some(Style::Stripes),
         _ => welcome.then_some(Style::default()),

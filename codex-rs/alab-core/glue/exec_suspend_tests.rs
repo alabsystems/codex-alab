@@ -188,6 +188,14 @@ fn exec_quota_observation_child() -> anyhow::Result<()> {
         }
         started.thread.shutdown_and_wait().await?;
         assert!(watch.root_options().await.is_none());
+        assert!(
+            !observed.current(),
+            "shutdown ends the authenticated quota wait"
+        );
+        assert!(
+            watch.borrow().is_none(),
+            "shutdown removes the quota observation"
+        );
         std::fs::write(
             std::env::var_os("ALAB_EXEC_QUOTA_OBSERVER_EVIDENCE").unwrap(),
             b"observed",

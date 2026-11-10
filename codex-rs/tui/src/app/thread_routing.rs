@@ -114,6 +114,17 @@ impl App {
         } else {
             None
         };
+        if let Some(startup_pane) = self.sidebars.remove(&None)
+            && let std::collections::hash_map::Entry::Vacant(entry) =
+                self.sidebars.entry(Some(thread_id))
+        {
+            entry.insert(startup_pane);
+            if let Some(mode) = &mut self.pane_resize
+                && mode.parent.is_none()
+            {
+                mode.parent = Some(thread_id);
+            }
+        }
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = receiver;
         self.refresh_pending_thread_approvals().await;
@@ -128,6 +139,9 @@ impl App {
         if let Some(channel) = self.thread_event_channels.get_mut(&active_id) {
             let receiver = self.active_thread_rx.take();
             let mut store = channel.store.lock().await;
+            if store.active {
+                store.replay_may_have_output = false;
+            }
             store.active = false;
             store.input_state = input_state;
             store.merge_recap_progress(recap_progress);
@@ -1195,6 +1209,35 @@ impl App {
                 {
                     self.retain_inactive_realtime_transcript(thread_id, &notification);
                 }
+                if let Some(companion) = self.side_companions.get_mut(&thread_id)
+                    && companion.apply_notification(&notification, &guard, || {
+                        self.chat_widget.new_status_indicator()
+                    })
+                {
+                    self.chat_widget.request_redraw();
+                }
+                // Status traffic alone does not change the displayed transcript.
+                guard.replay_may_have_output |= !matches!(
+                    &notification,
+                    ServerNotification::ThreadStarted(_)
+                        | ServerNotification::ThreadStatusChanged(_)
+                        | ServerNotification::ThreadReadStateChanged(_)
+                        | ServerNotification::ThreadTokenUsageUpdated(_)
+                        | ServerNotification::ThreadNameUpdated(_)
+                        | ServerNotification::ThreadProjectUpdated(_)
+                        | ServerNotification::ThreadQueueChanged(_)
+                        | ServerNotification::ThreadPredictionUpdated(_)
+                        | ServerNotification::ThreadAttachmentUpdated(_)
+                        | ServerNotification::ThreadSettingsUpdated(_)
+                        | ServerNotification::McpToolCallProgress(_)
+                        | ServerNotification::FileChangePatchUpdated(_)
+                        | ServerNotification::ServerRequestResolved(_)
+                        | ServerNotification::ThreadRealtimeOutputAudioDelta(_)
+                        | ServerNotification::ThreadRealtimeSdp(_)
+                        | ServerNotification::ThreadRealtimeItemAdded(_)
+                        | ServerNotification::RawResponseItemCompleted(_)
+                        | ServerNotification::RawResponseCompleted(_)
+                );
                 guard.push_notification(notification);
                 None
             };
@@ -1510,6 +1553,7 @@ impl App {
         }
         match presentation {
             ThreadAttachPresentation::Fresh
+            | ThreadAttachPresentation::FreshAfterClear
             | ThreadAttachPresentation::FreshWithDraft
             | ThreadAttachPresentation::SessionLineage => {
                 self.chat_widget.handle_thread_session(session);
@@ -1534,6 +1578,8 @@ impl App {
         if should_buffer_initial_replay {
             self.app_event_tx
                 .send(AppEvent::EndInitialHistoryReplayBuffer);
+            self.app_event_tx
+                .send(AppEvent::RestoreBackgroundTerminals(thread_id));
         }
         self.restore_realtime_replay_state_after_replay(
             &replayed_final_items,
@@ -1658,6 +1704,7 @@ impl App {
         let AppServerStartedThread { session, turns, .. } = started;
         if let Some(channel) = self.thread_event_channels.get(&thread_id) {
             let mut store = channel.store.lock().await;
+            store.replay_may_have_output |= snapshot.turns != turns;
             store.set_session(session.clone(), turns.clone());
             store.rebase_buffer_after_session_refresh();
             snapshot.active_reasoning_item = store.active_reasoning_item.clone();
@@ -1807,32 +1854,10 @@ impl App {
             self.chat_widget
                 .remember_realtime_delegated_reasoning_turn(turn_id);
         }
-        let confirmed_message_ids = snapshot
-            .turns
-            .iter()
-            .flat_map(Turn::item_payloads)
-            .chain(snapshot.events.iter().filter_map(|event| {
-                let ThreadBufferedEvent::Notification(notification) = event else {
-                    return None;
-                };
-                if let ServerNotification::ItemStarted(notification) = notification.as_ref() {
-                    Some(&notification.item.payload)
-                } else if let ServerNotification::ItemCompleted(notification) =
-                    notification.as_ref()
-                {
-                    Some(&notification.item.payload)
-                } else {
-                    None
-                }
-            }))
-            .filter_map(|item| {
-                if let ThreadItemPayload::UserMessage { client_id, .. } = item {
-                    client_id.clone()
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
+        let confirmed_message_ids = super::thread_events::confirmed_user_message_ids(
+            &snapshot.turns,
+            snapshot.events.iter(),
+        );
         let recovered_input = snapshot
             .input_state
             .as_ref()

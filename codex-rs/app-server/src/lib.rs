@@ -97,6 +97,9 @@ fn is_unsupported_untrusted_approval_policy_error(err: &std::io::Error) -> bool 
     )
 }
 
+pub use codex_agent_message_board_host::delete_agent_message_boards;
+pub use codex_agent_message_board_host::install_agent_message_board;
+
 mod analytics_utils;
 mod app_info;
 mod app_server_tracing;
@@ -112,6 +115,7 @@ pub use startup_config::StartupConfigArgs;
 pub use startup_config::print_startup_config;
 
 mod config_manager;
+pub use config_manager::alab_destination::alab_no_external_thread_config_loader; // ALAB(accounts): retain actual local-loader provenance through embedded startup.
 mod config_manager_service;
 mod connection_cleanup;
 mod connection_rpc_gate;
@@ -569,7 +573,7 @@ pub async fn run_main_with_transport_options(
         strict_config,
         Default::default(),
         arg0_paths.clone(),
-        Arc::new(NoopThreadConfigLoader),
+        alab_no_external_thread_config_loader(NoopThreadConfigLoader), // ALAB(accounts): register only this concrete local constructor occurrence.
     );
     let startup = config_manager
         .load_managed_startup_config(startup_cwd.clone())
@@ -675,7 +679,7 @@ pub async fn run_main_with_transport_options(
         Ok(state_db_init) => state_db_init,
         Err(err) => {
             return Err(std::io::Error::other(format!(
-                "failed to initialize sqlite state runtime under {}: {err}",
+                "failed to initialize sqlite state runtime under {}: {err:#}",
                 config.sqlite_config().home().display()
             )));
         }
@@ -717,8 +721,15 @@ pub async fn run_main_with_transport_options(
         });
     }
 
-    let analytics_events_client =
-        analytics_events_client_from_config(Arc::clone(&auth_manager), &config);
+    let runtime_auth_slot = config
+        .features
+        .enabled(Feature::RuntimeAgentInstances)
+        .then(codex_runtime_agent_instance::RuntimeAuthSlot::default);
+    let analytics_events_client = analytics_events_client_from_config(
+        Arc::clone(&auth_manager),
+        &config,
+        runtime_auth_slot.clone(),
+    );
     let outgoing_message_sender = Arc::new(OutgoingMessageSender::new(
         outgoing_tx,
         analytics_events_client.clone(),
@@ -887,6 +898,9 @@ pub async fn run_main_with_transport_options(
 
     let (remote_control_accept_handle, remote_control_handle) = start_remote_control(
         RemoteControlStartConfig {
+            runtime_auth: runtime_auth_slot
+                .clone()
+                .map(|slot| (slot, config.runtime_auth_mode)),
             remote_control_url: config.chatgpt_base_url.clone(),
             installation_id: installation_id.clone(),
             policy: remote_control_policy,
@@ -1027,6 +1041,7 @@ pub async fn run_main_with_transport_options(
                 &auth_manager,
             ))),
             auth_manager,
+            runtime_auth_slot,
             installation_id,
             code_mode_session_provider,
             rpc_transport: analytics_rpc_transport(&transport),

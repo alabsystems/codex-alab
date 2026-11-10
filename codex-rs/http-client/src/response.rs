@@ -45,7 +45,7 @@ impl HttpResponse {
     }
 
     pub async fn text(self) -> Result<String, HttpError> {
-        Ok(Box::pin(self.permit.run(self.inner.text())).await??)
+        self.permit.alab_response_text(self.inner).await // ALAB(accounts): erase the source-aware body future at the transport boundary.
     }
 
     pub async fn json<T: DeserializeOwned>(self) -> Result<T, HttpError> {

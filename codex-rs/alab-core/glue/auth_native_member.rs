@@ -26,6 +26,7 @@ pub(super) async fn configured_source<F: std::future::Future>(
 }
 
 pub(super) enum Initial {
+    Deferred,
     Disabled,
     Opened {
         member: Lifetime,
@@ -35,6 +36,9 @@ pub(super) enum Initial {
 }
 impl Initial {
     pub async fn begin() -> Self {
+        if !super::alab_manager_catalog::permitted() {
+            return Self::Deferred;
+        }
         match codex_alab_core::native_source_launch::allocate_manager().await {
             Ok(None) => Self::Disabled,
             Ok(Some(allocation)) => Lifetime::new(allocation)
@@ -59,7 +63,7 @@ impl Initial {
                     .load_auth_with_modes(enable_api_env, allowed_modes)
                     .await
             }
-            Self::Refused => Err(codex_alab_core::managed_auth::unavailable()),
+            Self::Deferred | Self::Refused => Err(codex_alab_core::managed_auth::unavailable()),
             Self::Opened { member, preload } => {
                 if selected.is_some() {
                     return Ok(None);
@@ -93,7 +97,7 @@ impl Initial {
 
     pub async fn finish(self, manager: &AuthManager, selected: Option<NoNativeReader>) {
         let (lifetime, prepared) = match self {
-            Self::Disabled => return,
+            Self::Disabled | Self::Deferred => return,
             Self::Refused => {
                 manager.alab_refuse_initial_source();
                 return;
@@ -123,36 +127,35 @@ impl Initial {
                 .ok()
                 .and_then(|cached| cached.auth.as_ref().and_then(no_native_reader))
         });
-        if let Some(kind) = kind {
-            if lifetime.unrelated_ready(kind).await.is_err() {
-                manager.alab_refuse_initial_source();
-            } else if let Ok(mut cached) = manager.inner.write()
-                && let Some(CodexAuth::ApiKey(api)) = &mut cached.auth
-            {
-                api.alab_source = Some(lifetime.clone());
-            }
+        if manager
+            .alab_begin_initial_source(lifetime.clone(), kind)
+            .is_err()
+        {
+            return;
+        }
+        if kind.is_some() {
+            let _ = manager.alab_resume_initial_source().await;
             return;
         }
         // Missing/failed selection is not NoCredentials, and must not initiate a new
         // preload after the original attempt failed or became uncertain.
         let preload = match prepared {
             Some(preload) => preload,
-            None => {
-                manager.alab_refuse_initial_source();
-                return;
-            }
+            None => return,
         };
         let operation = preload.source.operation.clone();
         if let Err(error) = manager
             .alab_initialize_member_source(preload.source, lifetime.clone())
             .await
         {
-            manager.alab_refuse_initial_source();
-            // A source I/O or native Ready failure is uncertain, not a policy verdict.
+            // Preserve the actual candidate/cache/counters and frozen Ready report
+            // through uncertainty. PendingInitial cannot expose a credential or
+            // fall back to startup; a later auth admission resumes this same report.
             if error.kind() == std::io::ErrorKind::PermissionDenied
                 && manager.inner.read().is_ok_and(|cache| cache.auth.is_none())
+                && lifetime.unavailable(&operation).await.is_ok()
             {
-                let _ = lifetime.unavailable(&operation).await;
+                manager.alab_refuse_initial_source();
             }
         }
     }
@@ -173,6 +176,7 @@ impl AuthManager {
         &self,
         policy: codex_http_client::NetworkPolicy,
     ) -> codex_http_client::NetworkPolicy {
+        let policy = self.alab_catalog_network_policy(policy);
         match self.alab_source_member.read() {
             Ok(member) => match member.as_ref() {
                 Some(member) => policy.with_native_source(
@@ -254,11 +258,6 @@ impl AuthManager {
             Err(codex_alab_core::managed_auth::unavailable())
         })
     }
-    pub(super) fn alab_member_cache_available(&self) -> bool {
-        self.alab_source_member
-            .read()
-            .is_ok_and(|member| member.as_ref().is_none_or(Lifetime::ready))
-    }
     pub(super) fn alab_member_for_source(
         &self,
         source: &Source,
@@ -286,55 +285,74 @@ pub(super) async fn direct_config_auth(
     if !codex_alab_core::native_source_launch::requested() {
         return None;
     }
-    Some(
-        async {
-            let allocation = codex_alab_core::native_source_launch::allocate_manager()
-                .await?
-                .ok_or_else(codex_alab_core::managed_auth::unavailable)?;
-            let member = Lifetime::new(allocation)?;
-            if enable_api_env
-                && allowed_modes.is_none_or(|modes| modes.contains(&AuthMode::ApiKey))
-                && auth_mode_is_allowed(Some(&config.allowed_login_methods()), AuthMode::ApiKey)
-                && let Some(key) = read_codex_api_key_from_env()
-            {
-                let mut auth = CodexAuth::from_api_key(key.as_str());
-                if !config.allows_auth(&auth) {
-                    return Err(codex_alab_core::managed_auth::unavailable());
-                }
-                member.unrelated_ready(NoNativeReader::ApiKey).await?;
-                if let CodexAuth::ApiKey(api) = &mut auth {
-                    api.alab_source = Some(member);
-                }
-                return Ok(Some(auth));
-            }
-            let operation = format!("{:032x}", rand::random::<u128>());
-            let preload = member.preload(&operation, None).await?;
-            match super::alab_native_source::direct_reader(
-                config,
-                allowed_modes,
-                preload.source,
-                member.clone(),
-            )
-            .await
-            {
-                Ok(auth) => Ok(Some(auth)),
-                Err(error) => {
-                    if error.kind() == std::io::ErrorKind::PermissionDenied {
-                        let _ = member.unavailable(&operation).await;
-                    }
-                    Err(error)
-                }
-            }
+    Some(super::alab_reader_catalog::load(config, enable_api_env, allowed_modes).await)
+}
+
+pub(super) async fn read_direct(
+    config: &AuthConfig,
+    enable_api_env: bool,
+    allowed_modes: Option<&[AuthMode]>,
+    record: &Arc<codex_alab_core::manager_catalog::Record>,
+    domain: Arc<codex_alab_core::assignment::Domain>,
+) -> std::io::Result<Option<CodexAuth>> {
+    let allocation = codex_alab_core::native_source_launch::allocate_manager()
+        .await?
+        .ok_or_else(codex_alab_core::managed_auth::unavailable)?;
+    let member = Lifetime::new(allocation)?;
+    member.attach_domain(domain)?;
+    let reader = super::alab_reader_catalog::Reader::begin(record, config, allowed_modes, &member)?;
+    if enable_api_env
+        && allowed_modes.is_none_or(|modes| modes.contains(&AuthMode::ApiKey))
+        && auth_mode_is_allowed(Some(&config.allowed_login_methods()), AuthMode::ApiKey)
+        && let Some(key) = read_codex_api_key_from_env()
+    {
+        let mut auth = CodexAuth::from_api_key(key.as_str());
+        if !config.allows_auth(&auth) {
+            return Err(codex_alab_core::managed_auth::unavailable());
         }
-        .await,
+        member.unrelated_ready(NoNativeReader::ApiKey).await?;
+        if let CodexAuth::ApiKey(api) = &mut auth {
+            api.alab_source = Some(member.clone());
+        }
+        reader.complete(&member, &auth)?;
+        auth.alab_capture_reader_origin(record.clone(), member.clone(), config)?;
+        return Ok(Some(auth));
+    }
+    let operation = format!("{:032x}", rand::random::<u128>());
+    let preload = member.preload(&operation, None).await?;
+    match super::alab_native_source::direct_reader(
+        config,
+        allowed_modes,
+        preload.source,
+        member.clone(),
     )
+    .await
+    {
+        Ok(mut auth) => {
+            reader.complete(&member, &auth)?;
+            auth.alab_capture_reader_origin(record.clone(), member.clone(), config)?;
+            Ok(Some(auth))
+        }
+        Err(error) => {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                let _ = member.unavailable(&operation).await;
+            }
+            Err(error)
+        }
+    }
 }
 
 impl CodexAuth {
     pub(super) fn alab_credential_access(&self) -> std::io::Result<()> {
+        if !self.alab_credential_epoch().native_ready() {
+            return Err(codex_alab_core::managed_auth::unavailable());
+        }
         let member = match self {
             Self::ApiKey(api) => api.alab_source.clone(),
-            Self::Chatgpt(auth) => auth.storage.alab_source_lifetime(),
+            Self::Chatgpt(auth) => {
+                auth.storage.alab_source_access()?;
+                auth.storage.alab_source_lifetime()
+            }
             _ => None,
         };
         if member.as_ref().is_some_and(|member| !member.ready()) {
@@ -346,4 +364,47 @@ impl CodexAuth {
 
 #[cfg(test)]
 #[path = "auth_native_member_tests.rs"]
-mod tests;
+pub(super) mod tests;
+
+// Metadata observers cannot keep a credential reader alive or authorize a read.
+// Only the explicit debug qualification child consumes these accessors.
+#[cfg(debug_assertions)]
+impl AuthManager {
+    pub fn alab_debug_close_native_work(&self) -> std::io::Result<()> {
+        if let Some(actual) = self.alab_host_capture() {
+            return actual?.alab_debug_close_native_work();
+        }
+        self.alab_native_member()?
+            .ok_or_else(codex_alab_core::managed_auth::unavailable)?
+            .debug_close_work()
+    }
+    pub fn alab_debug_native_retirement(
+        &self,
+    ) -> std::io::Result<codex_alab_core::native_reader_retirement::Observer> {
+        if let Some(actual) = self.alab_host_metadata() {
+            return actual.alab_debug_native_retirement();
+        }
+        self.alab_source_member
+            .read()
+            .map_err(|_| codex_alab_core::managed_auth::unavailable())?
+            .as_ref()
+            .map(Lifetime::retirement_observer)
+            .ok_or_else(codex_alab_core::managed_auth::unavailable)
+    }
+}
+#[cfg(debug_assertions)]
+impl CodexAuth {
+    pub fn alab_debug_native_retirement(
+        &self,
+    ) -> std::io::Result<codex_alab_core::native_reader_retirement::Observer> {
+        let member = match self {
+            Self::ApiKey(api) => api.alab_source.clone(),
+            Self::Chatgpt(auth) => auth.storage.alab_source_lifetime(),
+            _ => None,
+        };
+        member
+            .as_ref()
+            .map(Lifetime::retirement_observer)
+            .ok_or_else(codex_alab_core::managed_auth::unavailable)
+    }
+}

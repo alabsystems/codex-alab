@@ -560,6 +560,7 @@ mod tests {
     #[tokio::test]
     async fn configured_profile_takes_precedence_over_managed_auth() {
         let managed_auth = BedrockApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             api_key: "managed-bedrock-api-key".to_string(),
             region: "us-east-1".to_string(),
         };
@@ -620,6 +621,7 @@ mod tests {
 
         let access_keys_auth_manager = AuthManager::from_auth_for_testing(
             CodexAuth::BedrockAccessKeys(BedrockAccessKeysAuth {
+                alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
                 access_key_id: "managed-access-key-id".to_string(),
                 secret_access_key: "managed-secret-access-key".to_string(),
                 session_token: None,
@@ -730,6 +732,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_managed_auth_resolves_runtime_endpoint() {
         let managed_auth = BedrockApiKeyAuth {
+            alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
             api_key: "managed-bedrock-api-key".to_string(),
             region: "eu-west-1".to_string(),
         };

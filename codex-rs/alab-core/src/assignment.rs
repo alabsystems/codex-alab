@@ -111,6 +111,7 @@ struct State {
     restored: bool,
 }
 pub struct Domain {
+    catalog: std::sync::OnceLock<Arc<crate::manager_catalog::Record>>,
     state: Mutex<State>,
     changed: Notify,
     native_member: Mutex<Option<crate::native_source_lifetime::MemberIncarnation>>,
@@ -118,6 +119,7 @@ pub struct Domain {
 impl Default for Domain {
     fn default() -> Self {
         Self {
+            catalog: std::sync::OnceLock::new(),
             state: Mutex::new(State {
                 phase: Phase::Open,
                 intent: None,
@@ -143,23 +145,91 @@ enum Kind {
     Work,
     Resource,
 }
-type NativeUses = Arc<
-    Mutex<
-        Vec<(
-            crate::native_source_lifetime::MemberIncarnation,
-            crate::native_source_use::ParentUseLease,
-        )>,
-    >,
->;
+type UseEntries = Vec<(
+    crate::native_source_lifetime::MemberIncarnation,
+    crate::native_source_use::ParentUseLease,
+)>;
+type NativeUses = Arc<UseFamily>;
+#[derive(Default)]
+struct UseFamily {
+    leases: Mutex<UseEntries>,
+    drain: UseDrain,
+}
+impl UseFamily {
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, UseEntries>> {
+        self.leases.lock()
+    }
+}
+#[derive(Default)]
+struct DrainState {
+    detached: std::sync::atomic::AtomicBool,
+    failed: std::sync::atomic::AtomicBool,
+    ends: Mutex<Vec<crate::native_source_use::EndObservation>>,
+    changed: tokio::sync::Notify,
+}
+/// Exact turn/use-family cleanup observation. It grants no source or census authority.
+#[derive(Clone, Default)]
+pub struct UseDrain(Arc<DrainState>);
+impl UseDrain {
+    pub async fn settled(&self) -> Result<(), Refused> {
+        loop {
+            let changed = self.0.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.0.failed.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(Refused::Unavailable);
+            }
+            if self.0.detached.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            changed.await;
+        }
+        let ends = self
+            .0
+            .ends
+            .lock()
+            .map_err(|_| Refused::Unavailable)?
+            .clone();
+        for end in ends {
+            end.ended().await.map_err(|_| Refused::Unavailable)?;
+        }
+        Ok(())
+    }
+}
+impl Drop for UseFamily {
+    fn drop(&mut self) {
+        match (self.leases.get_mut(), self.drain.0.ends.lock()) {
+            (Ok(leases), Ok(mut ends)) => {
+                *ends = leases
+                    .iter()
+                    .map(|(_, lease)| lease.observe_end())
+                    .collect()
+            }
+            _ => {
+                self.drain
+                    .0
+                    .failed
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        self.drain
+            .0
+            .detached
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.drain.0.changed.notify_waiters();
+        // Lease owners drop after this body; observers still wait for actual End ACK.
+    }
+}
 struct ActivityLease {
     domain: Arc<Domain>,
     kind: Mutex<Kind>,
     native_uses: NativeUses,
+    catalog_epoch: u64,
 }
 #[derive(Clone)]
 pub struct Activity(Arc<ActivityLease>);
 #[derive(Clone)]
-pub struct ActivityRef(Weak<ActivityLease>);
+pub struct ActivityRef(Weak<ActivityLease>, UseDrain);
 tokio::task_local! { static CURRENT: Activity; }
 struct Destination {
     domain: Arc<Domain>,
@@ -168,11 +238,33 @@ struct Destination {
 }
 tokio::task_local! { static DESTINATION: Destination; }
 impl ActivityRef {
+    pub(crate) fn same_family(&self, activity: &Activity) -> bool {
+        Arc::ptr_eq(&self.1.0, &activity.0.native_uses.drain.0)
+    }
+    pub fn native_cleanup(&self) -> UseDrain {
+        self.1.clone()
+    }
     pub fn upgrade(&self) -> Option<Activity> {
         self.0.upgrade().map(Activity)
     }
 }
 impl Activity {
+    pub(crate) fn catalog_epoch(&self) -> u64 {
+        self.0.catalog_epoch
+    }
+    pub(crate) fn catalog_before(
+        &self,
+        registry: &Arc<crate::manager_catalog::Gate>,
+        epoch: u64,
+    ) -> bool {
+        self.0.catalog_epoch < epoch
+            && self
+                .0
+                .domain
+                .catalog
+                .get()
+                .is_some_and(|record| record.same_registry(registry))
+    }
     pub(crate) fn owns_native_use(
         &self,
         lease: &crate::native_source_use::ParentUseLease,
@@ -263,7 +355,7 @@ impl Activity {
             .is_ok_and(|kind| matches!(*kind, Kind::Start))
     }
     pub fn downgrade(&self) -> ActivityRef {
-        ActivityRef(Arc::downgrade(&self.0))
+        ActivityRef(Arc::downgrade(&self.0), self.0.native_uses.drain.clone())
     }
     pub fn same_domain(&self, domain: &Arc<Domain>) -> bool {
         Arc::ptr_eq(&self.0.domain, domain)
@@ -323,6 +415,19 @@ pub struct RetirementPermit {
     boundary: String,
 }
 /// A fully drained permit belonging to this exact manager and native operation.
+/// Only actual owned retirement transitions can mint resource-retirement evidence.
+pub trait RetirementProof: retirement_sealed::Sealed + Send + Sync {
+    fn protects(&self, domain: &Arc<Domain>) -> bool;
+}
+pub(crate) mod retirement_sealed {
+    pub trait Sealed {}
+}
+impl retirement_sealed::Sealed for RetirementPermit {}
+impl RetirementProof for RetirementPermit {
+    fn protects(&self, domain: &Arc<Domain>) -> bool {
+        RetirementPermit::protects(self, domain)
+    }
+}
 pub struct BoundaryPermit {
     retirement: RetirementPermit,
     native_intent: Option<String>,
@@ -332,11 +437,37 @@ pub enum FreezeError {
     Refused(Refused),
 }
 
-pub(crate) fn current_activity() -> Option<Activity> {
+pub fn current_activity() -> Option<Activity> {
     CURRENT.try_with(Clone::clone).ok()
 }
 
 impl Domain {
+    pub(crate) fn catalog_idle(&self, resources: bool) -> Result<bool, Refused> {
+        let state = self.state.lock().map_err(|_| Refused::Unavailable)?;
+        Ok(state.work == 0 && state.starts == 0 && (!resources || state.resources == 0))
+    }
+    pub(crate) async fn catalog_wait(self: &Arc<Self>, resources: bool) -> Result<(), Refused> {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.catalog_idle(resources)?
+                && (!resources || crate::native_source_use::settled_for(self))
+            {
+                return Ok(());
+            }
+            changed.await;
+        }
+    }
+    pub(crate) fn attach_catalog(
+        &self,
+        record: Arc<crate::manager_catalog::Record>,
+    ) -> Result<(), Refused> {
+        self.catalog.set(record).map_err(|_| Refused::Busy)
+    }
+    pub fn catalog(&self) -> Option<&Arc<crate::manager_catalog::Record>> {
+        self.catalog.get()
+    }
     pub(crate) fn register_native_member(
         &self,
         member: crate::native_source_lifetime::MemberIncarnation,
@@ -377,6 +508,11 @@ impl Domain {
         {
             return Err(Refused::Pending);
         }
+        let catalog = self
+            .catalog
+            .get()
+            .map(|record| record.admission(Some(parent), false, true))
+            .transpose()?;
         let mut state = self.state.lock().map_err(|_| Refused::Unavailable)?;
         if matches!(state.phase, Phase::Frozen | Phase::Uncertain) {
             return Err(Refused::Pending);
@@ -386,6 +522,31 @@ impl Domain {
             domain: Arc::clone(self),
             kind: Mutex::new(Kind::Resource),
             native_uses: Arc::clone(&parent.0.native_uses),
+            catalog_epoch: catalog
+                .as_ref()
+                .map_or(parent.0.catalog_epoch, |guard| guard.epoch),
+        })))
+    }
+    pub(crate) fn admit_catalog_resource(
+        self: &Arc<Self>,
+        parent: &Activity,
+    ) -> Result<Activity, Refused> {
+        let record = self.catalog().ok_or(Refused::Unavailable)?;
+        let other = parent.domain().catalog().ok_or(Refused::WrongDomain)?;
+        if !record.same_record_registry(other) {
+            return Err(Refused::WrongDomain);
+        }
+        let admission = record.admission(Some(parent), false, true)?;
+        let mut state = self.state.lock().map_err(|_| Refused::Unavailable)?;
+        if matches!(state.phase, Phase::Frozen | Phase::Uncertain) {
+            return Err(Refused::Pending);
+        }
+        state.resources += 1;
+        Ok(Activity(Arc::new(ActivityLease {
+            domain: Arc::clone(self),
+            kind: Mutex::new(Kind::Resource),
+            native_uses: Arc::clone(&parent.0.native_uses),
+            catalog_epoch: admission.epoch,
         })))
     }
     pub fn current(self: &Arc<Self>) -> Option<Activity> {
@@ -426,6 +587,9 @@ impl Domain {
     }
     /// Waits only for root admission; callers must keep approval dispatch independent.
     pub async fn wait_open(&self) -> Result<(), Refused> {
+        if let Some(catalog) = self.catalog() {
+            catalog.wait_root_open().await?;
+        }
         loop {
             let notified = self.changed.notified();
             tokio::pin!(notified);
@@ -510,6 +674,11 @@ impl Domain {
         if parent.is_some_and(|parent| !parent.same_domain(self)) {
             return Err(Refused::WrongDomain);
         }
+        let catalog = self
+            .catalog
+            .get()
+            .map(|record| record.admission(parent, publication, matches!(kind, Kind::Resource)))
+            .transpose()?;
         let mut state = self.state.lock().map_err(|_| Refused::Unavailable)?;
         let inherited = parent.is_some_and(|parent| {
             parent.0.kind.lock().is_ok_and(|parent_kind| {
@@ -557,9 +726,15 @@ impl Domain {
             native_uses: parent
                 .map(|parent| Arc::clone(&parent.0.native_uses))
                 .unwrap_or_default(),
+            catalog_epoch: catalog.as_ref().map_or(0, |guard| guard.epoch),
         })))
     }
     pub fn admit_mutation(self: &Arc<Self>) -> Result<Activity, Refused> {
+        let catalog = self
+            .catalog
+            .get()
+            .map(|record| record.admission(None, true, false))
+            .transpose()?;
         let mut state = self.state.lock().map_err(|_| Refused::Unavailable)?;
         if state.phase != Phase::Open {
             return Err(Refused::Pending);
@@ -569,6 +744,7 @@ impl Domain {
             domain: Arc::clone(self),
             kind: Mutex::new(Kind::Resource),
             native_uses: Arc::default(),
+            catalog_epoch: catalog.as_ref().map_or(0, |guard| guard.epoch),
         })))
     }
     pub fn admit_start(self: &Arc<Self>, parent: Option<&Activity>) -> Result<Activity, Refused> {
@@ -1552,5 +1728,29 @@ mod tests {
             .await
             .unwrap();
         boundary.finish(completion).unwrap();
+    }
+    #[tokio::test]
+    async fn ordinary_turn_cleanup_does_not_own_work_or_join_a_different_root_family() {
+        let domain = Arc::new(Domain::default());
+        let first = domain.admit_work(None).unwrap();
+        let observer = first.downgrade();
+        let child = domain.admit_resource(Some(&first)).unwrap();
+        let other = domain.admit_work(None).unwrap();
+        let cleanup = observer.native_cleanup();
+        drop(first);
+        let settled = cleanup.settled();
+        tokio::pin!(settled);
+        tokio::select! { _ = &mut settled => panic!("actual child still owns its family"), _ = tokio::task::yield_now() => {} }
+        drop(child);
+        settled.await.unwrap();
+        assert!(
+            observer.upgrade().is_none(),
+            "cached cleanup observer cannot pin activity"
+        );
+        assert!(other.same_domain(&domain));
+        assert!(
+            domain.try_retire(&"f".repeat(32)).is_err(),
+            "other actual work remains independent"
+        );
     }
 }

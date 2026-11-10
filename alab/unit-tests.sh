@@ -32,16 +32,23 @@ native_v8_env() (
     --target "${native_target}" --cache "${cache}/alab-v8-inputs"
 )
 
-# unit_tests <tree> <target-dir> [libtest args...]: the packages in `packages`,
-# with the upstream native runtime prerequisites in that same tree and target.
-# cargo and packages are supplied by check.sh, including its pristine comparisons.
+# unit_tests <tree> <target-dir> [--config <value>]... [libtest args...]: the packages in
+# `packages`, with the upstream native runtime prerequisites in that same tree and target.
+# cargo and packages are supplied by check.sh, including its pristine comparisons, whose
+# --config every cargo call in the tree takes (lib.sh, alab_pristine_config).
 unit_tests() (
   local tree="$1" target_dir="$2" package artifacts stdio host cli v8 archive binding
   local result_mode="" result_state="" result_plan="" result_parser result_runner result_python runner_config
   local runner_key result_round result_rounds result_status result_overall=0
-  local test_command=(/usr/bin/env)
-  local cargo_options=(--unverified test --locked --no-fail-fast --lib)
+  local proxy_home
+  local test_command=(/usr/bin/env) tree_config=()
   shift 2
+  while [[ "${1:-}" == --config ]]; do
+    [[ $# -ge 2 ]] || return 1
+    tree_config+=(--config "$2")
+    shift 2
+  done
+  local cargo_options=(--unverified test --locked ${tree_config[@]+"${tree_config[@]}"} --no-fail-fast --lib)
   case "${1:-}" in
     --record-results)
       [[ $# -ge 2 ]] || return 1
@@ -61,6 +68,16 @@ unit_tests() (
   fi
   cd "${tree}/codex-rs" || return $?
   export RUST_MIN_STACK=8388608 CARGO_TARGET_DIR="${target_dir}"
+  for package in "${packages[@]}"; do
+    if [[ "${package}" == codex-network-proxy ]]; then
+      # Managed MITM tests create CA files through find_codex_home. Keep both
+      # candidate and pristine runs inside their admitted target, never the owner home.
+      proxy_home="$(mktemp -d "${target_dir}/alab-network-proxy-home.XXXXXX")" || return $?
+      trap 'rm -rf -- "${proxy_home}"' EXIT
+      test_command+=("CODEX_HOME=${proxy_home}")
+      break
+    fi
+  done
   # Pin the native shim's layout across --no-run and the later --config runner.
   # Targets already inside .noindex need no placement; preserve caller overrides.
   if [[ -z "${CARGO_BUILD_BUILD_DIR:-}" && "${target_dir}/" != *.noindex/* ]]; then
@@ -84,7 +101,7 @@ unit_tests() (
         # These suites declare both helpers in upstream's BUILD.bazel and use
         # them through cargo_bin. A --lib build does not build runtime binaries.
         artifacts="$(RUSTY_V8_ARCHIVE="${archive}" RUSTY_V8_SRC_BINDING_PATH="${binding}" \
-          alab_build_command "${cargo}" --unverified build --locked \
+          alab_build_command "${cargo}" --unverified build --locked ${tree_config[@]+"${tree_config[@]}"} \
           -p codex-rmcp-client --bin test_stdio_server \
           -p codex-code-mode-host --bin codex-code-mode-host \
           --message-format=json-render-diagnostics)" || return $?
@@ -122,7 +139,7 @@ unit_tests() (
     case "${package}" in
       codex-mcp)
         # Its sandbox-capability tests need the full CLI, not the libtest binary.
-        artifacts="$(alab_build_command "${cargo}" --unverified build --locked \
+        artifacts="$(alab_build_command "${cargo}" --unverified build --locked ${tree_config[@]+"${tree_config[@]}"} \
           -p codex-cli --bin codex --message-format=json-render-diagnostics)" || return $?
         if [[ -n "${result_mode}" ]]; then
           printf '%s\n' "${artifacts}" >"${result_state}/helper-cli.jsonl" || return $?
@@ -165,12 +182,13 @@ unit_tests() (
         and (.target.kind | index("bin"))) | .executable | select(type == "string")]
       | unique | select(length == 1) | .[0]')" || return $?
     [[ -f "${result_runner}" && -x "${result_runner}" ]] || return 1
-    "${cargo}" metadata --locked --no-deps --format-version 1 >"${result_state}/metadata.json" \
-      || return $?
+    "${cargo}" metadata --locked ${tree_config[@]+"${tree_config[@]}"} --no-deps --format-version 1 \
+      >"${result_state}/metadata.json" || return $?
     # Keep the whole selected feature graph. Artifact provenance is captured before
     # Cargo invokes the runner; shared/custom library names never need guessing.
-    alab_build_command "${test_command[@]}" "${cargo}" --unverified test --locked --no-fail-fast --no-run --lib \
-      "${packages[@]}" --message-format=json-render-diagnostics >"${result_state}/artifacts.jsonl" \
+    alab_build_command "${test_command[@]}" "${cargo}" --unverified test --locked ${tree_config[@]+"${tree_config[@]}"} \
+      --no-fail-fast --no-run --lib "${packages[@]}" --message-format=json-render-diagnostics \
+      >"${result_state}/artifacts.jsonl" \
       || return $?
     if [[ "${result_mode}" == compare ]]; then
       "${result_python}" -I "${result_parser}" prepare --repo "${tree}" --target-dir "${target_dir}" \
@@ -201,7 +219,7 @@ unit_tests() (
       "${result_runner}" --state "${result_state}" --round "${result_round}")" || return $?
     # A unique always-true cfg cannot replace an existing cfg runner. Existing
     # matching cfg runners conflict; a triple runner wins and missing receipts refuse.
-    cargo_options=(--unverified test --locked --no-fail-fast --lib
+    cargo_options=(--unverified test --locked ${tree_config[@]+"${tree_config[@]}"} --no-fail-fast --lib
       --config "target.'${runner_key}'.runner=${runner_config}")
     printf 'ALAB_UNIT_ROUND %s\n' "${result_round}"
     result_status=0

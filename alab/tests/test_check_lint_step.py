@@ -61,7 +61,19 @@ if Path(__file__).parent.name == "deps":
     sys.exit(101 if failed else 0)
 
 fake = Path(os.environ["ALAB_FAKE_CARGO_DIR"])
-args = sys.argv[1:]
+# A path override (lib.sh, alab_pristine_config) is configuration, as cargo itself takes it:
+# logged as given, then set aside before the call is answered.
+logged = sys.argv[1:]
+args = []
+words = iter(logged)
+for word in words:
+    if word == "--config":
+        value = next(words)
+        if value.startswith("paths"):
+            continue
+        args += [word, value]
+    else:
+        args.append(word)
 here = Path.cwd()
 for parent in (here, *here.parents):
     manifest = parent / "Cargo.toml"
@@ -71,9 +83,9 @@ for parent in (here, *here.parents):
 tree = str(here.parent)
 side = "pristine" if ("/alab-pristine/" in tree + "/" or "/alab-pristine-" in tree) else "ours"
 with open(fake / "calls", "a") as log:
-    log.write(side + " " + " ".join(args) + "\\n")
+    log.write(side + " " + " ".join(logged) + "\\n")
 with open(fake / "environments.jsonl", "a") as log:
-    log.write(json.dumps({{"args": args, "CARGO_BUILD_JOBS": os.environ.get("CARGO_BUILD_JOBS"),
+    log.write(json.dumps({{"args": logged, "CARGO_BUILD_JOBS": os.environ.get("CARGO_BUILD_JOBS"),
                           "RUST_TEST_THREADS": os.environ.get("RUST_TEST_THREADS"),
                           "side": side, "target": os.environ.get("CARGO_TARGET_DIR"),
                           "build": os.environ.get("CARGO_BUILD_BUILD_DIR"),
@@ -89,11 +101,17 @@ effective_target = Path(os.environ.get("CARGO_TARGET_DIR") or
 if mode.get("cache_ownership") and any(word in args for word in ("run", "build", "test", "tippy")):
     marker = effective_target / "fixture-owner"
     if os.environ.get("CARGO_TARGET_DIR"):
-        if effective_target.exists() and (not marker.is_file() or marker.read_text() != "owned"):
-            print("fixture cache ownership refused before compilation", file=sys.stderr)
-            sys.exit(75)
-        effective_target.mkdir(parents=True, exist_ok=True)
-        marker.write_text("owned")
+        # Native admission owns the gate target and its lint child before compilation.
+        owner_targets = [effective_target]
+        if "tippy" in args and effective_target.name == "tippy":
+            owner_targets.insert(0, effective_target.parent)
+        for owner_target in owner_targets:
+            owner_marker = owner_target / "fixture-owner"
+            if owner_target.exists() and (not owner_marker.is_file() or owner_marker.read_text() != "owned"):
+                print("fixture cache ownership refused before compilation", file=sys.stderr)
+                sys.exit(75)
+            owner_target.mkdir(parents=True, exist_ok=True)
+            owner_marker.write_text("owned")
     else:
         effective_target.mkdir(parents=True, exist_ok=True)
         if not marker.exists():
@@ -441,6 +459,16 @@ class CheckLintStepTests(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         self.assertIn("tippy finds nothing in ALab's code", stderr)
         self.assertEqual(self.compiler_calls("pristine"), [])
+        calls = self.compiler_calls("ours")
+        lint = next(index for index, call in enumerate(calls) if " tippy " in call)
+        cli = next(index for index, call in enumerate(calls) if " run " in call)
+        alab = next(index for index, call in enumerate(calls)
+                    if " test " in call and "--lib" not in call)
+        units = next(index for index, call in enumerate(calls)
+                     if " test " in call and "--lib" in call)
+        self.assertLess(lint, cli)
+        self.assertLess(cli, alab)
+        self.assertLess(alab, units)
 
     def test_both_full_locked_graphs_resolve_before_the_first_compiler(self):
         code, stderr = self.check(CLEAN)
@@ -488,7 +516,8 @@ class CheckLintStepTests(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         compiled = [json.loads(line) for line in (self.fake / "compiled.jsonl").read_text().splitlines()]
         target = str(self.repo / "codex-rs/target")
-        self.assertEqual(compiled[0]["target"], target)
+        self.assertIn("tippy", compiled[0]["args"])
+        self.assertEqual(compiled[0]["target"], target + "/tippy")
         self.assertTrue(all(item["target"] == target for item in compiled if "tippy" not in item["args"]))
         self.assertEqual((Path(target) / "fixture-owner").read_text(), "owned")
 
@@ -817,6 +846,69 @@ class CheckLintStepTests(unittest.TestCase):
         self.assert_prepared("ours")
         self.assert_prepared("pristine")
 
+    def vendor_toolchain_source(self):
+        """ALab's commit carries a crate in place of upstream's, as alab/vendor/allocative does."""
+        vendored = self.repo / "alab/vendor/allocative"
+        self.write(vendored / "ALAB-SOURCE.json", json.dumps({
+            "crate": "allocative", "version": "0.3.6", "crate_sha256": "d8" * 32}))
+        self.write(vendored / "Cargo.toml", '[package]\nname = "allocative"\nversion = "0.3.6"\n')
+        self.commit("carry a toolchain source")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        return f'paths = ["{vendored}"]'
+
+    def compared(self, contained=False):
+        """A run whose lint and unit tests are both compared with pristine upstream."""
+        self.unit_mode(ours="fail", pristine="ok")
+        failure = bench_error("code-mode-host", "codex-code-mode-host")
+        code, stderr = self.check(CLEAN + [failure], ours_rc=101, pristine=CLEAN + [failure],
+                                  contained=contained)
+        self.assertEqual(code, 1, stderr)
+        self.assertIn("fails with ALab's layer, passes on upstream", stderr)
+        self.assertIn("does not build on upstream", stderr)
+        calls = [json.loads(line) for line in (self.fake / "environments.jsonl").read_text().splitlines()]
+        compiling = ("tippy", "build", "test", "run", "metadata")
+        return [(call["side"], call["args"]) for call in calls
+                if any(word in call["args"] for word in compiling)]
+
+    def overrides(self, args):
+        return [args[index + 1] for index, word in enumerate(args)
+                if word == "--config" and args[index + 1].startswith("paths")]
+
+    def test_pristine_upstream_builds_with_the_toolchain_sources_alab_carries(self):
+        """PRISTINE UPSTREAM BUILDS WITH THE TOOLCHAIN SOURCES ALAB CARRIES: upstream alone
+        does not build under Trust (allocative 0.3.6: E0119), so step 5's comparison, and step
+        4's, never compiled and every full check exited 1 there. Each cargo call in the
+        pristine tree, the lint, the helper builds, the metadata read and every unit round,
+        takes the crates alab/vendor carries as path overrides, which keep upstream's lockfile
+        (--locked) and its tree untouched. NEGATIVE CONTROL: no call in ALab's tree takes them
+        (its own codex-rs/Cargo.toml patches them in), and with nothing carried no call does."""
+        self.hook_code_mode_host()
+        for side, args in self.compared():
+            self.assertEqual(self.overrides(args), [], (side, args))
+        override = self.vendor_toolchain_source()
+        modes = [False] + ([True] if Path("/usr/bin/sandbox-exec").is_file() else [])
+        for contained in modes:
+            with self.subTest(contained=contained):
+                # Each run checks the pristine tree out afresh: the last one's untracked
+                # target/ leaves it unclean, which check.sh rightly refuses to reuse.
+                for tree in (self.repo / ".git").glob("alab-pristine-*"):
+                    self.git("worktree", "remove", "--force", "--force", str(tree))
+                (self.fake / "environments.jsonl").unlink(missing_ok=True)
+                calls = self.compared(contained=contained)
+                pristine = [args for side, args in calls if side == "pristine"]
+                self.assertTrue(any("tippy" in args for args in pristine), pristine)
+                self.assertTrue(any("--lib" in args for args in pristine), pristine)
+                self.assertTrue(any("build" in args for args in pristine), pristine)
+                for args in pristine:
+                    if "alab-unit-runner" in args:
+                        # ALab's own runner, built from ALab's manifest.
+                        self.assertEqual(self.overrides(args), [], args)
+                    else:
+                        self.assertEqual(self.overrides(args), [override], args)
+                for side, args in calls:
+                    if side == "ours":
+                        self.assertEqual(self.overrides(args), [], args)
+
     def test_native_helper_build_failures_are_preconditions(self):
         for side in ("ours", "pristine"):
             with self.subTest(side=side):
@@ -912,6 +1004,9 @@ class CheckLintStepTests(unittest.TestCase):
         self.assertEqual(len(tippy), 1, self.calls("pristine"))
         self.assertIn("-p codex-cli", tippy[0])
         self.assertIn("-p codex-core", tippy[0])
+        self.assertTrue(self.compiler_calls("ours"))
+        self.assertTrue(all(" tippy " in call for call in self.compiler_calls("ours")),
+                        "the full lint verdict refuses before CLI or test codegen")
 
     def test_a_build_script_that_fails_on_upstream_too_does_not_gate(self):
         ours = [built_script("codex-cli", "cli"), bench_error()] + CLEAN[2:]

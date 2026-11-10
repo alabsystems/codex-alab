@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "base": "1ad8b4f8ec12a6128eeba5361839416010b9d31d",
+  "target": "053e5b1ca914981275db97b1262a391d16e42556",
+  "frontier": "3026a8e54e0f48c4d8074cd700f35b0697abc329",
+  "commits": [
+    {
+      "sha": "053e5b1ca914981275db97b1262a391d16e42556",
+      "subject": "Add model provider configuration writes to the app-server (#58876)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/ClientRequest.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ModelProviderConfigWriteParams.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ModelProviderConfigWriteResponse.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/ClientRequest.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/BedrockProviderId.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/BedrockSettingsParams.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/CustomGatewaySettingsParams.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/GcpProviderId.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/GcpSettingsParams.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ModelProviderConfigWriteParams.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ModelProviderConfigWriteResponse.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ProviderSettingsPatch.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/index.ts",
+        "codex-rs/app-server-protocol/src/protocol/common.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/model_provider.rs",
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/src/config_manager_service.rs",
+        "codex-rs/app-server/src/config_manager_service_model_providers.rs",
+        "codex-rs/app-server/src/config_manager_service_provider_write.rs",
+        "codex-rs/app-server/src/config_manager_service_tests.rs",
+        "codex-rs/app-server/src/message_processor.rs",
+        "codex-rs/app-server/src/model_catalog.rs",
+        "codex-rs/app-server/src/request_processors/catalog_processor.rs",
+        "codex-rs/app-server/src/request_processors/config_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/mod.rs",
+        "codex-rs/app-server/tests/suite/v2/model_list_requirements_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/model_provider_config_tests.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py",
+        "sdk/python/tests/test_client_rpc_methods.py"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "model"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "model-discovery"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt provider configuration writes and catalog invalidation; regenerate exports from merged definitions to retain private review session registration.",
+      "evidence": [
+        "alab/upstream/053e5b1ca914981275db97b1262a391d16e42556.md",
+        "upstream 053e5b1ca914981275db97b1262a391d16e42556: protocol definitions, provider-write implementation and regression scenarios reviewed",
+        "merged f22b04e7d7: all four schema_fixtures_tests checks passed; native gate pending"
+      ],
+      "revisit": ""
+    }
+  ]
+}

@@ -146,7 +146,7 @@ async fn a_diff_overlay_hides_the_picker_preview_and_restores_it_on_return() -> 
     let size = Size::new(120, 40);
     app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Resize(size))
         .await?;
-    assert!(app.chat_widget.pet_picker_preview_draw().is_some());
+    assert!(app.chat_widget.alab_pet_picker_preview_visible_for_test());
 
     crate::test_support::boxed_future!(app.handle_event(
         &mut tui,
@@ -164,7 +164,7 @@ async fn a_diff_overlay_hides_the_picker_preview_and_restores_it_on_return() -> 
     app.close_transcript_overlay(&mut tui);
     app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Resize(size))
         .await?;
-    assert!(app.chat_widget.pet_picker_preview_draw().is_some());
+    assert!(app.chat_widget.alab_pet_picker_preview_visible_for_test());
     tui.draw_pet_picker_preview_image(None)?;
     tui.set_owned_screen(false)?;
     app_server.shutdown().await?;

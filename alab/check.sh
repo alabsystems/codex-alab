@@ -24,6 +24,8 @@
 #      testing. A failure is rerun alone; one that still fails is rerun alone on pristine
 #      upstream (git merge-base HEAD upstream/main, in this checkout's pristine tree and its
 #      own target dir: lib.sh, alab_pristine). It gates unless it fails there too.
+# Execution order: hooks, full tippy classification, CLI build/version, ALab tests,
+# then hooked upstream unit tests. Check numbers above retain their existing identities.
 # Upstream's integration suites stay upstream's gate: several need the network or are
 # timing-sensitive, and they cannot tell an ALab fault from an upstream one.
 #
@@ -73,6 +75,13 @@ check_scratch_cleanup() {
   fi
 }
 trap check_scratch_cleanup EXIT
+unit_root="${scratch}"
+if [[ -n "${ALAB_UNIT_RESULTS_DIR:-}" ]]; then
+  [[ "${ALAB_UNIT_RESULTS_DIR}" == /* ]] || alab_die "ALAB_UNIT_RESULTS_DIR must be absolute"
+  # Exclusive creation never overwrites an earlier run or the person's files.
+  mkdir -m 700 "${ALAB_UNIT_RESULTS_DIR}" || alab_die "cannot create fresh unit-results directory ${ALAB_UNIT_RESULTS_DIR}"
+  unit_root="${ALAB_UNIT_RESULTS_DIR}"
+fi
 mkdir "${scratch}/codex-home"
 export CODEX_HOME="${scratch}/codex-home"
 export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0
@@ -137,6 +146,10 @@ export CARGO_TARGET_DIR="${own_target}"
 # commit HEAD is built on (git merge-base HEAD upstream/main), and set upstream_base and
 # pristine. When it cannot, it says why and fails.
 pristine_upstream() {
+  local config
+  config="$(alab_pristine_config "${repo_root}")" || return 1
+  pristine_config=()
+  [[ -z "${config}" ]] || pristine_config=(--config "${config}")
   upstream_base="$(git merge-base HEAD upstream/main 2>/dev/null || true)"
   if [[ -z "${upstream_base}" ]]; then
     echo "alab/check.sh: no upstream/main to compare with (alab/setup.sh)" >&2
@@ -150,7 +163,6 @@ pristine_upstream() {
 
 pristine_upstream || alab_die "cannot prepare pristine dependency graph; no compiler started"
 alab_check_dependencies_ready "${repo_root}" "${pristine}" || exit $?
-alab_build_command "${cargo}" --unverified run --quiet --locked -p codex-cli --bin codex -- --version || passed $? 2
 
 # package_name <manifest>: the [package] name, or nothing for a virtual manifest.
 package_name() {
@@ -168,9 +180,6 @@ for manifest in alab-*/Cargo.toml; do
   }
   alab_packages+=(-p "${name}")
 done
-if [[ ${#alab_packages[@]} -gt 0 ]]; then
-  alab_build_command "${cargo}" --unverified test --locked --no-fail-fast "${alab_packages[@]}" || passed $? 1
-fi
 
 # The crate around each hooked upstream file: tippy lints every one (step 4), and each with a
 # library to unit-test runs its unit tests (step 5).
@@ -298,7 +307,7 @@ compare it with upstream alone" >&2
 ${upstream_base:0:9} in ${pristine}" >&2
     if [[ ${#packages[@]} -gt 0 ]]; then
       rc=0
-      lint "${pristine}" "$(alab_check_lint_target "${pristine}/codex-rs/target")" "${packages[@]}" \
+      lint "${pristine}" "$(alab_check_lint_target "${pristine}/codex-rs/target")" ${pristine_config[@]+"${pristine_config[@]}"} "${packages[@]}" \
         >"${scratch}/pristine-lint.json" || rc=$?
       stopped "${rc}"
     fi
@@ -321,16 +330,14 @@ ${upstream_base:0:9} in ${pristine}" >&2
   echo "alab/check.sh: tippy finds nothing in ALab's code ($(verdict .set_aside) diagnostics in upstream's set aside)" >&2
 fi
 
+alab_build_command "${cargo}" --unverified run --quiet --locked -p codex-cli --bin codex -- --version || passed $? 2
+if [[ ${#alab_packages[@]} -gt 0 ]]; then
+  alab_build_command "${cargo}" --unverified test --locked --no-fail-fast "${alab_packages[@]}" || passed $? 1
+fi
+
 [[ ${#hooked_packages[@]} -gt 0 ]] || exit 0
 
 packages=("${hooked_packages[@]}")
-unit_root="${scratch}"
-if [[ -n "${ALAB_UNIT_RESULTS_DIR:-}" ]]; then
-  [[ "${ALAB_UNIT_RESULTS_DIR}" == /* ]] || alab_die "ALAB_UNIT_RESULTS_DIR must be absolute"
-  # Exclusive creation never overwrites an earlier run or the person's files.
-  mkdir -m 700 "${ALAB_UNIT_RESULTS_DIR}" || alab_die "cannot create fresh unit-results directory ${ALAB_UNIT_RESULTS_DIR}"
-  unit_root="${ALAB_UNIT_RESULTS_DIR}"
-fi
 log="${unit_root}/unit.log"
 unit_reader="${repo_root}/alab/unit_results.py"
 unit_python="${ALAB_PYTHON:-/usr/bin/python3}"
@@ -371,7 +378,7 @@ for i in "${!hooked_dirs[@]}"; do
 done
 rc=0
 unit_state="${unit_root}/unit-pristine"
-unit_tests "${pristine}" "${pristine}/codex-rs/target" --compare-results \
+unit_tests "${pristine}" "${pristine}/codex-rs/target" ${pristine_config[@]+"${pristine_config[@]}"} --compare-results \
   "${unit_root}/unit-alone.json" "${unit_state}" 2>&1 | tee "${unit_root}/pristine.log" || rc=$?
 stopped "${rc}"
 "${unit_python}" -I "${unit_reader}" collect --state "${unit_state}" --log "${unit_root}/pristine.log" \
