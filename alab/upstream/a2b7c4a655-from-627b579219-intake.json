@@ -1,0 +1,241 @@
+{
+  "schema": 1,
+  "base": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "target": "a2b7c4a655a124c3e798b7744c5f83397eb2ada3",
+  "frontier": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "commits": [
+    {
+      "sha": "df82e2fe0ab2757fa676927d2ade4deea437df72",
+      "subject": "Support archiving and restoring cloud threads (#60635)",
+      "paths": [
+        "codex-rs/app-server-client/src/cloud_backend/connection_tests.rs",
+        "codex-rs/app-server-client/src/cloud_backend/mod.rs",
+        "codex-rs/app-server-client/src/cloud_backend/request_tests.rs",
+        "codex-rs/app-server-client/src/cloud_backend/requests.rs",
+        "codex-rs/cloud-client/src/client_tests.rs",
+        "codex-rs/cloud-client/src/discovery.rs",
+        "codex-rs/cloud-client/src/discovery_tests.rs",
+        "codex-rs/cloud-client/src/lib.rs",
+        "codex-rs/cloud-client/src/turns.rs",
+        "codex-rs/cloud-client/src/wire.rs",
+        "codex-rs/tui/src/app/agents_overview_actions.rs",
+        "codex-rs/tui/src/app/agents_overview_actions_tests.rs",
+        "codex-rs/tui/src/resume_picker.rs",
+        "codex-rs/tui/src/resume_picker/archive.rs",
+        "codex-rs/tui/src/resume_picker/archive_tests.rs",
+        "codex-rs/tui/src/resume_picker/sources.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "native-ui",
+        "native-session",
+        "account-isolation"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Retain Cloud activation policy while adopting archive/restore on the existing account-bound client. Archive affects only the selected Cloud thread; loaded IDs reflect live attachments, and picker caches and completions are scoped by backend plus thread ID. Mutation replies require acknowledgment and restore verifies returned identity.",
+      "evidence": [
+        "Reviewed production Cloud transport, request dispatch, attachment cleanup and picker ownership diffs plus archive failure/EOF, cross-backend same-ID and child-preservation regression diffs.",
+        "Static review only; new composed runtime qualification remains pending."
+      ],
+      "revisit": "Run Cloud archive/discovery, attachment EOF and picker same-ID/child preservation tests; retain the native credential-policy transport contract."
+    },
+    {
+      "sha": "4a784f63e8b062449bd154ecf86e588714cd60e9",
+      "subject": "Show pending key chords in a shared floating shortcut guide (#60637)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/agent_center/hints.rs",
+        "codex-rs/tui/src/app/agent_center/render.rs",
+        "codex-rs/tui/src/app/agents_overview_view.rs",
+        "codex-rs/tui/src/app/input.rs",
+        "codex-rs/tui/src/app/link_hover.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/owned_transcript_browsing_tests.rs",
+        "codex-rs/tui/src/app/owned_transcript_tests.rs",
+        "codex-rs/tui/src/app/pets.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__owned_transcript__tests__owned_find_pending_chord_footer.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__tests__workspace_presets_compact.snap",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/key_chords.rs",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__key_chords__pending_custom_chord.snap",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__key_chords__pending_custom_chord_inline.snap",
+        "codex-rs/tui/src/app/workspace_hud.rs",
+        "codex-rs/tui/src/app_backtrack.rs",
+        "codex-rs/tui/src/bottom_pane/shortcut_hud.rs",
+        "codex-rs/tui/src/daemon_recovery.rs",
+        "codex-rs/tui/src/keymap.rs",
+        "codex-rs/tui/src/keymap/chords.rs",
+        "codex-rs/tui/src/keymap/chords_tests.rs",
+        "codex-rs/tui/src/keymap_setup.rs",
+        "codex-rs/tui/src/keymap_setup/actions.rs",
+        "codex-rs/tui/src/pager_overlay/transcript.rs",
+        "codex-rs/tui/src/resume_picker.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__startup_draft__tests__startup_draft_safe_chord_guide.snap",
+        "codex-rs/tui/src/startup_draft.rs",
+        "codex-rs/tui/src/startup_draft_input.rs",
+        "codex-rs/tui/src/startup_draft_tests.rs",
+        "codex-rs/tui/src/startup_hooks_review.rs",
+        "codex-rs/tui/src/tui.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the shared floating chord guide and remove obsolete footer hint state. Rendering follows the owning matcher, delayed reveal and timeout remain distinct, startup filters retain safe actions, and overlay bounds govern cursor/image occlusion and click dismissal. Preserve ALab input and draft behavior through existing hooks.",
+      "evidence": [
+        "Reviewed matcher, HUD, App/owned transcript, pager, standalone picker/recovery/startup, pet and pointer routing production diffs; inspected custom-prefix timing/narrow-inline and startup-safe regression changes.",
+        "Static review only; new composed runtime qualification remains pending."
+      ],
+      "revisit": "Run key chord, owned transcript, startup draft and workspace/pet controls on the composition; inspect any merge conflicts against ALab hook intent."
+    },
+    {
+      "sha": "057d9140a8b356a4b1eb71f01c8e981f2aeef20f",
+      "subject": "Honor read-only MCP tool hints in automatic approval (#60638)",
+      "paths": [
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/core/src/mcp_tool_call_tests.rs",
+        "codex-rs/core/tests/suite/mcp_turn_metadata.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "native-session",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the intentional MCP automatic-approval change: readOnlyHint=true now wins over conflicting destructive/openWorld hints. Reviewed the complete classifier/unit/integration diff plus actual mode routing and strict_auto_review checks: absent hints remain conservative, Prompt retains its mode requirement, and strict review blocks annotation/session-skip paths. No additional default or feature is enabled.",
+      "evidence": [
+        "Complete git show057d9140a8 across all three files reviewed.",
+        "Actual upstream prepare_mcp_tool_approval strict checks and requires_mcp_tool_approval_for_mode dispatch reviewed.",
+        "New conflicting-annotation Auto/Writes integration variants and strict-review/prompt controls inspected; runtime execution pending."
+      ],
+      "revisit": "Run conflicting annotations, strict_auto_review_forces_guardian_for_mcp_policy_skip, prompt-mode unit controls and both apps_default_approval_prompts_for_writes_but_not_reads variants on the composed source."
+    },
+    {
+      "sha": "3f797555cdc0940072fe387c9180fd2736e08239",
+      "subject": "Refresh Apps tools outside the MCP runtime gate (#60639)",
+      "paths": [
+        "codex-rs/codex-mcp/src/binding_tests.rs",
+        "codex-rs/codex-mcp/src/client_tool_catalog.rs",
+        "codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs",
+        "codex-rs/codex-mcp/src/connection_manager_tests.rs",
+        "codex-rs/codex-mcp/src/connection_pool_tests.rs",
+        "codex-rs/codex-mcp/src/runtime.rs",
+        "codex-rs/codex-mcp/src/runtime/apps_tool_refresh_tests.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/core/src/session/mcp_refresh.rs",
+        "codex-rs/core/src/session/mcp_runtime.rs",
+        "codex-rs/core/src/tasks/regular.rs",
+        "codex-rs/core/tests/suite/codex_apps_protocol.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "account-isolation",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt network fetch and call drain outside the session publication permit. Publication validates captured generation, exact runtime identity and auth watch state under synchronous guards; invalidation and logout suppress stale local/shared catalog updates. Apps execution and reprojection wait for in-flight refreshes, with bounded retry after supersession.",
+      "evidence": [
+        "Reviewed all production changes and all regression diffs, including stale generation/logout rejection, unchanged revision/cache on stale fetch, preparation drain guard ordering and next model step awaiting the refreshed catalog.",
+        "Static review only; new composed runtime qualification remains pending."
+      ],
+      "revisit": "Run stale_apps_refresh_does_not_publish, preparation_holds_catalog_authority_until_it_finishes and next_model_step_uses_the_in_flight_apps_refresh plus actual-owner MCP status controls."
+    },
+    {
+      "sha": "30b42cb802a08ecc69d3c4199891e520485c12cf",
+      "subject": "Keep interrupts responsive during host service-tier updates (#60644)",
+      "paths": [
+        "codex-rs/core/src/agent/host/service_tier.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/thread_settings.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/tests/suite/agent_websocket.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt independently driven host tier receipts and asynchronous explicit replies so the submission loop remains interruptible. Local settings remain committed on handoff error; only explicit replied requests retry an observed failed same-tier receipt. Startup cancellation retains the registered runtime and host handoff.",
+      "evidence": [
+        "Reviewed every production file and the full WebSocket regression covering startup cancellation, interrupt with pending receipts, failure message, retained snapshot and explicit same-tier retry.",
+        "Static review only; new composed runtime qualification remains pending."
+      ],
+      "revisit": "Run pending_host_tier_settings_reply_does_not_block_interrupt and existing host child service-tier/lifecycle controls; inspect all ALab AgentServiceTier implementations for changed Result signature."
+    },
+    {
+      "sha": "2c2d99f0e3794f3cc4807b21b8dff8c424883ae1",
+      "subject": "Update the safety consent test for the current dialog (#60645)",
+      "paths": [
+        "codex-rs/tui/src/chatwidget/tests/status_and_layout.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "qualification-fixtures",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the complete official Daybreak fixture correction: pass can_save=true and assert the current Include logs and session history disclosure. It is equivalent to the two ALab fixture-only adaptations and removes the pristine comparison compile failure; drop those redundant ALab markers when merging rather than retain a parallel fixture variant.",
+      "evidence": [
+        "Complete git show2c2d99f0e3 diff reviewed; argument and title match the carried ALab fixture fixes.",
+        "627b579219-e13e-full-gate-failed-observation.json records the pristine E0061."
+      ],
+      "revisit": "Qualify the new merged source and pristine comparison; no current-main or artifact adoption claim."
+    },
+    {
+      "sha": "a2b7c4a655a124c3e798b7744c5f83397eb2ada3",
+      "subject": "Use trusted Guardian templates for managed policies (#60646)",
+      "paths": [
+        "codex-rs/config/src/config_toml.rs",
+        "codex-rs/config/src/strict_config.rs",
+        "codex-rs/config/src/strict_config_tests.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/guardian_policy.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/guardian/reviewer_config.rs",
+        "codex-rs/core/src/guardian/tests.rs",
+        "codex-rs/core/tests/suite/scenarios_guardian_extra_policy.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/extension_cached_delivery_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/extension_tests.rs"
+      ],
+      "classes": [
+        "security",
+        "fix",
+        "defaults"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt bundled trusted Guardian templates whenever managed tenant or additional rules exist, preserving explicit trusted host templates. Remove user-configured extra_policy and experimental_policy_template rather than carry obsolete compatibility; migration warnings direct additional rules to managed requirements. ALab-owned source search found no consumers of removed settings.",
+      "evidence": [
+        "Reviewed production config/template diffs and migration, hostile catalog, managed tenant/extra and explicit host-template regression diffs. Searched ALab crates/process sources for removed-field consumers; only historical intake records matched.",
+        "Static review only; new composed runtime qualification remains pending."
+      ],
+      "revisit": "Run removed_settings_have_migration_hints, Guardian requirements template variants, requirements_guardian_policy_beats_auto_review and extra_policy_reaches_guardian_review on composed source."
+    }
+  ]
+}

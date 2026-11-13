@@ -1,0 +1,20 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "codex-alab-input"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0 AND MIT"
+[lib]
+name = "codex_alab_input"
+[lints]
+workspace = true
+[dependencies]
+codex-alab-core = { path = "../alab-core" }
+crossterm = { workspace = true, features = ["bracketed-paste"] }
+libc = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+signal-hook = { workspace = true }
+[dev-dependencies]
+tempfile = { workspace = true }

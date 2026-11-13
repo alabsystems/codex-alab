@@ -1,0 +1,116 @@
+{
+  "base": "3026a8e54e0f48c4d8074cd700f35b0697abc329",
+  "target": "064b2d9bca2b5ba2f9f399ffefd06a75d97852f0",
+  "source": "codex-rs/features/src/lib.rs",
+  "method": "review aid: feature declaration extraction; not effective runtime configuration",
+  "changed_or_new": [
+    {
+      "key": "cli_resume_account_check",
+      "id": "CliResumeAccountCheck",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "tui_workspace",
+      "id": "TuiWorkspace",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "untrusted_as_tool_output",
+      "id": "UntrustedAsToolOutput",
+      "before": false,
+      "after": true
+    },
+    {
+      "key": "code_mode_host_grpc",
+      "id": "CodeModeHostGrpc",
+      "before": false,
+      "after": true
+    },
+    {
+      "key": "code_mode_host_output_truncation",
+      "id": "CodeModeHostOutputTruncation",
+      "before": false,
+      "after": true
+    },
+    {
+      "key": "hosted_search_policy",
+      "id": "HostedSearchPolicy",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "agent_message_board_mcp",
+      "id": "AgentMessageBoardMcp",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "mcp_lazy_stdio_startup",
+      "id": "McpLazyStdioStartup",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "command_sessions_world_state",
+      "id": "CommandSessionsWorldState",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "incremental_tools_legacy",
+      "id": "IncrementalToolsLegacy",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "plugin_discovery_prefetch",
+      "id": "PluginDiscoveryPrefetch",
+      "before": true,
+      "after": false
+    },
+    {
+      "key": "image_generation_animation",
+      "id": "ImageGenerationAnimation",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "unified_image_budget",
+      "id": "UnifiedImageBudget",
+      "before": false,
+      "after": true
+    },
+    {
+      "key": "guardian_include_additional_context",
+      "id": "GuardianIncludeAdditionalContext",
+      "before": null,
+      "after": true
+    },
+    {
+      "key": "guardian_denial_reconsideration",
+      "id": "GuardianDenialReconsideration",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "gateway_setup_wizard",
+      "id": "GatewaySetupWizard",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "async_compaction_root_only",
+      "id": "AsyncCompactionRootOnly",
+      "before": null,
+      "after": false
+    },
+    {
+      "key": "retain_client_tool_outputs",
+      "id": "RetainClientToolOutputs",
+      "before": false,
+      "after": true
+    }
+  ]
+}

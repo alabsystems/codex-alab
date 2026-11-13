@@ -1,0 +1,207 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:14:22.122301+00:00",
+  "source": "effd428484f6240ecd0bec63d4d57bdfa06f81e9",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "client::runtime_auth_tests::custom_backend_keeps_its_credential_without_registering_a_runtime",
+      "status": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::client_registers_in_requested_organization_when_default_is_denied",
+      "status": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::authenticated_clients_without_redirects_return_the_redirect_response",
+      "status": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::unsupported_openai_backend_rejects_runtime_auth_before_registration",
+      "status": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::reusable_runtime_client_keeps_the_selected_accounts_transport_policy",
+      "status": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::account_runtime_auth_signs_each_request_and_strips_credentials_on_redirect",
+      "status": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::reusable_runtime_client_refreshes_credentials_without_accepting_a_new_session",
+      "status": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::api_header_and_workload_payload_snapshots_capture_actual_manager_epoch",
+      "status": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::current_cache_read_requires_publication_after_policy_retirement",
+      "status": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::native_constructor_presence_cannot_export_an_unresolved_legacy_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::a_captured_credential_cannot_be_relabelled_by_another_managers_cache",
+      "status": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::snapshot_keeps_its_epoch_through_refresh_but_cannot_adopt_a_new_source_factory",
+      "status": "ok"
+    },
+    {
+      "name": "auth::manager::alab_context_host::tests::host_selects_real_context_without_relabeling_captured_auth_or_owning_watch_authority",
+      "status": "ok"
+    },
+    {
+      "name": "auth::manager::alab_context_host::tests::pointer_wake_rebinds_actual_receiver_even_when_counters_are_equal",
+      "status": "ok"
+    },
+    {
+      "name": "auth::manager::alab_context_host::tests::typed_pair_follows_the_actual_host_context_and_refuses_a_closed_host",
+      "status": "ok"
+    },
+    {
+      "name": "auth::manager::alab_native_member::tests::native_cache_capture_retains_cache_reader_and_rejects_missing_or_foreign_ready_members",
+      "status": "ok"
+    },
+    {
+      "name": "bootstrap::tests::registration_serializes_the_supported_actor_authorizations",
+      "status": "ok"
+    },
+    {
+      "name": "bootstrap::tests::registration_decodes_composite_actor_contexts",
+      "status": "ok"
+    },
+    {
+      "name": "installation_id::tests::resolve_installation_id_reuses_existing_uuid",
+      "status": "ok"
+    },
+    {
+      "name": "installation_id::tests::resolve_installation_id_generates_and_persists_uuid",
+      "status": "ok"
+    },
+    {
+      "name": "installation_id::tests::resolve_installation_id_rewrites_invalid_file_contents",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::captured_request_auth_allows_refresh_but_rejects_source_replacement",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::concurrent_requests_share_registration_and_replacement_preserves_in_flight_auth",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::explicit_keys_reuse_their_owner_without_borrowing_a_command_source",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::explicit_key_stays_independent_when_matching_saved_login_changes",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::bootstrap_refresh_reuses_known_sources_but_replaces_sessionless_initialization",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::failed_registration_does_not_poison_another_project_or_reuse_its_idempotency_key",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::new_request_uses_refreshed_credentials_without_replacing_the_runtime",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::policy_recovery_preserves_pending_registration",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::legacy_login_requires_sign_in_for_runtime_auth",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::projects_share_one_runtime_and_organization_changes_replace_it",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::recovery_is_bounded_and_revocation_cannot_trigger_reregistration",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::registration_failure_reports_retryability",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::request_auth_replaces_stale_headers_and_signs_each_attempt",
+      "status": "ok"
+    },
+    {
+      "name": "registration::tests::new_initializations_use_new_keys_and_retry_ids",
+      "status": "ok"
+    },
+    {
+      "name": "registration::tests::registration_never_forwards_credentials_through_a_redirect",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::source_outage_preserves_registered_pending_and_denied_runtimes",
+      "status": "ok"
+    },
+    {
+      "name": "registration::tests::registration_preserves_policy_revocation",
+      "status": "ok"
+    },
+    {
+      "name": "registration::tests::registration_rejects_unsafe_endpoints",
+      "status": "ok"
+    },
+    {
+      "name": "registration::tests::registration_rejects_incomplete_or_oversized_responses",
+      "status": "ok"
+    },
+    {
+      "name": "registration::tests::registration_retries_keep_the_key_and_sign_fresh_assertions",
+      "status": "ok"
+    },
+    {
+      "name": "registration::tests::rejected_registration_preserves_only_status_and_known_error_codes",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::file_upload_runtime_auth_signs_control_requests_but_not_blob_uploads",
+      "status": "ok"
+    },
+    {
+      "name": "manager::tests::a_late_registration_cannot_publish_the_previous_actor",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-b32-typed-auth-pair-native.sh",
+      "sha256": "bdede67ec8a209aa28472e10397ccd542983ede5ceabadf8575155d41314b9db"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-typed-auth-pair-native.log",
+      "sha256": "05e5bb951222adc310815d322f9d80c405085e847ec47900d8c5aa74058a4e84"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-typed-auth-pair-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Five nonempty helper-admitted selections, 44 passed, zero failed/ignored. Requalifies typed pairing after standard-library future erasure and upstream 37103. Local host/protocol/member fixtures do not prove compiled native image lifecycle, platform parity, full gate, complete intake or installed adoption. Later fea0202ba4 removes a redundant clone in one regression assertion and requires current-source gate."
+}

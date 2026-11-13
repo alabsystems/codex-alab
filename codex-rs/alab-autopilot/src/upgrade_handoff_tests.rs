@@ -7,8 +7,14 @@
 #[path = "upgrade_end_catchup_tests.rs"]
 mod end_catchup_tests;
 
+#[path = "upgrade_inventory_tests.rs"]
+mod upgrade_inventory_tests;
+
 #[path = "upgrade_ask_native_tests.rs"]
 mod upgrade_ask_native_tests;
+
+#[path = "upgrade_pending_indicator_tests.rs"]
+mod pending_indicator;
 
 use super::*;
 use codex_alab_aterm::Options as ClientOptions;
@@ -520,6 +526,7 @@ pub(super) struct Harness {
     pub(super) test: TestCodex,
     pub(super) requests: tokio::sync::mpsc::UnboundedReceiver<UpgradeRequest>,
     deadline: Instant,
+    _upgrade_guard: codex_alab_tui::upgrade::test_support::Guard,
     _dir: tempfile::TempDir,
     pub(super) _server: wiremock::MockServer,
 }
@@ -626,6 +633,10 @@ impl Harness {
         });
         let mut builder = codex_extension_api::ExtensionRegistryBuilder::<Config>::new();
         let autopilot = Autopilot::new(sup, None, goals.clone(), Timing::default(), |_| true);
+        // Isolate only native package admission. Native thread, goal, policy,
+        // timer and conditional TUI decisions remain the production evaluator.
+        *lock(&autopilot.upgrade_target_fixture) =
+            Some(codex_alab_tui::upgrade::test_support::prepare);
         // This fixture supplies the decided point and timer itself. Do not also launch
         // an unrelated claim-change evaluation that can supersede them after setup.
         autopilot.watching.store(true, Ordering::SeqCst);
@@ -679,7 +690,8 @@ impl Harness {
             .get::<ThreadRt>()
             .unwrap_or_else(|| panic!("native root runtime"));
         let old = dir.path().join("old-build");
-        let target = dir.path().join("new-build");
+        std::fs::create_dir(dir.path().join("bin")).unwrap();
+        let target = dir.path().join("bin/codex");
         for path in [&old, &target] {
             std::fs::write(path, b"captured image; never executed")
                 .unwrap_or_else(|err| panic!("{err}"));
@@ -765,10 +777,42 @@ impl Harness {
             test,
             requests,
             deadline,
+            _upgrade_guard: codex_alab_tui::upgrade::test_support::Guard(shared),
             _dir: dir,
             _server: server,
         }
     }
+}
+
+#[test]
+fn unavailable_native_package_admission_keeps_the_session_and_original_owed_act() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let mut h = Harness::new().await;
+            assert_eq!(
+                upgrade::check(&h.autopilot.upgrade_facts().await),
+                UpgradeCheck::Go
+            );
+            // Exercise the real producer against the in-process control peer.
+            // It cannot impersonate an independent native package host.
+            *lock(&h.autopilot.upgrade_target_fixture) = None;
+            assert_eq!(
+                h.autopilot.sup.renewal_client().unwrap().server_pid(),
+                Some(std::process::id())
+            );
+            let original = h.rt.owed_timer().unwrap();
+            assert!(!h.autopilot.try_upgrade().await);
+            assert!(!h.shared.exec_pending());
+            assert!(h.shared.take_upgrade_execution().is_none());
+            assert!(h.requests.try_recv().is_err());
+            let retained = h.rt.owed_timer().unwrap();
+            assert_eq!(retained.not_before, original.not_before);
+            assert_eq!(retained.rule, original.rule);
+            assert_eq!(retained.text, original.text);
+        })
+        .await
+        .expect("native admission refusal settles");
+    });
 }
 
 /// A long successful turn has no short-streak timer to carry. Its freshly
@@ -829,8 +873,10 @@ fn an_immediate_continuation_after_real_work_yields_to_the_new_build() {
 #[test]
 fn an_immediate_continuation_survives_refusal_but_never_supersedes_new_input() {
     native_test(|| async {
+        let Some(change) = pending_indicator::isolated_case().await else {
+            return;
+        };
         tokio::time::timeout(Duration::from_secs(60), async {
-        for change in ["refused", "draft", "native", "write-failed"] {
             let mut h = Harness::new().await;
             h.immediate_point().await;
             h.hold_model_response().await;
@@ -861,6 +907,8 @@ fn an_immediate_continuation_survives_refusal_but_never_supersedes_new_input() {
                 })));
             }
             let evaluations = h.rt.evaluations();
+            codex_alab_tui::upgrade::update_state("isolated pending indicator reset");
+            assert!(!codex_alab_tui::upgrade::test_support::update_is_pending());
             let pilot = Arc::clone(&h.autopilot);
             let rt = Arc::clone(&h.rt);
             let mut evaluating = tokio::spawn(async move { pilot.evaluate(rt).await });
@@ -949,6 +997,11 @@ fn an_immediate_continuation_survives_refusal_but_never_supersedes_new_input() {
             }
             evaluating.await.expect("evaluation completes");
             }
+            assert!(
+                codex_alab_tui::upgrade::test_support::update_is_pending(),
+                "{change}: a refused handoff keeps the update indicator: {}",
+                codex_alab_tui::upgrade::update_report("isolated pending indicator")
+            );
             assert!(!h.shared.exec_pending());
             if matches!(change, "refused" | "write-failed") {
                 tokio::select! {
@@ -1005,10 +1058,10 @@ fn an_immediate_continuation_survives_refusal_but_never_supersedes_new_input() {
                 .shutdown_and_wait()
                 .await
                 .expect("native shutdown");
-        }
-    })
-    .await
-    .expect("immediate refusal hang detector");
+        })
+        .await
+        .expect("immediate refusal hang detector");
+        pending_indicator::completed(change);
     });
 }
 

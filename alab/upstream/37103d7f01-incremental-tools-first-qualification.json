@@ -1,0 +1,131 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:32:45.626918+00:00",
+  "source": "c58e35eb6779aa4283dd0901666ecc9c6f9a3309",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "context::world_state::top_level_tools::tests::changed_and_added_entries_share_one_update_and_removed_entries_are_withdrawn::oversized_removal_preserves_update",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::changed_and_added_entries_share_one_update_and_removed_entries_are_withdrawn::null_fields",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::changed_and_added_entries_share_one_update_and_removed_entries_are_withdrawn::bundled",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::changed_and_added_entries_share_one_update_and_removed_entries_are_withdrawn::oversized_update_preserves_removal",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::changed_and_added_entries_share_one_update_and_removed_entries_are_withdrawn::utf8_byte_limit",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::namespace_description_change_does_not_repeat_unchanged_tools::none_updated_namespace_guidance_updated_instructions_for_the_functions_namespace_nupdated_namespace_guidance_expects",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::namespace_description_change_does_not_repeat_unchanged_tools::some_catalog_name_cleared_name_cleared_functions_expects",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::namespace_description_change_does_not_repeat_unchanged_tools::some_catalog_name_cleared_name_literal_name_and_instructions_catalog_functions_literal_name_and_instructions_expects",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::namespace_description_change_does_not_repeat_unchanged_tools::some_catalog_name_expects",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::namespace_description_change_does_not_repeat_unchanged_tools::some_cleared_name_runtime_instructions_runtime_instructions_expects",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::namespace_diff_contains_only_changed_and_added_tools",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::empty_catalog_is_persisted_and_can_add_tools_again",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::namespace_replaced_by_builtin_keeps_the_replacement_available",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::namespace_removals_emit_one_notice",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::initial_catalog_preserves_order_and_unchanged_catalog_emits_nothing",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::hidden_exec_is_not_reintroduced_and_returning_exec_restores_full_catalog",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::new_namespaces_share_one_notice_before_their_declarations",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::tool_type_change_keeps_the_callable_name_available",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::snapshots_catalog_transitions",
+      "status": "ok"
+    },
+    {
+      "name": "context::world_state::top_level_tools::tests::snapshots_namespace_transitions",
+      "status": "ok"
+    },
+    {
+      "name": "suite::code_mode_model_messages::exec_tools_follow_incremental_exec_flag::disabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::code_mode_model_messages::exec_tools_follow_incremental_exec_flag::enabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::exec_tools::changed_sections_and_entries_append_without_repeating_the_catalog::bundled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::exec_tools::changed_sections_and_entries_append_without_repeating_the_catalog::catalog_messages",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::incremental_tools::tool_removal_appends_a_standalone_notice_without_rewriting_history::responses_api",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-incremental-tools-native.sh",
+      "sha256": "ea18abe0930363a502c79b546980cc30c0fc60b25ac63f67b1114d21b503c892"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-incremental-tools-native.log",
+      "sha256": "ec8725a33940799142d12b6d601854919d249a2ea0c5c451d20334e17a9ac353"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-incremental-tools-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "25 actual passes: catalog-state unit tests (20), Code Mode enabled/disabled cases (2), bundled/model-message full exec update/compaction scenarios (2), Bedrock legacy removal/restoration scenario (1). Batch exit1 preserved: obsolete responses_api_incremental selection empty and rejected. Later upstream 762f87 restricts legacy to Bedrock; current full provider matrix is a separate run. No empty selection credited. Full gate/adoption separate."
+}

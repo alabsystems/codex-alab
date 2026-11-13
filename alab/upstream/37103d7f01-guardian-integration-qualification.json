@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:39:41.395547+00:00",
+  "source": "225995c38a16c020eaea39d77bec09965802c63b",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "config::tests::sync_elastic_budget_is_opt_in_and_validated",
+      "status": "ok"
+    },
+    {
+      "name": "suite::guardian_history::guardian_storage_policy_applies_before_capture_and_resume::elastic_capture",
+      "status": "ok"
+    },
+    {
+      "name": "suite::guardian_history::guardian_storage_policy_applies_before_capture_and_resume::fixed_capture",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::guardian_elastic_budgeting_request_history",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-integration-native.sh",
+      "sha256": "8e9f696d9dffac512b3b4118877ae422d834682c339cb3ea5bd6ee34d08050b3"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-integration-native.log",
+      "sha256": "c74d2d4d44aab7ef88679f54051575234c261ff0e9b44101c028125665083b97"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-integration-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Three helper-admitted nonempty selections, four passed, zero failed/ignored. Core fixtures qualify opt-in config validation, fixed/elastic capture before and after resume and model-visible Guardian request history preserving actor history. Does not prove every approval tool, native credential image lifecycle, platform parity, full gate, complete intake or adoption."
+}

@@ -3,6 +3,14 @@
 //! Earned-reset recovery under a cross-process custody lock.
 #[cfg(unix)]
 mod unix;
+
+/// What a walled request knows about its own wall: the provider's named reset,
+/// and the host that would continue on another account if the request ended now.
+#[derive(Clone, Copy, Default)]
+pub struct Wall<'a> {
+    pub reset_at: Option<i64>,
+    pub handoff: Option<&'a codex_alab_core::quota::WallHandoff>,
+}
 #[cfg(unix)]
 pub use unix::State;
 #[cfg(unix)]
@@ -33,7 +41,7 @@ pub async fn recover_weekly(
     _: codex_http_client::HttpClientFactory,
     _: &str,
     _: &State,
-    _: Option<i64>,
+    _: Wall<'_>,
 ) -> bool {
     false
 }
@@ -46,5 +54,6 @@ pub async fn preflight(
     _: codex_http_client::HttpClientFactory,
     _: &str,
     _: &State,
+    _: Option<&codex_protocol::protocol::RateLimitSnapshot>,
 ) {
 }

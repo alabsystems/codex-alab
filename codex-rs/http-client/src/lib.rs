@@ -46,6 +46,7 @@ pub use crate::error::StreamError;
 pub use crate::error::TransportError;
 pub use crate::network_policy::DestinationPolicy;
 pub use crate::network_policy::CredentialSourceUse; // ALAB(accounts): source-use admission is not transport permission.
+pub use crate::network_policy::IdleNetworkPermit; // ALAB(accounts): cached recovery state is distinct from an active request permit.
 pub use crate::network_policy::NetworkPermit;
 pub use crate::network_policy::NetworkPolicy;
 pub use crate::network_policy::NetworkPolicyController;

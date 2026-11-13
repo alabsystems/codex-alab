@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:36:35.691692+00:00",
+  "source": "c58e35eb6779aa4283dd0901666ecc9c6f9a3309",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "tests": [],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-deferred-output-native.sh",
+      "sha256": "9da6494ed44d0a0393b004fa980bcdbf79e767fde15c1c61302429699c111f6a"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-deferred-output-native.log",
+      "sha256": "12d9afbfb06ae025cc77d2bfdfb0451a23f00d46137c0b69c99d9093f2cfaea5"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-deferred-output-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Obsolete historical thread_items_list_defers_successful_command_output filter selected zero tests and was rejected. No pass claimed. Later d2b4d63e95 extends deferral to plain-text MCP and renames the fixture thread_items_list_defers_requested_outputs; current combined fixture is a separate run. Full gate and adoption separate."
+}

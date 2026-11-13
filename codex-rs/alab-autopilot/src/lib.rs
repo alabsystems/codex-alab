@@ -71,6 +71,13 @@ pub use resume_history::unfinished_recovery_turn;
 pub mod story;
 pub mod supervisor;
 pub mod upgrade;
+pub mod upgrade_goals;
+#[cfg(unix)]
+pub mod upgrade_source;
+#[cfg(unix)]
+pub mod upgrade_state;
+#[cfg(unix)]
+pub mod upgrade_destination;
 pub mod upgrade_ask;
 mod upgrade_monitor;
 pub mod upgrade_readiness;

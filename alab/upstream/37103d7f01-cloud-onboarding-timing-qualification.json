@@ -1,0 +1,131 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T17:30:28.703340+00:00",
+  "source": "ecd1195d68016f5550a45f7ae8eed8c51b324c6e",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "cloud_backend::submission_tests::native_submission_uses_one_admission_and_keeps_preflight_guards",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::requests::tests::admission_receipts_preserve_server_turns_and_duplicate_identity",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::session_lifecycle_requests::cloud_enter_recovers_drafts_from_server_receipts",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::session_lifecycle_requests::cloud_resume_picker_reconciles_admitted_steers",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::session_lifecycle_requests::conventional_steer_defers_review_and_holds_a_lost_reply",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::session_lifecycle_requests::queued_start_rejection_restores_the_draft",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::turn_submission::cloud_admission_keeps_tab_input_queued_until_the_admitted_turn_finishes",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::composer_submission::resumed_steers_reconcile_by_client_id_and_hold_unmatched_admissions",
+      "status": "ok"
+    },
+    {
+      "name": "tests::provider_setup_wizards_require_eligible_onboarding",
+      "status": "ok"
+    },
+    {
+      "name": "onboarding::auth::gateway_tests::select_a_saved_gateway_during_sign_in",
+      "status": "ok"
+    },
+    {
+      "name": "onboarding::auth::gateway_tests::create_highlights_the_saved_gateway_until_explicitly_selected",
+      "status": "ok"
+    },
+    {
+      "name": "turn_timing::tests::critical_path_report_retains_fractional_millisecond_rounding_and_compaction",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::critical_path_follows_runtime_admission::guardian_enabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::critical_path_follows_runtime_admission::default_disabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::critical_path_follows_runtime_admission::memory_excluded",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::critical_path_follows_runtime_admission::guardian_disabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::critical_path_follows_runtime_admission::overlapping_enabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::critical_path_follows_runtime_admission::subagent_unsupported",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::critical_path_follows_runtime_admission::subagent_enabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::critical_path_follows_runtime_admission::serial_enabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::critical_path_follows_runtime_admission::unsupported_enabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::spawned_child_has_independent_timing_and_parent_wait_is_tools::initial_spawn_input",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::spawned_child_has_independent_timing_and_parent_wait_is_tools::midturn_message",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::spawned_child_has_independent_timing_and_parent_wait_is_tools::gate_disabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::critical_path_runtime::standalone_user_shell_omits_uncaptured_path",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-cloud-onboarding-timing-native.sh",
+      "sha256": "03a87cbfd0ce7a1e7b760081a25bcbf8d4fca11cc169f74864e896240de4c5d8"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-cloud-onboarding-timing-native.log",
+      "sha256": "75e07d9fbe463c2c75c062248ead290aeb48e573460e115426b1bdcab6631b97"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-cloud-onboarding-timing-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Controller28810 terminal0 exact formatted cookie source. Thirteen nonempty selections passed25 tests: app-client single-admission/preflight and receipt mapping; six TUI admission/rejection/unknown-reply/history identity recovery controls; three gateway onboarding eligibility/selection/explicit-created-provider controls; phase rounding and complete13 critical-path runtime cases for root/Guardian/subagent capture, memory exclusion, initial and incoming messages, parent wait attribution and feature gating. Does not qualify real Cloud credential source/epoch retirement, all image handoff paths, PTY onboarding integration, native Windows/Linux or final composed main/adoption."
+}

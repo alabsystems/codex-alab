@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+
+#[path = "exec_helper_tree_tests.rs"]
+mod helper_choices;
 use codex_alab_core::quota::HeadlessExec;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -404,36 +407,7 @@ async fn bootstrap_tree(
     child_turn: &str,
 ) -> anyhow::Result<()> {
     use crate::in_process::*;
-    use codex_app_server_protocol::ClientInfo;
-    use codex_app_server_protocol::InitializeParams;
-    let state_db = codex_rollout::state_db::try_init(&config).await?;
-    let client = crate::in_process::start(InProcessStartArgs {
-        arg0_paths: Default::default(),
-        config: Arc::new(config.clone()),
-        cli_overrides: Vec::new(),
-        loader_overrides: codex_config::LoaderOverrides::without_managed_config_for_tests(),
-        strict_config: false,
-        cloud_config_bundle: Default::default(),
-        embedded_network_policy: Default::default(),
-        thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
-        feedback: codex_feedback::CodexFeedback::new(),
-        log_db: None,
-        state_db: Some(state_db),
-        environment_manager: Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-        config_warnings: Vec::new(),
-        session_source: SessionSource::Exec,
-        enable_codex_api_key_env: false,
-        initialize: InitializeParams {
-            client_info: ClientInfo {
-                name: "codex-tree-bootstrap-test".into(),
-                title: None,
-                version: "test".into(),
-            },
-            capabilities: None,
-        },
-        channel_capacity: 32,
-    })
-    .await?;
+    let client = start_bootstrap_client(config.clone()).await?;
     let sender = client.sender();
     let cancel = tokio_util::sync::CancellationToken::new();
     let pump_cancel = cancel.clone();
@@ -986,5 +960,250 @@ async fn review_tree(deny: bool, completed_source: bool, ephemeral: bool) -> any
     }
     root.shutdown_and_wait().await?;
     server.shutdown().await;
+    Ok(())
+}
+
+async fn start_bootstrap_client(
+    config: Config,
+) -> anyhow::Result<crate::in_process::InProcessClientHandle> {
+    use crate::in_process::*;
+    use codex_app_server_protocol::ClientInfo;
+    use codex_app_server_protocol::InitializeParams;
+    let state_db = codex_rollout::state_db::try_init(&config).await?;
+    let client = crate::in_process::start(InProcessStartArgs {
+        arg0_paths: Default::default(),
+        config: Arc::new(config.clone()),
+        cli_overrides: Vec::new(),
+        loader_overrides: codex_config::LoaderOverrides::without_managed_config_for_tests(),
+        strict_config: false,
+        cloud_config_bundle: Default::default(),
+        embedded_network_policy: Default::default(),
+        thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
+        feedback: codex_feedback::CodexFeedback::new(),
+        log_db: None,
+        state_db: Some(state_db),
+        environment_manager: Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        config_warnings: Vec::new(),
+        session_source: SessionSource::Exec,
+        enable_codex_api_key_env: false,
+        initialize: InitializeParams {
+            client_info: ClientInfo {
+                name: "codex-tree-bootstrap-test".into(),
+                title: None,
+                version: "test".into(),
+            },
+            capabilities: None,
+        },
+        channel_capacity: 32,
+    })
+    .await?;
+    Ok(client)
+}
+
+#[test]
+fn exec_recovery_tree_idle_crosses_embedded_bootstrap_without_a_root_turn() -> anyhow::Result<()> {
+    run_test_with_large_stack("idle-tree-bootstrap", || idle_bootstrap(false, false))
+}
+
+#[test]
+fn exec_recovery_tree_idle_ephemeral_crosses_embedded_bootstrap_without_a_root_turn()
+-> anyhow::Result<()> {
+    run_test_with_large_stack("idle-memory-tree-bootstrap", || idle_bootstrap(true, false))
+}
+
+#[test]
+fn exec_recovery_tree_idle_native_refusal_never_starts_model_work() -> anyhow::Result<()> {
+    run_test_with_large_stack("idle-tree-bootstrap-refused", || {
+        idle_bootstrap(false, true)
+    })
+}
+
+async fn idle_bootstrap(ephemeral: bool, refuse: bool) -> anyhow::Result<()> {
+    let mock = responses::start_mock_server().await;
+    let fixture = test_codex()
+        .with_model("gpt-5.6-sol")
+        .build_with_auto_env(&mock)
+        .await?;
+    let mut options = fixture.start_thread_options().await;
+    options.config.ephemeral = ephemeral;
+    options.config.model_provider.requires_openai_auth = false;
+    if !ephemeral {
+        options.thread_extension_init.insert(HeadlessExec);
+        options.turn_extension_init.insert(HeadlessExec);
+    }
+    let config = options.config.clone();
+    let invocation = ExecConfiguration::capture(&config, &ConfigOverrides::default())?;
+    let root = fixture
+        .thread_manager
+        .start_thread(options)
+        .await
+        .map_err(|e| anyhow::anyhow!("idle source root startup: {e}"))?
+        .thread;
+    let root_id = root.exec_thread_id();
+    if ephemeral {
+        assert!(root.thread_extension_data().get::<HeadlessExec>().is_none());
+    }
+    let model_requests =
+        responses::mount_sse_once(&mock, responses::sse_completed("idle-source-completed")).await;
+    root.start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+        text: "completed work retained through the idle upgrade".into(),
+        text_elements: Vec::new(),
+    }]))
+    .await?;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        wait_for_event(&root, |event| matches!(event, EventMsg::TurnComplete(_))),
+    )
+    .await?;
+    let mut child_options = fixture.start_thread_options().await;
+    child_options.config = config.clone();
+    child_options.session_source = Some(SessionSource::Internal(
+        InternalSessionSource::MemoryConsolidation,
+    ));
+    if !ephemeral {
+        child_options.thread_extension_init.insert(HeadlessExec);
+        child_options.turn_extension_init.insert(HeadlessExec);
+    }
+    let child = fixture
+        .thread_manager
+        .spawn_internal_session(root_id, child_options)
+        .await?
+        .thread;
+    let child_id = child.exec_thread_id();
+    let mut prepared = root
+        .prepare_upgrade_manager()
+        .await
+        .map_err(|e| anyhow::anyhow!("idle source inventory: {e}"))?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match root.validate_upgrade_idle_inputs(&prepared).await {
+                Ok(()) => break Ok::<(), anyhow::Error>(()),
+                Err(error) if error == "idle input sealing found an active or suspended turn" => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => break Err(anyhow::anyhow!(error)),
+            }
+        }
+    })
+    .await??;
+    child
+        .validate_upgrade_idle_inputs(&prepared)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(prepared.commit_if(|| true));
+    let inventory = prepared
+        .into_committed()
+        .map_err(|e| anyhow::anyhow!("idle source commitment: {e}"))?;
+    root.seal_upgrade_idle_inputs(&inventory)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    child
+        .seal_upgrade_idle_inputs(&inventory)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    root.shutdown_exec_tree()
+        .await
+        .map_err(anyhow::Error::msg)?;
+    root.exec_recovery_history()
+        .await
+        .map_err(|e| anyhow::anyhow!("idle source closed root history: {e}"))?;
+    child
+        .exec_recovery_history()
+        .await
+        .map_err(|e| anyhow::anyhow!("idle source closed child history: {e}"))?;
+    let tree = ExecTreeSnapshot::capture_idle(&root, &inventory, &invocation)
+        .await
+        .map_err(|e| anyhow::anyhow!("idle source snapshot: {e}"))?;
+    assert_eq!(tree.turn(), None);
+    assert!(
+        tree.threads()[0]
+            .history()
+            .map_err(anyhow::Error::msg)?
+            .items
+            .iter()
+            .any(|item| matches!(
+                item,
+                codex_rollout::RolloutItem::EventMsg(EventMsg::TurnComplete(_))
+            ))
+    );
+    assert_eq!(tree.threads()[0].ephemeral_history().is_some(), ephemeral);
+    let mut client = start_bootstrap_client(config.clone()).await?;
+    let sender = client.sender();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let pump_cancel = cancel.clone();
+    let pump = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = pump_cancel.cancelled() => break,
+                event = client.next_event() => if event.is_none() { break; },
+            }
+        }
+        client.shutdown().await
+    });
+    let _cancel_on_drop = cancel.clone().drop_guard();
+    let admitted = Arc::new(Mutex::new(Vec::new()));
+    let admissions = Arc::clone(&admitted);
+    let request = super::super::super::ExecBootstrapRequest::new(
+        config,
+        tree,
+        tokio::time::Instant::now() + Duration::from_secs(30),
+        move |thread, turn| {
+            let admissions = Arc::clone(&admissions);
+            Box::pin(async move {
+                admissions.lock().await.push((thread, turn));
+                if refuse && thread == child_id {
+                    Err("native child admission refused".into())
+                } else {
+                    Ok(())
+                }
+            })
+        },
+    );
+    let result = sender
+        .bootstrap_exec(request.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("idle destination bootstrap: {e}"))?;
+    assert_eq!(result.1.session_id, root_id.into());
+    assert_eq!(
+        sender.bootstrap_exec(request).await?.1.session_id,
+        root_id.into()
+    );
+    assert!(admitted.lock().await.is_empty());
+    assert!(
+        sender
+            .activate_exec_tree(root_id, "invented-root-turn".into())
+            .await
+            .is_err()
+    );
+    assert!(
+        sender
+            .activate_idle_exec_tree(ThreadId::new())
+            .await
+            .is_err()
+    );
+    let activated = sender.activate_idle_exec_tree(root_id).await;
+    if refuse {
+        assert!(
+            activated
+                .unwrap_err()
+                .to_string()
+                .contains("native child admission refused")
+        );
+        assert!(sender.activate_idle_exec_tree(root_id).await.is_err());
+    } else {
+        activated?;
+        sender.activate_idle_exec_tree(root_id).await?;
+    }
+    assert_eq!(
+        *admitted.lock().await,
+        vec![(root_id, None), (child_id, None)]
+    );
+    assert_eq!(
+        model_requests.requests().len(),
+        1,
+        "idle bootstrap and activation must not replay completed work or invent a turn"
+    );
+    cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(10), pump).await???;
     Ok(())
 }

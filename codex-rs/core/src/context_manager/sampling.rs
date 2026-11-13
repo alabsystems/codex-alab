@@ -3,8 +3,6 @@
 
 use codex_history::ResponseItemEnvelope;
 
-#[path = "../../../alab-core/glue/exec_sampling.rs"] mod alab_exec_sampling; // ALAB(exec-ephemeral): preserve sampled-prefix evidence without treating later appends as sampled.
-
 #[derive(Debug, Clone, Default)]
 pub(super) struct SamplingProgress {
     pub(super) last_sequence: u64,
@@ -76,3 +74,6 @@ pub(crate) fn sampled_through(items: &[ResponseItemEnvelope]) -> u64 {
         .max()
         .unwrap_or_default()
 }
+
+#[path = "../../../alab-core/glue/exec_sampling_progress.rs"]
+mod alab_exec; // ALAB(exec-ephemeral): preserve sampled-prefix counters without replay acknowledgement.

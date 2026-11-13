@@ -148,7 +148,7 @@ pub(crate) fn thread_extensions(
 }
 
 #[path = "../../alab-core/glue/quota_runtime_host.rs"]
-mod quota_runtime_host; // ALAB(quota): per-registry, volatile exec recovery admission.
+pub(crate) mod quota_runtime_host; // ALAB(quota): per-registry exec admission and its real lifecycle fixture.
 
 pub(crate) fn app_server_extension_event_sink(
     outgoing: Arc<OutgoingMessageSender>,

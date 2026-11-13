@@ -95,9 +95,17 @@ impl ModelsCache for FreshCache {
 }
 
 #[derive(Debug)]
-struct Endpoint(Arc<Calls>);
+struct Endpoint(Arc<Calls>, Option<Arc<Calls>>);
 
 impl ModelsEndpointClient for Endpoint {
+    fn for_originator(
+        &self,
+        _originator: codex_models_manager::ModelCatalogOriginator,
+    ) -> Option<Arc<dyn ModelsEndpointClient>> {
+        self.1.as_ref().map(|calls| {
+            Arc::new(Endpoint(Arc::clone(calls), None)) as Arc<dyn ModelsEndpointClient>
+        })
+    }
     fn identity(&self) -> Option<String> {
         Some(IDENTITY.to_string())
     }
@@ -126,6 +134,12 @@ impl ModelsEndpointClient for Endpoint {
 
 /// The first three calls the worker made, polling every 10 ms over a cache that is always fresh.
 async fn fixture() -> (tempfile::TempDir, Arc<ModelCatalog>, Arc<Calls>) {
+    fixture_with_work(None).await
+}
+
+async fn fixture_with_work(
+    work: Option<Arc<Calls>>,
+) -> (tempfile::TempDir, Arc<ModelCatalog>, Arc<Calls>) {
     let codex_home = tempfile::tempdir().unwrap_or_else(|err| panic!("scratch home: {err}"));
     let calls = Arc::new(Calls::default());
     let config_manager = crate::config_manager::ConfigManager::new_for_tests(
@@ -144,9 +158,14 @@ async fn fixture() -> (tempfile::TempDir, Arc<ModelCatalog>, Arc<Calls>) {
     );
     let models_manager: SharedModelsManager = Arc::new(OpenAiModelsManager::new_with_cache(
         Arc::new(FreshCache(Arc::clone(&calls))),
-        Arc::new(Endpoint(Arc::clone(&calls))),
+        Arc::new(Endpoint(Arc::clone(&calls), work.clone())),
         /*auth_manager*/ None,
     ));
+    if work.is_some() {
+        models_manager
+            .for_originator("codex_work_desktop")
+            .expect("retained Work catalog");
+    }
     let auth_manager = codex_login::AuthManager::shared_from_config(
         config.as_ref(),
         /*enable_codex_api_key_env*/ false,
@@ -261,4 +280,25 @@ async fn upstreams_polls_download() {
         first_three_polls(false).await,
         vec!["fetch", "fetch", "fetch"]
     );
+}
+
+/// The root can use another tab's fresh disk catalog while retained originators
+/// still need successful provider observations to update their saved settings.
+#[tokio::test]
+async fn cache_aware_polls_refresh_retained_originators_without_refetching_default() {
+    let work = Arc::new(Calls::default());
+    let (_home, catalog, root) = fixture_with_work(Some(Arc::clone(&work))).await;
+    catalog.list_models(RefreshStrategy::Offline).await.unwrap();
+    assert!(
+        work.log().is_empty(),
+        "offline reads must never refresh originators"
+    );
+    for _ in 0..2 {
+        catalog
+            .list_models(RefreshStrategy::OnlineIfUncached)
+            .await
+            .unwrap();
+    }
+    assert_eq!(root.log(), vec!["load", "load", "load"]);
+    assert_eq!(work.log(), vec!["fetch", "fetch"]);
 }

@@ -26,6 +26,7 @@ const CONTINUE_TEXT: &str = "Continue the isolated fixture without changing its 
 
 #[path = "upgrade_finish_order_native_case.rs"]
 mod native_case;
+use crate::alab_upgrade_fixture_trace as upgrade_fixture_trace;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Fixture {
@@ -50,23 +51,7 @@ struct CaseOutcome {
     completed: bool,
     accepted_upgrade: bool,
     continuation_posts_before_upgrade: usize,
-}
-
-fn short_fixture_dir() -> std::io::Result<tempfile::TempDir> {
-    let kept = tempfile::Builder::new().prefix("ac.").tempdir()?;
-    // The contained TMPDIR is short and writable. Reserve the longest case and
-    // FakeAterm's full u32 instance width within macOS's 103-byte UDS limit.
-    let longest_socket = kept.path().join(format!(
-        "held-completion/runtime/aterm/aterm-{}.sock",
-        u32::MAX
-    ));
-    if longest_socket.as_os_str().as_encoded_bytes().len() <= 103 {
-        Ok(kept)
-    } else {
-        // Ordinary macOS TMPDIRs can be too deep; retain their short-root fallback.
-        drop(kept);
-        tempfile::Builder::new().prefix("ac.").tempdir_in("/tmp")
-    }
+    upgrade_status: String,
 }
 
 #[test]
@@ -76,7 +61,7 @@ fn a_native_finish_waits_for_tui_catch_up_before_continuing_past_an_upgrade()
         .enable_all()
         .build()?
         .block_on(async {
-            let mut kept = short_fixture_dir()?;
+            let mut kept = codex_alab_tui::test_paths::upgrade_fixture_dir()?;
             kept.disable_cleanup(true);
             writeln!(
                 std::io::stderr().lock(),
@@ -87,7 +72,8 @@ fn a_native_finish_waits_for_tui_catch_up_before_continuing_past_an_upgrade()
             assert!(delivered.completed, "the positive control completed");
             assert!(
                 delivered.accepted_upgrade,
-                "the idle TUI accepts the handoff"
+                "the idle TUI accepts the handoff: {}",
+                delivered.upgrade_status
             );
             assert_eq!(delivered.continuation_posts_before_upgrade, 0);
             let lagged = run_child(kept.path(), "held-completion").await?;
@@ -97,7 +83,8 @@ fn a_native_finish_waits_for_tui_catch_up_before_continuing_past_an_upgrade()
             );
             assert!(
                 lagged.accepted_upgrade,
-                "UI catch-up eventually admits the handoff"
+                "UI catch-up eventually admits the handoff: {}",
+                lagged.upgrade_status
             );
             assert_eq!(
                 lagged.continuation_posts_before_upgrade, 0,
@@ -121,6 +108,10 @@ async fn run_child(root: &Path, case: &str) -> color_eyre::Result<CaseOutcome> {
     fake.set_foreground_leader(None);
     fake.set_policy_key("human_grace_s", "0");
     fake.set_policy_key("continue_text", CONTINUE_TEXT);
+    let mut handshake_witness = upgrade_fixture_trace::HandshakeWitness::new(
+        &fake,
+        case_root.join("private-handshake-events.json"),
+    );
     let fixture = Fixture {
         version: 2,
         case: case.into(),
@@ -210,6 +201,7 @@ async fn run_child(root: &Path, case: &str) -> color_eyre::Result<CaseOutcome> {
         case_root.join("private-control-requests.json"),
         serde_json::to_vec_pretty(&fake.requests())?,
     )?;
+    handshake_witness.persist()?;
     if hung {
         color_eyre::eyre::bail!("{case}: one-minute child hang detector; output retained");
     }
@@ -274,6 +266,7 @@ fn isolated_native_upgrade_finish_case() -> color_eyre::Result<()> {
     let mut ready = String::new();
     std::io::stdin().lock().read_line(&mut ready)?;
     assert_eq!(ready, format!("READY {}\n", std::process::id()));
+    upgrade_fixture_trace::init()?;
     let outcome = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?

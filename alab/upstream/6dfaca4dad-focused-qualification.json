@@ -1,0 +1,727 @@
+{
+  "schema": 1,
+  "kind": "focused-qualification-observations",
+  "observed_at": "2026-11-10T12:00:58.463744+00:00",
+  "upstream": "6dfaca4dad030f5ecaf4925f210f539353b15594",
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "tree": "9e3ecca1051a2231f7a9ed4fce5f5904f77e5f43b0f9dd18da59204efe3040bb",
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "full_gate_qualified": false,
+  "notes": "Manually collected completed-run evidence. Each result applies to its exact source. This file does not replace check.sh or provide semantic coverage enforcement.",
+  "runs": [
+    {
+      "name": "terminal-steering",
+      "source": "323ad6ecdb5001e8ef4dad3631a7a0b570ee5265",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-terminal-steering-budget-native.log",
+      "log_sha256": "65a6f754dd82a3a435af45d36697f43146a78ff38cafd754c6cb0932fc7355eb",
+      "suites": [
+        {
+          "package": "codex-core",
+          "target": "lib",
+          "filter": "alab_terminal_steering_tests::",
+          "passed": 12,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "12 libtest entries include a helper entry; the budget parent requires two isolated HTTP/SSE child scenarios. This is a focused module result, not full-gate qualification."
+    },
+    {
+      "name": "runtime-catalog",
+      "source": "87084e4142a0983143a659dd7286f1fd09e1e7a7",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-runtime-catalog-native.log",
+      "log_sha256": "24f2076c0ff4a22f487f9cf8d7e5e97c3f0a65a17d70afa35717e638d29e2036",
+      "suites": [
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "suite::runtime_auth::",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "suite::injected_models_cache::",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Deterministic loopback/proxy real-session fixtures; no skips reported. Does not prove production account entitlement or model availability."
+    },
+    {
+      "name": "cloud-client",
+      "source": "3998257dfa6422a8e75354c13c8e301fb329d6d5",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-cloud-client-native.log",
+      "log_sha256": "1262027fbe51623c7844c146fc6a360ef4bece087382d4e9759948be993048b9",
+      "suites": [
+        {
+          "package": "codex-cloud-client",
+          "target": "lib",
+          "filter": "",
+          "passed": 52,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Whole native library suite; fixtures do not prove deployed Cloud ingress, synchronized history/live replay, or a production service rollout."
+    },
+    {
+      "name": "animation",
+      "source": "e23516d6be76e111822072e49c80bbbe5831aa47",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-board-animation-native.log",
+      "log_sha256": "6a8407995cc04c69209319eb1f8b537293bf0cc8297ad10aefc3cf2c93e8e80d",
+      "suites": [
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "suite::scenarios::gif_generation_preserves_animation_and_replays_a_still_preview",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Actual animated artifact bytes and separate still preview replay; optional feature remains disabled by default. The board filter in the same log selected zero tests and is explicitly not qualification."
+    },
+    {
+      "name": "selected-source-partial",
+      "source": "6c7808dc8a2ee2788c13057ae6ce358b5965ea7c",
+      "exit_code": 1,
+      "log": "${HOME}/.ubd/codex-alignment-selected-source-board-native.log",
+      "log_sha256": "06057412c79200b9b46735d0bf7cefa693c63437830a57f3c9bb4cd2fb1021a4",
+      "suites": [
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "suite::scenarios::agent_message_board::",
+          "passed": 22,
+          "failed": 2,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "suite::models_cache_auth::",
+          "passed": 9,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-model-provider",
+          "target": "lib",
+          "filter": "",
+          "passed": 142,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-runtime-agent-instance",
+          "target": "lib",
+          "filter": "",
+          "passed": 28,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Controller failed: two board fixtures lack codex-message-board-mcp, and native protected profile refused reading the external checker. Other test pipelines reached that checker only after status0. Whole board suite remains unqualified; use repository-owned focused_results.py after preparing the native helper."
+    },
+    {
+      "name": "board-budget-catalog-policy",
+      "source": "cb5421807701b3020bbcad92699caacc2d46dbf0",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-board-budget-qualified-native.log",
+      "log_sha256": "bdbb1a265223a9387375104982fd50e1a28e14ec884d235e8cc1812ed4491d6f",
+      "suites": [
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "suite::scenarios::agent_message_board::",
+          "passed": 24,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "suite::runtime_auth_denials::",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "suite::model_request::",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "websocket_reconnects_for_replacement_and_account_switch_within_a_turn",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-guardian-v2",
+          "target": "lib",
+          "filter": "contributor_uses_the_thread_reviewers_catalog_policy",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Completed native controller with repository-owned nonempty-result checker inside the unchanged protected profile. Native message-board helper built and selected from Cargo JSON artifacts. Runtime-denial parent covers six scenarios. Deterministic fixtures do not establish production entitlement, paused-runtime transport coverage, Windows behavior or full-gate qualification."
+    },
+    {
+      "name": "runtime-transport-fresh-authorization",
+      "source": "a3490395cbced517c8f41820aa08a250485ec18a",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-runtime-transport-native.log",
+      "log_sha256": "0d4d01d4ed50f61442cb836ab1c796162c13311d8c1f457c5c456d3d26399021",
+      "suites": [
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "paused_runtime_cannot_continue_on_an_admitted_websocket",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-guardian-v2",
+          "target": "lib",
+          "filter": "runtime_transports_authenticate_each_classification",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Native protected-profile selections completed with repository-owned result checker. Paused-runtime cases cover dual-header and assertion-only modes; Guardian parent loops over both modes and six transport scenarios. Deterministic authorization fixtures do not prove production account entitlement or full-gate qualification."
+    },
+    {
+      "name": "autopilot-terminal-access-program-refusal",
+      "source": "0941fe692498d47f4bafbc8aa5e14b4c2ba68840",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-frontier-sid0.noindex/codex-rs/target-schema-native-15698.noindex/alab-focused-results.sRLFlC",
+      "log_sha256": "818a69ac8d011acb20d9cbd674f04efc93ae522f32e5dd0cc1ed01f1faed724c",
+      "suites": [
+        {
+          "package": "codex-alab-autopilot",
+          "target": "lib",
+          "filter": "classify_tests::",
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Completed selection and repository-owned nonempty checker inside the protected native profile. Actual typed refusal passes through protocol error conversion; ordinary status-less network failure remains recoverable. This completed stdout is immutable even while the containing controller continues other selections; no claim that the whole controller or full gate passed."
+    },
+    {
+      "name": "terminal-refusals-and-context-recovery",
+      "source": "0941fe692498d47f4bafbc8aa5e14b4c2ba68840",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-terminal-denials-native.log",
+      "log_sha256": "6a6310899e04aac2e1dfffc1ccfec5f4865b08aab9eb97a965de24f10c36d58d",
+      "suites": [
+        {
+          "package": "codex-alab-autopilot",
+          "target": "lib",
+          "filter": "classify_tests::",
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-api",
+          "target": "lib",
+          "filter": "only_an_explicit_workspace_403_stops_retries",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-api",
+          "target": "lib",
+          "filter": "terminal_failure_with_retry_header_ends_stream_immediately",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-api",
+          "target": "lib",
+          "filter": "wrapped_context_length_error_respects_http_status",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "forbidden_responses_retry_only_without_an_explicit_access_denial",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "explicit_denial_stops_compaction_on_model_downshift",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "manual_compact_retries_after_context_window_error",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "All seven native selections completed and checked under the protected profile. Shared terminal-stream parent covers provider codes in both error and response.failed envelopes. Local/remote explicit workspace and content refusals do not change compaction model; context-length failure retains shrinking recovery. Historical/current access-program pair fallback is outside these compaction cases and remains separately assessed. No full-gate or live-entitlement claim."
+    },
+    {
+      "name": "native-admission-and-project-trust",
+      "source": "94a14c3994eaa468c1421a7bad1978ff175f1e4a",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-admission-trust-native.log",
+      "log_sha256": "fdda5645d1bf2b4f39e57666fcbc9da111665083f05e7a759fb5db0b6965a71f",
+      "suites": [
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "api_key_resume_compaction_retries_current_program",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-code-mode-host",
+          "target": "grpc",
+          "filter": "session_admission_",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-exec",
+          "target": "all",
+          "filter": "exits_non_zero_when_required_mcp_server_fails_to_initialize",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "All three native selections checked under the protected profile. gRPC parent covers seven status cases and bounded attempts, plus a separate connection-reset recovery test. Exec parent uses actual codex-exec subprocesses for disabled project MCP, explicit persistent trust, saved untrusted refusal and conflicting ignore-user-config rejection. Program fallback fixtures use generic HTTP403 and do not prove typed access-program denial behavior. No full-gate or live-account claim."
+    },
+    {
+      "name": "gateway-board-agent-mode-provider-ui",
+      "source": "e9bdc12cdb2f6448bbb243ededa765fbda0eeee3",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-gateway-board-provider-native.log",
+      "log_sha256": "d00cb353596a95b58273f6323076f6a80ea3588f7ed984b5dc18860c2b999f49",
+      "suites": [
+        {
+          "package": "codex-app-server",
+          "target": "all",
+          "filter": "gateway_oauth_without_api_key_discovers_explicit_catalog_by_default",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-app-server",
+          "target": "all",
+          "filter": "thread_delete_removes_persisted_boards_even_with_agent_feature_disabled",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-model-provider",
+          "target": "lib",
+          "filter": "runtime_catalog_follows_redirects_without_forwarding_credentials_to_another_origin",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "suite::multi_agent_mode::",
+          "passed": 19,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "app::provider::tests::",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Five native selections completed and checked in the protected profile, with native message-board helper selected from Cargo JSON. Gateway discovery uses a deterministic authenticated catalog; redirect test checks runtime credential isolation across origins. TUI provider tests exercise actual embedded-server UI paths but do not prove new model selection/request identity or live entitlement. Dedicated gateway-OAuth cross-origin refusal remains separate. No full-gate qualification."
+    },
+    {
+      "name": "model-catalog-and-selection-readiness",
+      "source": "e1837195c23110caabc63f8ebb86b570000025e8",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-model-readiness-native.log",
+      "log_sha256": "1fbbda9e8119dca49bfc350ded6bbfa631cbaa57d89b02811be11d290360328b",
+      "suites": [
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "app::tests::model_defaults::",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "session_model_selection_tests::",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "model_picker_refresh",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-app-server",
+          "target": "all",
+          "filter": "list_models_uses_remote_catalog_as_source_of_truth",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-cli",
+          "target": "debug_models",
+          "filter": "",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Five checked native selections with ambient OPENAI_API_KEY, CODEX_API_KEY and CODEX_ACCESS_TOKEN removed. Actual TUI/embedded-server settings, stale catalog/picker state, remote-only model metadata and real CLI JSON fallback paths pass. Cloud model changes require server acceptance. This establishes these deterministic selection/discovery contracts, not exact selected-model inference execution, live account entitlement, complete feature coverage or full-gate qualification."
+    },
+    {
+      "name": "ui-mcp-search-and-lifecycle",
+      "source": "13a42f363df33557d8b82ed4709e262d2ed70e85",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-ui-lifecycle-native.log",
+      "log_sha256": "ef3334c7cf8d7d34b1fb29dd6496e242c06f0c10feefdab4352dd1e73321fd1a",
+      "suites": [
+        {
+          "package": "codex-mcp",
+          "target": "lib",
+          "filter": "returns_unknown_at_the_lookup_deadline",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "reasoning_status_tests::",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "command_start_before_message_completion_does_not_duplicate_preamble",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "app::tests::mcp_startup::",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "cloud_resume_picker_reconciles_admitted_steers",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "foreign_backend_events_leave_thread_cache_and_connection_untouched",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-file-search",
+          "target": "lib",
+          "filter": "",
+          "passed": 18,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-app-server",
+          "target": "all",
+          "filter": "test_fuzzy_file_search_sorts_and_includes_indices",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-app-server-client",
+          "target": "lib",
+          "filter": "successful_reopen_supersedes_only_earlier_losses_for_that_thread",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "lib",
+          "filter": "late_network_denial_grace_observes_cancellation_after_exit",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Ten checked native selections in the protected profile, 37 passed with zero ignored or failed. The MCP deadline fixture executed its real admission/wait path. UI startup tests do not establish cached stdio process dormancy or all sharing/authentication boundaries. Exact selected-model inference, live entitlement and the full gate remain separate."
+    },
+    {
+      "name": "cached-mcp-first-use-sharing-and-executor-custody",
+      "source": "caaa1e1b62cfa9be09c8cd3f607ead04d80bea3d",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-mcp-cached-native.log",
+      "log_sha256": "2fd4976facf7de0681dccc8e17cc96f72d8a0e843520b9a12dbc36e50ec4edef",
+      "suites": [
+        {
+          "package": "codex-mcp",
+          "target": "lib",
+          "filter": "tool_catalog_cache_sanitizes_tools_and_tracks_environment_generation",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "cached_stdio_stays_dormant_in_a_new_chat_until_first_use",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "cached_stdio_negotiates_sharing_on_first_use",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "mcp_pagination_preserves_valid_tools_and_rejects_oversized_cursors",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-app-server",
+          "target": "all",
+          "filter": "cached_executor_mcp_cannot_read_host_token_after_capability_downgrade",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Five checked native selections, six passed with zero failed or ignored. Actual stdio and CLI artifacts selected from Cargo JSON; ambient auth keys removed. Cached catalog dormancy, sharing negotiation, legacy/modern pagination and credential capability downgrade executed. Executor downgrade returns its credential-resolution failure with host fallback disabled and asserts no host-token exposure. Does not establish all MCP call/recorded-approval races, all credential redaction paths or full-gate qualification."
+    },
+    {
+      "name": "pane-cloud-message-and-root-compaction",
+      "source": "50258923ccc0b0e070eaa74974fc2b0be646b1bf",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-pane-cloud-compaction-corrected-native.log",
+      "log_sha256": "cbd970817cdf6ae611db753f655d94893fddb2a5c5ebecde2214ea004ec81751",
+      "suites": [
+        {
+          "package": "codex-core",
+          "target": "lib",
+          "filter": "root_only_controls_child_eligibility",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-app-server-client",
+          "target": "lib",
+          "filter": "cloud_backend::events::tests::",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "fullscreen_markdown_keeps_a_fitting_url_on_one_row",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "copy_on_select_preserves_link_activation_and_ignores_empty_drags",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "owned_details_keep_the_composer_cursor_and_screen",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "handle_start_side_seeds_navigation_before_thread_started",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Six corrected native selections completed, eight passed without ignored or failed entries. Previous attempt at the same source was refused for an empty snapshot-name selector; its log remains codex-alignment-pane-cloud-compaction-native.log, exit 1, and does not qualify as an overall pass. Corrected actual test covers the offset conversation snapshot, UI selection/copy and side-pane interaction routing. Compaction cases establish eligibility, not complete asynchronous compaction execution/cancellation; Cloud conversion cases do not prove live Cloud service availability. Full gate remains separate."
+    },
+    {
+      "name": "publication-identity-and-mailbox-eviction",
+      "source": "318bf5ed9ec0ed0cc7a3bbfc2a3a862f87f88445",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-publication-mailbox-native.log",
+      "log_sha256": "c7e26c2b995ba5602caeefb857782e14c357ced5b297da29a54cfc5953e52642",
+      "suites": [
+        {
+          "package": "codex-core",
+          "target": "lib",
+          "filter": "observer_state_is_not_silently_discarded_or_republished",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "lib",
+          "filter": "restored_delivery_keeps_its_scope_identity_and_consumes_all_its_clones_once",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "lib",
+          "filter": "exec_pending_input::tests::",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "package": "codex-core",
+          "target": "all",
+          "filter": "idle_mail_survives_eviction_and_preserves_followup_order",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Four checked native selections, nine passed with zero failed or ignored. Publication scope survives restoration without observer replay; nonportable observers refuse capture; cross-thread queue sharing remains distinct from separate deliveries; mailbox integration proves pending mail survives recipient eviction with follow-up order retained. Actual output also passes the declared-evidence checker for all nine named tests. This is partial exec-handoff behavior evidence, not the complete nested-tree/review/cancellation contract, a live service entitlement check or a full gate at this source."
+    },
+    {
+      "name": "local-board-integration",
+      "source": "9bab5235fe44c93e19c8ca81dd91570445bb9d59",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-local-board-native.log",
+      "log_sha256": "a5ad3442b0dfd54e3f6a4ec66de5111cfa8ebd1701a53d6d9d3048ca1c508d05",
+      "suites": [
+        {
+          "package": "codex-message-board",
+          "target": "local_board",
+          "filter": "",
+          "passed": 18,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "The complete local_board integration target ran natively in the protected profile: eighteen passed without failures or ignored tests. Covers atomic bulk subscriptions, shared-handle subscription rules, silent appends, durable scoped storage, argument validation, MCP read-only permission refusal and fixed read-view catalog/page boundaries through its included child modules. Does not establish all Guardian retrieval/review behavior or every fixed-view mutation refusal; those require their own source review and execution. No speculative subscription behavior change was made. Full gate remains exact-source separate evidence."
+    },
+    {
+      "name": "shared-ui-tree-preparation-and-rendering",
+      "source": "40cf3f6c5a0977b7c0498d4a105e90ec4ec52e02",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-ui-tree-native.log",
+      "log_sha256": "b42aee3696233bf885914f58a65464eeab54600f7dad542c63cf19358080259f",
+      "suites": [
+        {
+          "package": "codex-tui",
+          "target": "lib",
+          "filter": "ui_tree::",
+          "passed": 29,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Complete ui_tree native test selection completed in the protected profile, twenty-nine passed without ignored or failed entries. Includes whole-child and gap preparation measurements, Unicode/zero-width fragments, style/theme/link mapping and ellipsis behavior. Confirms the shared upstream preparation/rendering path; no rendering throughput or cache benefit measured, no complete native-ui/stash contract claimed and no new full-gate qualification inferred."
+    },
+    {
+      "name": "guardian-trait-retrieval-and-bounded-selection",
+      "source": "fb24df1f5ed7401b945f08cf0ebe51bd6d0bc173",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-guardian-retrieval-native.log",
+      "log_sha256": "6916483314289b32eac15a1d21874324a3ed20d4aad1569450075a89a95cc8aa",
+      "suites": [
+        {
+          "package": "codex-guardian-v3",
+          "target": "retrieval",
+          "filter": "",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "limits": "Whole native retrieval integration target completed in the protected profile: six passed without failures or ignored tests. Includes five-tool read-only binding, ordinary-board refusal at retrieval/subscription/delivery entry points, captured cutoffs, caller-scoped selection with later-channel preservation, cancellation-before-sampling and invalid-selection rollback, cross-page source ordering and admission-before-delivery progress. Does not establish every host disposition/deadline/cancellation race, enabled-by-default Guardian behavior, live entitlement or a full gate at this source. Guardian V3 remains experimental and disabled by default."
+    }
+  ]
+}

@@ -5,6 +5,12 @@ Status: agreed request grammar for client/native integration, not a shipped capa
 The native owner, process barrier, source adapter and restart custody must be
 qualified together before `/accounts use` or `/accounts auto` becomes available.
 
+Until then codex-alab refuses the request locally, before the session's admission
+closes and with no intent, receipt or paused work left behind, unless the native
+snapshot advertises `select` or `auto`, the assignment host declares the private
+target preview, a `ProcessHost` is installed and the session's manager holds a
+managed ChatGPT binding.
+
 ## Operation
 
 Use one durable 32-character lowercase hexadecimal operation ID for the entire

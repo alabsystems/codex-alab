@@ -80,6 +80,9 @@ args = sys.argv[1:]
 while args and args[0] in ("-I", "-B"):
     args.pop(0)
 path = args.pop(0)
+if path == "-c":
+    exec(args[0])
+    raise SystemExit(0)
 def expired(timeout):
     until = time.monotonic() + 60
     while not Path({str(self.ready)!r}).exists():

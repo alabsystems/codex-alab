@@ -327,7 +327,7 @@ async fn check_restore_memory(
     let mut inputs = tree
         .inputs()
         .clone()
-        .prepare(tree.root(), tree.turn())
+        .prepare(tree.root(), tree.turn().unwrap())
         .unwrap();
     let fresh = ThreadManager::with_models_provider_home_and_state_for_tests(
         codex_login::CodexAuth::from_api_key("replacement"),
@@ -368,13 +368,13 @@ async fn check_restore_memory(
     if let Some(memory) = tree.threads()[0].ephemeral_history() {
         options = memory
             .clone()
-            .prepare_start(options, tree.root(), tree.turn())
+            .prepare_start(options, tree.root(), tree.turn().unwrap())
             .unwrap();
     }
     options.thread_extension_init.insert(HeadlessExec);
     options.turn_extension_init.insert(HeadlessExec);
     let options = inputs
-        .prepare_start(options, tree.root(), tree.turn())
+        .prepare_start(options, tree.root(), tree.turn().unwrap())
         .unwrap();
     let replacement = fresh.start_thread(options).await.unwrap().thread;
     let settings = replacement.restorable_thread_settings().await;
@@ -634,7 +634,7 @@ async fn check_restore_memory(
                 .await
         );
         assert_eq!(
-            restored_idle.idle.lock().unwrap().as_ref().unwrap().len(),
+            restored_idle.idle.as_ref().unwrap().retained_len().unwrap(),
             1
         );
     }

@@ -11,9 +11,12 @@ use super::account_broker::Receipt;
 use super::*;
 use codex_alab_aterm::renewal::Identity;
 use codex_alab_core::account_handoff::Purpose;
+use codex_alab_core::quota::SpentWall;
+use codex_alab_core::quota::SpentWindow;
 use codex_alab_core::session::AccountHandoff;
 use codex_alab_core::session::NativePhase;
 use codex_alab_core::session::OwedAct;
+use codex_alab_core::session::RecoveryWall;
 use codex_history::RolloutItem;
 
 use codex_alab_aterm::account_recovery::policy_allows as policy_allows_recovery;
@@ -50,6 +53,81 @@ async fn confirmed_consumption(client: &codex_alab_aterm::Client, owed: &OwedAct
         Err(_) => account_broker::status(client, renewal.purpose, id).await,
     };
     matches!(outcome, Ok(Outcome::Consumed(ref consumed)) if bound(consumed, owed))
+}
+
+/// Whether the host's account pool shows another account this process's
+/// conversation could move to (`Snapshot::another_account_can_run`). A read
+/// only: no claim, selection or credential travels with it. A host that does
+/// not serve the pool, or does not answer for this very process, shows none.
+async fn rotation_target_in_sight(client: &codex_alab_aterm::Client) -> bool {
+    let Some(birth) = codex_alab_tui::identity::current()
+        .ok()
+        .and_then(|identity| codex_alab_tui::identity::proc_start_utc(&identity))
+    else {
+        return false;
+    };
+    client
+        .accounts_snapshot(&birth)
+        .await
+        .is_ok_and(|pool| pool.another_account_can_run())
+}
+
+/// Whether an account handoff that no receipt binds has been asked for long
+/// enough: the usage wall it was asked at named its own reset, and that reset
+/// plus `grace` has come. From then the wall's ordinary resume is due, which
+/// is all a `not-needed` answer would have left, so the ask ends and that
+/// resume takes the point.
+///
+/// The reset is the one the 429 named, not the reset of the window the turn
+/// was yielded for. For a five-hour wall the two agree to within a minute
+/// (the yield requires it). For a spent week they need not: a 429 that named
+/// an earlier reset (a five-hour window's) lapses the ask then, and the
+/// resume is typed into a week that is still spent. That costs one model
+/// request; it meets the wall again, and that turn's end asks for a handoff
+/// again. The window's own reset is not carried to this point.
+///
+/// A bound receipt is never abandoned here: the host may already have
+/// committed it. A wall that names no reset has no such moment, and neither
+/// has an intent whose wall this process does not hold. An unbound intent
+/// carries its wall across a restart (`carry_asked_wall`) and a bound one does
+/// not, so an intent bound before a restart and retired after it is asked for
+/// without this limit.
+fn rotation_ask_lapsed(
+    wall: Option<&Wall>,
+    receipt_bound: bool,
+    now: Instant,
+    grace: Duration,
+) -> bool {
+    !receipt_bound
+        && matches!(
+            wall,
+            Some(Wall::Usage { reset_at: Some(reset), .. })
+                if reset.checked_add(grace).is_some_and(|due| now >= due)
+        )
+}
+
+/// What a host that permits a recovery was read with ([`RecoveryHost::Permits`]).
+type Permitted = (
+    codex_alab_aterm::Client,
+    decide::Policy,
+    codex_alab_aterm::policy::HarnessPolicy,
+);
+
+/// What the host says about recovery for one purpose when it is asked
+/// ([`Autopilot::recovery_host`]).
+enum RecoveryHost {
+    /// Its policy reply permits the recovery: the claim's connection, the
+    /// policy codex-alab acts under, and that reply (boxed: the other answers
+    /// carry nothing).
+    Permits(Box<Permitted>),
+    /// Its policy reply was read and does not permit the recovery.
+    Refuses,
+    /// No policy reply was read: the claim's connection or the policy it acts
+    /// under is gone, the read failed, or the answer was no policy this reader
+    /// takes (an `ERR`). `follow_renewal` runs only after `evaluate` found a
+    /// proven claim's policy, so a missing connection here is a claim lost
+    /// since, never a session outside aterm.
+    Unread,
 }
 
 enum RenewalAckCause<'a> {
@@ -659,17 +737,11 @@ impl Autopilot {
         rt: &Arc<ThreadRt>,
         authority: &DecisionAuthority,
         runtime: Option<Arc<codex_goal_extension::GoalRuntimeHandle>>,
-        wall: String,
+        request: codex_protocol::turn_input::RecoverTurnRequest,
         goal: Option<String>,
         act: Act,
     ) -> codex_core::WithTurnExtensionData<codex_protocol::turn_input::RecoverTurnRequest> {
-        let request = codex_protocol::turn_input::RecoverTurnRequest {
-            turn_id: wall.clone(),
-            thread_settings: Default::default(),
-            trace: None,
-            prompt_cache_ttl: None,
-            cyber_access_program: *lock(&rt.cyber_access_program),
-        };
+        let wall = request.turn_id.clone();
         let me = Arc::clone(self);
         let rt = Arc::clone(rt);
         let policy = authority.policy.clone();
@@ -857,6 +929,187 @@ impl Autopilot {
         Identity::from_native(&auth.get_account_id()?, &auth.get_chatgpt_user_id()?)
     }
 
+    /// The host's freshly read word on recovery for `purpose`: the acting
+    /// claim's connection and policy with the policy reply that permits it,
+    /// a reply that was read and does not, or no reply to read. One gate for
+    /// the recovery itself and for the in-turn question whether it would
+    /// follow; only the recovery tells the last two apart.
+    async fn recovery_host(&self, purpose: Purpose) -> RecoveryHost {
+        let (Some(client), Some(policy)) = (self.sup.renewal_client(), self.sup.policy()) else {
+            return RecoveryHost::Unread;
+        };
+        match client.harness_policy().await {
+            Ok(codex_alab_aterm::policy::PolicyAnswer::Supported(remote)) => {
+                if policy_allows_recovery(&remote, purpose) {
+                    RecoveryHost::Permits(Box::new((client, policy, remote)))
+                } else {
+                    RecoveryHost::Refuses
+                }
+            }
+            Ok(codex_alab_aterm::policy::PolicyAnswer::Unsupported(_)) | Err(_) => {
+                RecoveryHost::Unread
+            }
+        }
+    }
+
+    /// Whether ending this thread's running turn at the creditless usage wall
+    /// `wall` would be followed by account rotation: the gates `evaluate` and
+    /// `follow_renewal` apply before the host is asked to prepare one, the
+    /// host's own word that it leaves such a wall (`leaves_wall`: a spent
+    /// week, or a five-hour wall further from its reset than the bound the
+    /// host advertises), and the host's pool showing an account to move to.
+    /// Policy alone is not enough: a host that allows rotation over a pool
+    /// with nowhere to go answers `waiting` to an ended turn, which no longer
+    /// polls for an earned reset. Advisory; it selects no account, and every
+    /// check runs again after the turn ends. A five-hour wall is refused with
+    /// no request to a host whose remembered policy reply prints no bound.
+    pub(super) async fn quota_handoff_ready(&self, rt: &ThreadRt, wall: SpentWall) -> bool {
+        let shared = self.sup.shared();
+        let standing = || {
+            shared.view().primary_thread.as_deref() == Some(rt.key.as_str())
+                && shared.is_registered(&rt.key)
+                && !rt.stopped.load(Ordering::SeqCst)
+                && !rt.vanilla()
+                && !self.upgrade_requested.load(Ordering::SeqCst)
+                && self.login_provider_eligible(rt)
+                && self.renewal_identity().is_some()
+        };
+        if !standing() {
+            return false;
+        }
+        // A HOST THAT LEAVES NO FIVE-HOUR WALL IS NOT ASKED ABOUT ONE. A creditless
+        // wall asks this every 30 seconds for as long as it stands, and the
+        // policy read below is a request to the host each time. The claim's
+        // connection remembers the last policy reply it read: one that prints
+        // no five-hour bound is refused here, as `leaves_wall` would refuse it
+        // after the read. The host announces a policy that moves and the
+        // supervisor reads it again, which replaces the remembered reply; a
+        // spent week and every pass of `follow_renewal` read afresh too. With
+        // none remembered the host is read; so is a host that prints the bound,
+        // whose current word decides.
+        if wall.window == SpentWindow::FiveHour
+            && self
+                .sup
+                .renewal_client()
+                .and_then(|client| client.policy())
+                .is_some_and(|remembered| {
+                    codex_alab_aterm::account_recovery::five_hour_bound(&remembered).is_none()
+                })
+        {
+            return false;
+        }
+        let RecoveryHost::Permits(permitted) = self.recovery_host(Purpose::WeeklyQuota).await
+        else {
+            return false;
+        };
+        let (client, _, remote) = *permitted;
+        // The host's word first: a host that would not leave this wall is not
+        // asked for its pool. The wall's time to its reset is measured now,
+        // after the policy read, not when the walled request read its usage.
+        let asked_at = i64::try_from(now_ms() / 1000).unwrap_or(i64::MAX);
+        codex_alab_aterm::account_recovery::leaves_wall(&remote, wall, asked_at)
+            && rotation_target_in_sight(&client).await
+            && self.sup.acting()
+            && standing()
+    }
+
+    /// THE USAGE WALL STAYS ON RECORD WHILE ITS HANDOFF IS ASKED FOR. This path owns
+    /// the point until the host answers, so `evaluate` never decides the wall and
+    /// never leaves its recovery (`sync_recovery`). Without one, the process after
+    /// a restart holds the intent with no wall: no reset to stop asking at, and no
+    /// point to resume from once the intent is released. The restart a session at
+    /// an ask can take is a crash or a kill and aterm's relaunch, which restores
+    /// the dead record's recovery where aterm is proven to have typed the line
+    /// (`Relaunch::Recovery`). An adopted update's re-exec is not one: the ask's
+    /// recheck is a timer that owes no act, and such a wait holds the live
+    /// upgrade (`upgrade_facts`). So an intent no receipt binds carries the
+    /// wall's recovery in the same record, written with it; the next process
+    /// restores the wall as it restores any provider wait, and both the bound on
+    /// asking and the wall's own resume read it there.
+    ///
+    /// A bound intent carries none. Once a receipt is bound the host may restart
+    /// the session on the other account, and that process must not stand at the
+    /// wall of the account it left; the bound is not judged for it either. The
+    /// asked wall is taken off the record only until the recovered turn is
+    /// reserved (`AccountHandoff::turn`, written to the record before that turn
+    /// is admitted, so a restarted process reads it too). The recovered turn
+    /// reuses the asked turn's id: from its reservation on, a usage wall on
+    /// record under that id is one it met on the account it moved to, and stays.
+    ///
+    /// The wall this path puts or finds on record is marked as the asked one
+    /// (`ThreadRt::asked_wall`). Released, the point's own wait replaces it; a
+    /// point left to a person takes it off (`drop_asked_wall_left_to_a_person`).
+    ///
+    /// False only where a wall that should be on record could not be published;
+    /// the caller retries before it asks the host. A point that holds no usage
+    /// wall for the intent's turn (a process that restored none) carries nothing.
+    fn carry_asked_wall(&self, rt: &ThreadRt, owed: &OwedAct, generation: u64) -> bool {
+        let Some(renewal) = owed
+            .renewal
+            .as_ref()
+            .filter(|renewal| renewal.purpose == Purpose::WeeklyQuota)
+        else {
+            return true;
+        };
+        let Some(turn) = owed
+            .native_origin
+            .as_ref()
+            .map(|origin| origin.turn_id.as_str())
+        else {
+            return true;
+        };
+        let shared = self.sup.shared();
+        // A usage wall on record under the asked turn's id. Another turn's
+        // recovery, or another kind of wall, is never this path's to touch.
+        let carried = shared.recovery().is_some_and(|carried| {
+            carried.thread == rt.key
+                && carried.turn_id == turn
+                && matches!(carried.wall, RecoveryWall::Usage { .. })
+        });
+        if renewal.receipt.is_some() {
+            // Until the recovered turn is reserved that wall is the one the
+            // handoff was asked at, on the account the session is leaving. Once
+            // it is reserved, a wall under the same id is the recovered turn's
+            // own: a bound intent stands until that turn is acknowledged.
+            if carried && renewal.turn.is_none() {
+                shared.set_recovery(None);
+            }
+            lock(&rt.asked_wall).take();
+            return true;
+        }
+        if carried {
+            // Published by an earlier pass, or restored from the record the
+            // process before left: the asked wall either way.
+            *lock(&rt.asked_wall) = Some(turn.to_owned());
+            return true;
+        }
+        // The reset is carried as a moment of real time. The clock it is held on
+        // stops while the host sleeps, so the sleep is counted before it is read.
+        // Monotonic first: a pause before the epoch read can only move the carried
+        // reset later, never before the wall's own.
+        let now = clock();
+        self.count_host_sleep(rt, now);
+        let epoch = now_ms();
+        let snapshot = lock(&rt.state).clone();
+        let Some(mut recovery) =
+            crate::recovery::capture_asked_wall(&rt.key, turn, &snapshot, now, epoch)
+        else {
+            return true;
+        };
+        if let RecoveryWall::Usage { quota, .. } = &mut recovery.wall {
+            *quota = self.quota_scope(rt);
+        }
+        let published = shared.publish_recovery(generation, recovery, || {
+            let current = lock(&rt.state);
+            current.point_at() == snapshot.point_at()
+                && current.point_turn_id == snapshot.point_turn_id
+        });
+        if published {
+            *lock(&rt.asked_wall) = Some(turn.to_owned());
+        }
+        published
+    }
+
     /// Returns true while this path owns the pending point. Failures retain its
     /// durable intent and a bounded wake; no peer text is logged or displayed.
     pub(super) async fn follow_renewal(self: &Arc<Self>, rt: &Arc<ThreadRt>) -> bool {
@@ -912,20 +1165,68 @@ impl Autopilot {
         {
             return false;
         }
-        let Some(client) = self.sup.renewal_client() else {
-            return false;
+        let (client, policy) = match self.recovery_host(purpose).await {
+            RecoveryHost::Permits(permitted) => {
+                if rt.bound_host_unread.swap(false, Ordering::SeqCst) {
+                    self.sup.note(format!(
+                        "{}: the host reads again; the bound handoff is asked about",
+                        rt.key
+                    ));
+                }
+                let (client, policy, _) = *permitted;
+                (client, policy)
+            }
+            // A BOUND RECEIPT KEEPS THE POINT WHILE THE HOST CANNOT BE READ. `commit`
+            // may have been sent for it, so the host may be moving the session to
+            // the other account. Letting the point go here hands it to `evaluate`,
+            // which decides the usage wall as this account's own: it writes that
+            // wall back on the record and, at its reset, types the usage resume on
+            // the account the session is leaving. One failed read proves nothing
+            // about the handoff, so the point is kept and the host read again.
+            // Nothing bounds this: a host that stays unread with its claim standing
+            // holds the point as a bound receipt answered `waiting` does, and the
+            // journal says so once. A read that times out is another case: it closes
+            // the connection, and the reconnect owns the next read.
+            //
+            // Only a usage-limit handoff is kept. A login handoff has releases of
+            // its own on a readable pass (a superseded turn, a sign-in in the same
+            // file) that this arm would sit ahead of, and the harm it prevents, a
+            // usage resume typed on the account being left, is that purpose's alone.
+            //
+            // An intent no receipt binds is not kept: no `commit` was sent for it,
+            // the session is on the account the wall belongs to, and the wall's own
+            // wait and resume are all a declined ask would leave. The bound on
+            // asking (`rotation_ask_lapsed`) is judged after this read, so keeping
+            // an unbound point here would hold it past the wall's reset for as
+            // long as the host stayed unread. Its intent stays on record, and the
+            // next pass that reads the host asks again.
+            RecoveryHost::Unread
+                if purpose == Purpose::WeeklyQuota
+                    && existing.as_ref().is_some_and(|owed| {
+                        owed.renewal
+                            .as_ref()
+                            .is_some_and(|renewal| renewal.receipt.is_some())
+                    }) =>
+            {
+                if !rt.bound_host_unread.swap(true, Ordering::SeqCst) {
+                    self.sup.note(format!(
+                        "{}: the host cannot be read while a bound handoff stands; \
+                         its point is kept and the host read again",
+                        rt.key
+                    ));
+                }
+                self.schedule(rt, clock() + recheck);
+                return true;
+            }
+            // A reply that was read and forbids this recovery still releases the
+            // point, receipt or not: a host with rotation (or renewal) switched off
+            // will not finish the move, and the wall's own resume is what such a
+            // host leaves the session.
+            RecoveryHost::Unread | RecoveryHost::Refuses => {
+                rt.bound_host_unread.store(false, Ordering::SeqCst);
+                return false;
+            }
         };
-        let Some(policy) = self.sup.policy() else {
-            return false;
-        };
-        let Ok(remote) = client.harness_policy().await else {
-            return false;
-        };
-        if !matches!(remote, codex_alab_aterm::policy::PolicyAnswer::Supported(ref p)
-            if policy_allows_recovery(p, purpose))
-        {
-            return false;
-        }
         let generation = shared.upgrade_generation();
         let accepted = rt.accepted_turns.load(Ordering::SeqCst);
         let offs = rt.off_seen.load(Ordering::SeqCst);
@@ -1086,9 +1387,11 @@ impl Autopilot {
                 return true;
             }
         };
-        // Keep the original point durable before the first native request.
+        // Keep the original point durable before the first native request: the
+        // intent, and beside an unbound one the usage wall it was asked at.
         if !current()
             || !shared.publish_renewal(generation, owed.clone())
+            || !self.carry_asked_wall(rt, &owed, generation)
             || !write_through(shared).await
         {
             self.schedule(rt, clock() + WRITE_THROUGH_RETRY);
@@ -1109,7 +1412,33 @@ impl Autopilot {
             return true;
         };
         let baseline_starts = renewal.starts;
-        let outcome = if let Some(id) = &renewal.receipt {
+        // The host is asked only until the wall's own reset. `waiting`, an
+        // error or silence would otherwise be re-asked without end while the
+        // account this session is on has long been able to run again. The
+        // reset is a moment of real time on a clock that stops while the host
+        // sleeps, and `evaluate` counts that sleep only after this function
+        // lets the point go, so it is counted here first.
+        let lapsed = purpose == Purpose::WeeklyQuota && {
+            let now = clock();
+            self.count_host_sleep(rt, now);
+            let state = lock(&rt.state);
+            let wall = state.point.as_ref().and_then(|point| point.wall.as_ref());
+            rotation_ask_lapsed(
+                wall,
+                renewal.receipt.is_some(),
+                now,
+                self.timing.reset_grace,
+            )
+        };
+        let outcome = if lapsed {
+            self.sup.note(format!(
+                "{}: the usage wall's reset came with no account handoff bound; the wall's own resume takes the point",
+                rt.key
+            ));
+            // The host's own word for "nothing to hand off": the arm below
+            // releases the intent exactly as it does for that answer.
+            Ok(Outcome::NotNeeded)
+        } else if let Some(id) = &renewal.receipt {
             account_broker::status(&client, renewal.purpose, id).await
         } else {
             account_broker::prepare(
@@ -1177,7 +1506,10 @@ impl Autopilot {
                 ) {
                     return true;
                 }
+                // The bound intent is written without the wall: `commit` follows
+                // only a record the other account's process can start from.
                 if shared.publish_renewal(generation, owed.clone())
+                    && self.carry_asked_wall(rt, &owed, generation)
                     && write_through(shared).await
                     && self.sup.admission_fence_current(&readiness)
                     && current()
@@ -1242,7 +1574,11 @@ impl Autopilot {
                 if let Some(renewal) = owed.renewal.as_mut() {
                     renewal.retire_selection();
                 }
-                if current() && shared.publish_renewal(generation, owed) {
+                // Unbound again: the wall goes back on record with the intent.
+                if current()
+                    && shared.publish_renewal(generation, owed.clone())
+                    && self.carry_asked_wall(rt, &owed, generation)
+                {
                     let _ = write_through(shared).await;
                 }
             }
@@ -1447,10 +1783,10 @@ impl Autopilot {
             })
         }));
         let request = codex_protocol::turn_input::RecoverTurnRequest {
+            prompt_cache_ttl: thread.recovery_prompt_cache_ttl(&wall),
             turn_id: wall,
             thread_settings: Default::default(),
             trace: None,
-            prompt_cache_ttl: None,
             cyber_access_program: *lock(&rt.cyber_access_program),
         };
         // Native refusal returns here before consuming input or starting work.
@@ -1464,6 +1800,150 @@ impl Autopilot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A thread whose point is a usage wall met at `at`, naming `reset_at`.
+    fn at_usage_wall(at: Instant, reset_at: Option<Instant>) -> ThreadState {
+        let mut state = ThreadState::default();
+        state.observe_person_turn();
+        state.observe_turn_end(
+            TurnEnd {
+                at,
+                by_autopilot: true,
+                by_person: false,
+                text: None,
+                earlier: None,
+                questions: false,
+                worked: Duration::from_secs(5),
+                wall: Some(Wall::Usage {
+                    reset_at,
+                    reset_label: None,
+                }),
+                aborted: false,
+                ran_tools: false,
+                restored: false,
+            },
+            &Timing::default(),
+        );
+        state
+    }
+
+    fn wall_of(state: &ThreadState) -> Option<&Wall> {
+        state.point.as_ref().and_then(|point| point.wall.as_ref())
+    }
+
+    #[test]
+    fn a_rotation_ask_lapses_only_past_the_walls_own_reset_with_no_receipt() {
+        let start = Instant::now();
+        let reset = start + Duration::from_secs(3600);
+        let grace = Duration::from_secs(60);
+        let due = reset + grace;
+        let tick = Duration::from_nanos(1);
+        let usage = Wall::Usage {
+            reset_at: Some(reset),
+            reset_label: None,
+        };
+        assert!(
+            rotation_ask_lapsed(Some(&usage), false, due, grace),
+            "the reset and its grace have come and nothing is bound"
+        );
+        assert!(rotation_ask_lapsed(
+            Some(&usage),
+            false,
+            due + Duration::from_secs(3600),
+            grace
+        ));
+        // NEGATIVE CONTROLS, each one condition away from the lapse above.
+        assert!(
+            !rotation_ask_lapsed(Some(&usage), false, due - tick, grace),
+            "one tick before the reset's grace ends"
+        );
+        assert!(
+            !rotation_ask_lapsed(Some(&usage), false, reset, grace),
+            "at the reset itself, inside the grace"
+        );
+        assert!(
+            rotation_ask_lapsed(Some(&usage), false, reset, Duration::ZERO),
+            "with no grace the reset is the moment"
+        );
+        assert!(
+            !rotation_ask_lapsed(Some(&usage), true, due + Duration::from_secs(3600), grace),
+            "a bound receipt is never abandoned"
+        );
+        let unnamed = Wall::Usage {
+            reset_at: None,
+            reset_label: None,
+        };
+        assert!(
+            !rotation_ask_lapsed(Some(&unnamed), false, due, grace),
+            "a wall that names no reset has no such moment"
+        );
+        for other in [
+            Wall::Login,
+            Wall::Entitlement,
+            Wall::Server {
+                what: "an API error".into(),
+                cut_off: false,
+                retry_at: Some(reset),
+            },
+        ] {
+            assert!(
+                !rotation_ask_lapsed(Some(&other), false, due, grace),
+                "{other:?}"
+            );
+        }
+        assert!(
+            !rotation_ask_lapsed(None, false, due, grace),
+            "no wall this process saw (an intent carried across a restart)"
+        );
+    }
+
+    /// The Autopilot's clock stops while the host sleeps. The ask's bound is
+    /// judged after the sleep is counted at the point, so a reset the host
+    /// slept through ends the ask at the wake, not as many hours later.
+    #[test]
+    fn a_reset_the_host_slept_through_lapses_the_ask_at_the_wake() {
+        let start = Instant::now();
+        let grace = Timing::default().reset_grace;
+        let mut state = at_usage_wall(start, Some(start + Duration::from_secs(3600)));
+        // Five waking minutes after the wall.
+        let now = start + Duration::from_secs(300);
+        let asleep = Duration::from_secs(5000);
+        assert_eq!(state.slept_to(Some(asleep), now), None, "the mark");
+        assert!(
+            !rotation_ask_lapsed(wall_of(&state), false, now, grace),
+            "the reset is 55 waking minutes ahead"
+        );
+        // The same reading again moves nothing: both callers may count.
+        assert_eq!(state.slept_to(Some(asleep), now), None);
+        assert!(!rotation_ask_lapsed(wall_of(&state), false, now, grace));
+        // The host then slept two hours; the awake clock did not move.
+        let slept = Duration::from_secs(2 * 3600);
+        assert_eq!(state.slept_to(Some(asleep + slept), now), Some(slept));
+        assert!(
+            rotation_ask_lapsed(wall_of(&state), false, now, grace),
+            "the reset passed during the sleep: {:?}",
+            wall_of(&state)
+        );
+        assert!(
+            !rotation_ask_lapsed(wall_of(&state), true, now, grace),
+            "a bound receipt outlives the sleep too"
+        );
+        // NEGATIVE CONTROL: a sleep that ends before the reset's grace does not.
+        let mut short = at_usage_wall(start, Some(start + Duration::from_secs(3600)));
+        assert_eq!(short.slept_to(Some(asleep), now), None);
+        let nap = Duration::from_secs(55 * 60);
+        assert_eq!(short.slept_to(Some(asleep + nap), now), Some(nap));
+        assert!(
+            !rotation_ask_lapsed(wall_of(&short), false, now, grace),
+            "the reset has come but its grace has not"
+        );
+        assert!(rotation_ask_lapsed(
+            wall_of(&short),
+            false,
+            now + grace,
+            grace
+        ));
+    }
 
     #[test]
     fn renewal_uses_the_native_renew_mode_instead_of_a_boolean_switch() {

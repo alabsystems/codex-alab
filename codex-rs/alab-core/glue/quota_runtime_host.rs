@@ -17,6 +17,12 @@ pub(super) fn install<C: Sync>(builder: &mut ExtensionRegistryBuilder<C>, runtim
     install_for(codex_alab_core::is_alab_binary(), builder, runtime_is_exec);
 }
 
+/// Use the production exec lifecycle in unit fixtures, including private reviewers.
+#[cfg(test)]
+pub(crate) fn install_exec_fixture<C: Sync>(builder: &mut ExtensionRegistryBuilder<C>) {
+    install_for(true, builder, true);
+}
+
 fn install_for<C: Sync>(
     active: bool,
     builder: &mut ExtensionRegistryBuilder<C>,

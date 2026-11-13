@@ -1,0 +1,167 @@
+{
+  "schema": 1,
+  "kind": "focused-qualification-observations",
+  "observed_at": "2026-11-10T14:23:29.305587+00:00",
+  "upstream": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "source": "6d6ac5c9f75115238fbc59ea8911b887858e5ef0",
+  "outer_process_terminal": true,
+  "outer_exit_code": 1,
+  "log": "${HOME}/.ubd/codex-alignment-b32-backend-skills-native.log",
+  "log_sha256": "38bb58869697b409a5fdabbc6ae6bcfdc10f6fc8910fa2af3824842b8be5a4f4",
+  "controller": "${HOME}/.ubd/codex-alignment-b32-backend-skills-native.sh",
+  "controller_sha256": "e682a0ac0e5f166a85ae1d0f3abefbacfdc9b4df0bf8f40b576833645dcee4d9",
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "selections": [
+    {
+      "package": "codex-backend-client",
+      "target": "lib",
+      "filter": "client::runtime_auth_tests::",
+      "result": {
+        "passed": 6,
+        "failed": 1,
+        "ignored": 0,
+        "filtered_out": 53
+      }
+    },
+    {
+      "package": "codex-skills-extension",
+      "target": "executor_file_system_authority",
+      "filter": "",
+      "result": {
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 0
+      }
+    },
+    {
+      "package": "codex-core",
+      "target": "all",
+      "filter": "repository_skill_cache_cannot_read_inaccessible_files",
+      "result": {
+        "passed": 0,
+        "failed": 2,
+        "ignored": 0,
+        "filtered_out": 3226
+      }
+    },
+    {
+      "package": "codex-core",
+      "target": "all",
+      "filter": "repository_skill_discovery_uses_session_grants",
+      "result": {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "filtered_out": 3227
+      }
+    },
+    {
+      "package": "codex-core",
+      "target": "all",
+      "filter": "repository_skill_grant_excludes_a_parent_after_a_nested_repository_is_created",
+      "result": {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "filtered_out": 3227
+      }
+    }
+  ],
+  "tests": [
+    {
+      "name": "client::runtime_auth_tests::custom_backend_keeps_its_credential_without_registering_a_runtime",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::client_registers_in_requested_organization_when_default_is_denied",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::authenticated_clients_without_redirects_return_the_redirect_response",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::unsupported_openai_backend_rejects_runtime_auth_before_registration",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::reusable_runtime_client_keeps_the_selected_accounts_transport_policy",
+      "outcome": "FAILED"
+    },
+    {
+      "name": "client::runtime_auth_tests::account_runtime_auth_signs_each_request_and_strips_credentials_on_redirect",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::reusable_runtime_client_refreshes_credentials_without_accepting_a_new_session",
+      "outcome": "ok"
+    },
+    {
+      "name": "executor_skill_reads_reject_invalid_resource_handles",
+      "outcome": "ok"
+    },
+    {
+      "name": "executor_discovery_preserves_posix_and_windows_locator_alias_roots",
+      "outcome": "ok"
+    },
+    {
+      "name": "direct_executor_discovery_preserves_hidden_nested_and_probed_metadata",
+      "outcome": "ok"
+    },
+    {
+      "name": "high_level_discovery_reuses_materialized_skill_contents_for_reads",
+      "outcome": "ok"
+    },
+    {
+      "name": "high_level_discovery_cache_separates_filesystem_permission_contexts",
+      "outcome": "ok"
+    },
+    {
+      "name": "reads_use_callback_access_without_capability_roots",
+      "outcome": "ok"
+    },
+    {
+      "name": "selected_root_id_distinguishes_identical_executor_paths",
+      "outcome": "ok"
+    },
+    {
+      "name": "skill_loading_and_reads_use_the_supplied_executor_file_system",
+      "outcome": "ok"
+    },
+    {
+      "name": "executor_discovery_routes_produce_equivalent_catalog_metadata",
+      "outcome": "ok"
+    },
+    {
+      "name": "high_level_discovery_batches_more_than_128_roots",
+      "outcome": "ok"
+    },
+    {
+      "name": "pre_discovered_executor_catalog_snapshot",
+      "outcome": "ok"
+    },
+    {
+      "name": "suite::skills_extension::repository_skill_cache_cannot_read_inaccessible_files::parent_becomes_a_symlink",
+      "outcome": "FAILED"
+    },
+    {
+      "name": "suite::skills_extension::repository_skill_cache_cannot_read_inaccessible_files::file_becomes_a_symlink",
+      "outcome": "FAILED"
+    },
+    {
+      "name": "suite::skills_extension::repository_skill_discovery_uses_session_grants",
+      "outcome": "FAILED"
+    },
+    {
+      "name": "suite::skills_extension::repository_skill_grant_excludes_a_parent_after_a_nested_repository_is_created",
+      "outcome": "FAILED"
+    }
+  ],
+  "limits": "17 passed, 5 failed, zero ignored across 22 executed tests. Six backend controls pass; the selected-account transport test fails its expected typed Revoked error and needs diagnosis. All 11 executor-filesystem tests pass. Both cached symlink scenarios see zero model requests where three were expected; attribution remains open. Session-grant and nested-repository scenarios explicitly fail because sandbox-exec cannot apply the filesystem sandbox (Operation not permitted). Do not weaken containment or count these four repository-skill failures as qualified. This is not native credential-image proof, Windows/Linux execution or a full gate; later source changes require their own evidence."
+}

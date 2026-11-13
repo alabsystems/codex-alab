@@ -749,7 +749,7 @@ mod tests {
             "service_tier": null, "cyber_access_program": null,
             "step": {"collaboration_mode": settings.effective_collaboration_mode(),
                 "summary": settings.reasoning_summary, "approval_policy": settings.approval_policy(),
-                "approvals_reviewer": settings.approvals_reviewer(), "disabled_plugin_ids": []}
+                "disabled_plugin_ids": []}
         })).unwrap();
         drop(settings);
         context.extension_data.insert(recovery);

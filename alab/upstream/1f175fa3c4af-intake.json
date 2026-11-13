@@ -1,0 +1,687 @@
+{
+  "schema": 1,
+  "base": "71f328417b3165cb4aede018d056ff9f17d9b352",
+  "target": "1f175fa3c4af6a3f2e8d51971c3734b4a0aaca6b",
+  "frontier": "ce3031018ef130e653ed4d9c5bb971652de97161",
+  "commits": [
+    {
+      "sha": "672e99fed8da8e5efc3268c52cddc4fc97ffd078",
+      "subject": "Fix code-mode session admission retries for proxy HTTP 503 responses (#61153)",
+      "paths": [
+        "codex-rs/code-mode-host/tests/grpc/admission_tests.rs",
+        "codex-rs/code-mode/src/grpc_session/mod.rs",
+        "codex-rs/code-mode/src/grpc_session/transport.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "provider-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Scope malformed proxy HTTP 503 body handling to OpenSession; retain gRPC header/trailer status and the existing five-attempt admission bound. Existing route/auth ownership remains intact. Verification pending: admission proxy-body, explicit-status and exhaustion cases.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-12b-part-1.md",
+        "upstream 672e99fed8da: codex-rs/code-mode-host/tests/grpc/admission_tests.rs::session_admission_retries_only_transient_failures_and_is_bounded"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "d2f76324729d7c4a2b3225cfe42c7dbf162d98b7",
+      "subject": "Ignore Hickory DNSSEC advisories while DNSSEC is disabled (#61156)",
+      "paths": [
+        "codex-rs/.cargo/audit.toml",
+        "codex-rs/deny.toml"
+      ],
+      "classes": [
+        "security",
+        "packaging"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Carry matching DNSSEC-only advisory exceptions without dependency or DNS configuration changes. The integrated all-workspace graph must confirm DNSSEC remains disabled; this is not a general vulnerability exemption. Verification pending.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-12b-part-1.md",
+        "upstream d2f76324729d: matching codex-rs/.cargo/audit.toml and codex-rs/deny.toml exceptions; codex-rs/network-proxy/Cargo.toml Rama pins; proposed hickory_dnssec_features_remain_disabled"
+      ],
+      "revisit": "Reassess before enabling DNSSEC or changing the Rust/Rama/Hickory closure; remove these exceptions when Hickory is at least 0.26.2."
+    },
+    {
+      "sha": "e61a08f9ecb93a29d5379b123bee047fff0c7a24",
+      "subject": "Reuse Guardian reviewer history for direct reviews (#61163)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server/tests/suite/v2/guardian_sync_session_tests.rs",
+        "codex-rs/core/src/guardian/review.rs",
+        "codex-rs/core/src/guardian/review_session.rs",
+        "codex-rs/core/tests/suite/scenarios_guardian_direct_review.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_exec.snap",
+        "codex-rs/ext/guardian-reviewer/src/pool.rs",
+        "codex-rs/ext/guardian-reviewer/src/pool_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor",
+        "protocol"
+      ],
+      "features": [
+        "exec-handoff",
+        "account-isolation",
+        "provider-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Use the existing per-parent Guardian pool for direct-review history while retaining separate actor history, current-policy evaluation, outer cancellation/deadline handling and bounded recovery. Stored verdicts must not become restored execution authority. Verification pending: parent/account isolation, cancellation and recorded-command nonexecution.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-12b-part-1.md",
+        "upstream e61a08f9ecb9: guardian_review_reuses_private_recorded_call_history_per_parent; core/src/guardian/recorded_tool_call.rs outer cancellation/deadline; proposed direct_guardian_history_does_not_cross_account_or_restore_authority"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "ae50f973f51665c65bd86d393e7c09172c5f57a1",
+      "subject": "Refactor TUI sidebar layout and focus handling around panels (#61167)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/side_pane.rs",
+        "codex-rs/tui/src/app/sidebar.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/key_chords.rs",
+        "codex-rs/tui/src/app/workspace_hud.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "native-ui",
+        "native-session",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt panel geometry/focus naming and reuse visible panel content. No ALab glue consumes the removed chooser geometry names; retain surrounding session, pet, account and parked-backend hooks. Verification pending: focused draft/account rows, resize and thread transitions.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-12b-part-1.md",
+        "upstream ae50f973f516: codex-rs/tui/src/app/sidebar.rs and side_focus.rs; existing sidebar_chooser_preserves_the_parent_draft_and_starts_a_side_chat; proposed panel_focus_preserves_stashed_draft_and_native_account_row"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "72532ecae5efe500d9e722f3ed5214e63cc8098a",
+      "subject": "Negotiate realtime voice calls in the TUI (#61172)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/codex-api/Cargo.toml",
+        "codex-rs/codex-api/src/lib.rs",
+        "codex-rs/codex-api/src/requests/headers.rs",
+        "codex-rs/core/Cargo.toml",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/core/src/realtime_conversation.rs",
+        "codex-rs/core/src/realtime_prompt.rs",
+        "codex-rs/model-provider/src/lib.rs",
+        "codex-rs/model-provider/src/provider.rs",
+        "codex-rs/prompts/Cargo.toml",
+        "codex-rs/prompts/src/lib.rs",
+        "codex-rs/prompts/src/realtime.rs",
+        "codex-rs/tui/Cargo.toml",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/realtime_settings.rs",
+        "codex-rs/tui/src/app/tests/realtime_handoff_e2e.rs",
+        "codex-rs/tui/src/app/tests/realtime_requests.rs",
+        "codex-rs/tui/src/app/tests/realtime_start.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/app_command.rs",
+        "codex-rs/tui/src/app_command_tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session/realtime.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/realtime.rs",
+        "codex-rs/tui/src/chatwidget/realtime_tests.rs",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/realtime_call.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "refactor"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Carry TUI-owned voice call negotiation only behind explicit user voice use and existing backend/feature policy. Preserve local AuthManager and EndpointSession source/destination admission, matching thread/attempt acceptance, cancellation, SDP redaction and prompt precedence. No ambient credential fallback or SourceV1 activation. Verification pending for the new route.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-12b-part-1.md",
+        "upstream 72532ecae5ef: tui/src/realtime_call.rs; voice_cancel_restart_only_attaches_the_new_attempt; existing alab-core/glue/api_auth_source_tests.rs; proposed tui_voice_negotiation_rejects_retired_local_source"
+      ],
+      "revisit": "Revisit activation only after native local-source retirement/destination refusal, cancellation/restart, no-unrequested-call and redaction regressions pass; retain the SourceV1 human hold."
+    },
+    {
+      "sha": "b279cfb170df7bd2f6dc891cd08d032116533efb",
+      "subject": "Enable conversation-scoped speed selection for Cloud turns (#61178)",
+      "paths": [
+        "codex-rs/app-server-client/src/cloud_backend/request_tests.rs",
+        "codex-rs/app-server-client/src/cloud_backend/requests.rs",
+        "codex-rs/cloud-client/examples/attach.rs",
+        "codex-rs/cloud-client/src/turns.rs",
+        "codex-rs/cloud-client/src/turns_tests.rs",
+        "codex-rs/cloud-client/src/turns_wire.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/model_defaults.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/tests/model_defaults_tests.rs",
+        "codex-rs/tui/src/app/user_turn_submission.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/app_server_session/user_message_submission.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/service_tiers.rs",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "model-discovery",
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Permit Cloud speed choices only within the explicitly selected Cloud backend/conversation; retain catalog ownership, admission-time consumption and omitted-versus-null wire semantics. Preserve local Ultra reasoning/default config and independent Fast/Ultrafast labels. Verification pending for stale account, conversation switch and pending settings.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-12b-part-1.md",
+        "upstream b279cfb170df: CloudTurnSettings and service_tier wire field; cloud_ultrafast_toggle_updates_the_conversation_on_admission; existing alab_ultra_default_survives_same_model_selection; proposed cloud_pending_speed_does_not_cross_account_or_conversation"
+      ],
+      "revisit": "Revisit after exact-source Cloud admission and pending-choice regressions pass. Do not change default backend, local effort, or service-tier settings; SourceV1 remains held."
+    },
+    {
+      "sha": "c37f817556df251ced030ebcd146effa90c35952",
+      "subject": "Reclaim abandoned trusted Git repositories (#61180)",
+      "paths": [
+        "codex-rs/core-plugins/src/git_policy.rs",
+        "codex-rs/core-plugins/src/marketplace_staging_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Use existing bounded staging cleanup and lifetime locks for trusted temporary Git repositories, retaining canonical Codex-home containment and rejecting a symlinked staging root. Preserve live/concurrent owners and automatic/manual Git environment separation; no ordinary-worktree pruning. Verification pending.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-12b-part-1.md",
+        "upstream c37f817556df: core-plugins/src/git_policy.rs; cleanup_preserves_live_process_and_reclaims_its_abandoned_checkout; proposed trusted_git_repository_rejects_symlinked_staging_root_without_touching_target"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "bbd0d2b2fbc573e4d58670833d9649bfbe3598dd",
+      "subject": "Fix pagination for unindexed threads sorted by ascending recency (#61181)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/thread_list.rs",
+        "codex-rs/rollout/src/recorder.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "The ascending-recency filesystem fallback must inspect one extra unindexed row when a state database exists so truncation can return a real next cursor. Other sort directions/keys retain their existing paths. The change is disjoint from the ALab rollout-version hook and does not widen provider filtering or account authority.",
+      "evidence": [
+        "Reviewed bbd0d2b2fbc5 actual recorder.rs and thread_list.rs diffs: saturating_add(1) is conditional on ascending RecencyAt plus an available state DB; truncate_fs_page now handles that recency case.",
+        "Required upstream regression: app-server tests/suite/v2/thread_list.rs::thread_list_cold_ascending_recency_returns_next_cursor verifies two unindexed rows, page size one, provider filtering, ordered pages and final cursor exhaustion. This review did not execute it.",
+        "Compared current codex-rs/rollout/src/recorder.rs ALAB version metadata hook; no owned call signature or runtime-source hook is replaced."
+      ],
+      "revisit": "Revisit if rollout pagination ownership, ordering, provider filters or the filesystem/database merge contract changes."
+    },
+    {
+      "sha": "c432cf0253ed90a2f208cc96918091ba1867edd8",
+      "subject": "Support renaming cloud threads (#61182)",
+      "paths": [
+        "codex-rs/app-server-client/src/cloud_backend/connection_tests.rs",
+        "codex-rs/app-server-client/src/cloud_backend/requests.rs",
+        "codex-rs/cloud-client/src/client_tests.rs",
+        "codex-rs/cloud-client/src/lib.rs",
+        "codex-rs/cloud-client/src/wire.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Cloud rename is an explicit request through the existing bound Cloud client. The server acknowledgment precedes loaded-name mutation and notification. Existing origin restrictions, request deadlines, credential/factory binding and source admission remain required; this does not enable Cloud or background activity by default.",
+      "evidence": [
+        "Reviewed c432cf0253ed actual five-file diff: ThreadSetName trims the name, calls Client::set_thread_name, and updates the loaded thread and emits ThreadNameUpdated only after success; malformed thread/name is refused and the existing mutate transport is used.",
+        "Traced cloud-client Client construction and turns::mutate plus ALab cloud_backend/auth.rs factory/idle-permit hooks: the new RPC does not introduce another credential getter, an unbound transport or a new redirect policy.",
+        "Required new upstream tests: cloud_backend/connection_tests.rs::rejected_rename_preserves_loaded_cloud_thread_name and cloud-client/src/client_tests.rs::rename_sends_the_thread_and_title_and_requires_acknowledgment.",
+        "Required existing custody controls: alab-core/glue/cloud_idle_source_tests.rs::cloud_idle_recovery_reads_and_attaches_only_under_its_original_source and alab-cloud-contracts/tests/reader.rs::retained_cloud_transport_owns_its_actual_reader_and_destination_policy. Proposed direct rename regression: cloud_rename_after_source_retirement_sends_nothing_and_preserves_loaded_name. These are verification requirements, not executed results."
+      ],
+      "revisit": "Require a targeted custody adaptation if integrated rename can send after source retirement; retain failure-before-cache-mutation and explicit Cloud selection."
+    },
+    {
+      "sha": "2bb2e20d6aa8ded4d6da6babebb3b61b3c50efb7",
+      "subject": "Fix fork parent metadata in reconstructed TUI sessions (#61183)",
+      "paths": [
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/app/thread_session_state.rs",
+        "codex-rs/tui/src/session_state.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "exec-handoff",
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Reconstructed TUI sessions must use the target thread fork parent instead of copied primary-session lineage. Changing the parent clears the stale cached parent title, while active permission fallback remains intact. This is presentation/session reconstruction, not authority to adopt a different runtime parent.",
+      "evidence": [
+        "Reviewed 2bb2e20d6aa8 actual thread_routing.rs, thread_session_state.rs and session_state.rs diffs: ThreadStarted and thread/read reconstruction call set_fork_parent; absent or invalid IDs clear lineage; cached title is cleared on a changed parent.",
+        "Required renamed upstream regression: session_state.rs::reconstructed_session_uses_target_lineage_and_active_permissions retains active-permission assertions and verifies target lineage plus removal of an inherited parent.",
+        "Compared surrounding ALab startup-stack, retry-status and queued-input hooks in thread_routing.rs; preserve them during merge. Proposed setter edge check: set_fork_parent_preserves_title_only_for_the_same_valid_parent. No test executed."
+      ],
+      "revisit": "Revisit if reconstruction begins using this display lineage as admission authority or if ALab restoration needs a distinct target-parent projection."
+    },
+    {
+      "sha": "d4242793f70c4ee471d7903a2c448bface1bc38e",
+      "subject": "Defer Guardian context limits to request preparation (#61185)",
+      "paths": [
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/context/guardian_assistant_context.rs",
+        "codex-rs/core/src/context/mod.rs",
+        "codex-rs/core/tests/suite/guardian_root_handoff.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/classification.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/conversation_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/decisions_lifecycle_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/decisions_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/observation.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/request.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/request_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/sampler.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/sampler_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/transcript.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/transcript_tests.rs",
+        "codex-rs/guardian-context/src/authorization.rs",
+        "codex-rs/guardian-context/src/lib.rs",
+        "codex-rs/guardian-context/src/preparation/elastic_tests.rs",
+        "codex-rs/guardian-context/src/preparation/mod.rs",
+        "codex-rs/guardian-context/src/preparation/root.rs",
+        "codex-rs/guardian-context/src/retained_instructions.rs",
+        "codex-rs/guardian-context/src/retained_instructions_tests.rs"
+      ],
+      "classes": [
+        "refactor",
+        "security"
+      ],
+      "features": [
+        "exec-handoff",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve original Guardian evidence and apply fixed/elastic context limits during request preparation, including asynchronous requests. Typed verified user-answer provenance and committed-prefix preservation remain mandatory; assistant context is not an authorization grant. The explicit sync elastic configuration gate is retained, so this review does not enable it or change model/telemetry defaults.",
+      "evidence": [
+        "Reviewed d4242793f70c production changes in core/context/config, Guardian classification/observation/request/sampler/transcript, authorization, root preparation and retained instructions, plus the changed assertions rather than only constructor updates.",
+        "RootConversationInput retains original source with cached fixed preparation and recomputes elastic preparation; prepare_context now prepares both sync and async sections. Verified answers retain typed provenance. New image detail is normalized before deduplication; existing committed request prefixes and prior item IDs are retained.",
+        "Required upstream checks: request_tests.rs::preparation_preserves_committed_prefix_and_selects_only_new_entries_and_images; retained_instructions_tests.rs::instructions_preserve_source_order_and_whole_records, ordinary_exchanges_keep_roles_and_drop_assistant_context_before_restrictions, and legacy_verified_answers_keep_distinct_source_order; guardian_root_handoff.rs::handoff_scenario callers must retain original large evidence while fixed request messages remain bounded.",
+        "Required ALab checks in exec_recovery_tree_tests.rs: exec_review_tree_recovers_original_delegate_after_all_admissions, exec_review_tree_refusal_stops_before_any_destination_request, exec_review_tree_delivers_a_result_completed_while_frozen, ephemeral_exec_review_tree_preserves_typed_result_without_storage, and ephemeral_exec_review_tree_refusal_stops_before_sampling. Search found no ALab-owned caller of changed GuardianRootSnapshot/ContextInput APIs. No tests executed."
+      ],
+      "revisit": "Revisit before enabling elastic budgeting by default or treating any preserved assistant/reviewer text as execution authorization; adapt only on an integrated provenance or handoff regression."
+    },
+    {
+      "sha": "d0221bc9471109ae027082d6fcacbc73b8b8e3aa",
+      "subject": "Keep plan item IDs unique after completion (#61186)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/plan_item.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/session/turn_tests.rs",
+        "codex-rs/core/tests/suite/items.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "exec-handoff",
+        "provider-recovery"
+      ],
+      "decision": "adapt",
+      "reason": "Unique completed plan IDs are correct, but the new unfinished_plan_id is local to run_turn and starts empty. ALab suspends a live child task and restores a new task from its captured context. Without an owned captured unfinished ID, a plan started before transfer receives a new UUID on restoration. Preserve the exact unfinished ID across retries and native transfer, clear it after completion, and allocate a new ID for a subsequent plan.",
+      "evidence": [
+        "Reviewed d0221bc94711 actual four-file diff: run_turn introduces Option<String>; run_sampling_request/try_run_sampling_request forward it; PlanModeStreamState reuses only an unfinished ID and otherwise allocates UUIDv7; finished state retires the ID.",
+        "Concrete compile adaptations: alab-core/glue/terminal_steering_tests.rs calls run_sampling_request at the two sampling helpers and must supply the new mutable argument without weakening refusal/cancellation assertions.",
+        "Concrete transfer seam: exec_child_suspension.rs removes/cancels the active task then captures recovery options; exec_model_context.rs, exec_sampling_progress.rs and exec_input_batch.rs do not store an unfinished plan ID. A new run_turn therefore loses an in-flight plan identity that the old turn-derived ID preserved.",
+        "Required upstream checks: turn_tests.rs::plan_attempts_only_reuse_unfinished_item_ids; app-server plan_item.rs::plan_mode_uses_proposed_plan_block_for_plan_item; core items.rs::plan_mode_keeps_only_unfinished_ids_across_model_requests.",
+        "Required new ALab integration regression (proposed name): exec_handoff_preserves_only_an_unfinished_plan_id. Start and partially emit a plan, suspend and restore the same turn, require identical start/delta/completion ID, then require a distinct next plan ID; cover snapshot validation and retirement. Keep identity/lifecycle in ALab-owned code with only marked upstream hooks. Retain all terminal_steering_tests refusal/overload/interrupt cases. No tests executed."
+      ],
+      "revisit": "This adaptation is required before qualification: prove exact unfinished identity is captured before emitted plan events, survives transfer, and is retired after completion. SourceV1 activation remains held."
+    },
+    {
+      "sha": "4490060db60a2053bc3c6095127cfc10a9f3e34d",
+      "subject": "Add authenticated GCS caching for Bazel CI and releases (#61187)",
+      "paths": [
+        ".bazelrc",
+        ".github/actions/build-bazel-package-binaries/action.yml",
+        ".github/actions/build-bazel-release/action.yml",
+        ".github/actions/prepare-bazel-ci/action.yml",
+        ".github/scripts/compute-bazel-windows-path.ps1",
+        ".github/scripts/run-bazel-ci.sh",
+        ".github/scripts/run-bazel-query-ci.sh",
+        ".github/scripts/run_bazel.py",
+        ".github/scripts/run_bazel_with_buildbuddy.py",
+        ".github/scripts/rusty_v8_bazel.py",
+        ".github/scripts/test_run_bazel.py",
+        ".github/scripts/test_run_bazel_with_buildbuddy.py",
+        ".github/scripts/v8_canary_changes.py",
+        ".github/workflows/README.md",
+        ".github/workflows/bazel.yml",
+        ".github/workflows/blocking-ci.yml",
+        ".github/workflows/postmerge-ci.yml",
+        ".github/workflows/rust-ci-full.yml",
+        ".github/workflows/rust-ci.yml",
+        ".github/workflows/rust-release-provisioned-macos.yml",
+        ".github/workflows/rust-release-windows.yml",
+        ".github/workflows/rust-release.yml",
+        ".github/workflows/rusty-v8-release.yml",
+        ".github/workflows/sdk.yml",
+        ".github/workflows/v8-canary.yml",
+        "scripts/check-module-bazel-lock.sh"
+      ],
+      "classes": [
+        "packaging",
+        "security",
+        "removed-path",
+        "defaults"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "superseded",
+      "reason": "All 26 changed paths belong to the existing whole-path removal policy: .github/**, .bazelrc, and scripts/check-module-bazel-lock.sh. Preserve their removal in the integrated tree rather than import GCS credentials, Bazel CI/release switches or a second qualification lane. ALab continues its native Cargo/atpkg source-bound build and gate.",
+      "evidence": [
+        "Reviewed 4490060db60a actual wrapper, GCS/OIDC setup action, release selection and workflow changes. Remote cache writes are intended only for protected main pushes, reads use explicit credential files, and release selection is conditional; none is a reason to reactivate removed paths.",
+        "Compared every original changed path with alab/removed-paths: 24 paths are under .github/, one is .bazelrc and one is scripts/check-module-bazel-lock.sh. All are covered, including renamed/deleted wrapper paths.",
+        "Required merge verification is whole-path absence under the committed removal rules, not execution of removed test_run_bazel.py or GitHub workflows. Do not claim Bazel, GCS, OIDC, Windows or upstream CI qualification from this review."
+      ],
+      "revisit": "Revisit only if ALab explicitly adopts Bazel/GCS or changes removed-path policy; that requires a separate source, credential, permissions and release-lane decision."
+    },
+    {
+      "sha": "f242b49c8adda8f7bb1e5ff225df22295ac8e07b",
+      "subject": "Remove redundant legacy permission helpers (#61194)",
+      "paths": [
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/protocol/src/permissions.rs",
+        "codex-rs/protocol/src/permissions/target_tests.rs",
+        "codex-rs/protocol/src/permissions_tests.rs"
+      ],
+      "classes": [
+        "refactor",
+        "security"
+      ],
+      "features": [
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Remove redundant legacy PermissionProfile helpers while keeping the supported cwd-aware/template conversions and sandbox enforcement conversion. The replacement tests preserve canonical profile round trips and workspace metadata restrictions. ALab restoration uses its current permission snapshot API, not the deleted helpers; no permission/default widening is authorized.",
+      "evidence": [
+        "Reviewed f242b49c8add actual models/permissions implementation and test diff. PermissionProfile::from_legacy_sandbox_policy is removed, distinct SandboxEnforcement conversion remains, and redundant workspace materialization helpers disappear. Existing symbolic/template handling is inlined rather than disabled.",
+        "Searched ALab-owned crates/glue for the removed APIs: no callers. exec_child_configuration.rs retains PermissionProfileSnapshot restoration and current destination permission handling.",
+        "Required protocol regressions: models.rs::permission_profile_presets_match_legacy_defaults and permission_profile_round_trip_preserves_disabled_sandbox; permissions_tests.rs::workspace_write_with_extra_root_protects_metadata; retain target_tests.rs legacy-home-relative denial/materialization cases. Also run the ALab exec configuration/recovery permission round trips. No tests executed."
+      ],
+      "revisit": "Revisit on any restored-permission mismatch or future deletion of the supported snapshot/cwd conversion APIs; never replace denial/materialization tests with weaker containment claims."
+    },
+    {
+      "sha": "9908717ddb274aab3a9653d5301ca20dd64b62c2",
+      "subject": "Preserve permission profiles across working directory updates (#61195)",
+      "paths": [
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/tests/suite/remote_env.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Keep the active permission-profile snapshot intact on a cwd-only update instead of reconstructing it through legacy SandboxPolicy. Runtime workspace roots follow the new cwd while explicit profile roots and exclusions remain intact. This supports ALab retained restrictions and must not become new destination authority or change Ultra/default policy.",
+      "evidence": [
+        "Read the complete 9908717 diff: SessionConfiguration::apply removes cwd-only legacy profile reprojection and the unused network_sandbox_policy helper.",
+        "The revised session_configuration_apply_preserves_profile_file_system_policy_on_cwd_only_update compares the full profile snapshot/settings; settings_update_does_not_retarget_active_turn_environment additionally checks new/old workspace paths and .git/config.",
+        "Compared alab-core/glue/exec_tree_settings.rs and the retained/fresh restriction tests in exec_tree_capture_tests.rs; no ALab call to the removed accessor was found."
+      ],
+      "revisit": "Run the two upstream permission tests plus captured_root_restrictions_survive_startup_without_relaxing_fresh_host_policy and environment_restore_requires_current_owner_workspace_and_configuration on the integrated source."
+    },
+    {
+      "sha": "ea1b6ad1cf2c39dacf10bf1f2667d9c6f7e7eb3f",
+      "subject": "Clear inline image previews before history insertion can scroll them (#61196)",
+      "paths": [
+        "codex-rs/tui/src/tui.rs",
+        "codex-rs/tui/src/tui/history_tail.rs",
+        "codex-rs/tui/src/tui/inline_image_history_tests.rs",
+        "codex-rs/tui/src/tui/snapshots/codex_tui__tui__inline_image_history_tests__inline_history_erases_preview_before_scrolling_and_preserves_draft.snap"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Erase retained inline previews before history insertion can scroll their out-of-band pixels; preserve direct Kitty images only when standard scrollback and unchanged viewport geometry make preservation valid. Retain ALab pet cleanup and draft ownership hooks; this changes rendering lifecycle, not pet activation defaults.",
+      "evidence": [
+        "Read the complete ea1b6ad diff including all retained_images call sites in tui.rs/history_tail.rs and the clear-before-history predicate.",
+        "Read the four new inline_image_history_tests: scrolling Sixel/draft, direct Kitty preservation, KittyLocalFile deletion/reupload, and moving-viewport Kitty redraw.",
+        "Compared alab-tui/glue/pet_cleanup_tests.rs and pet ownership paths; ALab overlay/disable cleanup remains a separate required contract."
+      ],
+      "revisit": "Run tui::inline_image_history_tests and app::alab_pet_cleanup_tests on the integrated source; retain overlay/disable assertions."
+    },
+    {
+      "sha": "cdfcc18dbaf34b103f0f368925e6768d0f3b8471",
+      "subject": "Clarify remote message board and clock documentation (#61197)",
+      "paths": [
+        "codex-rs/agent-message-board-client/src/client.rs",
+        "codex-rs/agent-message-board-client/src/notifications.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/tests/suite/scenarios_agent_message_board_remote.rs",
+        "codex-rs/features/src/feature_configs.rs",
+        "codex-rs/message-board/src/host.rs"
+      ],
+      "classes": [
+        "other"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "The actual changes clarify remote-board and configured-clock documentation and rename only a test token. Membership, queued notification delivery, acceptance versus consumption, and clock execution are unchanged. Documentation does not authorize activation or native transport authority.",
+      "evidence": [
+        "Read all seven changed files in cdfcc18: client/notifications/config-schema/feature-config/codex_thread/message-board host hunks are documentation only; the remote-board fixture token is renamed consistently.",
+        "Compared features.toml native-session/product-policy boundaries and accounts-source-use.md: a configured clock or accepted board message is not native End acknowledgement or a human/native ownership claim."
+      ],
+      "revisit": "No new test is required for comment-only behavior; preserve the existing remote_board_uses_the_existing_tools_and_session_identity coverage during integrated validation."
+    },
+    {
+      "sha": "fae87361f44705ac524b7ce950ee531920779533",
+      "subject": "Add graceful agent-tree suspension and recovery (#61198)",
+      "paths": [
+        "codex-rs/core-api/src/lib.rs",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/api.rs",
+        "codex-rs/core/src/agent/control/completion.rs",
+        "codex-rs/core/src/agent/control/mailbox.rs",
+        "codex-rs/core/src/agent/control/residency.rs",
+        "codex-rs/core/src/agent/control/residency_tests.rs",
+        "codex-rs/core/src/agent/control/resume.rs",
+        "codex-rs/core/src/agent/control/runtime.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/control_tests.rs",
+        "codex-rs/core/src/agent/history.rs",
+        "codex-rs/core/src/agent/registry.rs",
+        "codex-rs/core/src/agent_communication.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/input_queue.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/src/session/turn_input.rs",
+        "codex-rs/core/src/session/turn_input_tests.rs",
+        "codex-rs/core/src/session/turn_suspension.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/src/thread_manager/shutdown.rs",
+        "codex-rs/core/tests/suite/abort_tasks.rs",
+        "codex-rs/core/tests/suite/host_turn_admission.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff",
+        "account-isolation"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt durable local agent-tree suspension, terminal-result persistence receipts, ancestor-aware loading, and registration-time input fences while retaining ALab capture/admission adapters. Upstream preserves durable regular-turn IDs and results but does not replace review/ephemeral/input-parser/native End/fresh-authority contracts. SourceV1 remains held. Adapt task-start return values, late mailbox hook placement, and the now-nonoptional stored model context. Preserve the new terminal-result write receipt: pending durable writes are nonportable and must be refused by exec capture, never silently dropped.",
+      "evidence": [
+        "Read all 30 files in fae8736, including LocalAgentRuntime shutdown/suspend dispositions and unconfirmed result writes, mailbox receipts, ThreadManager local-root checks, ancestor loading, and turn-start rechecks.",
+        "Compared tasks/mod.rs ALAB task_activity/startup_mailbox hooks, alab-core/glue/exec_input_state.rs::startup_mailbox, and exec_child_restore.rs:554. spawn_task now returns TurnInputSubmission; the ALab bare return and obsolete load_agent_model_context(...).ok_or(...) need adaptation.",
+        "Compared ALab exec_tree_capture/exec_child_suspension/exec_tree_input and accounts-source-use.md. ALab captures managed review, ephemeral members, exact queued inputs and fresh destination authority beyond the new durable-only upstream tree descriptor.",
+        "Read graceful_suspend_preserves_a_finishing_child_result (all eight cases), suspended_tree_records_the_original_unfinished_turns, tree_suspension_leaves_an_ephemeral_turn_running, saved_message_wake_checks_the_last_started_turn_during_admission, and terminal_result_writes_require_confirmation_after_the_parent_claims_mail.",
+        "Read agent_communication MessagePublication/MessageDelivery changes and alab-core/glue/exec_message_publication.rs: publish now returns Option and carries result_write; restore_exec must initialize no live receipt, and capture_exec must reject an unconfirmed receipt even without lifecycle observers."
+      ],
+      "revisit": "Before integration approval, retain admission/input hooks after the new locked recheck, map refused ALab starts to explicit NotSubmitted, adapt model-history loading, and run the upstream tree cases plus existing ALab nested/review/ephemeral, sealed-input, idle-restoration, authority and joined-reader tests listed in the part-3 review. No SourceV1 activation or equivalence claim. Update exec_message_publication constructor/optional publication call sites; add a regression that an observer-free live result-write receipt blocks capture without clearing the receipt or decrementing its outstanding count."
+    },
+    {
+      "sha": "94fc72960265bcd80b0dbda249dde104cae2bdd3",
+      "subject": "Align rollout trace replay with the same-binary contract (#61199)",
+      "paths": [
+        "codex-rs/rollout-trace/AGENTS.md",
+        "codex-rs/rollout-trace/README.md",
+        "codex-rs/rollout-trace/src/bundle.rs",
+        "codex-rs/rollout-trace/src/lib.rs",
+        "codex-rs/rollout-trace/src/protocol_event.rs",
+        "codex-rs/rollout-trace/src/reducer/acceptance_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/code_cell.rs",
+        "codex-rs/rollout-trace/src/reducer/mod.rs",
+        "codex-rs/rollout-trace/src/reducer/tool/agents.rs",
+        "codex-rs/rollout-trace/src/reducer/tool/agents_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/tool/terminal.rs"
+      ],
+      "classes": [
+        "protocol",
+        "refactor"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Accept the narrower diagnostic contract: only the recording executable reduces raw traces; consumers use reduced state plus manifest identity. Require explicit code-cell thread identity and structured agent-message deliveries rather than guessing legacy assistant JSON. This removes diagnostic compatibility, not ALab handoff codecs or stored-history support.",
+      "evidence": [
+        "Read all eleven changed paths in 94fc729, including new rollout-trace/AGENTS.md, raw schema errors, removed code_cell_event_thread_id fallback and inter_agent_message_fields legacy parser.",
+        "The revised reducer tests supply type=agent_message with structured author/recipient/content; replay_rejects_a_mismatched_manifest_schema retains explicit schema rejection. Reduced/manifest schema constants remain 2 because no reduced-state shape changes here.",
+        "Searched ALab-owned Rust sources: no use of rollout_trace/replay_bundle or removed natural trace parsing APIs; ALab exec recovery uses its own typed stored-history and transfer contracts."
+      ],
+      "revisit": "Run rollout-trace reducer acceptance, code_cell and tool::agents tests, especially explicit identity and delivered-result links. Never interpret version equality alone as cross-binary replay proof."
+    },
+    {
+      "sha": "16e27626e654b29cc2ea696a545b2cd5f29db136",
+      "subject": "Unify TUI status content and layout caching in `StatusLine` (#61200)",
+      "paths": [
+        "codex-rs/tui/src/app/side_pane.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/composer_layout.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/status_surface.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/status_surface_tests.rs",
+        "codex-rs/tui/src/bottom_pane/footer.rs",
+        "codex-rs/tui/src/bottom_pane/footer/footer_content.rs",
+        "codex-rs/tui/src/bottom_pane/footer/footer_content_tests.rs",
+        "codex-rs/tui/src/bottom_pane/footer/snapshots/codex_tui__bottom_pane__footer__footer_content__tests__prepared_tree_uses_its_natural_width_and_paints_only_the_footer_viewport.snap",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/bottom_pane/multi_select_picker.rs",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__status_line__tests__prepared_tree_paints_only_the_footer_viewport.snap",
+        "codex-rs/tui/src/bottom_pane/status_line.rs",
+        "codex-rs/tui/src/bottom_pane/status_line_setup.rs",
+        "codex-rs/tui/src/bottom_pane/status_line_tests.rs",
+        "codex-rs/tui/src/bottom_pane/status_surface_preview.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/status_controls.rs",
+        "codex-rs/tui/src/chatwidget/tests/status_surface_previews.rs",
+        "codex-rs/tui/src/ui_tree/render.rs",
+        "codex-rs/tui/src/ui_tree/render/prepare.rs",
+        "codex-rs/tui/src/ui_tree_tests.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt StatusLine ownership of content and cached geometry and direct prepared-tree painting. Reapply the three ALab footer allocation/measurement/render hooks using the new already-inset content rectangle; remove duplicate inset in owned composer_border glue and reconcile zero-width measurement. Preserve separate goal/account rows, native draft/hint priority, cursor and click targets, passive native content and the ALab-off recovery switch.",
+      "evidence": [
+        "Read the complete 16e2762 diff: FooterContent and separate status cache become StatusLine; FooterLayout::status_bounds and FooterRows::status_area apply inset at the caller; cached comparisons ignore layout; native/extension renderers paint their allotted rectangle directly.",
+        "Compared current composer_layout.rs ALAB footer_layout hook and status_surface.rs status_height/render_status hooks with alab-tui/glue/composer_border.rs. Its current render_status performs x+2/width-4 itself, which would double-pad the new status_area.",
+        "Read owned active_goal_reserves_a_row_without_moving_the_draft_or_stealing_account_hits, goal_account_rows_follow_footer_layout_with_constrained_draft_and_focus, passive_footer_keeps_its_native_status_without_replacing_focused_account_hits and edition_switch_preserves_native_composer_with_a_recovery_button.",
+        "Read upstream status_rows_respect_host_budget_and_yield_to_the_draft replacement-content assertions, extension clipping/theme/focus tests, and direct UI-tree cell/link tests."
+      ],
+      "revisit": "Adapt only owned glue and minimal retained hooks after merge. Run the complete composer_border tests plus upstream status_surface/status_line/UI-tree coverage; extend the existing owned constrained-layout test to assert nonzero-origin/narrow-width exact padding and account hit cells so double inset cannot pass."
+    },
+    {
+      "sha": "1f175fa3c4af6a3f2e8d51971c3734b4a0aaca6b",
+      "subject": "Clean up Rust error handling and OTLP test assertions (#61201)",
+      "paths": [
+        "codex-rs/app-server-client/src/cloud_backend/mod.rs",
+        "codex-rs/app-server-client/src/cloud_backend/requests.rs",
+        "codex-rs/ext/image-generation/src/backend.rs",
+        "codex-rs/otel/tests/suite/otlp_http_loopback.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/tests/background_task_defaults_tests.rs",
+        "codex-rs/tui/src/app/user_verification_tests.rs",
+        "codex-rs/tui/src/app_backtrack.rs",
+        "codex-rs/tui/src/app_server_connection.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "The actual changes box image-backend errors, normalize terminating bail expressions, and factor the existing OTLP diagnostic prefix length without changing matching, transport retries, assertions or activation. Preserve ALab Cloud-source and TUI owner hooks around these unchanged error boundaries.",
+      "evidence": [
+        "Read all nine changed paths in 1f175fa. Cloud begin/EOF/item-index and queued/duplicate admission failure conditions remain the same; ImageBackendError retains the same downcast/accessor behavior through Box.",
+        "OTLP loopback assertions retain their existing success/failure conditions and 2000-character diagnostic bound; only the bound is named. TUI reconnect/backtrack/connection edits add terminating semicolons.",
+        "Compared existing ALab Cloud integration and product-policy contracts; no account, permission, Ultra/default, or native activation setting is added."
+      ],
+      "revisit": "Retain existing Cloud request/error-boundary and OTLP loopback tests in integrated validation; no new ALab behavior test is required for the syntactic cleanup."
+    }
+  ]
+}

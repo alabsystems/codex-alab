@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "kind": "upstream-fetch-observation",
+  "observed_at": "2026-11-10T13:27:15.053965+00:00",
+  "transport": "alab/github.py via Agh",
+  "remote": "upstream",
+  "refspec": "refs/heads/main:refs/remotes/upstream/main",
+  "before": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "after": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "exit_code": 0,
+  "candidate": "39c22475bcec7e43a0807be188bcd1f1c49db625",
+  "candidate_contains_fetched_target": true,
+  "qualification": "The exact 270afedaa6 full gate passed, with 17 failures reproduced on pristine upstream and four owned ignored tests. Later combined-auth changes have focused library evidence only. Gateway source-scoped cache adaptation, complete intake/contracts, landing and installed adoption remain unfinished."
+}

@@ -267,6 +267,7 @@ impl LocalAgentControl {
         context: AgentCommunicationContext,
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
+        let _upgrade_input = self.runtime.admit_upgrade_input()?; // ALAB(upgrade): loaded and unloaded delivery revoke a prepared process handoff before acceptance.
         let observers = state.extensions.message_lifecycle_contributors();
         let delivery = (!observers.is_empty())
             .then(|| MessageDelivery::publish(context.sender_thread_id, observers));

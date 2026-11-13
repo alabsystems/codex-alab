@@ -336,6 +336,9 @@ pub struct Policy {
     pub continue_per_hour: Option<u32>,
     /// `approve=all` (`safe` reads as `none`: codex-alab has no proofs).
     pub approve_all: bool,
+    /// aterm's raw `[harness] answer_questions` switch, as the prose question and go-ahead paths
+    /// read it. The question overlay never reads it: it reads [`Self::questions`], which aterm
+    /// resolved over the switch (`answer::decide_box`).
     pub answer_questions: bool,
     pub answer_text: Option<String>,
     pub questions: Questions,

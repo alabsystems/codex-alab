@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:13:59.433806+00:00",
+  "source": "581e42280b28b3cfe91fe5bf249c76a70ef66bd6",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "mcp::tests::ema_auth_statuses_do_not_wait_for_account_refresh",
+      "status": "ok"
+    },
+    {
+      "name": "protocol::tests::turn_context_item_normalizes_legacy_permissions_and_writes_profile_only",
+      "status": "ok"
+    },
+    {
+      "name": "tests::rollout_item_variants_preserve_existing_payload_shapes",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-profile-native.sh",
+      "sha256": "bdeb17d3719a2e95da1fee5ba87e48c36518bc0cd50c1108f345d6deb5a73522"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-profile-native.log",
+      "sha256": "76adbc0b5674c33b1fd15078741da0dddce9cb20195f0f430e6132fce5564fa0"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-profile-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Three nonempty native unit selections passed: same-owner EMA lease status, canonical permission normalization and rollout payload roundtrip. App-server background-routing and roster suspension filters matched zero tests and were correctly rejected, so overall exit1. This does not prove distinct-owner MCP status fix or roster recovery. Correct module/test identities must be inspected before another run; full gate and adoption are separate."
+}

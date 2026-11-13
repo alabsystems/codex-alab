@@ -1,0 +1,449 @@
+{
+  "schema": 1,
+  "kind": "native-focused-failed-observation",
+  "observed_at": "2026-11-10T18:15:11.406437+00:00",
+  "source": "6187e587cc8d55bcfb610bef0d8d7eb8f4c43513",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "suite_results": [
+    {
+      "result": "ok",
+      "passed": 48,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "result": "FAILED",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0
+    },
+    {
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "result": "ok",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "result": "ok",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "result": "ok",
+      "passed": 31,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "unambiguously_line_reported_tests": [
+    {
+      "name": "app::app_server_event_targets::tests::mcp_startup_notifications_without_threads_are_app_scoped",
+      "status": "ok"
+    },
+    {
+      "name": "app::app_server_event_targets::tests::mcp_startup_notifications_route_to_threads",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::background_exit_tests::daemon_ctrl_c_during_mcp_startup_does_not_show_background_exit_menu",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::active_side_thread_renders_live_mcp_startup_notifications",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::mcp_startup::resumed_subagent_mcp_startup_settles_while_cached_servers_remain_deferred",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::mcp_startup::side_conversations_settle_despite_unreported_locally_configured_servers",
+      "status": "ok"
+    },
+    {
+      "name": "app::thread_events::tests::thread_event_store_rebase_preserves_mcp_startup_notifications",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::alab_hand::turns_session_tests::a_turn_during_mcp_startup_is_reported_as_work",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::alab_hand::turns_session_tests::mcp_startup_writes_no_working_and_begins_no_turn",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::app_server_mcp_startup_after_lag_can_settle_without_starting_updates",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::app_server_mcp_startup_completed_failure_does_not_carry_into_the_next_round",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::app_server_mcp_startup_failure_renders_warning_history",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::app_server_mcp_startup_lag_reports_only_explicit_cancellations",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::app_server_mcp_startup_lag_settles_startup_and_tracks_new_starts",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::app_server_mcp_startup_late_failure_does_not_reopen_the_next_round",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::app_server_mcp_startup_next_reported_start_reactivates_progress",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::app_server_mcp_startup_reports_cancellation_after_lag",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::app_server_mcp_startup_reports_failure_after_lag",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::inline_review_submits_during_mcp_startup",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::mcp_apps_readiness_retries_an_in_flight_installed_mention_lookup",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::mcp_startup_complete_does_not_clear_running_task",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::mcp_startup_complete_preserves_review_status",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::mcp_startup_dedupes_same_round_duplicate_failure_warning",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::primary_thread_ignores_child_mcp_startup_notifications",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::mcp_startup::subagent_mcp_startup_settles_while_cached_servers_remain_deferred",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::mcp_startup_failure_restores_running_status_header",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::mcp_startup_ignores_status_for_other_thread",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::mcp_startup_header_booting_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::mcp_startup_updates_preserve_streaming_status_suppression",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::mcp_startup_warning_identity_survives_resume_and_task_switch",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::pending_mcp_startup_does_not_block_queued_follow_up",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::pending_mcp_startup_does_not_reject_queued_compaction",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::pending_mcp_startup_does_not_drain_follow_up_before_review_starts",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::pending_mcp_startup_dispatches_queued_slash_commands",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::pending_mcp_startup_does_not_unblock_external_review",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::pending_mcp_startup_does_not_unblock_foreground_compaction",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::pending_mcp_startup_does_not_unblock_foreground_shell",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::reported_mcp_startup_rechecks_an_identical_failure_after_lag",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::turn_start_preserves_active_mcp_startup_header",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::review_opens_during_mcp_startup",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::turn_start_replaces_idle_completed_mcp_startup_header",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::slash_commands::slash_resume_opens_picker_while_mcp_startup_is_running",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::slash_commands::slash_resume_with_arg_requests_named_session_while_mcp_startup_is_running",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::mcp_startup::review_and_fork_during_mcp_startup_preserve_drafts_when_foreground_work_is_pending",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::session_lifecycle_requests::local_mcp_respects_configured_servers_and_managed_requirements",
+      "status": "ok"
+    },
+    {
+      "name": "temporary_structured_request::tests::rejects_closed_notification_channel",
+      "status": "ok"
+    },
+    {
+      "name": "temporary_structured_request::tests::rejects_completion_without_assistant_message",
+      "status": "ok"
+    },
+    {
+      "name": "temporary_structured_request::tests::rejects_failed_turn",
+      "status": "ok"
+    },
+    {
+      "name": "temporary_structured_request::tests::rejects_oversized_assistant_message",
+      "status": "ok"
+    },
+    {
+      "name": "temporary_structured_request::tests::returns_latest_matching_assistant_message",
+      "status": "ok"
+    },
+    {
+      "name": "temporary_structured_request::tests::managed_workspace_default_respects_read_only_availability",
+      "status": "ok"
+    },
+    {
+      "name": "temporary_structured_request::tests::preserves_custom_permissions_and_disables_required_mcp_servers",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gcp::vertex_guardian_requests_use_luna",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gcp::vertex_requests_omit_reasoning_summaries::catalog_model",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gcp::vertex_requests_use_command_auth_with_namespaces_and_tool_search::sol",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gcp::vertex_credential_file_is_retained_when_refreshing_after_401",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gcp::vertex_requests_use_command_auth_with_namespaces_and_tool_search::sol_incremental",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gcp::vertex_requests_use_command_auth_with_namespaces_and_tool_search::terra",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gcp::missing_vertex_credentials_explain_how_to_reauthenticate",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gcp::vertex_requests_omit_reasoning_summaries::fallback_model",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_blocks_mcp_execution_without_changing_parent_tools::disable_mcps_with_incremental_tools",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_blocks_mcp_execution_without_changing_parent_tools::retain_mcps_without_incremental_tools",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_blocks_mcp_execution_without_changing_parent_tools::inherit_mcps_by_default",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_does_not_hide_stream_errors_after_tool_calls",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_in_progress_turn_uses_captured_history::legacy",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_in_progress_turn_uses_captured_history::paginated",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_in_progress_turn_uses_captured_history::paginated_after_mid_turn_compaction",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_legacy_turnstatus_failed_false_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_legacy_turnstatus_completed_false_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_legacy_turnstatus_failed_true_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_legacy_turnstatus_completed_true_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_legacy_turnstatus_interrupted_false_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_legacy_turnstatus_interrupted_true_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_paginated_turnstatus_completed_false_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_paginated_turnstatus_completed_true_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_paginated_turnstatus_failed_false_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_paginated_turnstatus_failed_true_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_paginated_turnstatus_interrupted_true_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_context_and_keeps_source_unchanged::threadhistorymode_paginated_turnstatus_interrupted_false_expects",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_effort_baseline::increasing_effort_without_parent_overrides",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_effort_baseline::increasing_pinned_effort",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_effort_baseline::parent_overrides_disabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_preserves_effort_baseline::pinned_parent",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_rejects_invalid_sources_and_prompts",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_returns_null_for_custom_tool_calls",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_skips_inherited_stop_hooks",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_wait_keeps_parent_responsive_and_reclaims_child::cancel",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::unsupported_effort_updates_keep_inherited_effort::unsupported_model",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::unsupported_effort_updates_keep_inherited_effort::unsupported_provider",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::thread_sample::sample_wait_keeps_parent_responsive_and_reclaims_child::timeout",
+      "status": "ok"
+    },
+    {
+      "name": "cmd_script::tests::preserves_quotes_in_the_hash_command",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_and_layout::daybreak_refusal_offers_enable_for_the_next_turn",
+      "status": "failed"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-corrected-source-native.sh",
+      "sha256": "5b5045cd13318f9658289c553c95cc09a6f4568d8c3b9c29e57e03e291824b0f"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-corrected-source-native.log",
+      "sha256": "03c11042257fcf7417d3fd0aa71376442cd89e1d18cc6cbd8a97d3a332db80f6"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-corrected-source-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Controller80055 terminal1 completed all eight selections: suite summaries report97 passed/one failed. Only91 successful test lines parse individually because concurrent debug output interleaves six names; no per-name validation is claimed for those six. Daybreak expects obsolete Upload logs? label; actual ALab consent header is Include logs and session history? with save-ZIP disclosure. Correction4b2b5da419 changes only expected label and remains unverified. Includes31 thread-sampling,48 MCP startup,8 GCP and portable Windows command-string tests; no native Windows, live Cloud service, full gate or adoption qualification."
+}

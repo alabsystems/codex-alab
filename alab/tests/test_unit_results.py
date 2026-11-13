@@ -428,6 +428,73 @@ class UnitResultsTests(unittest.TestCase):
                 self.assertNotEqual(process.returncode, 0)
                 self.assertEqual(self.candidate.calls("a"), 0)
 
+    def test_same_size_artifact_rewrite_with_restored_mtime_refuses_before_exec(self):
+        tree = Tree(self.base, "same-size-rewrite", targets={"a": "custom_a"})
+        tree.set_behavior(a="ok")
+        control, prepared = self.prepare(tree, "unchanged-control")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        log, status = self.execute(tree, control, names=("a",))
+        self.assertEqual(status, 0, log.read_text())
+        self.assertIn(b"fixture executed", log.read_bytes())
+        collected, _result = self.collect(control, log, status)
+        self.assertEqual(collected.returncode, 0, collected.stderr)
+        self.assertEqual(tree.calls("a"), 1)
+
+        state, prepared = self.prepare(tree, "rewritten-artifact")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        binary = tree.binaries["a"]
+        stored = json.loads((state / "state.json").read_text())["libraries"][0]["snapshot"]
+        before = binary.stat()
+        self.assertEqual(stored, [before.st_dev, before.st_ino, before.st_size,
+                                  before.st_mtime_ns, before.st_ctime_ns])
+        original = binary.read_bytes()
+        self.assertEqual(original.count(b"fixture executed"), 1)
+        rewritten = original.replace(b"fixture executed", b"changed executed")
+        self.assertEqual(len(rewritten), len(original))
+        self.assertNotEqual(rewritten, original)
+        deadline = time.monotonic() + 3
+        while True:
+            binary.write_bytes(rewritten)
+            os.utime(binary, ns=(before.st_atime_ns, before.st_mtime_ns))
+            after = binary.stat()
+            if after.st_ctime_ns != before.st_ctime_ns:
+                break
+            self.assertLess(time.monotonic(), deadline, "filesystem did not expose a ctime change")
+            time.sleep(0.01)
+        self.assertEqual(after.st_atime_ns, before.st_atime_ns)
+        observed = [after.st_dev, after.st_ino, after.st_size,
+                    after.st_mtime_ns, after.st_ctime_ns]
+        self.assertEqual(observed[:4], stored[:4], "the previous four-field check would miss this rewrite")
+        self.assertNotEqual(observed[4], stored[4], "ctime must expose the actual rewrite")
+
+        cwd = tree.root / "codex-rs/a"
+        refused = self.command("run", "--state", state, binary, cwd=cwd,
+                               env=dict(os.environ, CARGO_MANIFEST_DIR=str(cwd)))
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn(b"unit-test artifact changed after Cargo preparation", refused.stderr)
+        self.assertNotIn(b"changed executed", refused.stdout)
+        self.assertEqual(tree.calls("a"), 1, "the rewritten artifact must never execute")
+        self.assertEqual(list(state.glob("library-*.json")), [])
+
+    def test_legacy_four_field_artifact_snapshots_refuse_before_exec(self):
+        tree = Tree(self.base, "legacy-artifact", targets={"a": "custom_a"})
+        tree.set_behavior(a="ok")
+        state, prepared = self.prepare(tree, "legacy-state")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        path = state / "state.json"
+        document = json.loads(path.read_text())
+        for library in document["libraries"]:
+            self.assertEqual(len(library["snapshot"]), 5)
+            library["snapshot"] = library["snapshot"][:4]
+        path.write_text(json.dumps(document))
+        cwd = tree.root / "codex-rs/a"
+        refused = self.command("run", "--state", state, tree.binaries["a"], cwd=cwd,
+                               env=dict(os.environ, CARGO_MANIFEST_DIR=str(cwd)))
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn(b"invalid length", refused.stderr)
+        self.assertEqual(tree.calls("a"), 0)
+        self.assertEqual(list(state.glob("library-*.json")), [])
+
     def test_metadata_artifact_and_original_source_guards(self):
         plan = self.original()
         for change in ("workspace", "source", "artifact-package", "target", "version"):

@@ -322,6 +322,12 @@ impl ChatWidget {
         None
     }
 
+    pub(crate) fn has_unsent_input(&self) -> bool {
+        !self.composer_is_empty()
+            || self.pending_image_submission.is_some()
+            || self.has_queued_follow_up_messages()
+    }
+
     pub(crate) fn has_queued_follow_up_messages(&self) -> bool {
         self.input_queue.has_queued_follow_up_messages()
     }
@@ -443,7 +449,7 @@ impl ChatWidget {
         self.finalize_turn();
         self.add_to_history(history_cell::new_cyber_policy_error_event(notice));
         if notice == crate::daybreak::Notice::Disabled
-            && !self.alab_keep_policy_offer_non_modal() // ALAB(recovery): preserve access while the harness advances permitted work.
+            && !self.alab_autonomous_root_active() // ALAB(recovery): preserve access while the harness advances permitted work.
             && !self.thread_usage.replaying_turn_completion
             && !self.blocks_direct_input
             && let Some(thread_id) = self.thread_id

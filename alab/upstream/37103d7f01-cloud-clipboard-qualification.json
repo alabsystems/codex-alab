@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T17:34:02.067206+00:00",
+  "source": "ecd1195d68016f5550a45f7ae8eed8c51b324c6e",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "clipboard_copy::worker::tests::cloud_config_completion_does_not_wait_for_the_clipboard",
+      "status": "ok"
+    },
+    {
+      "name": "clipboard_copy::worker::tests::cloud_handoff_keeps_an_owned_clipboard_read_until_completion_or_input",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::composer_submission::handoff_image_survives_model_rejection_and_submission_failure",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::reconnect::tests::draft_handoff_preserves_newline_after_short_unicode_prefix",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::reconnect::tests::handoff_edit_discards_stale_command_before_ordinary_enter",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-cloud-clipboard-native.sh",
+      "sha256": "f545919a42bd9ab31227448f8347fcd53db465ae965b835c29886965ac46cabf"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-cloud-clipboard-native.log",
+      "sha256": "e9df3122abe329632d983bee91606c1aeafc6460632c1097e6c56807eecb6ebe"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-cloud-clipboard-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Controller72462 terminal0 exact formatted cookie source. Five nonempty targeted tests passed: Cloud config completion while clipboard remains blocked, owned clipboard completion/cancellation across handoff, image retention after unsupported model or rejected submission, Unicode paste newline retention, and stale command dismissal before ordinary Enter. Complements73 native Cloud contracts; does not qualify actual OS clipboard providers on every platform, live Cloud authentication/credential retirement or final composed main/adoption."
+}

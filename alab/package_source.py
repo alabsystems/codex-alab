@@ -18,11 +18,14 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import secrets
 import stat
 import subprocess
 import sys
 import tempfile
+
+validate_ident = runpy.run_path(str(Path(__file__).resolve().with_name("source_content.py")))["validate_ident"]
 
 
 GUARD_ENV = "ALAB_PACKAGE_SOURCE_GUARD"
@@ -136,7 +139,9 @@ def repository_environment():
             or any(not re.fullmatch(r"GIT_[A-Z0-9_]+", name) for name in names)):
         raise ValueError("Git did not provide bounded repository-local environment names")
     # Command-scoped caller configuration is still ordinary Git configuration.
-    return frozenset(name for name in names if not name.startswith("GIT_CONFIG"))
+    # GIT_CONFIG alone redirects only `git config`, hiding settings that other
+    # Git commands still use. Keep enumeration and execution on the same inputs.
+    return frozenset(name for name in names if not name.startswith("GIT_CONFIG")) | {"GIT_CONFIG"}
 
 
 def git_environment(overrides=None):
@@ -255,15 +260,11 @@ def validate_binding(record, *, clean=True, before_checkout=False):
     if metadata(entry) != record.get("metadata"):
         raise ValueError("source Git metadata changed outside its custody")
     detached(source)
-    # Status/checkout can trust assume-unchanged or skip-worktree entries. Do not
-    # move away from a source whose user has asked Git to ignore its file changes.
-    if any(row and not row.startswith("H ") for row in git(source, "ls-files", "-v", "-z").split("\0")):
-        raise ValueError("source index suppresses file-change detection")
     if before_checkout:
         if (entry / "index").exists():
             raise ValueError("new source acquired an index before checkout")
-    elif git(source, "diff", "--cached", "--name-only", "--no-ext-diff", "--no-textconv", record["commit"], "--"):
-        raise ValueError("source index holds staged work")
+    else:
+        validate_index(source, record["commit"])
     if clean and fresh_status(source, record["commit"]):
         raise ValueError("source holds tracked, untracked or ignored work")
     unchanged_binding(record)
@@ -280,11 +281,8 @@ def unchanged_binding(record):
         raise ValueError("source custody changed during Git validation")
 
 
-def remove_fresh(record, source):
-    # Removal runs its own status after validation. Suppress every configured
-    # external clean/process filter there, so no second callback can add owner
-    # work after the final metadata check. A transformed worktree that needs its
-    # filter to appear clean will instead be refused and retained by normal Git.
+def external_filter_config(source):
+    """Suppress external conversion without changing builtin Git text handling."""
     keys = git(source, "config", "--name-only", "--null", "--list")
     if len(os.fsencode(keys)) > MAX_BYTES or keys and not keys.endswith("\0"):
         raise ValueError("Git filter configuration is unbounded or not NUL-framed")
@@ -292,21 +290,94 @@ def remove_fresh(record, source):
     for key in keys.split("\0")[:-1]:
         if not key:
             raise ValueError("Git configuration has an ambiguous empty key")
-        match = re.fullmatch(r"(filter\..*)\.(?:clean|process|required)", key, re.DOTALL)
+        match = re.fullmatch(r"(filter\.(.*))\.(?:clean|smudge|process|required)", key, re.DOTALL)
         if match:
-            if "=" in match[1]:
-                raise ValueError("Git filter key cannot be safely overridden for removal")
+            if not match[2] or "=" in match[1]:
+                raise ValueError("Git filter driver cannot be safely overridden")
             drivers.add(match[1])
     options = []
     for driver in sorted(drivers):
-        options.extend(("-c", driver + ".clean=", "-c", driver + ".process=",
+        options.extend(("-c", driver + ".clean=", "-c", driver + ".smudge=", "-c", driver + ".process=",
                         "-c", driver + ".required=false"))
+    return tuple(options)
+
+
+def remove_fresh(record, source):
+    # A parent receipt has no child creation/removal custody. Git's own final
+    # status overlooks files under an uninitialized gitlink, even with ignore=none.
+    if committed_gitlinks(source, record["commit"]):
+        raise ValueError("source gitlinks have no child cleanup custody")
+    # Removal runs its own status after validation. Suppress every configured
+    # external clean/process filter there, so no second callback can add owner
+    # work after the final metadata check. A transformed worktree that needs its
+    # filter to appear clean will instead be refused and retained by normal Git.
+    options = external_filter_config(source)
     unchanged_binding(record)
-    git(record["common"], *options, "worktree", "remove", "--", str(source))
+    # Match validation's mode and symlink checks in Git's final removal safeguard.
+    git(record["common"], "-c", "core.filemode=true", "-c", "core.symlinks=true", *options,
+        "worktree", "remove", "--", str(source))
 
 
-def fresh_status(source, commit, *, nul=False):
+def validate_index(source, commit):
+    # Status/checkout can trust assume-unchanged or skip-worktree entries. Do not
+    # move away from a source whose user has asked Git to ignore its file changes.
+    if any(row and not row.startswith("H ") for row in git(source, "ls-files", "-v", "-z").split("\0")):
+        raise ValueError("source index suppresses file-change detection")
+    if git(source, "diff", "--cached", "--ita-visible-in-index", "--ignore-submodules=none",
+           "--name-only", "--no-ext-diff", "--no-textconv", commit, "--"):
+        raise ValueError("source index holds staged work")
+
+
+def committed_gitlinks(source, commit):
+    children = []
+    for row in git(source, "ls-tree", "-r", "-z", commit).split("\0"):
+        if not row:
+            continue
+        header, name = row.split("\t", 1)
+        mode, kind, identity = header.split()
+        if mode == "160000":
+            path = Path(name)
+            if (kind != "commit" or not COMMIT.fullmatch(identity) or path.is_absolute()
+                    or not path.parts or any(part in (".", "..") for part in path.parts)):
+                raise ValueError("source has an invalid committed gitlink")
+            children.append((path, identity))
+    return children
+
+
+def validate_gitlinks(source, commit, parents):
+    for relative, identity in committed_gitlinks(source, commit):
+        child = source
+        for part in relative.parts:
+            child = child / part
+            try:
+                directory(child)
+            except FileNotFoundError:
+                break
+        else:
+            if not any(child.iterdir()):
+                continue  # An ordinary checkout leaves an empty uninitialized directory.
+            marker = child / ".git"
+            try:
+                info = marker.lstat()
+            except FileNotFoundError:
+                raise ValueError("uninitialized source gitlink contains unowned files") from None
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                raise ValueError("source gitlink has no real Git marker")
+            if (Path(git(child, "rev-parse", "--show-toplevel")).resolve(strict=True) != child
+                    or git(child, "rev-parse", "--verify", "HEAD^{commit}") != identity):
+                raise ValueError("source gitlink differs from its committed child")
+            validate_index(child, identity)
+            if fresh_status(child, identity, parents=parents):
+                raise ValueError("source gitlink contains tracked, untracked or ignored work")
+
+
+def fresh_status(source, commit, *, nul=False, parents=frozenset()):
     """Read worktree content against a fresh index, never cached stat/monitor validity."""
+    source = Path(source).resolve(strict=True)
+    if source in parents:
+        raise ValueError("source gitlinks form a cycle")
+    validate_gitlinks(source, commit, parents | {source})
+    options = external_filter_config(source)
     scratch = Path(tempfile.mkdtemp(prefix="alab-source-index-", suffix=".noindex"))
     index = scratch / "index"
     captured = None
@@ -318,9 +389,12 @@ def fresh_status(source, commit, *, nul=False):
                 or info.st_mode & 0o022 or info.st_nlink != 1):
             raise ValueError("validation index is not an exact owned file")
         captured = stamp_info(info)
+        validate_ident(source, commit, env=git_environment(environment), filter_config=options)
         args = ("-z",) if nul else ()
-        return git(source, "-c", "core.splitIndex=false", "status", "--porcelain=v1",
-                   "--untracked-files=all", "--ignored", *args, env=environment)
+        return git(source, *options, "-c", "core.splitIndex=false", "-c", "core.filemode=true",
+                   "-c", "core.symlinks=true",
+                   "status", "--porcelain=v1",
+                   "--untracked-files=all", "--ignored", "--ignore-submodules=all", *args, env=environment)
     finally:
         # Remove only the exact unchanged index Git wrote. Any extra/replaced
         # scratch state is retained, never swept up by recursive cleanup.

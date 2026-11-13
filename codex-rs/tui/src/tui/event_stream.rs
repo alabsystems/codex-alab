@@ -129,14 +129,15 @@ impl<S: EventSource + Default> EventBroker<S> {
 /// Real crossterm-backed event source.
 pub struct CrosstermEventSource {
     #[cfg(not(windows))]
-    events: alab_kitty_replies::KittyReplies<crossterm::event::EventStream>, // ALAB(pet-perf): aterm's kitty graphics replies are no keys
+    events: alab_kitty_replies::KittyReplies<alab_kitty_replies::Input>, // ALAB(pet-perf): aterm's kitty graphics replies are no keys
     #[cfg(windows)]
     events: super::windows_key_sequence::WindowsKeySequence<crossterm::event::EventStream>,
 }
 
 impl Default for CrosstermEventSource {
     fn default() -> Self {
-        let events = crossterm::event::EventStream::new();
+        #[cfg(not(windows))] let events = alab_kitty_replies::Input::new(); // ALAB(upgrade-input): the ALab binary owns a joined reader and persistent parser.
+        #[cfg(windows)] let events = crossterm::event::EventStream::new();
         Self {
             #[cfg(not(windows))]
             events: alab_kitty_replies::KittyReplies::new(events), // ALAB(pet-perf): aterm's kitty graphics replies are no keys

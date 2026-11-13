@@ -111,6 +111,7 @@ async fn interrupted_redemption(automatic_timeout: bool, natural_reset: bool) {
             "turn",
             Duration::from_millis(10),
             natural_reset.then(|| chrono::Utc::now().timestamp() + 3),
+            None,
         );
         tokio::pin!(recovering);
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -157,6 +158,7 @@ async fn interrupted_redemption(automatic_timeout: bool, natural_reset: bool) {
                     owner,
                     "next-turn",
                     Duration::from_millis(10),
+                    None,
                     None
                 )
             )

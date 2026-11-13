@@ -36,7 +36,8 @@ class DailyTests(unittest.TestCase):
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
         scripts = self.repo / "alab"
         scripts.mkdir()
-        for name in ["daily.sh", "lib.sh", "retention.py"]:
+        for name in ["daily.sh", "lib.sh", "retention.py", "pristine_state.py",
+                     "qualification.py", "upstream_intake.py", "source_content.py"]:
             shutil.copyfile(ROOT / "alab" / name, scripts / name)
         self.sync = self.repo / sync_name
         self.git("worktree", "add", "-q", "--detach", str(self.sync), "HEAD")
@@ -122,7 +123,8 @@ class DailyTests(unittest.TestCase):
     def test_reap_and_tidy_keep_every_common_marker_kind_from_a_linked_worktree(self):
         scripts = self.sync / "alab"
         scripts.mkdir()
-        for name in ["daily.sh", "lib.sh", "retention.py"]:
+        for name in ["daily.sh", "lib.sh", "retention.py", "pristine_state.py",
+                     "qualification.py", "upstream_intake.py", "source_content.py"]:
             shutil.copyfile(ROOT / "alab" / name, scripts / name)
         marker = self.repo / ".git/alab-preserve-builds"
         for kind in ["file", "directory", "dangling-symlink"]:

@@ -132,6 +132,7 @@ fn metadata(chat: &ChatWidget) -> [ServerNotification; 5] {
                 thread_settings: codex_app_server_protocol::ThreadSettings {
                     disabled_plugin_ids: Vec::new(),
                     cwd: chat.config.cwd.clone(),
+                    environments: None,
                     approval_policy: codex_app_server_protocol::AskForApproval::OnRequest,
                     approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::AutoReview,
                     sandbox_policy: codex_app_server_protocol::SandboxPolicy::ReadOnly {

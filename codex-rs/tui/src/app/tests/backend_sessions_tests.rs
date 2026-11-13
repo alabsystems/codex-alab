@@ -298,7 +298,7 @@ async fn backend_sessions_poll_three_sources_and_isolate_closed_or_paused_stream
             Duration::from_secs(5),
             backends.next_event(/*paused_backend*/ None),
         )
-        .await?;
+        .await.map_err(|error| codex_alab_tui::test_tasks::proxy_closure_timeout(error, proxies[0].is_finished()))?; // ALAB(test): report whether proxy cancellation finished before the existing EOF deadline.
         assert_eq!(owner, owners[0]);
         if event.is_none() {
             break;

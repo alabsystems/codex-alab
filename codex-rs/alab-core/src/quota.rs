@@ -4,6 +4,8 @@
 //! Causal, account-bound evidence from accepted full usage reads. No credentials or polling.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -19,6 +21,71 @@ pub struct HeadlessExec;
 /// the member a root or authorize replacing any turn or selecting an account.
 #[derive(Clone, Copy, Debug)]
 pub struct ExecQuotaMember;
+
+/// Which of the account's own usage windows a creditless wall has spent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpentWindow {
+    /// The seven-day allowance.
+    Week,
+    /// The five-hour allowance, on a week that is not spent.
+    FiveHour,
+}
+
+/// A usage wall no earned credit can lift, as the walled request's own fresh
+/// usage read shows it. `resets_at` is the moment that window resets (seconds
+/// since the Unix epoch), as the read names it: a host that leaves only walls
+/// far enough from their reset is judged against its bound with the time left
+/// when it is asked ([`SpentWall::resets_in`]), not when the usage was read.
+/// The requests between the two (the credit list, the host's policy) take
+/// time, and a relative figure would be that much too long by then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpentWall {
+    pub window: SpentWindow,
+    pub resets_at: i64,
+}
+
+impl SpentWall {
+    /// The time left to the reset at `now` (seconds since the Unix epoch);
+    /// zero once it has come.
+    pub fn resets_in(&self, now: i64) -> Duration {
+        Duration::from_secs(u64::try_from(self.resets_at.saturating_sub(now)).unwrap_or(0))
+    }
+}
+
+type HandoffProbe = dyn Fn(SpentWall) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync;
+
+/// Installed in a root turn's store by a host that can move the conversation to
+/// another account once that turn ends at a usage wall. Quota recovery tells it
+/// which wall and asks only whether ending the walled turn now would be
+/// followed by such a move. It grants no execution, spends no credit and
+/// selects no account; the host re-checks everything after the turn ends.
+pub struct WallHandoff {
+    probe: Box<HandoffProbe>,
+}
+
+impl WallHandoff {
+    /// A host that does not answer in time is not ready: the caller keeps its
+    /// own wait rather than hold the original request on the host.
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+    pub fn new<F, Fut>(probe: F) -> Self
+    where
+        F: Fn(SpentWall) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = bool> + Send + 'static,
+    {
+        Self {
+            probe: Box::new(move |wall| Box::pin(probe(wall))),
+        }
+    }
+
+    /// Advisory and evaluated while the turn still runs. A stale answer costs
+    /// either one more poll or an ordinary usage-wall wait, never a credit.
+    pub async fn ready(&self, wall: SpentWall) -> bool {
+        tokio::time::timeout(Self::PROBE_TIMEOUT, (self.probe)(wall))
+            .await
+            .unwrap_or(false)
+    }
+}
 
 /// Persisted identity, bucket and denial history; never live permission.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -310,6 +377,83 @@ impl Quota {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn wall_handoff_probe_is_bounded() {
+        let week = SpentWall {
+            window: SpentWindow::Week,
+            resets_at: 1_800_000_000,
+        };
+        let started = tokio::time::Instant::now();
+        let silent = WallHandoff::new(|_| std::future::pending::<bool>());
+        assert!(
+            !silent.ready(week).await,
+            "a host that never answers is not ready"
+        );
+        assert_eq!(started.elapsed(), WallHandoff::PROBE_TIMEOUT);
+        let slow = WallHandoff::new(|_| async {
+            tokio::time::sleep(WallHandoff::PROBE_TIMEOUT - Duration::from_millis(1)).await;
+            true
+        });
+        assert!(
+            slow.ready(week).await,
+            "an answer inside the bound is taken"
+        );
+        assert!(!WallHandoff::new(|_| async { false }).ready(week).await);
+    }
+
+    /// The host is told the wall the request stands at, unchanged: its answer
+    /// may depend on the window and on when the reset is.
+    #[tokio::test]
+    async fn wall_handoff_probe_is_told_the_wall() {
+        let five_hour = SpentWall {
+            window: SpentWindow::FiveHour,
+            resets_at: 1_800_007_200,
+        };
+        let only_that = WallHandoff::new(move |wall| async move { wall == five_hour });
+        assert!(only_that.ready(five_hour).await);
+        assert!(
+            !only_that
+                .ready(SpentWall {
+                    window: SpentWindow::Week,
+                    ..five_hour
+                })
+                .await
+        );
+        assert!(
+            !only_that
+                .ready(SpentWall {
+                    resets_at: 1_800_007_199,
+                    ..five_hour
+                })
+                .await
+        );
+    }
+
+    /// The time left to a wall's reset is measured when it is asked for, so a
+    /// wall read a while ago is that much nearer its reset.
+    #[test]
+    fn a_spent_walls_time_to_reset_is_measured_when_asked() {
+        let wall = SpentWall {
+            window: SpentWindow::FiveHour,
+            resets_at: 1_800_000_965,
+        };
+        assert_eq!(wall.resets_in(1_800_000_000), Duration::from_secs(965));
+        assert_eq!(wall.resets_in(1_800_000_040), Duration::from_secs(925));
+        assert_eq!(wall.resets_in(1_800_000_964), Duration::from_secs(1));
+        // At and past the reset nothing is left, whatever the clocks say.
+        for now in [1_800_000_965, 1_800_000_966, i64::MAX] {
+            assert_eq!(wall.resets_in(now), Duration::ZERO, "{now}");
+        }
+        let never = SpentWall {
+            resets_at: i64::MAX,
+            ..wall
+        };
+        assert_eq!(
+            never.resets_in(i64::MIN),
+            Duration::from_secs(i64::MAX.unsigned_abs())
+        );
+    }
 
     #[test]
     fn subscription_recovery_requires_a_fresh_same_account_transition() {

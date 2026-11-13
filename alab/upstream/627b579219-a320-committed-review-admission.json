@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "kind": "committed-upstream-review-admission",
+  "base": "9c18d72ba68b8e2aabbbef638ba4d0971f7e4934",
+  "source": "a320af803b49daf8a51361b965c5754e996442d0",
+  "integrated_upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "commits": 426,
+  "reviewed": 426,
+  "missing": [],
+  "errors": [],
+  "limits": "Committed review declarations only; semantic review quality, runtime qualification, publication and adoption remain separate."
+}

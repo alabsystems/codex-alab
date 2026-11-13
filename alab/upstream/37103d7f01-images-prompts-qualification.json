@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:22:39.645792+00:00",
+  "source": "99267e4a643b23ea5a7ebda1485edee85ad0d40c",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "clipboard_paste::macos::tests::tiff_item_precedes_later_png",
+      "status": "ok"
+    },
+    {
+      "name": "clipboard_paste::macos::tests::jpeg_item_precedes_later_png",
+      "status": "ok"
+    },
+    {
+      "name": "image_decode::tests::rejects_images_larger_than_the_pixel_budget",
+      "status": "ok"
+    },
+    {
+      "name": "image_decode::tests::decodes_images_in_display_orientation",
+      "status": "ok"
+    },
+    {
+      "name": "manifest::tests::plugin_interface_normalizes_default_prompt_array",
+      "status": "ok"
+    },
+    {
+      "name": "discoverable::tests::discovery_warns_once_per_invalid_manifest",
+      "status": "ok"
+    }
+  ],
+  "summaries": [
+    "ok. 2 passed; 0 failed; 0 ignored; 0 measured; 6346 filtered out; finished in 0.03s",
+    "ok. 2 passed; 0 failed; 0 ignored; 0 measured; 6346 filtered out; finished in 0.00s",
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 506 filtered out; finished in 0.00s",
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 506 filtered out; finished in 0.07s"
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-images-prompts-native.sh",
+      "sha256": "170526de1446dbcf471df1d303177802e27fce5fd51725e6a2c02f14b1929a34"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-images-prompts-native.log",
+      "sha256": "e17531295d00566c7e4142ffe36a124a7633dd143b8c3470ed0f13197a5e49fe"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-images-prompts-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Four nonempty helper-admitted selections; six passed, zero failed or ignored. Native macOS pasteboard ITEM fixtures check representation order without reading or changing system clipboard. PNG/JPEG orientation fixture checks absent and all eight EXIF orientations; pixel budget rejects oversized allocation. Plugin fixtures check Unicode prompt limit normalization and invalid-manifest discovery warning. No interactive clipboard, complete discovery permission integration, full gate, platform parity, complete intake, remote landing or adoption claim."
+}

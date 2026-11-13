@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "kind": "native-full-gate-observation",
+  "observed_at": "2026-11-10T15:07:35.291270+00:00",
+  "source": "a4cc18a6411f8ccd2fa92e4bed3f1148def68d47",
+  "upstream": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "command": "alab/check.sh",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "tree": "9e3ecca1051a2231f7a9ed4fce5f5904f77e5f43b0f9dd18da59204efe3040bb",
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "reviewed_structural_hook_loss": {
+    "enabled": true,
+    "topics": [
+      "core-test-fixtures",
+      "exec-tree",
+      "startup-test-fixture"
+    ],
+    "decision": "alab/upstream/c875667eb8-resolution.md"
+  },
+  "results": {
+    "selected_upstream_libraries": 37,
+    "candidate_failed_copies": 17,
+    "isolated_candidate_failed_copies": 17,
+    "pristine_failed_copies": 17,
+    "pristine_executed_copies": 17,
+    "alab_owned_ignored_tests": 4,
+    "alab_tippy_diagnostics": 0,
+    "upstream_tippy_diagnostics_set_aside": 40
+  },
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-gate-b32ada5320-a4cc18a641-native.log",
+      "sha256": "ac98ac496008e174ef5790a9c8f4627e4f00b13b08f3f1ef88fcdd38c1025e1b"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-b32ada5320-a4cc18a641/unit-main.json",
+      "sha256": "f0e39ca8061266e1da42fed1a44830e9b99c5294172dede4d60e3d73bae9df1f"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-b32ada5320-a4cc18a641/unit-alone.json",
+      "sha256": "81ef556980ac88abf0b9d3cdf399f77aa24fd42689e52510ce304021198cea4a"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-b32ada5320-a4cc18a641/unit-pristine.json",
+      "sha256": "81ef556980ac88abf0b9d3cdf399f77aa24fd42689e52510ce304021198cea4a"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-b32ada5320-a4cc18a641/unit.log",
+      "sha256": "2d7afe19f7397c690f1d45d3f010e43b76ee85b3a73d12dd66fbc930fea0d4ec"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-b32ada5320-a4cc18a641/alone.log",
+      "sha256": "bbf6391441c1c93a527c552533734439eb93e2f38ddb04a41797712375f756fa"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-b32ada5320-a4cc18a641/pristine.log",
+      "sha256": "66acd75138e688a34bf9eccf25f19966570bc57762d7bba5d62f0136e88bfefa"
+    }
+  ],
+  "limits": "Actual check.sh terminal exit 0 observed through exec session 31595; exit sidecar also 0. CLI built and ran, owned tests completed, ALab Tippy clean (40 upstream diagnostics set aside). Seventeen failed library copies reproduced on pristine upstream by the existing comparator; they remain failures. Existing ignored tests remain ignored. Reviewed structural marker losses admitted without a runtime boundary waiver. This qualifies exact source a4cc18a641 only, including gateway RequestRecovery changes but before typed auth-pair changes and upstream 37103d7f01. It does not prove complete intake, semantic feature contracts, live entitlement, Windows runtime, remote landing or installed adoption."
+}

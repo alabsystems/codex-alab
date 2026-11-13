@@ -317,6 +317,14 @@ pub async fn credential_action(
         .await
         .unwrap_or(false)
 }
+/// Keep a selected credential operation and its source alive through actual completion.
+/// This grants no destination permission; the operation must use its admitted runner.
+pub async fn credential_operation<T: Send + 'static>(
+    policy: NetworkPolicy,
+    operation: impl Future<Output = T> + Send + 'static,
+) -> Result<T, AuthError> {
+    owned_with_policy(policy, operation, true).await
+}
 /// A concrete destination lease for a handshake. The bound factory's real
 /// socket permit takes over before this scope ends; this is not a source seal.
 pub struct DestinationLease(Option<Arc<Guard>>);

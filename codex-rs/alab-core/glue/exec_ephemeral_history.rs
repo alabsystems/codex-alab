@@ -15,7 +15,6 @@ use codex_thread_store::ThreadStoreError;
 use codex_thread_store::ThreadStoreResult;
 use serde::Deserialize;
 use serde::Serialize;
-use std::sync::Arc;
 use std::sync::Mutex;
 
 #[path = "exec_memory_codec.rs"]
@@ -58,15 +57,25 @@ impl ExecEphemeralHistory {
         thread: codex_protocol::ThreadId,
         turn: &str,
     ) -> Result<crate::StartThreadOptions, String> {
-        self.prepare_start_for(options, thread, Some(turn))
+        self.prepare_start_for(options, thread, Some(turn), true)
     }
 
-    pub(crate) fn prepare_idle_start(
+    pub fn prepare_idle_start(
         self,
         options: crate::StartThreadOptions,
         thread: codex_protocol::ThreadId,
     ) -> Result<crate::StartThreadOptions, String> {
-        self.prepare_start_for(options, thread, None)
+        self.prepare_start_for(options, thread, None, true)
+    }
+
+    /// Restore idle memory under the destination host's ordinary startup policy.
+    /// No source data grants headless-exec identity or turn admission.
+    pub fn prepare_idle_runtime_start(
+        self,
+        options: crate::StartThreadOptions,
+        thread: codex_protocol::ThreadId,
+    ) -> Result<crate::StartThreadOptions, String> {
+        self.prepare_start_for(options, thread, None, false)
     }
 
     fn prepare_start_for(
@@ -74,6 +83,7 @@ impl ExecEphemeralHistory {
         mut options: crate::StartThreadOptions,
         thread: codex_protocol::ThreadId,
         turn: Option<&str>,
+        exec: bool,
     ) -> Result<crate::StartThreadOptions, String> {
         if !options.config.ephemeral
             || options.reserved_thread_id.is_some()
@@ -91,8 +101,10 @@ impl ExecEphemeralHistory {
                 history_revision: None,
                 rollout_path: None,
             });
-        options.thread_extension_init.insert(HeadlessExec);
-        options.turn_extension_init.insert(HeadlessExec);
+        if exec {
+            options.thread_extension_init.insert(HeadlessExec);
+            options.turn_extension_init.insert(HeadlessExec);
+        }
         options
             .thread_extension_init
             .insert(RestoreContext(context));
@@ -180,6 +192,15 @@ impl crate::CodexThread {
 
 struct RestoreContext(crate::context_manager::PreparedExecContext);
 
+// This marker records explicit ephemeral configuration, never exec admission.
+struct EphemeralMemoryOwner;
+
+pub(crate) fn prepare_owner(ephemeral: bool, init: &mut codex_extension_api::ExtensionDataInit) {
+    if ephemeral {
+        init.insert(EphemeralMemoryOwner);
+    }
+}
+
 pub(crate) async fn restore_context_if_pending(session: &Session) {
     // This existing startup boundary runs before any task starts. Establish
     // empty history here for never-started idle members, never during capture.
@@ -198,7 +219,11 @@ pub(crate) async fn restore_context_if_pending(session: &Session) {
         .thread_extension_data
         .remove::<RestoreContext>()
     {
-        session.state.lock().await.history = context.0.bind(Arc::clone(&session.item_id_generator));
+        let mut state = session.state.lock().await;
+        state.history = context.0.clone().install(
+            std::sync::Arc::clone(&session.item_id_generator),
+            &state.history,
+        );
     }
 }
 
@@ -216,8 +241,22 @@ pub(crate) fn record(session: &Session, items: &[RolloutItem]) {
     record_items(&session.services.thread_extension_data, items);
 }
 
+/// Internal sessions may intentionally use an isolated extension registry. Their
+/// registered parent still owns the exec tree, so establish memory bookkeeping
+/// before startup records history. This grants neither root identity nor admission.
+pub(crate) fn inherit_internal_owner(
+    parent: &ExtensionData,
+    child: &mut codex_extension_api::ExtensionDataInit,
+) {
+    if parent.get::<HeadlessExec>().is_some() || parent.get::<ExecQuotaMember>().is_some() {
+        child.insert(ExecQuotaMember);
+    }
+}
+
 fn owns_memory_history(data: &ExtensionData) -> bool {
-    data.get::<HeadlessExec>().is_some() || data.get::<ExecQuotaMember>().is_some()
+    data.get::<EphemeralMemoryOwner>().is_some()
+        || data.get::<HeadlessExec>().is_some()
+        || data.get::<ExecQuotaMember>().is_some()
 }
 
 fn record_items(data: &ExtensionData, items: &[RolloutItem]) {
@@ -324,6 +363,27 @@ mod tests {
     use codex_protocol::models::ResponseItem;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::TurnStartedEvent;
+
+    #[test]
+    fn internal_memory_ownership_requires_an_exec_parent_without_granting_root_identity() {
+        for kind in [0, 1, 2, 3] {
+            let parent = ExtensionData::new("parent");
+            if kind == 1 {
+                parent.insert(HeadlessExec);
+            } else if kind == 2 {
+                parent.insert(ExecQuotaMember);
+            } else if kind == 3 {
+                parent.insert(EphemeralMemoryOwner);
+            }
+            let mut child = codex_extension_api::ExtensionDataInit::new();
+            inherit_internal_owner(&parent, &mut child);
+            assert_eq!(
+                child.get::<ExecQuotaMember>().is_some(),
+                matches!(kind, 1 | 2)
+            );
+            assert!(child.get::<HeadlessExec>().is_none());
+        }
+    }
 
     #[tokio::test]
     async fn missing_durable_writer_is_not_initialized_as_empty_ephemeral() {

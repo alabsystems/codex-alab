@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "kind": "native-full-gate-observation",
+  "observed_at": "2026-11-10T11:44:30.323946+00:00",
+  "source": "bccbcddbb2fdb27c6ceffead1c8b59a9e9e084a6",
+  "upstream": "6dfaca4dad030f5ecaf4925f210f539353b15594",
+  "command": "alab/check.sh",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "tree": "9e3ecca1051a2231f7a9ed4fce5f5904f77e5f43b0f9dd18da59204efe3040bb",
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "reviewed_structural_hook_loss": {
+    "enabled": true,
+    "topics": [
+      "core-test-fixtures",
+      "exec-tree",
+      "startup-test-fixture"
+    ],
+    "decision": "alab/upstream/c875667eb8-resolution.md:362"
+  },
+  "results": {
+    "selected_upstream_libraries": 37,
+    "candidate_failed_copies": 17,
+    "isolated_candidate_failed_copies": 17,
+    "pristine_failed_copies": 17,
+    "pristine_executed_copies": 17,
+    "alab_owned_ignored_tests": 4
+  },
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-gate-6dfaca4dad-bccbcddbb2-reviewed-native.log",
+      "sha256": "179af17c237c28e3ff6a9e1600fc434455930eef442eb89f2adb79201b99a3dd"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-6dfaca4dad-bccbcddbb2-reviewed/unit-main.json",
+      "sha256": "f0e39ca8061266e1da42fed1a44830e9b99c5294172dede4d60e3d73bae9df1f"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-6dfaca4dad-bccbcddbb2-reviewed/unit-alone.json",
+      "sha256": "81ef556980ac88abf0b9d3cdf399f77aa24fd42689e52510ce304021198cea4a"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-6dfaca4dad-bccbcddbb2-reviewed/unit-pristine.json",
+      "sha256": "81ef556980ac88abf0b9d3cdf399f77aa24fd42689e52510ce304021198cea4a"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-6dfaca4dad-bccbcddbb2-reviewed/unit.log",
+      "sha256": "fa0863b5a251592241e14e39f20850a06762ac7473e9f26c5e73b06818f0f873"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-6dfaca4dad-bccbcddbb2-reviewed/alone.log",
+      "sha256": "c2ed21e065eec3118f0b8b0f28a7aedb70564c22891585ce2458fb6a5bc1fa7f"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-6dfaca4dad-bccbcddbb2-reviewed/pristine.log",
+      "sha256": "1fafb4b68b4d58813823b0b23261b097ea362e215d659269aac6bd1bcb20b9d6"
+    }
+  ],
+  "limits": "Full check.sh passed on this exact source with committed lockfile. Seventeen upstream library failures were reproduced on pristine upstream by the existing package/artifact/context-aware comparator and are non-gating under the established gate; they are not passes. Four existing ignored ALab-owned tests remain ignored. Reviewed structural marker losses were explicitly admitted; runtime boundaries were not waived. This receipt does not prove complete intake, every semantic feature contract, live service eligibility, Windows runtime, remote main landing or installed adoption. Later commits require their own source/risk assessment."
+}

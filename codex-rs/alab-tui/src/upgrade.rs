@@ -12,11 +12,12 @@
 //!   `exec '<abs>' "$@"`) names the build it execs. Builds compare by file identity
 //!   (device, inode), never by version strings (CONTRACT §7). Anything unreadable names no
 //!   other build: no upgrade.
-//! - **The exec** ([`exec_plan`]): `execve(resumeArgv[0], resumeArgv, <launch environment>)`
+//! - **The exec** ([`PreparedExec`]): `execve(<admitted physical image>, resumeArgv, <launch environment>)`
 //!   from the launch cwd, `resumeArgv` rebuilt exactly as the session record's is (the
 //!   primary thread's rollout must exist). The launch environment is the one captured first
 //!   thing in `main`, before arg0 rewrote `PATH` and `.env` was merged; no variable is
 //!   added (the new image learns `execGeneration` from its own pid's record).
+//!   Native custody stays held through exec and is adopted by the next image's startup hook.
 //! - **Leave** ([`request`]): `exec_pending`, then the TUI's own `/exit`.
 //! - **Exec** ([`exec_after_teardown`], from `life::at_exit` once the record was rewritten
 //!   `status:"upgrading"`): MCP and other children get [`CHILDREN_GRACE`], then the exec
@@ -25,6 +26,8 @@
 
 use crate::resume_argv;
 use crate::session::rollout_materialized;
+use crate::upgrade_admission::Received;
+use crate::upgrade_exec_custody::ExecCustody;
 use codex_alab_core::session::Launch;
 use codex_alab_core::session::Shared;
 use std::ffi::CString;
@@ -36,6 +39,154 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
+
+#[cfg(test)]
+#[path = "upgrade_prepared_tests.rs"]
+mod prepared_tests;
+
+/// Native execution resources for owned test fixtures. This backend is absent
+/// from normal product builds and performs no signed-package admission.
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    use super::*;
+    use std::fs::File;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    /// The cached bit that controls the native header's update indicator.
+    pub fn update_is_pending() -> bool {
+        super::pending()
+    }
+
+    struct Preparation {
+        shared: &'static Shared,
+        count: AtomicUsize,
+    }
+
+    static PREPARATION_FIXTURE: Mutex<Option<Arc<Preparation>>> = Mutex::new(None);
+
+    /// Substitute only package admission for one exact fixture session.
+    /// The production build contains neither this registration nor its reader.
+    pub struct PreparationGuard(Arc<Preparation>);
+
+    impl PreparationGuard {
+        pub fn preparations(&self) -> usize {
+            self.0.count.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for PreparationGuard {
+        fn drop(&mut self) {
+            let mut fixture = PREPARATION_FIXTURE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if fixture
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &self.0))
+            {
+                *fixture = None;
+                let execution = self.0.shared.take_upgrade_execution();
+                drop(fixture);
+                drop(execution);
+            }
+        }
+    }
+
+    pub fn scoped_preparation(shared: &'static Shared) -> Result<PreparationGuard, String> {
+        let mut fixture = PREPARATION_FIXTURE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fixture.is_some() {
+            return Err("another fixture owns package preparation".into());
+        }
+        let preparation = Arc::new(Preparation {
+            shared,
+            count: AtomicUsize::new(0),
+        });
+        *fixture = Some(Arc::clone(&preparation));
+        Ok(PreparationGuard(preparation))
+    }
+
+    pub(super) fn prepare_if_registered(shared: &Shared) -> Option<Result<PreparedExec, String>> {
+        let preparation = PREPARATION_FIXTURE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|preparation| std::ptr::eq(preparation.shared, shared))
+            .cloned()?;
+        let prepared = prepare(preparation.shared);
+        if prepared.is_ok() {
+            preparation.count.fetch_add(1, Ordering::SeqCst);
+        }
+        Some(prepared)
+    }
+
+    pub struct Guard(pub &'static Shared);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            drop(self.0.take_upgrade_execution());
+        }
+    }
+    pub fn prepare(shared: &'static Shared) -> Result<PreparedExec, String> {
+        let plan = exec_plan(shared)?;
+        let image = named_build(&plan.path)
+            .ok_or("fixture image missing")?
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let root = image
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("fixture package root missing")?
+            .to_path_buf();
+        let (lease, lease_path) = tempfile::NamedTempFile::new_in(&root)
+            .map_err(|error| error.to_string())?
+            .keep()
+            .map_err(|error| error.to_string())?;
+        lease.try_lock().map_err(|error| error.to_string())?;
+        let image_file = File::open(&image).map_err(|error| error.to_string())?;
+        let i = image_file.metadata().map_err(|error| error.to_string())?;
+        let l = lease.metadata().map_err(|error| error.to_string())?;
+        let received = Received {
+            receipt: crate::upgrade_admission::Receipt {
+                protocol: 1,
+                program: "codex".into(),
+                build: 7,
+                version: "0.0.0".into(),
+                root,
+                executable: image,
+                tree_root: "a".repeat(64),
+                device: i.dev(),
+                inode: i.ino(),
+                size: i.len(),
+                modified_seconds: i.mtime(),
+                modified_nanoseconds: i.mtime_nsec(),
+                lease_path,
+                lease_device: l.dev(),
+                lease_inode: l.ino(),
+            },
+            lease,
+            image: image_file,
+        };
+        PreparedExec::finish(plan, received)
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn scoped_preparation_is_bound_and_cleared() {
+        let shared: &'static Shared = Box::leak(Box::new(Shared::new()));
+        let other = Shared::new();
+        let guard = scoped_preparation(shared).expect("register isolated fixture");
+        assert!(scoped_preparation(shared).is_err());
+        assert!(prepare_if_registered(&other).is_none());
+        assert!(prepare_if_registered(shared).is_some_and(|result| result.is_err()));
+        assert_eq!(guard.preparations(), 0);
+        assert!(shared.commit_upgrade_execution(Box::new(String::new), || true));
+        drop(guard);
+        assert!(prepare_if_registered(shared).is_none());
+        assert!(shared.take_upgrade_execution().is_none());
+    }
+}
 
 pub use codex_alab_core::session::UpgradeRequest;
 
@@ -790,12 +941,149 @@ pub fn launch_names_other_build(launch: &Launch) -> bool {
 /// Everything the exec needs, decided before the teardown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecPlan {
-    /// `resumeArgv[0]`: the launch path (atpkg's twin), never `current_exe()`.
+    /// Initially the launch path; preparation pins this to the admitted image.
     pub path: PathBuf,
     pub argv: Vec<OsString>,
     /// The launch environment, verbatim and in order.
     pub env: Vec<(OsString, OsString)>,
     pub cwd: Option<PathBuf>,
+}
+
+/// Immutable resume arguments and exact native-admitted image/custody. A launch
+/// shim changing after this preparation can never substitute another executable.
+pub struct PreparedExec {
+    plan: ExecPlan,
+    admitted: Received,
+    custody: ExecCustody,
+    _preparation: Option<tokio::sync::SemaphorePermit<'static>>,
+}
+
+static PREPARATION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+impl PreparedExec {
+    fn prepare(plan: ExecPlan, admitted: Received, deadline: Instant) -> Result<Self, String> {
+        admitted
+            .probe(deadline)
+            .map_err(|error| error.to_string())?;
+        Self::finish(plan, admitted)
+    }
+
+    fn finish(mut plan: ExecPlan, admitted: Received) -> Result<Self, String> {
+        if plan.argv.first().map(OsString::as_os_str) != Some(plan.path.as_os_str()) {
+            return Err("the resume argv does not start with the original launch path".into());
+        }
+        plan.path = admitted
+            .receipt()
+            .executable
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let custody = admitted
+            .prepare_exec_custody()
+            .map_err(|error| error.to_string())?;
+        let prepared = Self {
+            plan,
+            admitted,
+            custody,
+            _preparation: None,
+        };
+        prepared.validate()?;
+        Ok(prepared)
+    }
+
+    /// Install the final source snapshot before teardown. Data custody supplies
+    /// no native execution admission and does not commit source producers.
+    pub fn with_state(mut self, state: &[u8]) -> Result<Self, String> {
+        self.validate()?;
+        self.custody = self
+            .admitted
+            .prepare_exec_custody_with_state(Some(state))
+            .map_err(|error| error.to_string())?;
+        Ok(self)
+    }
+
+    pub fn plan(&self) -> &ExecPlan {
+        &self.plan
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.admitted
+            .validate(
+                &self.admitted.receipt().executable,
+                self.admitted.receipt().build,
+            )
+            .map_err(|error| error.to_string())?;
+        if self.plan.path
+            != self
+                .admitted
+                .receipt()
+                .executable
+                .canonicalize()
+                .map_err(|error| error.to_string())?
+        {
+            return Err("the admitted physical executable changed".into());
+        }
+        check_launch_cwd(self.plan.cwd.as_deref())
+    }
+
+    fn execute(self) -> String {
+        if let Err(why) = self.validate() {
+            return why;
+        }
+        exec(&self.plan, Some(&self.custody))
+    }
+}
+
+/// Prepare through the authenticated native control host, without consulting
+/// PATH or changing the managed selection. Cancellation retains original child
+/// ownership in its worker; the complete preparation slot follows the probe.
+pub async fn prepare_admitted(
+    shared: &Shared,
+    client: &codex_alab_aterm::Client,
+    deadline: Instant,
+) -> Result<PreparedExec, String> {
+    #[cfg(feature = "test-support")]
+    if let Some(prepared) = test_support::prepare_if_registered(shared) {
+        return prepared;
+    }
+    let permit = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(deadline),
+        PREPARATION.acquire(),
+    )
+    .await
+    .map_err(|_| "another target preparation is still running".to_owned())?
+    .map_err(|error| error.to_string())?;
+    let host = crate::upgrade_host::Host::capture(client)?;
+    let image = shared
+        .launch()
+        .and_then(Launch::upgrade_path)
+        .and_then(named_build)
+        .ok_or("the launch path no longer identifies a candidate")?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let root = image
+        .parent()
+        .filter(|bin| bin.file_name() == Some(std::ffi::OsStr::new("bin")))
+        .and_then(Path::parent)
+        .ok_or("the candidate is not a native package entrypoint")?;
+    let build = root
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(|name| name.parse::<u64>().ok())
+        .filter(|build| *build > 0)
+        .ok_or("the candidate does not identify an exact published build")?;
+    let admitted =
+        crate::upgrade_admission::admit(host.path().to_path_buf(), image, build, deadline)
+            .await
+            .map_err(|error| error.to_string())?;
+    host.validate(client)?;
+    let plan = exec_plan(shared)?;
+    tokio::task::spawn_blocking(move || {
+        let mut prepared = PreparedExec::prepare(plan, admitted, deadline)?;
+        prepared._preparation = Some(permit);
+        Ok(prepared)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// The exec for `launch` resuming `thread`, its argv rebuilt from codex's own clap
@@ -866,6 +1154,7 @@ fn check_launch_cwd(cwd: Option<&Path>) -> Result<(), String> {
 
 /// Leave like `/exit` so the exit path execs. `false` (and nothing pending) when the TUI
 /// never said how to leave.
+#[cfg(test)]
 pub fn request(shared: &Shared) -> bool {
     shared.set_exec_pending(true);
     if shared.leave() {
@@ -879,7 +1168,7 @@ pub fn request(shared: &Shared) -> bool {
 /// Queue the upgrade's conditional event and wait for the TUI to accept it using its
 /// current native state. A cancelled waiter withdraws the queued request; its caller
 /// also invalidates the native generation before restoring any suspended act.
-pub async fn request_checked(
+pub(crate) async fn request_checked(
     shared: &Shared,
     commit: impl FnOnce() -> bool + Send + 'static,
 ) -> bool {
@@ -901,16 +1190,44 @@ pub async fn request_checked(
     result
 }
 
+/// Install the exact owned plan only at the TUI's successful native commit.
+/// Cancellation or refusal drops custody and leaves the running session intact.
+pub async fn request_admitted(
+    shared: &'static Shared,
+    prepared: PreparedExec,
+    commit: impl FnOnce() -> bool + Send + 'static,
+) -> bool {
+    let Some(launch) = shared
+        .launch()
+        .and_then(Launch::upgrade_path)
+        .map(Path::to_path_buf)
+    else {
+        return false;
+    };
+    request_checked(shared, move || {
+        if prepared.validate().is_err()
+            || named_build(&launch)
+                .and_then(|path| path.canonicalize().ok())
+                .as_ref()
+                != Some(&prepared.plan.path)
+        {
+            return false;
+        }
+        shared.commit_upgrade_execution(Box::new(move || prepared.execute()), commit)
+    })
+    .await
+}
+
 /// The exit path of an upgrade: exec the plan, or `_exit(1)` with the record kept.
 pub fn exec_after_teardown(shared: &Shared) -> ! {
     use std::io::Write;
-    let plan = exec_plan(shared);
+    let prepared = shared.take_upgrade_execution();
     wait_for_children(CHILDREN_GRACE);
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
-    let why = match plan {
-        Ok(plan) => exec(&plan),
-        Err(why) => why,
+    let why = match prepared {
+        Some(prepared) => prepared(),
+        None => "no admitted execution plan was committed".to_owned(),
     };
     let _ = writeln!(
         std::io::stderr(),
@@ -966,7 +1283,7 @@ fn cstring(bytes: &[u8]) -> Result<CString, String> {
 }
 
 /// `execve` the plan; returns only why it failed.
-fn exec(plan: &ExecPlan) -> String {
+fn exec(plan: &ExecPlan, custody: Option<&ExecCustody>) -> String {
     let path = match cstring(plan.path.as_os_str().as_bytes()) {
         Ok(path) => path,
         Err(why) => return why,
@@ -1000,6 +1317,11 @@ fn exec(plan: &ExecPlan) -> String {
         return format!("chdir {}: {err}", cwd.display());
     }
     reset_signals();
+    if let Some(custody) = custody
+        && let Err(error) = custody.inherit()
+    {
+        return format!("inherit original executable custody: {error}");
+    }
     // SAFETY: every pointer is a NUL-terminated string kept alive above, and both arrays
     // end with a null pointer, as execve requires.
     unsafe { libc::execve(path.as_ptr(), argv_ptrs.as_ptr(), env_ptrs.as_ptr()) };
@@ -1024,12 +1346,15 @@ mod cwd_tests {
         assert!(check_launch_cwd(Some(&cwd)).is_ok());
         std::fs::remove_dir(&cwd).unwrap_or_else(|err| panic!("{err}"));
         let before = std::env::current_dir().unwrap_or_else(|err| panic!("{err}"));
-        let why = exec(&ExecPlan {
-            path: dir.path().join("unreached-executable"),
-            argv: vec!["unreached-executable".into()],
-            env: Vec::new(),
-            cwd: Some(cwd.clone()),
-        });
+        let why = exec(
+            &ExecPlan {
+                path: dir.path().join("unreached-executable"),
+                argv: vec!["unreached-executable".into()],
+                env: Vec::new(),
+                cwd: Some(cwd.clone()),
+            },
+            None,
+        );
         assert!(
             why.starts_with(&format!("chdir {}:", cwd.display())),
             "{why}"

@@ -14,7 +14,8 @@ import time
 from pathlib import Path
 
 import capacity_exec as probe
-from renewal_follow import fake_auth, fixture_tls, request_kind
+import provider_fixture
+from renewal_follow import bearer_generation, fake_auth, fixture_tls, request_kind
 
 
 def prompt(index):
@@ -35,11 +36,10 @@ class Accounts:
         self.aborted = False
 
     def identity(self, headers):
-        token = headers.get("Authorization", "")
-        prefix = "Bearer fixture-access-"
-        if not token.startswith(prefix) or not token[len(prefix):].isdigit():
+        generation = bearer_generation(headers)
+        if generation is None or not generation.isdigit():
             raise ValueError("unrecognized fixture credential")
-        index = int(token[len(prefix):])
+        index = int(generation)
         if not 0 <= index < self.count:
             raise ValueError("fixture credential outside account set")
         if headers.get("ChatGPT-Account-Id") != f"parallel-account-{index}":
@@ -111,7 +111,7 @@ def server_for(accounts, root):
                     accounts.errors.append(str(error))
                 self.send_error(400)
 
-    class Server(http.server.ThreadingHTTPServer):
+    class Server(provider_fixture.LoopbackHTTPServer):
         request_queue_size = max(128, 2 * accounts.count)
 
     server = Server(("127.0.0.1", 0), Handler)

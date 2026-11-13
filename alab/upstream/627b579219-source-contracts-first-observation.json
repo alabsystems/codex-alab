@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "kind": "native-focused-incomplete-observation",
+  "observed_at": "2026-11-10T18:02:10.505302+00:00",
+  "source": "ca525ab4d82ab82e58ca033af978581d7eefb068",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "exit_code": 143,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::snapshot_keeps_its_epoch_through_refresh_but_cannot_adopt_a_new_source_factory",
+      "status": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::current_cache_read_requires_publication_after_policy_retirement",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::requests::tests::duplicate_and_queued_admissions_never_invent_a_running_turn",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::requests::tests::admission_receipts_preserve_server_turns_and_duplicate_identity",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::events::tests::image_receipt_preserves_submission_identity_and_attachment",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::events::tests::completed_reply_preserves_the_full_text_questions_and_timestamp",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::requests::tests::image_submission_keeps_attachment_markers_and_input_order",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::requests::tests::user_input_uses_stable_id_and_the_existing_cloud_configuration",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::requests::tests::unsupported_filters_do_not_return_unrelated_cloud_rows",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::requests::tests::ordinary_multi_backend_resume_queries_cloud_interactive_threads_on_every_page",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::tests::successful_reopen_supersedes_only_earlier_losses_for_that_thread",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::tests::attachment_status_follows_its_server_notifications",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::tests::failed_replacement_keeps_old_thread_until_new_attachment_succeeds",
+      "status": "ok"
+    },
+    {
+      "name": "cloud_backend::submission_tests::native_submission_uses_one_admission_and_keeps_preflight_guards",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-source-contracts-native.sh",
+      "sha256": "b852bd8aa63cf36d6de9d30e655b7ff1e975b168157da601af74ce35eb3abb14"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-source-contracts-native.log",
+      "sha256": "f6a176d4c0a2547d1077a8ed55adf61d494dba083f955bd6a4b56077e0a1f4e8"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-source-contracts-native.exit",
+      "sha256": "9d9b18720961e9b4689fd763b85e7b6f36160ccd3a8a1c9ddc5103bb0f66c396"
+    }
+  ],
+  "limits": "Controller65202 terminal143 after deliberate cancellation for proven TUI compile errors, not an observation timeout. Fourteen earlier tests passed (login2/Cloud backend12); no complete-controller qualification. TUI compilation failed: new feedback consent fixture omitted ALab can_save argument, and two owned turn-report fixtures called removed set_mcp_startup_expected_servers. Corrections committed df88f9b5c4; gateway-cookie topic registered1f0c5a6ed9. Verified native front60794 TERM ended script root but nested controller continued; verified source-only process group61903 TERM then settled to143. Independent reader/GCP run remained untouched and passed separately. Remaining selections cannot be claimed executed."
+}

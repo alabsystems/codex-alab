@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "kind": "aterm-measurement-adapter-landed",
+  "fix": "row-kind-scoped consumed-key admission and GONE checks; namespace ignored by message decoder still requires run2; first consumed tool-call namespace and lost consumed namespace still refuse",
+  "initial_commit": "e5ed9fa900c",
+  "landed": "793166c0e15ded5ae9197d6948e9837af6d098b7",
+  "checked_composition": "7fe46d346c824c96a3e3272b063b62c81fb523c9",
+  "checked_patch": "cc721d40fa5a4de1c0efc61dffa0ac627fb54eab",
+  "exit": 0,
+  "verification": [
+    "fmt",
+    "census",
+    "export-scan",
+    "lint",
+    "test",
+    "doc",
+    "cells"
+  ],
+  "log": "${HOME}/.ubd/aterm-codex-measure-verify-land.log",
+  "log_sha256": "1f6151c9cf432a3f2a0f435a4b433fcc853c90a04394c4979b5013dea5b7904c",
+  "remote_readback": {
+    "head": "00243a5a6f243ca198de125a020e837172ee1f59",
+    "comparison_from_landed": "ahead",
+    "ahead_by": 3,
+    "behind_by": 0,
+    "transport": "agh API"
+  },
+  "code_equivalence": "All five measure/decoder test and production Rust files match the checked composition at landed HEAD. The local origin/main tracking ref was stale after the guarded push; actual remote ancestry was checked via agh.",
+  "measurement_worktree": "${HOME}/.ubd/aterm-codex-measure-sid0.noindex",
+  "followup_main": "ffcf661c6f185f4790dd39f1fa7a044061b47e2f",
+  "limits": [
+    "Development main only; no public Aterm release, installed host replacement, new Codex package measurement or installed client adoption claim.",
+    "Following main was fetched through agh and fast-forwarded after the verification ended; that later main is not claimed as this verification run's tested composition.",
+    "Final Codex artifact still needs fresh two-run native measurement."
+  ]
+}

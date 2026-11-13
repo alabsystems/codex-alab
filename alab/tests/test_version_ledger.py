@@ -305,6 +305,77 @@ class LedgerReleaseTests(Scratch):
         self.layer("0.3.0", "0.166.0", ledger=two + row.stdout)
         self.assertEqual(self.package("--release-version").stdout, "0.3.0+codex.0.165.0\n")
 
+    def test_a_late_patch_tag_preserves_the_frozen_baseline_and_tag_integrity(self):
+        self.on(self.u3, "main-frozen-before-patch-tag")
+        self.layer(ledger=HEADER + self.row("0.1.0", "0.164.0"))
+        self.assertEqual(self.package("--release-version").stdout, "0.1.0+codex.0.164.0\n")
+        self.release("0.164.1", self.u2)
+        checked = self.package("--release-version")
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(checked.stdout, "0.1.0+codex.0.164.0\n")
+        self.assertIn("rust-v0.164.0", checked.stderr)
+        self.git(self.upstream, "tag", "-f", "rust-v0.164.0", self.tags["0.164.1"])
+        self.refused(self.package("--release-version"), "that tag names")
+
+    def test_a_patch_branch_point_integrated_after_recording_still_needs_a_bump(self):
+        self.on(self.u2, "main-before-new-patch-code")
+        ledger = HEADER + self.row("0.1.0", "0.164.0")
+        self.layer(ledger=ledger)
+        self.release("0.164.1", self.u3)
+        self.git(self.alab, "merge", "-q", "--no-edit", self.u3)
+        self.layer(ledger=ledger)
+        self.refused(self.package("--release-check"), "recorded on the upstream baseline 0.164.0")
+
+    def test_a_late_minor_tag_preserves_the_frozen_baseline_and_its_client_floor(self):
+        # The claim: main at u3 holds rust-v0.164.0's branch point (u2) and u3 itself, and
+        # its client line 0.165.0 is the floor above the newest stable it has merged.
+        self.on(self.u3, "main-frozen-before-minor-tag")
+        source, _ = self.layer(ledger=HEADER + self.row("0.1.0", "0.164.0"))
+        self.assertEqual(self.package("--release-version").stdout, "0.1.0+codex.0.164.0\n")
+        # Upstream then cuts its next minor's stable from u3, code the claim already held.
+        # Discovery alone would move the baseline to 0.166.0 and the floor to 0.167.0.
+        self.release("0.166.0", self.u3)
+        live = self.package("--version-only")
+        self.assertIn("+codex.0.166.0.", live.stdout)
+        self.assertIn("alab/client-version 0.165.0 is behind", live.stderr)
+        # The release is still the one the ledger froze, floor included.
+        checked = self.package("--release-version")
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(checked.stdout, "0.1.0+codex.0.164.0\n")
+        self.assertIn("rust-v0.166.0 appeared after 0.1.0 froze rust-v0.164.0", checked.stderr)
+        hooked = self.hook(PUB_SOURCE_COMMIT=source, PUB_VERSION="0.1.0")
+        self.assertEqual(hooked.returncode, 0, hooked.stderr)
+        self.assertIn("released as 0.1.0+codex.0.164.0", hooked.stdout)
+        # Frozen facts are still facts: once the recorded tag names another commit, the
+        # row is no longer accepted, so nothing is frozen and nothing is released.
+        self.git(self.upstream, "tag", "-f", "rust-v0.164.0", self.tags["0.166.0"])
+        moved = self.package("--release-version")
+        self.assertNotEqual(moved.returncode, 0, moved.stdout)
+        self.assertEqual(moved.stdout, "")
+        self.assertNotIn("appeared after", moved.stderr)
+
+    def test_a_frozen_release_still_holds_its_client_line_to_the_recorded_floor(self):
+        # The claim itself was below its own floor: 0.164.0 is not above rust-v0.164.0.
+        self.on(self.u3, "main-claimed-below-its-floor")
+        self.layer(client="0.164.0", ledger=HEADER + self.row("0.1.0", "0.164.0"))
+        self.refused(self.package("--release-check"), "is below the floor 0.165.0")
+        # A later minor tag for code it already held does not excuse that, and the floor
+        # it is held to is the recorded baseline's, not the newly discovered one's.
+        self.release("0.166.0", self.u3)
+        self.refused(self.package("--release-check"), "is below the floor 0.165.0")
+
+    def test_a_minor_branch_point_integrated_after_recording_still_needs_a_bump(self):
+        self.on(self.u2, "main-before-new-minor-code")
+        ledger = HEADER + self.row("0.1.0", "0.164.0")
+        self.layer(ledger=ledger)
+        # u3 arrives by a later merge, and upstream cuts 0.166.0 from it: new code under
+        # the old version, which a frozen row never covers. The client line is edited so
+        # that only the ledger can refuse.
+        self.release("0.166.0", self.u3)
+        self.git(self.alab, "merge", "-q", "--no-edit", self.u3)
+        self.layer(client="0.167.0", ledger=ledger)
+        self.refused(self.package("--release-check"), "recorded on the upstream baseline 0.164.0")
+
     def test_a_release_is_above_every_recorded_version(self):
         self.on(self.u3, "main-on-u3")
         two = HEADER + self.row("0.1.0", "0.164.0") + self.row("0.2.0", "0.164.0")

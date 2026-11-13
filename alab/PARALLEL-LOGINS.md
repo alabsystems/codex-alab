@@ -5,7 +5,7 @@
 ## Requirement audit, 2026-11-03
 
 The target is an unbounded account roster, simultaneous account logins, and
-automatic continuation on another account when weekly allowance runs out,
+automatic continuation on another account when a usage allowance runs out,
 integrated with aterm's email authentication, shared roster and machine identity.
 Passing same-account renewal or quota-wait tests alone does not meet that target.
 
@@ -258,6 +258,38 @@ quota recovery and suppresses another rotation attempt for the same accepted
 turn, so a five-hour-only wall cannot become an indefinite weekly rotation wait.
 No current host capability is advertised by this work yet.
 
+Amended 2026-11-12. Only a spent week rotated when the paragraph above was
+written. aterm's rotation branch, as the design for this amendment read it,
+also leaves a five-hour wall whose reset is more than 900 seconds away, and
+codex-alab now ends a creditless interactive turn at such a wall for a host
+that says so (`alab/continuous-earned-resets.md`, the two sections dated
+2026-11-12):
+
+- The host says so with `codex_rotation_five_hour=<seconds>` in its `harness
+  policy` reply. That word is not shipped: the installed aterm 0.198.0 prints
+  `codex_rotation=1` without it (measured on this Mac, 2026-11-12), so every
+  five-hour wall still waits in its turn there, as before.
+- `not-needed` still releases the intent to ordinary quota recovery and
+  suppresses another attempt for the same accepted turn.
+- The ask is now bounded by the wall's own reset: an unbound handoff that the
+  host keeps answering `waiting` or an error for is given up at the reset
+  plus the reset grace, counted across host sleep, and the session resumes on
+  the account it is on. An unbound intent carries its wall's reset in the
+  record, so the process after a restart keeps the limit (repaired after
+  review, 2026-11-12; the re-exec shape is tested on loopback fixtures, a
+  crash relaunch is not). Still asked about without limit: a wall whose 429
+  names no reset, and an intent that was bound before a restart on the same
+  account and retired after it.
+- A `codex exec` run keeps its request at every wall and asks aterm through
+  its own protocol. For a wall that follows an earlier `not-needed` in the
+  same run it needs a fix in aterm's exec control, which the design found
+  keeps that answer for the whole root turn.
+
+Not run: any native qualification of the five-hour handoff. The two cases
+planned for it in `alab/smoke/renewal_follow.py` (`five-hour-quota`,
+`five-hour-near-reset`) are not in this tree, and they need a `native_host`
+fixture built from an aterm that prints the word.
+
 The existing goal witness transaction now records an owned quota failure as
 `limited` alongside the `UsageLimited` goal state. Restoration retains the
 original goal ID, objective, usage accounting and budget. The same edit-revoking
@@ -390,6 +422,349 @@ available, so cleanup does not depend on another client poll. Its regression
 test verifies that a retired receipt without completion evidence keeps that
 service alive. The result is
 `$HOME/.aterm/.ubd/codex-quota-background-rollback/result.json`.
+
+## Rotation smokes against a recorded host, 2026-11-12
+
+No rotation case is qualified by this section. It records how the rotation
+smokes are run against today's aterm test host, what their fixture now serves,
+and what was run on 2026-11-12 with the only package this Mac had: the
+installed `2026111101`, built from `49f3c2ba233b`, which predates the rotation
+branch (it holds neither `c7641e9bad` nor `d2f4338223`). A TUI quota case needs
+a package whose source contains `c7641e9bad`. None could be built:
+
+```sh
+alab/package.sh --commit ae9b0eb15e --any-commit --no-promote \
+  --out "$HOME/.aterm/.ubd/codex-rotation-2026-11-12/pkg"
+# alab: a qualified atpkg-publish is required (ALAB_ATPKG_PUBLISH)   exit 1
+```
+
+`aterm pkg which atpkg-publish` reported it absent from the signed index. The
+refusal was not worked around. The package holds no Python, so it is not
+rebuilt per smoke commit.
+
+### What the fixture serves
+
+Before this work a walled TUI turn against the fixture never ended. The
+fixture's usage windows had no `reset_after_seconds`; the client's
+`RateLimitWindowSnapshot` requires it, the whole usage read failed, and the
+turn polled until the smoke's hang detector. `alab/smoke/provider_fixture.py`
+now builds the usage, earned-reset list and redemption replies, and `check()`
+refuses one the client would not decode. A reply the fixture cannot build is
+recorded in `model.fixture_faults` and fails the run at once instead of at the
+detector, in the TUI controller and in both exec smokes
+(`alab/tests/test_rotation_smoke_runs.py` runs each controller whole against a
+stand-in host and requires it).
+
+The refusal of a model request at a wall is built there too (`refusal`): the
+429's body and its `x-codex-*` headers come from one reading of the account's
+usage, so the reset the body names is the spent window's own, and `check`
+refuses a refusal the client would not read as that wall. The three 429s of
+`renewal_follow.py` are built this way; the exec smokes' own 429s (a body with
+no plan and no windows) are as they were.
+
+The module's golden replies (`alab/smoke/fixtures/provider/*.json`: three
+usage readings, the credit list, the redemption reply and the weekly and
+five-hour refusals) are decoded by the real client in the gate, with no
+package. The usage replies go through `codex-backend-client`; the refusals go
+through `codex_api::map_api_error`, as a refused model request's status,
+headers and body do, and must come out as a usage limit with the plan, the
+reset, the reached type and both windows the fixture stated:
+
+```sh
+cd codex-rs && targo --unverified test -p codex-alab-quota-recovery fixture_tests
+# 8 passed; whole crate: 49 passed; 0 failed
+```
+
+The fixture also now states each account's windows in rate-limit headers on
+every model response, keeps the source login healthy until the provider has
+refused it, routes the redemption, token and usage endpoints by path, gives
+each fixture login a JWT access token, and records which program sent each
+request (`client`: `host` for aterm's usage reader, whose User-Agent is
+exactly `codex-cli`, else `codex`).
+
+A fixture login carries no `tokens.login_owner_id`, as before this work. A
+real sign-in writes one, and `09cd86ba9d` gave each fixture login its own; it
+was withdrawn. With distinct owner ids the client's `same_owner()`
+(`codex-rs/login/src/auth/change_state.rs`) answers false for two logins of
+one account and user, where with none it answers true, and that is what every
+same-account case presents. Those cases last passed with no owner id, and no
+run here could judge the change: the one `happy` trial made with it
+(`t15-happy-step8`) differs from the two made without it. It is to be applied
+again alone, once `happy` has run with a rotation-branch package before and
+after it.
+
+### Recording the host
+
+The host binary says nothing of its source. `native_host_record.py` writes
+`build.json` beside it: the image's sha256 and size and the verdict of the
+host's own no-argument self-run are measured; the aterm commit is attested, with
+a mandatory sentence saying how it is known and a field saying what that
+attestation is worth. `"attestation": "trial"` says the commit is not proven to
+be the binary's source. `"built-from-clean-commit"` says the host was built
+from a clean checkout of it, and the record then names who built it and when
+(`builder`, `built_at`). A host that fails its self-run gets no record, and a
+record is never replaced; a record of an earlier schema, which no longer loads,
+is kept beside the new one as `build.json.legacy`.
+
+Only a `built-from-clean-commit` record whose self-run was made qualifies a
+run. `renewal_matrix.py` refuses any other before a case runs, because its
+`qualification.json` is read by its `passed` field and not by a sentence. A
+single case can still be run against a trial record with `renewal_follow.py`;
+its `result.json` carries `nativeHost.attestation` and
+`nativeHost.qualifies`, as the exec smokes' reports do.
+
+The host file must be named `aterm` or `aterm-*`. aterm's live snapshot accepts
+a session only when the process that opened its terminal has such a name
+(`owned_by_aterm`), and here that process is the host. Under the name
+`native_host` every snapshot is refused as `terminal` and each TUI case ends at
+its hang detector; `renewal_follow.py` and `renewal_matrix.py` now refuse such
+a host by name.
+
+```sh
+cp <aterm target>/native_host <dir>/aterm-native-host
+python3.14 -B -I <wt>/alab/smoke/native_host_record.py \
+  --host <dir>/aterm-native-host \
+  --source 414e1ae381d4bbd4272a161ca20a24eb1a714961 \
+  --aterm-checkout <aterm checkout> --source-evidence '<text>' \
+  --attestation trial
+# a host that qualifies a run:
+#  --attestation built-from-clean-commit --builder '<who>' \
+#  --built-at 2026-11-12T09:30:00-08:00
+```
+
+The record used by the runs in the table below is
+`$HOME/.aterm/.ubd/codex-rotation-2026-11-12/native-host-trial-aterm-name/build.json`,
+written under schema 2, which had no attestation field; the runs made after
+the review use a second byte copy of the same image recorded as a trial under
+schema 3, `.../host-trial-s3/build.json`. Both say:
+sha256 `08c2e3978e363336df385f1c8784f6c87eff3f6bbc1a94306f9c910023687841`,
+178839392 bytes, self-run `PASS real-host shipping-qualified policy and
+wrong-token refusal; worker EOF joined`. Its evidence text is: "TRIAL,
+provenance unproven: a byte copy of
+codex-rotation-2026-11-11/native-host-5h/native_host (mtime 2026-11-12 00:17:48
+-0800), renamed aterm-native-host so that its process name begins with aterm-.
+That binary was handed over as built from aterm 414e1ae381d, but the commit is
+dated 00:18:27, after the binary was written, so it was built from a working
+tree that only later became that commit, or from an earlier one. It was not
+rebuilt from the commit and reports no source of its own."
+
+A record that qualifies a run needs a host built from a clean checkout of the
+landed aterm commit, that commit as `--source`, `--attestation
+built-from-clean-commit` with the builder and the build time, and evidence
+text saying how that is known; the hash, size and self-run verdict are then
+measured from that file, named `aterm-*`.
+
+### Running a case
+
+```sh
+python3.14 -B <wt>/alab/smoke/renewal_follow.py --host <host> --package <pkg> \
+  --output <out> --case <case>
+```
+
+`<out>` must not exist. It receives `result.json`, `requests.json`,
+`http-events.json`, `unrouted-posts.json`, `host-stdout.jsonl`,
+`host-stderr.txt` and `renewal-control-trace.jsonl`; the guardian's verdict is
+the sibling `<out>-guardian-result.json`. `result.json` names the package
+source, the host record, and the sha256 of the controller and of both fixture
+modules. Do not pass `-I`: the controller imports its siblings. Keep `<out>`
+short: the host puts its control socket under it and exits with `path must be
+shorter than SUN_LEN` when `<out>/control.sock` exceeds 103 bytes (seen with
+a 93-byte output directory). Budgets are in
+`alab/smoke/renewal-case-budgets.md`: 270/300 s for `weekly-quota`,
+`weekly-quota-exhausted` and `five-hour-wall-soon`, 450/480 s for the chain
+and rollback cases.
+
+A case that reaches the hang detector says what it saw: the host's
+live-snapshot outcomes and, for a quota case, what followed the first 429
+(codex usage reads, codex credit-list reads, prepares traced) and which of
+four causes that points to.
+
+### Results of 2026-11-12
+
+All ran against the host record above and package source `49f3c2ba233b`, and
+are trial evidence only. Paths are under
+`$HOME/.aterm/.ubd/codex-rotation-2026-11-12/`; the commit is the smoke tree
+that ran, and the hash is the first 16 hex digits of `controllerSha256`.
+
+| Result | Command | Smoke tree | Outcome |
+| --- | --- | --- | --- |
+| `trial-01-step1-weekly-quota-oldpkg` | `--case weekly-quota` | `c9e9fb3a32`, `2ec949df9e0b22b7` | failed at the detector: 13 usage reads, no credit read: the old fixture's reply did not decode |
+| `t09-wq-step5` | `--case weekly-quota` | `d91b6f91ab`, `5d4404f589b0b2bb` | failed at the detector, as the negative control must: 61 codex usage reads, 9 codex credit-list reads, no prepare; `unrouted-posts.json` empty |
+| `t11-wq-step6` | `--case weekly-quota` | `054b78fdb1`, `74810eeec9999fd4` | failed at the detector the same way: 50 usage reads, 9 credit-list reads, no prepare |
+| `trial-03-step3-happy-oldpkg` | `--case happy`, host named `native_host` | `fcb210a427` before its amendment, `cafeadd65c7e7985` | failed at the detector: live snapshot `terminal`, `renew` never published |
+| `trial-04-step3-happy-oldpkg-aterm-name` | `--case happy` | `fcb210a427` before its amendment, `cafeadd65c7e7985` | failed at the detector: snapshot published, prepare ready, source signalled at 122.0 s and exited `signal:15`, attach refused twice (126.0 s, 182.3 s), receipt left `committing`; then 1088 `resume` actions from 126.9 s to 269.9 s, 877 answered ok and 211 refused |
+| `t15-happy-step7` | `--case happy` | `6f6211d0b1`, `ec95469941359264` | failed at the same point as `trial-04`: signalled at 121.9 s, attach refused twice (124.2 s, 182.1 s), receipt left `committing`; then 1099 `resume` actions from 125.0 s to 270.1 s, 891 ok and 208 refused |
+| `t15-happy-step8` | `--case happy` | `09cd86ba9d`, `cd980bb6a9340264` | failed at the detector with the receipt left `committing`, but not as the two runs above: signalled at 61.9 s, attach refused three times (64.2 s, 122.2 s, 242.3 s), one `threads-ambiguous` snapshot; then 1572 `resume` actions from 65.0 s to 270.1 s, 1108 ok and 464 refused |
+| `t16-5h-soon-step9` | `--case five-hour-wall-soon` | `2d19fd2e13`, `1d38329080bd8b6c` | passed: refused at 0.8 s, one walled usage read, retried and answered 30.33 s later, three requests, no prepare traced |
+| `trial-05-exec-accounts-baseline-oldpkg` | `exec_accounts.py` | `ab9f144248` | passed, 3 requests; the exec fixture's old reply |
+| `trial-06-exec-accounts-step4-oldpkg` | `exec_accounts.py` | `dc63e73112` | passed, 3 requests; the client now reads its credit list after each usage read |
+| `t07b-exec-chain`, `t10-exec-step6-chain` | `exec_accounts.py --chain` | `dc63e73112`, `054b78fdb1` | passed, 4 requests |
+| `t08-exec-step5`, `t10-exec-step6`, `t12-exec-step7`, `t14-exec-step8` | `exec_accounts.py` | `d91b6f91ab`, `054b78fdb1`, `6f6211d0b1`, `09cd86ba9d` | passed, 3 requests each; the last with the per-login owner ids since withdrawn |
+| `t13-parallel-logins-step7` | `parallel_logins.py --package <pkg> --output <out> --count 40` | `6f6211d0b1` | passed: 40 concurrent requests, credential files unchanged |
+| `t17-weekly-reset` | `python3.14 -I -B alab/smoke/weekly_reset.py --package <pkg> --output <out>` | `2d19fd2e13` | passed, 27 of 27 cases; this suite has its own fixture |
+
+The exec reports name the host record but not their controller or fixture
+hashes; the commit above is what identifies them. The two `trial-0[34]` runs
+used the controller as it was before `b98f89d549` was amended to exempt the
+exec fixture from the reply check (`checked_replies`); the TUI path is the
+same in both.
+
+Runs made after the review of this work, with the same image and package.
+`f1-5h` used the schema-2 record; the others used the trial record
+`host-trial-s3/build.json`, and their reports say `"attestation": "trial",
+"qualifies": false`.
+
+| Result | Command | Smoke tree | Outcome |
+| --- | --- | --- | --- |
+| `f1-5h` | `--case five-hour-wall-soon` | `3c3f812923`, `7639ccc0d7e2ea54` | passed: one walled usage read, retried and answered 30.27 s after the refusal, three foreground requests and one title request, no prepare traced, `renew` never published |
+| `f2-exec` | `exec_accounts.py` | `b7020b0107` | passed, 3 requests; the host read the source's usage (not allowed), then the target's (allowed) |
+| `f3-5h` | `--case five-hour-wall-soon` | `21ddd4d585`, `fc2dabd5c09117d1` | passed, with the 429 built by `provider_fixture.refusal`: its headers stated the five-hour window at 100% and the week at 10%; retried and answered 30.28 s later, three foreground requests, no prepare traced |
+| `f4-exec` | `exec_accounts.py` | `21ddd4d585` | passed, 3 requests, the same order of reads as `f2-exec` |
+| `f5-weekly` | `--case weekly-quota` | `21ddd4d585`, `fc2dabd5c09117d1` | failed at the detector as `t09` and `t11` did: 51 codex usage reads after the 429, 9 codex credit-list reads, no prepare; no fixture fault; the 429's headers stated the week at 100% |
+
+`renewal_matrix.py --case weekly-quota` against the trial record exits 1
+before any case with `the native host record qualifies no run: its
+attestation is `trial``.
+
+What the runs show:
+
+- The negative control holds. With a package that cannot hand a walled turn
+  over, `weekly-quota` fails at the detector with codex credit-list reads and
+  no prepare. Before the fixture was corrected the same run made no credit
+  read at all. It still holds with the refusal built by `provider_fixture.py`
+  (`f5-weekly`).
+- `five-hour-wall-soon` passes with this package (`t16`, `f1-5h`, `f3-5h`).
+  Since the review its other account reads usable throughout and answers a
+  model request at once, so a turn that waits its wall out had somewhere to go
+  and did not; the controller no longer publishes `renew` in this case, and it
+  fails the run by name, while it runs and again after its loop, when a
+  charged rotation, a handoff receipt, a native action or a model request from
+  another login appears. No run exercised that failure: package `2026111101` hands no
+  five-hour wall over, so it is covered by
+  `alab/tests/test_rotation_smoke_runs.py` against a stand-in host only.
+- `happy` does not pass with this package against this host: the source ends
+  by signal 15 and the host refuses both the forward and the rollback launch's
+  attach. What follows is the outcome rotation must never have. No successor
+  attaches, so the session has ended with nobody resuming it, and the host
+  then issues `resume` without bound: 7.6 to 7.7 actions a second in all three
+  runs (`native-actions.jsonl`), from the first refused attach until the
+  detector stopped the run. Each run shows the same cycle: about 57 s of
+  `resume` answered ok on the signalled operation, a refused attach, the same
+  again, and then `resume` on a second operation id, refused; the run
+  signalled a minute earlier went one step further, to a refused attach and
+  then accepted `resume` on that second operation. Nothing in the run ends it
+  but the detector. Its cause is not determined: the package
+  predates the rotation branch and the host's provenance is unproven. It is the
+  first thing to check when `happy` runs with a package from the rotation
+  branch against a host of proven provenance: a source ended by the host must
+  be followed by an attached successor, and `resume` must stop.
+- Whether the refused attach is the old package or the unproven host is not
+  determined. It was the same with and without the JWT access tokens
+  (`trial-04` against `t15-happy-step7`: the signal at 122 s, two refused
+  attaches, 211 and 208 refused `resume` actions). It was not the same with
+  the per-login owner ids (`t15-happy-step8`): the source was signalled at
+  61.9 s, one 60 s poll earlier, attach was refused three times, 464 `resume`
+  actions were refused, and the host traced a `threads-ambiguous` live
+  snapshot that neither other run has. The extra refused attach and the larger
+  counts are what one more 60 s cycle before the detector produces; why the
+  signal came a poll earlier, and the ambiguous snapshot, are not explained.
+  One run on each side decides nothing, so the owner-id commit was reverted
+  rather than kept on reading alone.
+- What the host's pool holds at a wall was not shown by any run; what follows
+  is the evidence and where it stops.
+  - Recorded: in the exec runs the host's first provider request comes after
+    the first 429. It reads the source's usage, then one destination's; in the
+    chain run its first read of the final account follows the second wall. In
+    the TUI quota runs (`t09`, `t11`, `t16`) the host made no provider request
+    in 270 s and `host-state/accounts-codex/state.json` held no account entry.
+    That the host reads usage only when asked to move a session is inferred
+    from this order of events, not observed as a rule.
+  - Not exercised: package `2026111101` never sends `codex-accounts snapshot`.
+    No control trace of any run holds that verb, so no run tested what the
+    snapshot shows or what the client decides from it.
+  - By reading only: on the aterm rotation branch (`414e1ae381d`,
+    `crates/aterm-gui/src/codex_accounts_control.rs`) `snapshot_in` builds its
+    rows from `peek_account_records`, a read of the roster, logins and state
+    files that makes no provider request, and reports
+    `assignment.account_id` as null. The client's
+    `Snapshot::another_account_can_run`
+    (`codex-rs/alab-aterm/src/accounts.rs`) then needs two rows that are
+    enrolled, not held and `usable` or `unseen`. At a TUI turn's first wall
+    the rows `main` and `target` would both be unseen, which is two.
+  - Untested, and a likely place for a rotation-branch run to stop: a second
+    wall. By then the host has sampled the source and the middle account, so
+    in `weekly-quota-chain` only the final row is still able, which is one
+    where two are required. A hang there is the pool gate, and this section
+    does not rule it out.
+
+  The oracles of `weekly-quota`, `weekly-quota-exhausted` and
+  `weekly-quota-chain` were left as written; none was run with a package that
+  can end a walled turn.
+
+### Not run
+
+- `weekly-quota`, `weekly-quota-chain`, `weekly-quota-rollback` and
+  `weekly-quota-exhausted` with a package whose source contains `c7641e9bad`,
+  singly or through `renewal_matrix.py --case weekly-quota --case
+  weekly-quota-exhausted --case weekly-quota-chain --case
+  weekly-quota-rollback` (worst case 1560 s): no such package exists.
+- `five-hour-wall-soon` with such a package. It is not in
+  `renewal_matrix.CASES` until that run passes.
+- `lost-consume-ack` and every other same-account fault case.
+- `exec_shared_pool.py`, `exec_review.py` and every `exec_accounts.py` option
+  other than `--chain`.
+- `weekly-quota-chain` since its second account's 429 came to be built by
+  `provider_fixture.refusal`; `exec_accounts.py --chain` since the review.
+- `happy`, or any same-account case, since the per-login owner id was
+  withdrawn.
+- Any run against a host with proven provenance, and so any run of
+  `renewal_matrix.py`, which now refuses a trial record.
+
+A five-hour rotation in the TUI is unqualified, and not only for want of a run.
+`alab-quota-recovery` ends a walled turn for the host only when
+`weekly_exhausted` holds for the reading, which requires the 10080-minute
+window at 100%. A turn refused on its five-hour window therefore waits on its
+own account whatever the reset, which is what `five-hour-wall-soon` asserts
+for a reset ten minutes off. The far-reset case, handed to another account,
+belongs to the commit that makes that crate yield a five-hour wall.
+
+### Unit tests
+
+```sh
+python3.14 -B -m unittest discover -s <wt>/alab/tests -p 'test_*.py'
+cd <wt>/alab/smoke && python3.14 -B -m unittest renewal_follow_test
+```
+
+`renewal_follow_test` runs 28 tests with one known error, present at the
+baseline: `test_usage_server_requires_its_explicit_tls_root` fails with
+`CERTIFICATE_VERIFY_FAILED` (self-signed certificate) under python3.14, so its
+last assertions do not execute. It is not python3.14's strict flag: clearing
+`VERIFY_X509_STRICT` changes nothing. The fixture CA and its server
+certificate share the subject `CN=127.0.0.1`, and the OpenSSL 3.5.9 in this
+python reports the leaf as self-signed, while `/usr/bin/openssl verify` and
+the client's rustls accept the same chain. Correcting it changes the
+certificates every smoke serves, which needs a smoke run with a package that
+can pass, so it was left.
+
+`alab/tests/test_rotation_smoke_runs.py` runs the controllers whole, in
+process, in about eight seconds: `renewal_follow.py --case
+five-hour-wall-soon`, `exec_accounts.py`, `exec_shared_pool.py` and
+`renewal_matrix.py` against
+`alab/tests/fixtures/rotation-host/stand_in_host.py` and a stand-in package.
+The stand-in is a script that signs in with the run's own fixture login and
+sends a session's requests to the controller's loopback provider. It is no
+host and says nothing about aterm or codex; what it tests is that a fixture
+fault, a missing or misnamed host record and a handoff end a run where and
+how the controllers say they do.
+
+The whole `alab/tests` directory ran 668 tests in 821 s at `21ddd4d585` with
+one failure, three errors and seven skips, the same four as at `2d19fd2e13`
+(647 tests) and none in a file this work touches: three classes need a built
+unit runner (`ALAB_TEST_UNIT_RUNNER`), and `test_contained_budget`'s
+`test_runtime_grant_does_not_read_its_siblings_or_account_canaries` fails the
+same way at `ae9b0eb15e`. The outputs are
+`$HOME/.aterm/.ubd/codex-rotation-2026-11-12/unit-all-2d19fd2e13.log` and
+`unit-all-21ddd4d585.log`.
 
 ## Concurrent credential isolation
 

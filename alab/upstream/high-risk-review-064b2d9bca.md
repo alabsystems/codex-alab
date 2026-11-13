@@ -61,3 +61,41 @@ Required scenarios: invalid input and unadvised overload send once; advised over
 retries within configured limits; reporting delays and host sleep do not extend
 provider deadlines; cancellation ends waits; foreground earned-reset recovery
 retries the same compaction only after verified redemption. These are pending.
+
+## Catalog normalization and retained origins: 33ffb6f905b9 / 44ccf394573c
+
+Decision: retain upstream's successful-current-identity update notifications,
+unsupported-setting normalization, and in-memory child catalog preservation.
+Explicit supported choices must survive; unsupported effort/tier choices follow
+the refreshed provider metadata. Do not copy bundled fallback into a successful
+remote observation or equate a failed refresh with an empty provider catalog.
+
+Evidence read: 33ff's manager/update diff and the child session/catalog-selector
+diffs in 44cc. The ALab enhanced worker uses OnlineIfUncached, while upstream's
+ModelCatalog::list_models refreshed retained originators only for Online. That
+combination silently skipped originator updates in enhanced mode. The candidate
+now includes both online strategies in that branch; offline reads remain local.
+The owned cache-aware poll regression creates a retained Work endpoint, reads a
+fresh default cache, and checks that two polls fetch Work twice and default zero
+times. The fixture now uses upstream's actual startup-model factory.
+
+Required evidence remains pending: run the new regression, child remote-model
+capability tests with failed cache writes/empty responses, catalog normalization
+scenarios, and account-switch invalidation. No test pass is claimed here.
+
+## Provider continuity and selected discovery: e115d5f90d56 / daa69c411c1e
+
+Decision: adopt saved-provider continuity and explicit model/list provider selection.
+A changed default is not authority to reroute an existing thread. Keep managed
+provider validation, missing-definition errors, and refusal of explicit provider
+changes on resume. Temporary selected-provider catalogs retain runtime auth and
+do not replace the default catalog's disk cache.
+
+Evidence read: config-manager and turn-processor diffs in e115; catalog-processor
+and thread catalog construction diffs in daa. ALab source/destination account
+admission must still surround actual credentials and catalog I/O; provider
+continuity is not proof of account equivalence. Required scenarios: resume after
+default change, recover after restoring a missing provider, preserve a draft on
+failed resume, list a nondefault provider with runtime auth, reject unknown or
+managed-forbidden providers, and prove unchanged default cache. These remain
+unqualified on this full candidate.

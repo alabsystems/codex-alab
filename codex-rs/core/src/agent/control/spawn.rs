@@ -5,12 +5,14 @@ use super::spawn_telemetry::SpawnMeasurements;
 use super::spawn_telemetry::record_spawn_success;
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
+use crate::agent::helper_daybreak;
 use crate::agent::history::load_agent_model_context;
 use crate::agent::history::prepare_forked_history;
 use crate::agent::role::apply_role_to_config;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
 use crate::agent::types::SpawnAgentOptions;
+use crate::agent::types::SpawnProgramSource;
 use crate::agents_md_manager::SessionInstructions;
 use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
@@ -240,7 +242,7 @@ impl LocalAgentControl {
         thread_id: ThreadId,
         parent: Option<Arc<CodexThread>>,
     ) -> CodexResult<Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
-        let membership = self.runtime.admit_start()?;
+        let membership = self.runtime.admit_exec_producer()?; // ALAB(upgrade): reload registration and cancellation cleanup retain producer admission.
         let state = self.runtime.upgrade()?;
         let owner_thread_id = parent.as_ref().map(|parent| parent.session.thread_id);
         if let Some(parent) = &parent {
@@ -634,7 +636,7 @@ impl LocalAgentControl {
         options: SpawnAgentOptions,
     ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
         let _exec_start = self.runtime.admit_exec_tree_start()?; // ALAB(exec-tree): retain admission through child creation and initial input.
-        let membership = self.runtime.admit_start()?;
+        let membership = self.runtime.admit_exec_producer()?; // ALAB(upgrade): provisional child cleanup retains producer admission after caller cancellation.
         let spawn_started_at = Instant::now();
         let state = self.runtime.upgrade()?;
         // Resolve the parent before inheriting settings or copying attachments.
@@ -746,6 +748,89 @@ impl LocalAgentControl {
             disabled_plugin_ids,
             ..StartThreadOptions::new(config.clone())
         };
+        let mut cyber_access_program = options.cyber_access_program;
+        let mut inherited_program_to_resolve = None;
+        if let Some(parent_id) = session_source
+            .as_ref()
+            .and_then(SessionSource::parent_thread_id)
+            && let Ok(parent) = state.get_thread(parent_id).await
+        {
+            let turn = match options.parent_turn_id.as_deref() {
+                Some(id) => parent.session.turn_context_for_sub_id(id).await,
+                None => None,
+            };
+            let spawn_owner = helper_daybreak::eligible_owner(&parent.session);
+            if options.cyber_access_program_source == SpawnProgramSource::ParentTurn
+                && let Some(resolution) = turn.as_ref().and_then(|turn| {
+                    turn.extension_data
+                        .get::<helper_daybreak::turn::SavedProgramResolution>()
+                })
+            {
+                resolution
+                    .validate()
+                    .map_err(|err| err.with_agent_context(AgentErrorContext::ChildStartup))?;
+                // Carry the saved choice. The child resolves it for its own model and account.
+                cyber_access_program = None;
+            }
+            if config.features.enabled(Feature::DaybreakProgramPropagation)
+                && let Some(enrollment) = parent
+                    .thread_extension_data()
+                    .get::<helper_daybreak::Enrollment>()
+                && parent
+                    .session
+                    .get_config()
+                    .await
+                    .features
+                    .enabled(Feature::DaybreakProgramPropagation)
+            {
+                start_options
+                    .thread_extension_init
+                    .insert(helper_daybreak::Enrollment::NativeHelper);
+                if let Some(turn) = turn {
+                    let propagate_program = spawn_owner.is_some()
+                        && turn.config.model_provider_id
+                            == codex_model_provider_info::OPENAI_PROVIDER_ID
+                        && codex_model_provider::provider_uses_first_party_auth_path(
+                            turn.provider.info(),
+                        )
+                        && config.model_provider_id
+                            == codex_model_provider_info::OPENAI_PROVIDER_ID
+                        && config
+                            .model_provider
+                            .supports_cyber_access_programs(&config.model_provider_id)
+                        && codex_model_provider::provider_uses_first_party_auth_path(
+                            &config.model_provider,
+                        );
+                    if propagate_program
+                        && options.cyber_access_program_source == SpawnProgramSource::ParentTurn
+                    {
+                        inherited_program_to_resolve = cyber_access_program;
+                    }
+                    if let Some(intent) = helper_daybreak::spawning_intent(
+                        &parent.session,
+                        &turn,
+                        &enrollment,
+                        spawn_owner.as_ref(),
+                    )
+                    .await
+                    {
+                        // A read failure must not become an immutable default on a live child.
+                        if propagate_program
+                            && (options.cyber_access_program.is_none()
+                                || options.cyber_access_program_source
+                                    == SpawnProgramSource::ParentTurn)
+                            && let Err(error) = &intent.choice
+                        {
+                            return Err(CodexErr::InvalidRequest(error.clone())
+                                .with_agent_context(AgentErrorContext::ChildStartup));
+                        }
+                        if intent.choice.is_ok() {
+                            start_options.thread_extension_init.insert(intent);
+                        }
+                    }
+                }
+            }
+        }
         let fork_context = match (session_source, options.fork_mode.as_ref()) {
             (Some(session_source), Some(_)) => {
                 let fork_context_started_at = Instant::now();
@@ -850,11 +935,31 @@ impl LocalAgentControl {
             None
         };
 
+        if let Some(inherited) = inherited_program_to_resolve
+            && inherited != codex_protocol::turn_input::CyberAccessProgram::Standard
+            && let Some(model) = new_thread
+                .thread
+                .thread_extension_data()
+                .get::<codex_protocol::openai_models::ModelInfo>()
+            && model
+                .available_access_programs
+                .as_ref()
+                .is_some_and(|programs| !programs.cyber.contains(&inherited))
+        {
+            // Preserve the parent's turn override, adapting Blue/Red to the child model.
+            // The separately captured saved choice remains the default for later turns.
+            cyber_access_program = helper_daybreak::turn::select_program(
+                &model,
+                codex_protocol::openai_models::SavedDaybreakChoice::On,
+            )
+            .map_err(CodexErr::InvalidRequest)?
+            .or(Some(inherited));
+        }
         let start_options = TurnStartOptions {
             parent_turn_id: options.parent_turn_id,
             turn_trigger: options.turn_trigger,
             root_turn_id: options.root_turn_id,
-            cyber_access_program: options.cyber_access_program,
+            cyber_access_program,
             ..Default::default()
         };
         let input_admission_started_at = Instant::now();
@@ -941,7 +1046,7 @@ impl LocalAgentControl {
         thread_id: ThreadId,
         session_source: SessionSource,
     ) -> CodexResult<ThreadId> {
-        let _membership = self.runtime.admit_start()?;
+        let _membership = self.runtime.admit_exec_producer()?; // ALAB(upgrade): retain producer admission across recursive rollout resume.
         let root_depth = thread_spawn_depth(&session_source).unwrap_or(0);
         let (resumed_thread_id, resumed_multi_agent_version) = Box::pin(
             self.resume_single_agent_from_rollout(config.clone(), thread_id, session_source),

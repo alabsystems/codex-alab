@@ -13,23 +13,30 @@ use std::sync::atomic::Ordering;
 const CHILD: &str = "ALAB_NATIVE_SOURCE_CASE";
 
 fn child(case: &str) {
+    child_in_slot(case, Some("6f6c64"));
+}
+
+fn child_in_slot(case: &str, slot: Option<&str>) {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     let name = concat!(module_path!(), "::native_source_child")
         .split_once("::")
         .unwrap()
         .1;
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
         .args(["--exact", name])
         .env(CHILD, case)
         .env("CODEX_HOME", &root)
         .env(
             codex_alab_core::home::AUTH_PATH_ENV,
             root.join("startup.json"),
-        )
-        .env(managed_auth::SLOT_ENV, "6f6c64")
-        .output()
-        .unwrap();
+        );
+    match slot {
+        Some(slot) => command.env(managed_auth::SLOT_ENV, slot),
+        None => command.env_remove(managed_auth::SLOT_ENV),
+    };
+    let output = command.output().unwrap();
     assert!(
         output.status.success(),
         "{}\n{}",
@@ -72,6 +79,25 @@ fn native_source_refresh_and_logout_do_not_touch_startup_source() {
 #[test]
 fn native_source_invalid_unreadable_and_replaced_files_keep_the_cached_owner() {
     child("replaced");
+}
+
+#[test]
+fn assignment_source_is_admissible_only_for_a_real_managed_chatgpt_grant() {
+    child("admissible");
+}
+
+#[test]
+fn assignment_source_is_inadmissible_for_a_login_outside_managed_custody() {
+    child_in_slot("unbound", None);
+}
+
+#[test]
+fn assignment_source_is_inadmissible_outside_the_alab_binary() {
+    // This process never activated ALab; the fence refuses it for the same reason.
+    let stock =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    assert!(!codex_alab_core::is_alab_binary());
+    assert!(stock.alab_assignment_source_admissible().is_err());
 }
 
 fn document(user: &str, account: &str, refresh: &str) -> AuthDotJson {
@@ -261,6 +287,21 @@ async fn native_source_child() {
     let startup = home.join("startup.json");
     let selected = home.join("selected.json");
     let old = document("user-old", "account-old", "old");
+    if case == "unbound" {
+        // An ordinary codex-alab login: its file has no slot marker and no carrier names one.
+        write(&startup, &old);
+        let plain = manager(&home, None).await;
+        let tokens = plain.auth_cached().unwrap().get_token_data().unwrap();
+        assert_eq!(tokens.account_id.as_deref(), Some("account-old"));
+        assert_eq!(plain.alab_managed_binding(&tokens).unwrap(), None);
+        assert!(plain.alab_assignment_source_admissible().is_err());
+        assert!(plain.alab_native_source_fence().await.is_err());
+        assert!(
+            plain.refresh_lock.try_acquire().is_ok(),
+            "a refused fence keeps no refresh permit"
+        );
+        return;
+    }
     let mut new = document("user-new", "account-new", "new");
     let mut rotated = document("user-new", "account-new", "rotated");
     if case == "scope-jwt" {
@@ -273,7 +314,7 @@ async fn native_source_child() {
     marker(&selected, "6e6577");
     let original = std::fs::read(&startup).unwrap();
     let mut proof = source(selected.clone(), &new);
-    if case == "bootstrap" || case == "restore" {
+    if case == "bootstrap" || case == "restore" || case == "admissible" {
         proof = source(startup.clone(), &old);
         proof.slot = "6f6c64".into();
         proof.assignment_generation = 0;
@@ -296,8 +337,50 @@ async fn native_source_child() {
         Some("account-old")
     );
 
+    if case == "admissible" {
+        // The check is the fence's own hostless half: it holds where the fence succeeds,
+        // and it neither takes the refresh lock nor asks the native host.
+        selected_manager
+            .alab_assignment_source_admissible()
+            .unwrap();
+        let fence = selected_manager.alab_native_source_fence().await.unwrap();
+        selected_manager
+            .alab_assignment_source_admissible()
+            .unwrap();
+        drop(fence);
+        *owner.source.lock().unwrap() = source(selected.clone(), &new);
+        assert!(
+            selected_manager.alab_native_source_fence().await.is_err(),
+            "the host's half stays with the fence"
+        );
+        selected_manager
+            .alab_assignment_source_admissible()
+            .unwrap();
+
+        // A host facade is a selector, never the epoch an assignment retires.
+        let real = Arc::new(manager(&home, None).await);
+        real.alab_assignment_source_admissible().unwrap();
+        let host = super::super::alab_context_host::wrap(real.clone());
+        assert!(host.alab_assignment_source_admissible().is_err());
+        assert!(host.alab_native_source_fence().await.is_err());
+        host.alab_context_host.as_ref().unwrap().close();
+
+        // An API key is no ChatGPT grant, even beside the managed file.
+        let api = AuthManager::from_auth_for_testing_with_home(
+            CodexAuth::from_api_key("fixture-api-key"),
+            home.clone(),
+        );
+        assert!(api.alab_assignment_source_admissible().is_err());
+        assert!(api.alab_native_source_fence().await.is_err());
+        assert_eq!(std::fs::read(&startup).unwrap(), original);
+        return;
+    }
+
     if case == "bootstrap" || case == "restore" {
         let before = *selected_manager.auth_change_state_tx.borrow();
+        selected_manager
+            .alab_assignment_source_admissible()
+            .unwrap();
         let mut fence = selected_manager.alab_native_source_fence().await.unwrap();
         assert_eq!(fence.assignment_generation(), 0);
         assert_eq!(fence.credential_generation(), 1);
@@ -514,6 +597,9 @@ async fn native_source_child() {
 
     match case.as_str() {
         "binding" => {
+            selected_manager
+                .alab_assignment_source_admissible()
+                .unwrap();
             let fence = selected_manager.alab_native_source_fence().await.unwrap();
             assert_eq!(fence.auth_state(), after);
             assert_eq!(fence.credential_generation(), proof.revision.generation);

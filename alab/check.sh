@@ -24,7 +24,9 @@
 #      testing. A failure is rerun alone; one that still fails is rerun alone on pristine
 #      upstream (git merge-base HEAD upstream/main, in this checkout's pristine tree and its
 #      own target dir: lib.sh, alab_pristine). It gates unless it fails there too.
-# Execution order: hooks, full tippy classification, CLI build/version, ALab tests,
+# Newly integrated upstream commits also need committed intake reviews and complete
+# declared execution evidence for every affected feature's scenarios.
+# Execution order: hooks, intake/evidence admission, full tippy classification, CLI build/version, ALab tests,
 # then hooked upstream unit tests. Check numbers above retain their existing identities.
 # Upstream's integration suites stay upstream's gate: several need the network or are
 # timing-sensitive, and they cannot tell an ALab fault from an upstream one.
@@ -122,6 +124,22 @@ if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "${base}^{commit}")" ]]; then
     echo "or, if upstream made one redundant, rerun with ALAB_ALLOW_HOOK_LOSS=1." >&2
     exit 1
   fi
+fi
+
+intake_target="$(git merge-base HEAD upstream/main)" \
+  || alab_die "cannot identify the integrated upstream frontier before review admission"
+intake_base="$(git rev-parse -q --verify refs/remotes/origin/main^{commit})" \
+  || alab_die "no origin/main for upstream review admission"
+new_upstream="$(git rev-list -1 "${intake_base}..${intake_target}")" \
+  || alab_die "cannot determine which upstream commits need review admission"
+if [[ -n "${new_upstream}" ]]; then
+  intake_python="$(alab_python_311)" || alab_die "upstream review admission needs a TOML-capable interpreter"
+  "${intake_python}" -I "${repo_root}/alab/upstream_gate.py" \
+    --repo "${repo_root}" --base "${intake_base}" --source HEAD --upstream "${intake_target}" \
+    || alab_die "upstream review admission failed; commit complete intake decisions before checking again"
+  "${intake_python}" -I "${repo_root}/alab/feature_gate.py" \
+    --repo "${repo_root}" --base "${intake_base}" --source HEAD --upstream "${intake_target}" \
+    || alab_die "feature evidence admission failed; complete the exact-source affected-feature bundle before checking again (alab/design/upstream-alignment.md)"
 fi
 
 cd "${repo_root}/codex-rs"
@@ -334,6 +352,12 @@ alab_build_command "${cargo}" --unverified run --quiet --locked -p codex-cli --b
 if [[ ${#alab_packages[@]} -gt 0 ]]; then
   alab_build_command "${cargo}" --unverified test --locked --no-fail-fast "${alab_packages[@]}" || passed $? 1
 fi
+# Compile the fixed native kernel-probe driver under the same protected compiler
+# authority. macOS refuses sandbox_apply inside an existing sandbox, so the
+# authenticated parent runs its two real boundary controls after this child drains.
+if [[ "$(uname -s)" == Darwin && -f "${repo_root}/codex-rs/alab-release/Cargo.toml" ]]; then
+  alab_build_command "${cargo}" --unverified build --locked -p codex-alab-release --bin codex-release || passed $? 1
+fi
 
 [[ ${#hooked_packages[@]} -gt 0 ]] || exit 0
 
@@ -395,7 +419,7 @@ done < <(jq -r '.passed[] | "\(.package)/\(.target): \(.test)"' "${unit_root}/un
 
 check_selected() {
   alab_project_selected || return $?
-  local upstream_base pristine build_target pristine_target
+  local upstream_base pristine build_target pristine_target common feature_reads=()
   cd "${repo_root}"
   upstream_base="$(git merge-base HEAD upstream/main)" || return $?
   pristine="$(alab_pristine "${repo_root}" "${upstream_base}")" || return $?
@@ -404,9 +428,30 @@ check_selected() {
     "${CARGO_TARGET_DIR:-${repo_root}/codex-rs/target}")" || return $?
   pristine_target="$(alab_real "${pristine}/codex-rs/target")" || return $?
   export CARGO_TARGET_DIR="${build_target}"
+  if [[ -z "${ALAB_FEATURE_BUNDLE:-}" ]]; then
+    common="$(git rev-parse --path-format=absolute --git-common-dir)" || return $?
+    ALAB_FEATURE_BUNDLE="${common}/alab-feature-evidence/$(git rev-parse HEAD)" || return $?
+    export ALAB_FEATURE_BUNDLE
+  fi
+  [[ "${ALAB_FEATURE_BUNDLE}" == /* ]] || alab_die "ALAB_FEATURE_BUNDLE must be absolute"
+  if [[ -d "${ALAB_FEATURE_BUNDLE}" ]]; then
+    feature_reads=(--read "${ALAB_FEATURE_BUNDLE}")
+  fi
   alab_contained --pristine "${pristine}" --read "${ATPKG_PROJECT_FRONT}" \
-    --read "${ATPKG_PROJECT_EXECUTION}" "${build_target}" "${pristine_target}" -- \
-    /bin/bash -c '. "$1"; shift; check_main "$@"' alab-check "${repo_root}/alab/check.sh"
+    --read "${ATPKG_PROJECT_EXECUTION}" ${feature_reads[@]+"${feature_reads[@]}"} "${build_target}" "${pristine_target}" -- \
+    /bin/bash -c '. "$1"; shift; check_main "$@"' alab-check "${repo_root}/alab/check.sh" || return $?
+  if [[ "$(uname -s)" == Darwin && -f "${repo_root}/codex-rs/alab-release/Cargo.toml" ]]; then
+    local kernel_scratch kernel_status=0
+    mkdir -p /tmp/.ubd || return $?
+    kernel_scratch="$(mktemp -d /tmp/.ubd/cks.XXXXXX)" || return $?
+    TMPDIR="${kernel_scratch}" "${build_target}/debug/codex-release" verify-sandbox || kernel_status=$?
+    if [[ "${kernel_status}" -ne 0 ]]; then
+      alab_say "native sandbox controls failed; kept ${kernel_scratch}"
+      return "${kernel_status}"
+    fi
+    # This fixed native probe joined every env/cat/touch child; it forks no workers.
+    rm -rf "${kernel_scratch}"
+  fi
 }
 
 check_entry() {
@@ -414,6 +459,8 @@ check_entry() {
     check_main "$@"
     return
   fi
+  ALAB_PYTHON="$(alab_python_311)" || return $?
+  export ALAB_PYTHON
   alab_project_run "${repo_root}" "" /bin/bash -c \
     '. "$1"; shift; check_selected "$@"' alab-check "${repo_root}/alab/check.sh"
 }

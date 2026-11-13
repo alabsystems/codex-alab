@@ -40,7 +40,7 @@ unit_tests() (
   local tree="$1" target_dir="$2" package artifacts stdio host cli v8 archive binding
   local result_mode="" result_state="" result_plan="" result_parser result_runner result_python runner_config
   local runner_key result_round result_rounds result_status result_overall=0
-  local proxy_home
+  local proxy_home helper_scratch helper_metadata helpers need_helpers=0
   local test_command=(/usr/bin/env) tree_config=()
   shift 2
   while [[ "${1:-}" == --config ]]; do
@@ -95,6 +95,29 @@ unit_tests() (
         ;;
     esac
   done
+  result_python="${ALAB_PYTHON:-/usr/bin/python3}"
+  for package in "${packages[@]}"; do
+    case "${package}" in
+      codex-core | codex-app-server | codex-mcp) need_helpers=1 ;;
+    esac
+  done
+  # Bind runtime artifacts to this tree's package/target metadata, not just a
+  # binary name. A bin target's libtest harness has the same target name/kind.
+  if [[ -n "${result_mode}" || "${need_helpers}" == 1 ]]; then
+    if [[ -n "${result_mode}" ]]; then
+      helper_metadata="${result_state}/metadata.json"
+    else
+      helper_scratch="$(mktemp -d "${target_dir}/alab-helpers.XXXXXX")" || return $?
+      trap 'rm -rf -- "${helper_scratch}"; [[ -z "${proxy_home:-}" ]] || rm -rf -- "${proxy_home}"' EXIT
+      helper_metadata="${helper_scratch}/metadata.json"
+    fi
+    "${cargo}" metadata --locked ${tree_config[@]+"${tree_config[@]}"} --no-deps --format-version 1 \
+      >"${helper_metadata}" || return $?
+  fi
+  select_helpers() {
+    printf '%s\n' "${artifacts}" | "${result_python}" -I "${alab_library_root}/alab/native_helpers.py" \
+      --repo "${tree}" --target-dir "${target_dir}" --metadata "${helper_metadata}" "$@"
+  }
   for package in "${packages[@]}"; do
     case "${package}" in
       codex-core | codex-app-server)
@@ -108,24 +131,10 @@ unit_tests() (
         if [[ -n "${result_mode}" ]]; then
           printf '%s\n' "${artifacts}" >"${result_state}/helper-native.jsonl" || return $?
         fi
-        stdio="$(printf '%s\n' "${artifacts}" | jq -e -r -s '
-          [.[] | select(.reason == "compiler-artifact" and .target.name == "test_stdio_server"
-            and (.target.kind | index("bin"))) | .executable | select(type == "string")]
-          | unique | select(length == 1) | .[0]')" || {
-          echo "alab/check.sh: no unique test_stdio_server executable in helper build artifacts" >&2
-          return 1
-        }
-        host="$(printf '%s\n' "${artifacts}" | jq -e -r -s '
-          [.[] | select(.reason == "compiler-artifact" and .target.name == "codex-code-mode-host"
-            and (.target.kind | index("bin"))) | .executable | select(type == "string")]
-          | unique | select(length == 1) | .[0]')" || {
-          echo "alab/check.sh: no unique codex-code-mode-host executable in helper build artifacts" >&2
-          return 1
-        }
-        [[ -f "${stdio}" && -x "${stdio}" && -f "${host}" && -x "${host}" ]] || {
-          echo "alab/check.sh: a prepared native test helper is not executable" >&2
-          return 1
-        }
+        helpers="$(select_helpers --helper codex-rmcp-client/test_stdio_server \
+          --helper codex-code-mode-host/codex-code-mode-host)" || return $?
+        stdio="$(printf '%s\n' "${helpers}" | jq -e -r '.["test_stdio_server"]')" || return $?
+        host="$(printf '%s\n' "${helpers}" | jq -e -r '.["codex-code-mode-host"]')" || return $?
         # cargo_bin checks the original name before its underscore alias. Bind
         # both to the actual artifact so inherited overrides cannot cross trees.
         test_command+=("CARGO_BIN_EXE_test_stdio_server=${stdio}"
@@ -144,17 +153,8 @@ unit_tests() (
         if [[ -n "${result_mode}" ]]; then
           printf '%s\n' "${artifacts}" >"${result_state}/helper-cli.jsonl" || return $?
         fi
-        cli="$(printf '%s\n' "${artifacts}" | jq -e -r -s '
-          [.[] | select(.reason == "compiler-artifact" and .target.name == "codex"
-            and (.target.kind | index("bin"))) | .executable | select(type == "string")]
-          | unique | select(length == 1) | .[0]')" || {
-          echo "alab/check.sh: no unique codex executable in helper build artifacts" >&2
-          return 1
-        }
-        [[ -f "${cli}" && -x "${cli}" ]] || {
-          echo "alab/check.sh: the prepared codex test helper is not executable" >&2
-          return 1
-        }
+        helpers="$(select_helpers --helper codex-cli/codex)" || return $?
+        cli="$(printf '%s\n' "${helpers}" | jq -e -r '.codex')" || return $?
         # A fresh macOS executable can spend longer in first-launch loading than
         # the capability probe's timeout. Verify this exact artifact is ready.
         "${cli}" --version >/dev/null || {
@@ -168,22 +168,23 @@ unit_tests() (
   done
   if [[ -n "${result_mode}" ]]; then
     result_parser="${alab_library_root}/alab/unit_results.py"
-    result_python="${ALAB_PYTHON:-/usr/bin/python3}"
     # The runtime adapter belongs to ALab even when testing pristine upstream.
     # Its native C entrypoint avoids interpreter/Rust startup signal changes and
     # execs inside Cargo's own child; prepare/collect Python never enters it.
+    # Its source metadata must also come from ALab, with this run's output target.
+    # Pristine path overrides belong only to the upstream workspace being tested.
+    "${cargo}" metadata --locked --manifest-path "${alab_library_root}/codex-rs/Cargo.toml" \
+      --no-deps --format-version 1 >"${result_state}/runner-metadata.json" || return $?
     artifacts="$(alab_build_command "${cargo}" --unverified build --locked \
       --manifest-path "${alab_library_root}/codex-rs/Cargo.toml" \
       -p codex-alab-unit-runner --bin alab-unit-runner \
       --message-format=json-render-diagnostics)" || return $?
     printf '%s\n' "${artifacts}" >"${result_state}/helper-runner.jsonl" || return $?
-    result_runner="$(printf '%s\n' "${artifacts}" | jq -e -r -s '
-      [.[] | select(.reason == "compiler-artifact" and .target.name == "alab-unit-runner"
-        and (.target.kind | index("bin"))) | .executable | select(type == "string")]
-      | unique | select(length == 1) | .[0]')" || return $?
-    [[ -f "${result_runner}" && -x "${result_runner}" ]] || return 1
-    "${cargo}" metadata --locked ${tree_config[@]+"${tree_config[@]}"} --no-deps --format-version 1 \
-      >"${result_state}/metadata.json" || return $?
+    helpers="$(printf '%s\n' "${artifacts}" | "${result_python}" -I "${alab_library_root}/alab/native_helpers.py" \
+      --repo "${alab_library_root}" --target-dir "${target_dir}" \
+      --metadata "${result_state}/runner-metadata.json" \
+      --helper codex-alab-unit-runner/alab-unit-runner)" || return $?
+    result_runner="$(printf '%s\n' "${helpers}" | jq -e -r '.["alab-unit-runner"]')" || return $?
     # Keep the whole selected feature graph. Artifact provenance is captured before
     # Cargo invokes the runner; shared/custom library names never need guessing.
     alab_build_command "${test_command[@]}" "${cargo}" --unverified test --locked ${tree_config[@]+"${tree_config[@]}"} \

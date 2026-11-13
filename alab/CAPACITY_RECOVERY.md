@@ -186,6 +186,36 @@ Nothing here needs a key.
 
 ## Continue permitted work after a security refusal
 
+An active claimed root never waits for a person to settle Daybreak safety UI. When a
+safety-buffering notification offers a faster model, the TUI emits the validated
+interrupt/fork/retry automatically instead of opening a confirmation. Duplicate offers
+for the same model are suppressed; a changed server-selected model is a new offer.
+Accepted automatic retries are capped at two per original user-turn command lineage.
+The retry count travels with the accepted command, is not added to persistent record
+formats, and resets for a new human turn. Immediately before interruption the app
+rechecks the active claimed root and this budget, closing the queued-event authority
+race. With no faster treatment, buffering and recourse stay non-modal while the server
+determines the next outcome; no rewrite or Daybreak escalation is submitted merely to
+keep work moving. Ordinary interactive Codex keeps its existing confirmations and is
+not subject to the automatic cap. The active-root predicate and cross-thread guard are
+in `alab-tui/glue/chat_hand.rs` and `tui/src/chatwidget/safety_buffering.rs`.
+
+If history loading, forking, attachment, or submission fails after interruption, an
+authorized automatic retry makes one bounded continuation attempt on the thread that
+is current after that failure, rather than restoring its prompt as a supervisor-blocking draft. The continuation has
+native ALab attribution and a fresh client ID, retains the original structured input,
+and adds an instruction to inspect current state, preserve completed work, avoid
+repeating side effects, and continue only independently authorized work. It rechecks
+thread identity and root authority and will not replace a different turn that is active.
+The acknowledged source interruption is exempt even if its completion is still queued
+in the local cache; only that exact ID is cleared so the harness-attributed submission
+can start. A failure before interruption receives no such exemption. A pre-existing
+unsent draft is preserved. A rejected harness-owned turn likewise does
+not become a blocking composer draft. If authority has changed, or the continuation
+cannot be submitted, the original input state is restored and the failure is reported;
+storage, transport, authentication, and server admission failures remain external
+limits rather than reasons to invent approval or bypass policy.
+
 Inside aterm, an active Cruise or Land harness treats a native `cyber_policy`
 refusal during regular sampling separately from capacity errors. It can submit one policy-aware continuation
 for the current task. That instruction excludes the refused action and asks for

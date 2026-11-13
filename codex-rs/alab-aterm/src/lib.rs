@@ -33,6 +33,7 @@ pub mod account_recovery;
 pub mod accounts;
 pub mod assignment;
 mod client;
+mod runtime_claim;
 pub mod conn;
 pub mod context;
 pub mod enrollment;

@@ -9,6 +9,12 @@ use crate::pets::PetImageRenderError;
 use crate::tui::Tui;
 
 impl Tui {
+    #[cfg(test)]
+    pub(crate) fn alab_preview_placed_for_test(&self) -> bool {
+        self.pet_picker_preview_image_state
+            .alab_image_placed_for_test()
+    }
+
     pub(crate) fn alab_clear_pet_images_for_thread_switch(&mut self) -> std::io::Result<()> {
         if codex_alab_tui::interface::available() {
             self.alab_clear_pet_images_on_exit()

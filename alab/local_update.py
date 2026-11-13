@@ -19,6 +19,7 @@ from pathlib import Path
 import plistlib
 import pwd
 import runpy
+import secrets
 import shutil
 import stat
 import subprocess
@@ -36,11 +37,12 @@ LABEL = "systems.alab.codex-alab-local-update"
 GUARDIAN_CONTRACT = "cache-lock-v2"
 CHANNEL_STATUS = ".alab-local-update-status.json"
 WORK_PHASES = frozenset(("fetching", "checking", "building", "selecting"))
+CONTROLLER_BINDING_LIMIT = 64 * 1024
 
 
 def git(repo, *args):
     done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                          timeout=60)
+                          timeout=60, env=PROMOTE.git_environment())
     if done.returncode:
         raise RuntimeError(f"git {args[0]} failed: {done.stderr.strip() or done.returncode}")
     return done.stdout.strip()
@@ -174,7 +176,8 @@ def update_once(repo, out, prefix, aterm, *, run=subprocess.run, build=None, kee
                 return subprocess.run(
                     ["/bin/bash", "-c", '. "$1/alab/package.sh"; shift; package_locked_entry "$@"',
                      "alab-local-build", str(ROOT), commit, "--out", str(out),
-                     "--keep", str(keep), "--no-promote"], check=False)
+                     "--keep", str(keep), "--no-promote"], check=False,
+                    env=PROMOTE.git_environment())
         result = build(source)
         if result.returncode:
             raise RuntimeError(f"package build failed (exit {result.returncode}); selection kept")
@@ -201,6 +204,7 @@ def parser():
     result.add_argument("--fixed-source", help="run this exact source with its own cache guardian")
     result.add_argument("--expected-checkout", help="original verbatim selected checkout")
     result.add_argument("--expected-prefix", help="original resolved selection prefix")
+    result.add_argument("--controller-binding", help=argparse.SUPPRESS)
     # Observations only: neither value grants selection custody.
     result.add_argument("--initial-selected-source", help=argparse.SUPPRESS)
     result.add_argument("--initial-selected-version", help=argparse.SUPPRESS)
@@ -236,7 +240,7 @@ def cache_busy(cache):
 def common_dir(repo):
     result = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True, timeout=60,
+        capture_output=True, timeout=60, env=PROMOTE.git_environment(),
     )
     if result.returncode or not result.stdout.endswith(b"\n"):
         raise RuntimeError("cannot locate the clone's common directory")
@@ -281,51 +285,81 @@ def check_controller_disk(repo, out):
                                "20 GiB controller floor; not allocating source")
 
 
+def controller_binding_text(binding):
+    text = json.dumps(binding, ensure_ascii=True, separators=(",", ":"))
+    if len(text.encode("utf-8")) > CONTROLLER_BINDING_LIMIT:
+        raise ValueError("controller source binding exceeds its bounded handoff")
+    return text
+
+
+def controller_custody(operation, *arguments):
+    """Run the existing source owner with this updater's isolated Git context."""
+    if operation not in {"create_fresh", "validate_binding", "remove_fresh"}:
+        raise ValueError("unknown controller source operation")
+    payload = json.dumps(arguments, ensure_ascii=True, separators=(",", ":"))
+    if len(payload.encode("utf-8")) > 2 * CONTROLLER_BINDING_LIMIT:
+        raise ValueError("controller source operation exceeds its bounded arguments")
+    program = ('import json,runpy,sys; ns=runpy.run_path(sys.argv[1]); '
+               'value=ns[sys.argv[2]](*json.loads(sys.argv[3])); '
+               'print(json.dumps(value,default=str))')
+    done = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", program,
+         str(ROOT / "alab/package_source.py"), operation, payload],
+        capture_output=True, text=True, timeout=60, env=PROMOTE.git_environment())
+    if done.returncode:
+        raise RuntimeError(f"controller source {operation} failed (exit {done.returncode}): "
+                           + done.stderr.strip())
+    if len(done.stdout.encode("utf-8")) > 2 * CONTROLLER_BINDING_LIMIT:
+        raise ValueError("controller source operation returned oversized data")
+    return json.loads(done.stdout)
+
+
+def validate_controller_binding(binding, repo, controller, source):
+    """Require this handoff's source and repository before consulting its custody."""
+    controller_binding_text(binding)
+    if (not isinstance(binding, dict) or type(binding.get("schema")) is not int
+            or binding["schema"] != 1 or type(binding.get("custody")) is not int
+            or binding["custody"] != 2
+            or binding.get("source") != str(Path(controller).resolve(strict=True))
+            or binding.get("commit") != source
+            or binding.get("common") != str(common_dir(repo).resolve(strict=True))):
+        raise ValueError("controller source binding differs from the requested handoff")
+    controller_custody("validate_binding", binding)
+
+
 @contextmanager
 def controller_checkout(repo, source, *, handoff_complete=None):
-    """Own one regenerable source tree, preserving any unexpected output or work."""
-    controller = Path(tempfile.mkdtemp(prefix="alab-local-controller-", dir=common_dir(repo)))
-    registered = False
+    """Own the source's pre-checkout binding through the completed public handoff."""
+    parent = Path(tempfile.gettempdir()) / ".ubd"
+    parent.mkdir(mode=0o700, exist_ok=True)
+    if parent.is_symlink() or not parent.is_dir():
+        raise ValueError("controller scratch must be a real directory")
+    controller = Path(tempfile.mkdtemp(
+        prefix="alab-local-controller-", suffix=".noindex", dir=parent)).resolve()
+    binding = None
     try:
-        git(repo, "worktree", "add", "--quiet", "--detach", str(controller), source)
-        registered = True
-        if git(controller, "rev-parse", "HEAD") != source or git(
-                controller, "status", "--porcelain=v1", "--untracked-files=all", "--ignored"):
-            raise RuntimeError("the fresh controller worktree is not exact and clean")
-        yield controller
+        binding = controller_custody("create_fresh", str(repo), str(controller), source)
+        validate_controller_binding(binding, repo, controller, source)
+        yield controller, binding
     finally:
         try:
+            if binding is None:
+                raise RuntimeError("controller source creation did not establish custody")
             if handoff_complete is not None and handoff_complete() is not True:
                 raise RuntimeError("the public handoff did not confirm successful completion")
-            if registered and (git(controller, "rev-parse", "HEAD") != source or git(
-                    controller, "status", "--porcelain=v1", "--untracked-files=all", "--ignored")):
-                raise RuntimeError("unexpected controller work or output")
-            # Registered controllers use their exact-source retention policy too.
-            # No freshly fetched code is trusted after unexpected edits or output.
-            policy_root = controller if registered else ROOT
-            allowed = runpy.run_path(str(policy_root / "alab/retention.py"))["cleanup_allowed"](repo) is True
+            validate_controller_binding(binding, repo, controller, source)
+            allowed = runpy.run_path(str(controller / "alab/retention.py"))["cleanup_allowed"](repo) is True
         except Exception as error:
             allowed = False
             print(f"alab: cannot establish controller cleanup policy ({error}); preserving", file=sys.stderr)
         if not allowed:
             print(f"alab: kept controller source {controller}: cleanup policy preserves worktrees",
                   file=sys.stderr)
-        elif registered:
-            try:
-                # Even without a preservation policy, unexpected output or work
-                # makes this source tree one to retain rather than discard.
-                if git(controller, "rev-parse", "HEAD") != source or git(
-                        controller, "status", "--porcelain=v1", "--untracked-files=all",
-                        "--ignored"):
-                    raise RuntimeError("unexpected work or output")
-                git(repo, "worktree", "remove", str(controller))
-            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                print(f"alab: kept controller source {controller}: {error}", file=sys.stderr)
         else:
             try:
-                if controller.is_dir() and not any(controller.iterdir()):
-                    controller.rmdir()
-            except OSError as error:
+                validate_controller_binding(binding, repo, controller, source)
+                controller_custody("remove_fresh", binding, str(controller))
+            except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
                 print(f"alab: kept controller source {controller}: {error}", file=sys.stderr)
 
 
@@ -388,6 +422,7 @@ def record_status(repo, code, reason, *, phase="completed", **details):
 def channel_context(out, details):
     """An optional display destination, admitted only by the selected package check."""
     root = (Path(out).absolute() / "codex").resolve(strict=True)
+    identity = channel_directory_identity(root)
     selected = Path(details["initial_selected_checkout"])
     source, version = PROMOTE.package(selected, root)
     label = version.text
@@ -398,17 +433,27 @@ def channel_context(out, details):
             or source != details["initial_selected_source"]
             or label != details["initial_selected_version"]):
         raise ValueError("the display context does not match the selected package")
+    if channel_directory_identity(root) != identity:
+        raise ValueError("the display channel changed during admission")
     return root, {"initial_package": name, "initial_source": source,
-                  "initial_version": label}
+                  "initial_version": label}, identity
+
+
+def channel_directory_identity(root):
+    metadata = os.stat(root, follow_symlinks=False)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("the display channel is not a directory")
+    return metadata.st_dev, metadata.st_ino
 
 
 def record_channel_status(context, code, phase, last_phase, details):
     """Best-effort, atomic, nonsecret observation; never update or selection authority."""
     if context is None:
         return False
-    path = None
+    directory_fd = temporary_fd = None
+    temporary = None
     try:
-        root, initial = context
+        root, initial, identity = context
         if (last_phase not in WORK_PHASES
                 or (code is None and phase != last_phase)
                 or (code is not None and (phase != "completed" or type(code) is not int
@@ -428,22 +473,43 @@ def record_channel_status(context, code, phase, last_phase, details):
         data = (json.dumps(record, ensure_ascii=True) + "\n").encode("utf-8")
         if len(data) > 64 * 1024:
             return False
-        with tempfile.NamedTemporaryFile(mode="wb", dir=root,
-                                         prefix=".alab-local-update-display-",
-                                         delete=False) as stream:
-            path = Path(stream.name)
+        directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        opened = os.fstat(directory_fd)
+        if (opened.st_dev, opened.st_ino) != identity:
+            return False
+        candidate = ".alab-local-update-display-" + secrets.token_hex(16)
+        temporary_fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                               | os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
+        temporary = candidate  # Cleanup owns only a successfully created file.
+        stream = os.fdopen(temporary_fd, "wb")
+        temporary_fd = None  # The stream now owns this descriptor.
+        with stream:
             stream.write(data)
-        path.replace(root / CHANNEL_STATUS)
-        return True
+        if channel_directory_identity(root) != identity:
+            return False
+        os.replace(temporary, CHANNEL_STATUS, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        temporary = None
+        return channel_directory_identity(root) == identity
     except Exception:
         # The existing journal and transaction retain their original failure semantics.
         return False
     finally:
-        if path is not None:
+        if temporary_fd is not None:
             try:
-                path.unlink(missing_ok=True)
+                os.close(temporary_fd)
             except OSError:
                 pass
+        if directory_fd is not None:
+            try:
+                if temporary is not None:
+                    os.unlink(temporary, dir_fd=directory_fd)
+            except OSError:
+                pass
+            finally:
+                try:
+                    os.close(directory_fd)
+                except OSError:
+                    pass
 
 
 def run_locked(argv, *, source=None, expected_checkout=None, expected_prefix=None,
@@ -484,7 +550,7 @@ def run_locked(argv, *, source=None, expected_checkout=None, expected_prefix=Non
         nonlocal handed_off
         check_controller_disk(args.repo, args.out)
         with controller_checkout(args.repo, commit,
-                                 handoff_complete=lambda: handed_off == 0) as controller:
+                                 handoff_complete=lambda: handed_off == 0) as (controller, binding):
             # A stable public mode chooses its own same-version guardian/private
             # entry. The dispatcher never passes a private guardian ABI forward.
             # Keep this source tree until that entry and guardian have both exited.
@@ -497,11 +563,15 @@ def run_locked(argv, *, source=None, expected_checkout=None, expected_prefix=Non
                 sys.executable, "-I", "-B", str(controller / "alab/local_update.py"),
                 *argv, "--repo", str(args.repo.resolve(strict=True)),
                 "--fixed-source", commit, "--expected-checkout", checkout,
-                "--expected-prefix", prefix, *observations], check=False)
+                "--expected-prefix", prefix,
+                "--controller-binding", controller_binding_text(binding), *observations], check=False,
+                env=PROMOTE.git_environment())
             handed_off = done.returncode
         return False, "controller handoff completed"
 
     try:
+        if source is not None and fixed_source_args(argv).fixed_source != source:
+            raise RuntimeError("fixed controller source differs from its guarded transaction")
         progress("checking")
         if source is not None and guardian_contract != GUARDIAN_CONTRACT:
             raise RuntimeError("controller handoff requires the cache-owning guardian; refresh the bootstrap")
@@ -528,9 +598,11 @@ def fixed_source_args(argv):
     if not all(isinstance(value, str) and Path(value).is_absolute()
                for value in (args.expected_checkout, args.expected_prefix)):
         raise ValueError("fixed source requires the original absolute checkout and prefix")
-    if git(ROOT, "rev-parse", "HEAD") != args.fixed_source or git(
-            ROOT, "status", "--porcelain=v1", "--untracked-files=all", "--ignored"):
-        raise RuntimeError("the fixed-source controller is not exact and clean")
+    raw = args.controller_binding
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > CONTROLLER_BINDING_LIMIT:
+        raise ValueError("fixed source requires its bounded pre-checkout binding")
+    binding = json.loads(raw)
+    validate_controller_binding(binding, args.repo, ROOT, args.fixed_source)
     return args
 
 
@@ -565,7 +637,7 @@ def main(argv=None):
         cache = os.environ.get("ALAB_PACKAGE_CACHE", str(Path.home() / ".cache/codex-alab"))
         if args.fixed_source is None:
             if any(value is not None for value in (args.expected_checkout, args.expected_prefix,
-                    args.initial_selected_source, args.initial_selected_version)):
+                    args.controller_binding, args.initial_selected_source, args.initial_selected_version)):
                 raise ValueError("selection custody arguments require --fixed-source")
             if cache_busy(cache):
                 print("alab: local update: another packager owns the cache; next poll will look again",
@@ -584,7 +656,7 @@ def main(argv=None):
             'import runpy,sys; ns=runpy.run_path(sys.argv[1]); '
             'sys.exit(ns["run_fixed_locked"](sys.argv[2:]))',
             str(Path(__file__).resolve()), *argv],
-            check=False)
+            check=False, env=PROMOTE.git_environment())
         if done.returncode == 75:
             print("alab: local update: another packager owns the cache; next poll will look again",
                   file=sys.stderr)

@@ -1,0 +1,313 @@
+{
+  "schema": 1,
+  "base": "576b5fec15fc1fc0fb0b4dae9eb13ac195d90297",
+  "target": "6dfaca4dad030f5ecaf4925f210f539353b15594",
+  "frontier": "c875667eb837663697d5ffa32d375043434e73b4",
+  "commits": [
+    {
+      "sha": "36e074a2fb365aa788886495c82e6ea612226cd9",
+      "subject": "Add local diagnostic ZIP saves to the TUI (#60542)",
+      "paths": [
+        "codex-rs/tui/src/app/background_requests.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/feedback_upload.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__tests__feedback_saved_receipt.snap",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/thread_events.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/bottom_pane/feedback_note_view.rs",
+        "codex-rs/tui/src/bottom_pane/feedback_note_view_tests.rs",
+        "codex-rs/tui/src/bottom_pane/feedback_view.rs",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__feedback_note_view__tests__feedback_disclosure_four_rows.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__feedback_note_view__tests__feedback_disclosure_short_panes.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__feedback_note_view__tests__feedback_disclosures.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__feedback_note_view__tests__feedback_multiline_paste.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__feedback_note_view__tests__feedback_note_uploads_disabled.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__feedback_note_view__tests__feedback_view_bug.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__feedback_note_view__tests__feedback_view_safety_check.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__feedback_view__tests__feedback_upload_consent_lists_doctor_report.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__feedback_view__tests__feedback_upload_consent_lists_windows_sandbox_log_when_included.snap",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__feedback_command_suggestion.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__feedback_good_result_consent_popup.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__feedback_upload_consent_popup.snap",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
+        "codex-rs/tui/src/chatwidget/tests/popups_and_settings.rs",
+        "codex-rs/tui/src/slash_command.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "product-policy",
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Allow an explicitly requested local diagnostic ZIP independently of uploads. Keep ALab feedback.enabled=false: Enter cannot send when uploads are disabled, Ctrl-S chooses LocalZip, log/history attachments require separate consent, and an unavailable save never falls back to upload. Dispatch rechecks the active connection and refuses local saves on remote workspaces; Cloud feedback is unavailable. Staging is bounded and cleaned, save paths belong to the app-server Codex home, local saves avoid future rollout-path attachments and use thread-ID selection. Source and meaningful regressions reviewed; native feedback/save/no-upload scenarios remain pending.",
+      "evidence": [
+        "Source review: tui/src/app/{feedback_upload,background_requests,event_dispatch,thread_events}.rs, app_event.rs and app_server_session.rs separate destinations/receipts and unsupported-method handling.",
+        "Source review: tui/src/chatwidget.rs, chatwidget/slash_dispatch.rs and bottom_pane/{feedback_note_view,feedback_view}.rs explicit save/send actions, upload-disabled behavior, attachment consent and remote/Cloud guards.",
+        "Source review: app/tests.rs real local ZIP/no-upload/log consent/invalid-destination checks; bottom_pane/feedback_note_view_tests.rs save-without-upload, remote shortcut, paste and narrow disclosure cases; chatwidget/tests/{popups_and_settings,app_server}.rs.",
+        "Inspected representative disabled-upload, receipt, external/employee/remote disclosure snapshots; ALab defaults retain feedback.enabled=false."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "fdb8be14853730447f841d4068319b32cea77193",
+      "subject": "Add optional tool call summaries to the full-screen transcript (#60554)",
+      "paths": [
+        "codex-rs/config/src/types.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/thread-manager-sample/src/main.rs",
+        "codex-rs/tui/src/app/history_completion.rs",
+        "codex-rs/tui/src/app/history_completion_tests.rs",
+        "codex-rs/tui/src/app/history_pagination.rs",
+        "codex-rs/tui/src/app/history_pagination_tests.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/owned_transcript_tests.rs",
+        "codex-rs/tui/src/app/side_pane.rs",
+        "codex-rs/tui/src/app_server_session/history.rs",
+        "codex-rs/tui/src/chatwidget/activity_presentation.rs",
+        "codex-rs/tui/src/chatwidget/config_panel.rs",
+        "codex-rs/tui/src/chatwidget/input_restore.rs",
+        "codex-rs/tui/src/chatwidget/replay.rs",
+        "codex-rs/tui/src/config_panel/config_panel_tests.rs",
+        "codex-rs/tui/src/config_panel/mod.rs",
+        "codex-rs/tui/src/config_panel/snapshots/codex_tui__config_panel__tests__config_Sessions.snap",
+        "codex-rs/tui/src/config_panel/toggle.rs",
+        "codex-rs/tui/src/exec_cell/render.rs",
+        "codex-rs/tui/src/history_cell/mod.rs",
+        "codex-rs/tui/src/history_cell/notices.rs",
+        "codex-rs/tui/src/local_settings.rs",
+        "codex-rs/tui/src/transcript_view.rs",
+        "codex-rs/tui/src/transcript_view/activity.rs",
+        "codex-rs/tui/src/transcript_view/disclosure.rs",
+        "codex-rs/tui/src/transcript_view/layout.rs",
+        "codex-rs/tui/src/transcript_view/text.rs",
+        "codex-rs/tui/src/transcript_view/turn_details.rs",
+        "codex-rs/tui/src/transcript_view_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Carry tui.collapse_turn_details with native default false and no ALab override. Explicit owned full-screen configuration enables output-free tool invocation summaries; raw/detailed modes, canonical transcript/search content, live/parked identity, and disclosure anchors remain distinct. Summaries strip controls and preserve nonzero exit status rather than substituting tool output. Also retain correct interrupted-turn pagination: only a loaded owning page emits terminal notices, including itemless interruptions, without manufacturing successful completion. Source and meaningful regressions reviewed; native summary/pagination/config scenarios remain pending.",
+      "evidence": [
+        "Source review: config/src/types.rs and core/src/config/mod.rs default false; schema/config fixtures, config_panel/{mod,toggle}.rs and local_settings.rs explicit owned-mode control.",
+        "Source review: transcript_view/{turn_details,disclosure,layout,text,activity}.rs and transcript_view.rs summary gating, identity/anchors, search/full content and unseen activity.",
+        "Source review: app/{owned_transcript,side_pane,history_completion,history_pagination}.rs, app_server_session/history.rs and chatwidget/{activity_presentation,input_restore,replay}.rs live/parked and interrupted-page lifecycle; exec_cell/render.rs and history_cell trait/notices.",
+        "Source review: transcript_view_tests.rs live search-group/parked expansion/no-output case, app/history_{completion,pagination}_tests.rs owning-page/itemless interruption cases, app/owned_transcript_tests.rs search availability, config_panel/config_panel_tests.rs terminal-mode exclusion."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "7539b0a856e6dcd16459b7a8dac6c5e2a7c77a9f",
+      "subject": "Extend output-free transcript summaries to more tools (#60555)",
+      "paths": [
+        "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
+        "codex-rs/tui/src/history_cell/base.rs",
+        "codex-rs/tui/src/history_cell/computer_activity.rs",
+        "codex-rs/tui/src/history_cell/dynamic.rs",
+        "codex-rs/tui/src/history_cell/dynamic_tests.rs",
+        "codex-rs/tui/src/history_cell/exec.rs",
+        "codex-rs/tui/src/history_cell/mcp.rs",
+        "codex-rs/tui/src/history_cell/mcp_preview.rs",
+        "codex-rs/tui/src/history_cell/mcp_tests.rs",
+        "codex-rs/tui/src/history_cell/patches.rs",
+        "codex-rs/tui/src/history_cell/patches_tests.rs",
+        "codex-rs/tui/src/history_cell/plans.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "codex-rs/tui/src/thread_transcript/tools.rs",
+        "codex-rs/tui/src/thread_transcript/tools_tests.rs",
+        "codex-rs/tui/src/transcript_view/disclosure.rs",
+        "codex-rs/tui/src/transcript_view/footer_tests.rs",
+        "codex-rs/tui/src/transcript_view/layout.rs",
+        "codex-rs/tui/src/transcript_view/search_tests.rs",
+        "codex-rs/tui/src/transcript_view/snapshots/codex_tui__transcript_view__footer__tests__activity_focus_keeps_controls_without_passive_hints.snap",
+        "codex-rs/tui/src/transcript_view/turn_details.rs",
+        "codex-rs/tui/src/transcript_view_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Extend the same default-off collapse_turn_details presentation to dynamic/MCP/computer, patch/image, plan, terminal-interaction and collaboration tools. Labels describe invocations/status, not results, prompt contents or terminal stdin; canonical raw/display cells retain their full data. Declined commands and failed image/resume calls retain honest status. Fallback per-entry disclosure identities support cells without activity IDs; focused expand/collapse hints reflect search expansion and the actual entry. No execution behavior or ALab default is activated. Source and representative status/no-output/search regressions reviewed; native qualification pending.",
+      "evidence": [
+        "Source review: history_cell/{base,computer_activity,dynamic,exec,mcp,mcp_preview,patches,plans}.rs tool-label implementations and multi_agents.rs/thread_transcript/tools.rs honest replay/fallback labels.",
+        "Source review: transcript_view/{turn_details,disclosure,layout}.rs entry-bound fallback identities and focused/search-expanded footer state.",
+        "Source review: dynamic/MCP/patches/replayed-tool label tests, transcript_view_tests.rs failed image private-prompt exclusion, search_tests.rs expansion controls and footer_tests.rs/snapshot expand/collapse hints."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "bcbb7f5a9cb8279166352369aa8995469552d1a4",
+      "subject": "Group consecutive tool calls in the full-screen conversation (#60556)",
+      "paths": [
+        "codex-rs/tui/src/history_cell/search.rs",
+        "codex-rs/tui/src/transcript_view.rs",
+        "codex-rs/tui/src/transcript_view/disclosure.rs",
+        "codex-rs/tui/src/transcript_view/layout.rs",
+        "codex-rs/tui/src/transcript_view/layout_tests.rs",
+        "codex-rs/tui/src/transcript_view/mutations.rs",
+        "codex-rs/tui/src/transcript_view/search.rs",
+        "codex-rs/tui/src/transcript_view/turn_details.rs",
+        "codex-rs/tui/src/transcript_view_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Keep consecutive invocation grouping behind default-off collapse_turn_details. Index chronological groups by canonical cell keys and prompt boundaries while preserving raw transcript, Find and scrollback output. Do not merge across a pinned disclosure; preserve held selection during older-history insertion, reindex completed dynamic tools and invalidate summaries on replacement/merge/pagination. A completed single web search returns to its normal row and provisional duplicates are hidden only in presentation. Source and grouping/selection/search-completion scenarios reviewed; native qualification pending.",
+      "evidence": [
+        "Source review: transcript_view/turn_details.rs backwards grouping, prompt/held-prefix boundaries, canonical source keys, pending dynamic tools, completed search dedup and incremental invalidation.",
+        "Source review: transcript_view/{disclosure,layout,mutations,search}.rs canonical focus handoff, summary-specific cache invalidation and history-loaded reset; history_cell/search.rs invocation labels.",
+        "Source review: transcript_view_tests.rs completed web-search focus, selected older-page insertion and joined group, and live search group completion while selection is held; layout_tests.rs presentation-key fixtures."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "a7a9d82f15f15e8a89399abb15f4766430b9d5c7",
+      "subject": "Collapse completed turn activity beneath transcript prompts (#60557)",
+      "paths": [
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/tests/realtime_requests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget/completion.rs",
+        "codex-rs/tui/src/chatwidget/realtime_tests/transcripts.rs",
+        "codex-rs/tui/src/chatwidget/replay.rs",
+        "codex-rs/tui/src/chatwidget/streaming.rs",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
+        "codex-rs/tui/src/chatwidget/tests/exec_flow.rs",
+        "codex-rs/tui/src/chatwidget/tests/list_spacing_tests.rs",
+        "codex-rs/tui/src/chatwidget/turn_lifecycle.rs",
+        "codex-rs/tui/src/history_cell/messages.rs",
+        "codex-rs/tui/src/history_cell/separators.rs",
+        "codex-rs/tui/src/thread_transcript.rs",
+        "codex-rs/tui/src/transcript_view/disclosure.rs",
+        "codex-rs/tui/src/transcript_view/layout.rs",
+        "codex-rs/tui/src/transcript_view/text.rs",
+        "codex-rs/tui/src/transcript_view/turn_details.rs",
+        "codex-rs/tui/src/transcript_view/turn_tip.rs",
+        "codex-rs/tui/src/transcript_view_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Retain default-off completed-turn collapse on the owned transcript. Carry authoritative assistant message phase through live consolidation and replay; only a completed-turn boundary plus a final answer folds preceding commentary/tools under its prompt. Partial/final answers stay visible, unfinished legacy progress remains until an answer, and nested tool groups expand separately. Untimed completion markers can acquire later timing without duplication; terminal mode still omits untimed display. Controls are presentation-only zero-width source ranges, preserve wrapped-prompt anchoring and search matches, and detailed/disabled views retain original output. Source and meaningful regressions reviewed; native phase/collapse/realtime scenarios remain pending.",
+      "evidence": [
+        "Source review: transcript_view/{turn_details,disclosure,layout,text,turn_tip}.rs phase/completion-aware folding, parent identity, zero-source control rows, wrapped anchor and search-child unpinning.",
+        "Source review: chatwidget/{streaming,completion,replay,turn_lifecycle}.rs, app/event_dispatch.rs/app_event.rs and history_cell/{messages,separators}.rs authoritative phase and untimed-to-timed completion custody; thread_transcript.rs replay phase preservation.",
+        "Source review: transcript_view_tests.rs completed-turn partial/final retention, nested expansion, private output exclusion, search/selection anchor preservation, detailed/disabled output controls and legacy progress/review completion.",
+        "Source review: chatwidget/tests/{app_server,exec_flow,list_spacing_tests}.rs and realtime transcript fixtures preserve actual completed source/phase and rendered transcript behavior."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "ae5c75dbfc1a1e802db7ea9e4231f71ae86507a1",
+      "subject": "Discard opening prompts when side chat creation fails (#60558)",
+      "paths": [
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/tests/key_chords.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Failed side-chat creation must discard its own opening message and image attachments rather than merge them into the parent draft. Both sidebar and side-conversation error paths are corrected. Upstream chooser regression preserves the independently typed parent/subsequent draft and checks failed attachment absence. Source reviewed; runtime qualification pending.",
+      "evidence": [
+        "Source review: tui/src/app/side.rs pending message clearing and removal of error-path restoration.",
+        "Source review: tui/src/app/tests/key_chords.rs failed creation/dismissal draft and attachment assertions."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "f988a5f0da566270150a0031edec457064c8cccd",
+      "subject": "Preserve inherited previews for paginated thread forks (#60559)",
+      "paths": [
+        "codex-rs/app-server/src/request_processors.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_fork.rs",
+        "codex-rs/rollout/src/list.rs",
+        "codex-rs/rollout/src/recorder.rs",
+        "codex-rs/thread-store/src/live_thread.rs",
+        "codex-rs/thread-store/src/local/paginated_fork.rs",
+        "codex-rs/thread-store/src/local/thread_history.rs",
+        "codex-rs/thread-store/src/local/thread_history/turn_lookup.rs",
+        "codex-rs/thread-store/src/thread_metadata_sync.rs",
+        "codex-rs/thread-store/src/types.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "exec-handoff",
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Keep a fork inherited display preview across reference-backed paginated creation, first local turn, metadata merge and reopen. Recover a compacted opening preview from transcript lineage only within the requested frozen fork boundary, not unrestricted parent history. Preview metadata is presentation, not inherited authorization; ALab restrictive restoration remains separately tested. Full changed production paths and added fork scenarios reviewed; native qualification pending.",
+      "evidence": [
+        "Source review: app-server/src/request_processors/thread_processor.rs preview precedence and shared user_message_preview helper; app-server/tests/suite/v2/thread_fork.rs listing/new-turn/reopen/after-compaction cases.",
+        "Source review: rollout/src/{list,recorder}.rs non-agent inherited-history listing and distinct preview merge.",
+        "Source review: thread-store/src/{live_thread,types,thread_metadata_sync}.rs and local/{paginated_fork,thread_history,thread_history/turn_lookup}.rs pending preview capture and ordinal-bounded transcript query."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "6dfaca4dad030f5ecaf4925f210f539353b15594",
+      "subject": "Avoid periodic wakeups in idle Windows file watchers (#60560)",
+      "paths": [
+        "MODULE.bazel",
+        "codex-rs/file-watcher/src/file_watcher_tests.rs",
+        "patches/BUILD.bazel",
+        "patches/notify_windows_idle.patch"
+      ],
+      "classes": [
+        "fix",
+        "packaging"
+      ],
+      "features": [
+        "build-and-adoption",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "The production idle-wakeup fix exists only in the removed Bazel notify patch, not Cargo: target Cargo.lock still selects registry notify 8.2.0. Keep the added Windows unwatch/rewatch regression, and carry the behavior through admitted native dependency inputs or a canonical dependency release before claiming the Windows wakeup fix. The patch uses an Arc-owned semaphore, indefinite alertable wait and explicit configure wakeup. Merging this commit alone does not fix ALab Cargo-built Windows watchers. Native dependency adaptation and Windows qualification remain pending.",
+      "evidence": [
+        "Source review: MODULE.bazel notify annotation and patches/notify_windows_idle.patch semaphore ownership/wait/configure signaling.",
+        "Source review: file-watcher/src/file_watcher_tests.rs native watch/unwatch/rewatch regression.",
+        "Compared target codex-rs/Cargo.lock notify 8.2.0 registry entry against alab/removed-paths Bazel/patches policy."
+      ],
+      "revisit": ""
+    }
+  ]
+}

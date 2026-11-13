@@ -3,7 +3,6 @@
 
 use super::*;
 use codex_app_server_protocol::AccountSecuritySetupAction;
-use codex_app_server_protocol::AccountSecuritySetupNotice;
 use codex_app_server_protocol::GetAccountSecuritySetupResponse;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::RouteAwareClientPool;
@@ -23,7 +22,9 @@ struct Notice {
 
 impl AccountRequestProcessor {
     pub(crate) async fn get_account_security_setup(&self) -> GetAccountSecuritySetupResponse {
+        let mut verified_identity = None; // ALAB(notices): failure never manufactures an absence receipt.
         let notice = tokio::time::timeout(Duration::from_secs(/*secs*/ 3), async {
+            let _assignment_resource = self.auth_manager.alab_account_resource().ok()?; // ALAB(accounts): admit the security read before any credential/configuration access.
             let config = self.load_latest_config().await;
             let (auth, factory) = self.auth_manager.auth_with_http_client_factory().await?;
             let source_generation = self
@@ -85,7 +86,7 @@ impl AccountRequestProcessor {
             if !response.status().is_success() {
                 return None;
             }
-            let notice = response.json::<Response>().await.ok()?.notice?;
+            let notice = response.json::<Response>().await.ok()?.notice; // ALAB(notices): successful empty reads retain their authenticated identity.
             let current = self.auth_manager.auth().await?;
             if self
                 .auth_manager
@@ -99,17 +100,14 @@ impl AccountRequestProcessor {
             {
                 return None;
             }
-            Some(AccountSecuritySetupNotice {
-                account_id,
-                user_id,
-                title: notice.title,
-                description: notice.description,
-                action: notice.action,
-            })
+            alab_observation::verified(&mut verified_identity, account_id, user_id, notice) // ALAB(notices): only the validated completion can certify an empty reminder.
         })
         .await
         .ok()
         .flatten();
-        GetAccountSecuritySetupResponse { notice }
+        GetAccountSecuritySetupResponse { notice, alab_successful_empty: verified_identity } // ALAB(notices): expose receipt without changing the upstream notice payload.
     }
 }
+
+#[path = "../../../../alab-core/glue/security_setup_observation.rs"]
+mod alab_observation; // ALAB(notices): classify successful empty reads in ALab-owned glue.

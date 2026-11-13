@@ -96,3 +96,42 @@ impl InProcessClientSender {
             .map_err(io::Error::other)
     }
 }
+
+impl InProcessClientSender {
+    pub async fn activate_idle_exec_tree(&self, thread: ThreadId) -> io::Result<()> {
+        let (reply, receive) = oneshot::channel();
+        self.try_send_client_message(InProcessClientMessage::AlabExecSuspend(
+            Request::ActivateIdleTree { thread, reply },
+        ))?;
+        receive
+            .await
+            .map_err(|_| io::Error::other("idle exec activation reply was lost"))?
+            .map_err(io::Error::other)
+    }
+}
+
+impl InProcessClientSender {
+    pub async fn bootstrap_upgrade_forest(
+        &self,
+        request: super::ForestBootstrapRequest,
+    ) -> io::Result<super::BootstrappedForest> {
+        let (reply, receive) = oneshot::channel();
+        self.try_send_client_message(InProcessClientMessage::AlabExecSuspend(
+            Request::BootstrapForest { request, reply },
+        ))?;
+        receive
+            .await
+            .map_err(|_| io::Error::other("forest bootstrap reply was lost"))?
+            .map_err(io::Error::other)
+    }
+    pub async fn activate_upgrade_forest(&self, primary: ThreadId) -> io::Result<()> {
+        let (reply, receive) = oneshot::channel();
+        self.try_send_client_message(InProcessClientMessage::AlabExecSuspend(
+            Request::ActivateForest { primary, reply },
+        ))?;
+        receive
+            .await
+            .map_err(|_| io::Error::other("forest activation reply was lost"))?
+            .map_err(io::Error::other)
+    }
+}

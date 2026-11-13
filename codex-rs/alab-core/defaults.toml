@@ -6,6 +6,10 @@
 # still overrides each one. An owner-only build, installed and updated by atpkg, run inside
 # aterm: nothing goes to OpenAI but the model, login and usage traffic the product needs.
 
+# Start new sessions on GPT-6.1 Sol at Ultra unless the user selects otherwise.
+model = "gpt-6.1-sol"
+model_reasoning_effort = "ultra"
+
 # atpkg updates codex-alab; the update check polls GitHub and Homebrew every 20 h.
 check_for_update_on_startup = false
 
@@ -49,7 +53,7 @@ auto_recap = false
 status_line = ["model-with-reasoning", "context-remaining", "five-hour-limit", "weekly-limit", "git-branch", "thread-name"]
 # The title without the 10 Hz activity spinner: aterm shows activity itself.
 terminal_title = ["run-state", "thread-name", "project-name"]
-# The default pet, OSC 9 notifications and the paste-burst switch are set only inside aterm
+# OSC 9 notifications, the paste-burst switch and the progress bar are set only inside aterm
 # (`aterm-defaults.toml`): elsewhere they would change what codex does in a terminal they
 # were never chosen for.
 

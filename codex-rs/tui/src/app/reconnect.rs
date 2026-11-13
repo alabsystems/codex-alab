@@ -234,12 +234,21 @@ impl App {
                 owner.reset_realtime_conversation();
             }
             self.retire_background_voice();
+            self.saved_openings.abandon();
+            if let Some(pane) = self.sidebars.get_mut(&self.sidebar_parent()) {
+                pane.opening = None;
+            }
             self.reconnect.offline = true;
             self.alab_tasks_connection_changed(); // ALAB(tasks): retained local lists disable agent actions before disconnected keys can select them.
             self.account_email_request_id = None;
             self.alab_cancel_account_email_read(); // ALAB(interface): a disconnected transport cannot keep an identity retry alive.
             // Cached blank sessions are usable only while this connection owns a subscription.
-            self.agents_overview.blank_sessions.clear();
+            self.agents_overview.blank_sessions.retain(|id, _| {
+                self.backend_registry
+                    .owner(*id)
+                    .zip(self.app_server_backend_id)
+                    .is_some_and(|(owner, reconnecting)| owner != reconnecting)
+            });
             self.reconnect.failed = false;
             self.alab_refresh_connection_state(); // ALAB(interface): retained account details and footer activity reflect the reconnecting transport.
             if self.pending_server_version_notice.take().is_some() {
@@ -256,7 +265,11 @@ impl App {
             if let Some(task) = self.agents_overview.refresh_task.take() {
                 task.abort();
             }
-            self.agents_overview.request_id = None;
+            self.agents_overview.active_refresh = None;
+            if let Some(owner) = self.app_server_backend_id {
+                self.agents_overview
+                    .invalidate_discovery(owner, /*displayed*/ true);
+            }
             self.agents_overview.refresh_show_more = false;
             self.agents_overview.active_refresh_thread_ids.clear();
             self.agents_overview.refresh_pending = false;
@@ -372,6 +385,7 @@ impl App {
         // prevents their late completions from submitting follow-up operations on the new one.
         let (tx, rx) = mpsc::unbounded_channel();
         self.app_event_tx = AppEventSender::new(tx);
+        self.app_server_backend_id = Some(session.backend_id());
         *app_event_rx = rx;
         // The old timer targets the discarded channel, so a new preview can be scheduled.
         self.config_notification_test_pending = None;
@@ -382,6 +396,7 @@ impl App {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.connection_notice = None;
+            state.restart_history_search();
             if state.creating_worktree {
                 state.creating_worktree = false;
                 self.pending_managed_worktree_creation = false;
@@ -444,7 +459,7 @@ impl App {
             cancellation.cancel();
         }
         self.agents_overview.dispatched_requests.clear();
-        self.agents_overview.request_id = None;
+        self.agents_overview.active_refresh = None;
         self.agents_overview.refresh_show_more = false;
         self.agents_overview.active_refresh_thread_ids.clear();
         self.agents_overview.refresh_pending = false;
@@ -559,7 +574,9 @@ impl App {
         self.refresh_pending_thread_approvals().await;
         // Discover tasks whose notifications were missed, without clearing retained rows.
         // A hidden overview performs this discovery when it is next opened.
-        self.agents_overview.initialized = false;
+        self.agents_overview
+            .initialized
+            .remove(&app_server.backend_id());
         if self.reconnect.presentation == ReconnectPresentation::Overview {
             let threads = self
                 .agents_overview

@@ -26,6 +26,7 @@ impl Drop for TerminalInitializationGuard {
 ///
 /// Partial control sequences remain quarantined; an unresolved boundary fails after one second.
 pub(crate) fn discard_pending_terminal_input() -> Result<()> {
+    #[cfg(unix)] if codex_alab_tui::input::owned() { return codex_alab_tui::input::discard_pending(terminal_input_is_readable); } // ALAB(upgrade-input): quarantine belongs to the same joined parser, never a competing reader.
     #[cfg(unix)]
     let _ = crossterm::event::discard_buffered_input()?;
 

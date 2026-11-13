@@ -931,12 +931,14 @@ async fn constructor_child() {
             "missing native membership cannot become legacy access"
         );
         assert!(manager.auth_with_http_client_factory().await.is_none());
+        assert!(manager.alab_auth_with_http_client_factory().await.unwrap().is_none());
         *manager.alab_source_member.write().unwrap() = Some(replacement);
         assert!(
             manager.auth_cached().is_none(),
             "another ready constructor is not this cache's provenance"
         );
         assert!(manager.auth_with_http_client_factory().await.is_none());
+        assert!(manager.alab_auth_with_http_client_factory().await.unwrap().is_none());
         *manager.alab_source_member.write().unwrap() = Some(original);
         assert!(
             manager
@@ -948,6 +950,7 @@ async fn constructor_child() {
                 .same(&epoch)
         );
         assert!(manager.auth_with_http_client_factory().await.is_some());
+        assert!(manager.alab_auth_with_http_client_factory().await.unwrap().is_some());
         drop(factory);
         drop(snapshot);
         assert!(
@@ -1353,6 +1356,31 @@ async fn constructor_child() {
             let CodexAuth::Chatgpt(chatgpt) = &snapshot else {
                 panic!("actual managed direct reader")
             };
+            let server = wiremock::MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("reader-body"))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let factory = snapshot
+                .alab_bind_http_client_factory(
+                    config.auth_route_config.http_client_factory().clone(),
+                )
+                .expect("pair the actual reader with its original caller transport");
+            let retained_client = factory
+                .build_client(&server.uri(), codex_http_client::ClientRouteClass::Other)
+                .unwrap();
+            assert_eq!(
+                retained_client
+                    .get(server.uri())
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap(),
+                "reader-body"
+            );
             let member = chatgpt.storage.alab_source_lifetime().unwrap();
             let original = std::fs::read(&peer.source.path).unwrap();
             std::fs::write(&peer.source.path, b"{}").unwrap();
@@ -1388,6 +1416,13 @@ async fn constructor_child() {
                     .is_err(),
                 "changed actual ReaderLoaded cannot authorize the old origin"
             );
+            assert!(
+                retained_client.get(server.uri()).send().await.is_err(),
+                "a retained paired HTTP client cannot use the reader's replacement Ready"
+            );
+            server.verify().await;
+            drop(retained_client);
+            drop(factory);
         }
         peer.live.store(false, Ordering::Release);
         assert!(snapshot.api_key().is_none());
@@ -1640,6 +1675,8 @@ async fn constructor_child() {
                 );
             }
             if case == "managed_policy" {
+                let prepared_token = snapshot.get_token().unwrap();
+                assert!(manager.alab_validate_credential_export(&snapshot, &prepared_token).is_ok());
                 let factory = manager.http_client_factory();
                 let permit = factory
                     .network_policy()
@@ -1649,6 +1686,7 @@ async fn constructor_child() {
                 manager.reload().await;
                 assert!(manager.auth_cached().is_none());
                 assert!(snapshot.get_token().is_err());
+                assert!(manager.alab_validate_credential_export(&snapshot, &prepared_token).is_err());
                 assert!(permit.check().is_err());
             }
             if case == "api_reload" {
@@ -1675,9 +1713,12 @@ async fn constructor_child() {
                 assert!(snapshot.get_token().is_err());
             }
             if case == "eof" || case == "api_manager" {
+                let prepared_token = snapshot.get_token().unwrap();
+                assert!(manager.alab_validate_credential_export(&snapshot, &prepared_token).is_ok());
                 peer.live.store(false, Ordering::Release);
                 assert!(manager.auth_cached().is_none());
                 assert!(snapshot.get_token().is_err());
+                assert!(manager.alab_validate_credential_export(&snapshot, &prepared_token).is_err());
                 drop(manager);
                 tokio::task::yield_now().await;
                 assert_eq!(peer.retired.load(Ordering::Relaxed), 0);

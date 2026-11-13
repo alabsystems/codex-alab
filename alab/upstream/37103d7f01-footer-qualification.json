@@ -1,0 +1,285 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:51:31.848041+00:00",
+  "source": "53b3d3d41e2aef5edb7a3d33add057151e7ea532",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::extension_status_keeps_its_rows_when_effort_changes",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::extension_status_line_clips_links_to_footer_layout",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::extension_layout_uses_the_width_left_by_the_mode_indicator_after_resize",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::extension_status_paints_with_the_current_theme_at_the_same_width",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::input_history_search_uses_the_final_row",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::activity_shortcut_help_follows_runtime_binding",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::fullscreen_plan_indicator_keeps_the_cycle_hint_when_it_fits",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::passive_activity_keeps_shortcuts_only_when_the_complete_hint_fits",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::shortcut_help_keeps_bottom_anchored_composer_status_and_cursor_stable",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::shortcut_help_close_row_uses_runtime_binding_and_narrow_fallback",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::sidebar_focus_collapses_extension_status_to_its_dim_line",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::shortcut_help_stays_above_the_prompt_and_bottom_status",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::status_survives_hints_feedback_and_queue",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::status_rows_yield_to_the_composer_and_shared_footer_overrides",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::transcript_search_keeps_status_and_query_cursor",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::slash_popup_preserves_footer_and_selection_style",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::status_surface::tests::shortcut_help_keeps_input_and_close_hint_visible_when_height_is_tiny",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::context_used_accepts_context_usage_legacy_id",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::model_is_canonical_and_accepts_model_name_legacy_id",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::context_remaining_is_selectable_id",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::git_summary_items_are_selectable_ids",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::parse_status_line_items_accepts_title_only_variants",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::preview_uses_runtime_values",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::preview_uses_placeholders_when_runtime_values_are_missing",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::preview_includes_thread_title",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::project_name_is_canonical_and_accepts_legacy_ids",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::reasoning_is_selectable_id",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::run_state_is_canonical_and_accepts_status_legacy_id",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::picker_previews_the_pr_link_and_preserves_the_color_preference",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::thread_usage_items_are_independently_selectable",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::setup_view_snapshot_uses_runtime_preview_values",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::setup_view_snapshot_includes_hostname",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::status_line_setup::tests::setup_view_snapshot_includes_thread_usage_items",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_line_setup_popup_hardcoded_only_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::missing_project_root_uses_different_status_and_title_preview_sources",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_line_setup_popup_live_only_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_line_setup_popup_mixed_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_surface_hostname_preview_uses_current_machine_hostname",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_surface_preview_lines_hardcoded_only_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_line_setup_popup_workspace_headline_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_line_setup_popup_rate_limits_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_surface_preview_lines_live_only_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_surface_preview_lines_mixed_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_surface_preview_lines_rate_limits_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_surface_preview_lines_thread_usage_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_surface_preview_omits_unavailable_rate_limit_items",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::status_surface_thread_usage_previews_omit_unavailable_usd_estimates",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::terminal_title_preview_uses_title_truncation_for_live_values",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::terminal_title_setup_popup_live_only_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::terminal_title_setup_popup_hardcoded_only_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::terminal_title_setup_popup_mixed_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::terminal_title_setup_popup_rate_limits_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::thread_title_falls_back_to_thread_id_when_unnamed",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::thread_color_preview_matches_footer",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::status_surface_previews::terminal_title_setup_popup_thread_usage_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::token_usage_update_refreshes_status_line_with_runtime_context_window",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-footer-native-r2.sh",
+      "sha256": "391479aca03eb536a9e8feed9bb30c6d16ef9a67603c798914e52780b1173e7f"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-footer-native-r2.log",
+      "sha256": "2254d06c5b2d5179374cd3a246b77320abddb8b4b29b1c27d3f299a6da4cdecb"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-footer-native-r2.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Four nonempty native TUI selections: 56 passed, zero failed or ignored. Covers extension footer resize/height/theme-change/hyperlink integration, native status picker preference and PR-link preservation, live/placeholder previews and runtime context-window updates across the extension flag. Other TUI tests were filtered out as recorded per suite. Corrected module selection replaces the prior empty selection without rewriting its negative receipt. Does not qualify all terminal interactions, lower-level preparation tests, full gate, complete intake, native credential images or adoption.",
+  "suites": [
+    {
+      "passed": 17,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 6331
+    },
+    {
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 6332
+    },
+    {
+      "passed": 22,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 6326
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 6347
+    }
+  ]
+}

@@ -158,6 +158,9 @@ impl State {
             AppServerEvent::Lagged { .. } | AppServerEvent::Disconnected { .. } => {
                 self.release(owner, |_| true);
             }
+            AppServerEvent::ThreadStreamDisconnected(error) => {
+                self.release(owner, |(thread, _)| thread == &error.thread_id);
+            }
             AppServerEvent::ServerNotification(notification) => match notification.as_ref() {
                 ServerNotification::TurnCompleted(completed) => {
                     self.release(owner, |(thread, turn)| {
@@ -178,7 +181,8 @@ impl State {
                 }
                 _ => {}
             },
-            AppServerEvent::ServerRequest(_) => {}
+            // Restored delivery does not establish a new turn or recover an unobserved end.
+            AppServerEvent::ThreadStreamReconnected(_) | AppServerEvent::ServerRequest(_) => {}
         }
     }
 }

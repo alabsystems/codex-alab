@@ -77,6 +77,20 @@ fn register_with_receipt(
     consumer
 }
 
+/// Whether this host can carry an assignment past admission. Each leg is something `drive`
+/// retries forever without: the process admission, the prepared-target preview, and a managed
+/// ChatGPT source to fence. Asked while the domain is still open, so a refusal changes nothing.
+fn capable(cohort: &Cohort) -> Result<(), domain::Refused> {
+    if domain::process_host_installed()
+        && native::previews_target()
+        && cohort.manager.alab_assignment_source_admissible().is_ok()
+    {
+        Ok(())
+    } else {
+        Err(domain::Refused::Unavailable)
+    }
+}
+
 impl domain::Consumer for Consumer {
     fn request<'a>(&'a self, intent: domain::Intent) -> domain::AdmissionFuture<'a> {
         Box::pin(async move {
@@ -122,6 +136,12 @@ impl domain::Consumer for Consumer {
                         return Ok(());
                     }
                 }
+            }
+            // Only a request on an open domain closes admission, so only that one is refused
+            // where it could never reopen. A held intent answers for itself below: a replay
+            // observes its operation and any other request is `Busy`.
+            if self.cohort.domain.intent().is_none() {
+                capable(&self.cohort)?;
             }
             self.cohort.domain.request(intent.clone())?;
             if self
@@ -660,6 +680,154 @@ mod tests {
         );
     }
 
+    const GATE_CHILD: &str = "ALAB_ASSIGNMENT_GATE_FIXTURE";
+
+    /// `request` answers `Invalid` to anything that is not the codex-alab binary before it
+    /// reaches the gate, and that identity is process-wide: the gate runs in its own process.
+    #[test]
+    fn request_without_host_capability_refuses_before_admission_closes() {
+        let name = concat!(module_path!(), "::assignment_gate_child")
+            .split_once("::")
+            .unwrap()
+            .1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name])
+            .env(GATE_CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
+    #[tokio::test]
+    async fn assignment_gate_child() {
+        if std::env::var_os(GATE_CHILD).is_none() {
+            return;
+        }
+        codex_alab_core::activate();
+        let (session, _) = super::super::super::tests::make_session_and_context().await;
+        let cohort = Arc::new(Cohort {
+            domain: session.services.auth_manager.alab_assignment_domain(),
+            manager: Arc::clone(&session.services.auth_manager),
+            coordinator: State::default(),
+            participants: Default::default(),
+        });
+        let thread = session.thread_id().to_string();
+        let consumer = register_with_receipt(thread.clone(), Arc::clone(&cohort), None);
+        let auto = domain::Intent {
+            operation: "a".repeat(32),
+            thread: thread.clone(),
+            selection: domain::Selection::Auto {
+                revision: "c".repeat(64),
+            },
+        };
+        let manual = domain::Intent {
+            operation: "d".repeat(32),
+            thread,
+            selection: domain::Selection::Manual {
+                account: "b".repeat(64),
+                revision: "c".repeat(64),
+            },
+        };
+        assert!(auto.valid() && manual.valid());
+        // What every host is today: no process admission and no target preview.
+        assert!(!domain::process_host_installed());
+        assert!(!native::previews_target());
+
+        for intent in [&auto, &manual] {
+            assert_eq!(
+                consumer.request(intent.clone()).await,
+                Err(domain::Refused::Unavailable),
+                "an operation this host cannot complete is refused, not started"
+            );
+            assert_eq!(cohort.domain.phase(), domain::Phase::Open);
+            assert!(cohort.domain.intent().is_none());
+            assert!(consumer.observation().is_none());
+            assert!(!cohort.coordinator.running.load(Ordering::Acquire));
+            assert!(cohort.coordinator.intent.lock().unwrap().is_none());
+            assert!(
+                cohort.domain.admit_start(None).is_ok(),
+                "a root turn still starts"
+            );
+            assert!(
+                cohort.manager.alab_account_resource().is_ok(),
+                "token refresh and usage reads are still admitted"
+            );
+            assert!(
+                codex_alab_core::session::shared()
+                    .assignment_receipt()
+                    .is_none(),
+                "nothing is left to fence the next process"
+            );
+        }
+
+        // The gate guards the closing of admission only. An intent the domain already holds
+        // is an operation in flight: asking for it again observes it and is never refused here.
+        cohort.domain.request(auto.clone()).unwrap();
+        assert_eq!(consumer.request(auto.clone()).await, Ok(()));
+        assert_eq!(consumer.request(auto.clone()).await, Ok(()));
+        assert_eq!(cohort.domain.intent().as_ref(), Some(&auto));
+        assert_eq!(
+            consumer.request(manual.clone()).await,
+            Err(domain::Refused::Busy),
+            "a second operation is still busy, as before"
+        );
+
+        // A receipt left by an earlier process holds the domain with no coordinator running.
+        // Nothing there is closed by a new request, so the answer names the pending operation
+        // instead of calling the host incapable.
+        let (session, _) = super::super::super::tests::make_session_and_context().await;
+        let held = Arc::new(Cohort {
+            domain: session.services.auth_manager.alab_assignment_domain(),
+            manager: Arc::clone(&session.services.auth_manager),
+            coordinator: State::default(),
+            participants: Default::default(),
+        });
+        let receipt = domain::Receipt {
+            operation: "e".repeat(32),
+            boundary: None,
+            thread: "00000000-0000-0000-0000-000000000001".into(),
+            selection: manual.selection,
+            source: domain::ReceiptStamp {
+                credential_generation: 1,
+                assignment_generation: 0,
+                generations: domain::Generations {
+                    auth: 0,
+                    owner: 0,
+                    source: 0,
+                    login: 0,
+                },
+            },
+            destination: None,
+            acknowledged: false,
+        };
+        let thread = session.thread_id().to_string();
+        let consumer = register_with_receipt(thread.clone(), Arc::clone(&held), Some(receipt));
+        assert_eq!(held.domain.phase(), domain::Phase::Uncertain);
+        assert!(!held.coordinator.running.load(Ordering::Acquire));
+        let other = domain::Intent {
+            operation: "f".repeat(32),
+            thread,
+            selection: auto.selection,
+        };
+        assert!(other.valid());
+        assert_eq!(
+            consumer.request(other).await,
+            Err(domain::Refused::Busy),
+            "a held receipt is a pending operation, not an incapable host"
+        );
+        assert_eq!(held.domain.phase(), domain::Phase::Uncertain);
+        assert_eq!(
+            held.domain.intent().map(|intent| intent.operation),
+            Some("e".repeat(32))
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn local_reconciliation_retains_admission_and_boundary_while_dispatch_stays_live() {
         let (session, _) = super::super::super::tests::make_session_and_context().await;
@@ -700,6 +868,7 @@ mod tests {
                 ));
                 assert!(cohort.domain.admit_work(None).is_err());
                 let submission = super::super::Submission {
+                    alab_upgrade: Vec::new(), // ALAB(upgrade): the native sender supplies admission.
                     id: stage.into(),
                     op: codex_protocol::protocol::Op::Interrupt,
                     turn_extension_init: None,

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -233,6 +234,18 @@ class BuildCacheRegistrationTests(unittest.TestCase):
             "'target': os.environ.get('CARGO_TARGET_DIR')}) + '\\n')\n"
             "sys.exit(int(os.environ.get('FIXTURE_GATE_STATUS', '0')))\n")
         gate.chmod(0o700)
+        # Exercise the real source-bound recorder too: its candidate must have
+        # committed inputs and explicit local base/upstream identities.
+        for name in ("qualification.py", "upstream_intake.py", "source_content.py"):
+            shutil.copyfile(ROOT / "alab" / name, gate.parent / name)
+        self.environment["ALAB_PYTHON"] = sys.executable
+        for arguments in (("init", "-q"), ("config", "user.name", "Fixture"),
+                          ("config", "user.email", "fixture@example.invalid"),
+                          ("add", "."), ("commit", "-qm", "fixture"),
+                          ("update-ref", "refs/remotes/origin/main", "HEAD"),
+                          ("update-ref", "refs/remotes/upstream/main", "HEAD")):
+            subprocess.run(["git", "-C", str(self.workspace.parent), *arguments],
+                           env=self.environment, check=True, capture_output=True)
         body = self.sync_function("run_check")
         body += '\nwt="$1"; check=1; mode=continue; '
         body += 'in_wt() { printf "fixture-source\\n"; }; '
@@ -247,6 +260,7 @@ class BuildCacheRegistrationTests(unittest.TestCase):
                     self.environment["FIXTURE_GATE_STATUS"] = str(status)
                     done = self.shell(body, self.workspace.parent)
                     self.assertEqual(done.returncode, status, done.stderr)
+                    self.assertIn("qualification record:", done.stdout)
                     self.assertEqual(self.recorded(), [{
                         "kind": "gate", "cwd": str(self.workspace.parent), "target": target}])
 

@@ -20,8 +20,6 @@ use futures::stream;
 
 use crate::session::Session;
 
-#[path = "../../../alab-core/glue/exec_audio_durations.rs"] mod alab_exec_audio; // ALAB(exec-ephemeral): carry trusted duration data through memory handoff, never into rollouts or requests.
-
 /// Thread-local metadata. It is never serialized into a rollout or a provider request.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FileAudioDurations(BTreeMap<String, Duration>);
@@ -100,3 +98,6 @@ pub(super) async fn resolve(session: &Session, mut file_ids: BTreeSet<String>) {
 #[cfg(test)]
 #[path = "file_audio_tests.rs"]
 mod tests;
+
+#[path = "../../../alab-core/glue/exec_file_audio.rs"]
+mod alab_exec; // ALAB(exec-ephemeral): retain trusted duration metadata without reclassifying unknown audio.

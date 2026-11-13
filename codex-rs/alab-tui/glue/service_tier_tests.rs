@@ -65,7 +65,7 @@ async fn supported_speed_tiers_reach_model_status_title_and_header_surfaces() {
         assert!(
             chat.status_line_value_for_item(StatusLineItem::ModelWithReasoning)
                 .unwrap()
-                .ends_with(label)
+                .ends_with(label.to_lowercase().as_str())
         );
         assert_eq!(
             chat.terminal_title_value_for_item(

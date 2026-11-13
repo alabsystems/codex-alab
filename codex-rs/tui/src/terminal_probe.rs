@@ -62,6 +62,7 @@ mod imp {
     const MAX_TERMINAL_CSI_BYTES: usize = 64;
 
     static DA1_SUPPORTED: AtomicBool = AtomicBool::new(false);
+    include!("../../alab-tui/glue/upgrade_probe.rs"); // ALAB(upgrade): retain the existing exit-report barrier across exec.
 
     /// Results from the TUI's one-shot startup terminal probe.
     #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -322,7 +323,7 @@ mod imp {
             query_identity,
             &mut buffer,
         );
-        crossterm::event::buffer_input(&startup_replay_input(&buffer))?;
+        codex_alab_tui::input::buffer_input(&startup_replay_input(&buffer))?; // ALAB(upgrade-input): startup replay shares the same persistent Unix parser as the TUI.
         let saw_da1 = find_primary_device_attributes(&buffer).is_some();
         DA1_SUPPORTED.store(saw_da1, Ordering::Relaxed);
         result
@@ -885,6 +886,8 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(any(unix, windows))]
 pub(crate) use imp::*;
+
+#[cfg(unix)] pub(crate) use imp::{alab_da1_supported, alab_set_da1_supported}; // ALAB(upgrade): transfer only terminal protocol facts, not probe input or SDK authority.
 
 #[cfg(test)]
 mod tests {

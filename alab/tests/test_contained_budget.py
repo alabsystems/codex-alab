@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import secrets
 import select
+import shlex
 import shutil
 import signal
 import stat
@@ -25,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @unittest.skipUnless(Path("/usr/bin/sandbox-exec").is_file(), "requires macOS sandbox-exec")
 class ContainedBudgetTests(unittest.TestCase):
-    def contained_command(self, values, child=("/usr/bin/env",), reads=(), check=True):
+    def contained_command(self, values, child=("/usr/bin/env",), reads=(), check=True,
+                          writable_roots=()):
         with tempfile.TemporaryDirectory(prefix="codex-budget-") as directory:
             temporary = Path(directory)
             cargo_home = temporary / "cargo-home"
@@ -37,13 +39,14 @@ class ContainedBudgetTests(unittest.TestCase):
                            if not key.startswith("ALAB_")}
             for key in ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "CARGO_NET_OFFLINE"):
                 environment.pop(key, None)
-            environment.update(values, ALAB_CARGO_HOME=str(cargo_home), ALAB_PYTHON=sys.executable)
+            environment.update(values, ALAB_CARGO_HOME=str(cargo_home))
+            environment.setdefault("ALAB_PYTHON", sys.executable)
             command = 'set -euo pipefail; . "$1/alab/lib.sh"; shift; alab_contained "$@"'
             read_args = [argument for path in reads for argument in ("--read", str(path))]
             self.contained_child_eof = True
             process = subprocess.Popen(
                 ["/bin/bash", "-c", command, "contained-budget", str(ROOT),
-                 *read_args, str(writable), "--", *child],
+                 *read_args, str(writable), *map(str, writable_roots), "--", *child],
                 cwd=ROOT, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, start_new_session=True,
             )
@@ -69,6 +72,100 @@ class ContainedBudgetTests(unittest.TestCase):
         output = self.contained_command(values)
         return dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
 
+    def portable_runtime(self):
+        import pwd
+
+        runtime = Path(sys.base_prefix).resolve()
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        if not runtime.is_relative_to(home) or runtime.parent == home:
+            self.skipTest("selected portable Python must live below the protected account home")
+        return runtime, home
+
+    def test_selected_portable_python_imports_and_runtime_stays_read_only(self):
+        import encodings
+
+        runtime, _ = self.portable_runtime()
+        # Prove ordinary file permissions would allow this open outside the boundary.
+        # No bytes are written, inside or outside containment.
+        descriptor = os.open(Path(encodings.__file__).resolve(), os.O_WRONLY)
+        os.close(descriptor)
+        child = r'''
+import encodings, errno, json, os, ssl, sys, tomllib
+from pathlib import Path
+result = {"toml": tomllib.loads("value = 7")["value"], "ssl": ssl.OPENSSL_VERSION}
+target = Path(encodings.__file__).resolve()
+assert target.is_file()
+try:
+    descriptor = os.open(target, os.O_WRONLY)
+except OSError as error:
+    result["write"] = error.errno
+else:
+    os.close(descriptor)
+    result["write"] = "allowed"
+print(json.dumps(result))
+'''
+        result = json.loads(self.contained_command(
+            {}, (sys.executable, "-I", "-B", "-c", child),
+            writable_roots=(runtime.parent,)))
+        self.assertEqual(result["toml"], 7, result)
+        self.assertTrue(result["ssl"], result)
+        self.assertIn(result["write"], (errno.EPERM, errno.EACCES), result)
+
+    def test_runtime_grant_does_not_read_its_siblings_or_account_canaries(self):
+        runtime, home = self.portable_runtime()
+        with tempfile.TemporaryDirectory(prefix=".alab-runtime-sibling-", dir=runtime.parent) as sibling, \
+                tempfile.TemporaryDirectory(prefix=".alab-runtime-home-", dir=home) as account:
+            canaries = [Path(sibling) / "private.txt", Path(account) / "private.txt"]
+            for canary in canaries:
+                canary.write_text("owned-runtime-boundary-canary")
+            child = r'''
+import json, sys
+from pathlib import Path
+result = []
+for name in sys.argv[1:]:
+    try:
+        Path(name).read_bytes()
+        result.append("allowed")
+    except OSError as error:
+        result.append(error.errno)
+print(json.dumps(result))
+'''
+            result = json.loads(self.contained_command(
+                {}, (sys.executable, "-I", "-B", "-c", child, *map(str, canaries))))
+            self.assertTrue(all(code in (errno.EPERM, errno.EACCES) for code in result), result)
+
+    def test_unsafe_python_runtime_prefixes_are_refused_after_canonicalization(self):
+        import pwd
+
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        with tempfile.TemporaryDirectory(prefix="alab-python-prefix-") as directory:
+            temporary = Path(directory)
+            private_home = temporary / "private-home"
+            private_home.mkdir()
+            alias = temporary / "home-alias"
+            alias.symlink_to(home, target_is_directory=True)
+            for prefix in (home, home.parent, Path("/"), private_home, alias):
+                with self.subTest(prefix=prefix):
+                    wrapper = temporary / "python"
+                    measured = temporary / "measured"
+                    measured.unlink(missing_ok=True)
+                    injection = ("import sys; "
+                                 f"sys.prefix = sys.base_prefix = sys.exec_prefix = sys.base_exec_prefix = {str(prefix)!r}; "
+                                 "exec(sys.argv[1])")
+                    wrapper.write_text(
+                        '#!/bin/sh\nif [ "$1 $2 $3" = "-I -B -c" ]; then\n'
+                        '  case "$4" in *sys.base_exec_prefix*)\n'
+                        f'    printf measured >{shlex.quote(str(measured))}\n'
+                        f'    exec {shlex.quote(sys.executable)} -I -B -c {shlex.quote(injection)} "$4" ;;\n'
+                        '  esac\n'
+                        f'fi\nexec {shlex.quote(sys.executable)} "$@"\n')
+                    wrapper.chmod(0o755)
+                    code, _, stderr = self.contained_command(
+                        {"ALAB_PYTHON": str(wrapper), "HOME": str(private_home)}, check=False)
+                    self.assertTrue(measured.is_file(), "the runtime-prefix query was intercepted")
+                    self.assertNotEqual(code, 0, stderr)
+                    self.assertIn("Python runtime", stderr)
+
     def test_admitted_compile_and_test_limits_survive(self):
         environment = self.contained_environment({"CARGO_BUILD_JOBS": "6", "RUST_TEST_THREADS": "3",
                                                   "CARGO_NET_OFFLINE": "true"})
@@ -81,6 +178,31 @@ class ContainedBudgetTests(unittest.TestCase):
         self.assertNotIn("CARGO_BUILD_JOBS", environment)
         self.assertNotIn("RUST_TEST_THREADS", environment)
         self.assertNotIn("CARGO_NET_OFFLINE", environment)
+
+    def test_fixture_scratch_is_the_allocated_root_even_after_tmpdir_changes(self):
+        child = r'''
+import json, os, shutil, stat, tempfile
+from pathlib import Path
+root = Path(os.environ["ALAB_TEST_SCRATCH"])
+assert root.resolve() == Path(os.environ["TMPDIR"]).resolve()
+with tempfile.TemporaryDirectory(prefix="nested-", dir=root) as nested:
+    os.environ["TMPDIR"] = nested
+    path = root / "c123456"
+    path.mkdir(mode=0o700)
+    try:
+        (path / "witness").write_text("owned fixture")
+        print(json.dumps({"unchanged": os.environ["ALAB_TEST_SCRATCH"] == str(root),
+                          "short": len(os.fsencode(path.resolve())) <= 32,
+                          "private": stat.S_IMODE(root.stat().st_mode) == 0o700,
+                          "forged": str(root) == "/tmp/not-the-allocated-root"}))
+    finally:
+        shutil.rmtree(path)
+'''
+        result = json.loads(self.contained_command(
+            {"ALAB_TEST_SCRATCH": "/tmp/not-the-allocated-root"},
+            (sys.executable, "-I", "-c", child)))
+        self.assertEqual(result, {"unchanged": True, "short": True,
+                                  "private": True, "forged": False})
 
     def test_unrelated_environment_is_still_scrubbed(self):
         environment = self.contained_environment({"CONTAINMENT_UNRELATED_SENTINEL": "private-fixture"})

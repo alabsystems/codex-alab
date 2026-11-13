@@ -20,6 +20,7 @@ pub(super) struct SafetyBufferedRetry {
     pub(super) model: String,
     pub(super) turn: AppCommand,
     pub(super) prompt: UserMessage,
+    pub(super) autonomous: bool, // ALAB(daybreak): automatic recovery is distinct from an interactive confirmation.
 }
 
 impl App {
@@ -35,7 +36,13 @@ impl App {
             model,
             mut turn,
             prompt,
+            autonomous,
         } = retry;
+        // ALAB(daybreak): authority can change after the widget queues an automatic retry.
+        if autonomous && !self.chat_widget.alab_autonomous_safety_retry_allowed(&turn) {
+            return;
+        }
+        let recovery_turn = turn.clone();
         if self.active_thread_id != Some(thread_id)
             || self.chat_widget.thread_id() != Some(thread_id)
             || self.primary_thread_id != Some(thread_id)
@@ -50,10 +57,15 @@ impl App {
         let input_state = self.chat_widget.capture_thread_input_state();
         if self.pending_server_profiles.contains_key(&thread_id) {
             self.fail_safety_buffered_branch(
+                app_server,
                 input_state,
                 prompt,
+                recovery_turn,
+                None,
+                autonomous,
                 color_eyre::eyre::eyre!("Wait for permissions to update before forking."),
-            );
+            )
+            .await;
             return;
         }
 
@@ -66,6 +78,7 @@ impl App {
             model: turn_model,
             effort,
             collaboration_mode,
+            alab_safety_retries,
             ..
         } = &mut turn
         else {
@@ -109,6 +122,7 @@ impl App {
                 /*developer_instructions*/ None,
             )
         });
+        *alab_safety_retries = alab_safety_retries.saturating_add(1); // ALAB(daybreak): carry the circuit breaker into the accepted retry.
 
         if let Err(err) = app_server.turn_interrupt(thread_id, turn_id.clone()).await {
             self.chat_widget
@@ -166,12 +180,30 @@ impl App {
         {
             Ok(thread) => thread,
             Err(err) => {
-                self.fail_safety_buffered_branch(input_state, prompt, err);
+                self.fail_safety_buffered_branch(
+                    app_server,
+                    input_state,
+                    prompt,
+                    recovery_turn,
+                    Some(turn_id.as_str()),
+                    autonomous,
+                    err,
+                )
+                .await;
                 return;
             }
         };
         if let Err(err) = safety_retry_fork_point(&thread.turns, &turn_id) {
-            self.fail_safety_buffered_branch(input_state, prompt, err);
+            self.fail_safety_buffered_branch(
+                app_server,
+                input_state,
+                prompt,
+                recovery_turn,
+                Some(turn_id.as_str()),
+                autonomous,
+                err,
+            )
+            .await;
             return;
         }
         items.extend(
@@ -204,7 +236,7 @@ impl App {
                 retry_config,
                 thread_id,
                 /*last_turn_id*/ None,
-                /*before_turn_id*/ Some(turn_id),
+                /*before_turn_id*/ Some(turn_id.clone()), // ALAB(daybreak): retain the acknowledged interruption for bounded recovery.
                 ForkGoalContinuation::DeferUntilNextTurn,
                 selected_profile.as_ref(),
             )
@@ -212,7 +244,16 @@ impl App {
         let started = match started {
             Ok(started) => started,
             Err(err) => {
-                self.fail_safety_buffered_branch(input_state, prompt, err);
+                self.fail_safety_buffered_branch(
+                    app_server,
+                    input_state,
+                    prompt,
+                    recovery_turn,
+                    Some(turn_id.as_str()),
+                    autonomous,
+                    err,
+                )
+                .await;
                 return;
             }
         };
@@ -231,7 +272,16 @@ impl App {
             )
             .await
         {
-            self.fail_safety_buffered_branch(input_state, prompt, err);
+            self.fail_safety_buffered_branch(
+                app_server,
+                input_state,
+                prompt,
+                recovery_turn,
+                Some(turn_id.as_str()),
+                autonomous,
+                err,
+            )
+            .await;
             return;
         }
 
@@ -251,29 +301,57 @@ impl App {
             .submit_thread_op(app_server, retry_thread_id, turn)
             .await
         {
-            self.fail_safety_buffered_branch(failure_input_state, prompt, err);
+            self.fail_safety_buffered_branch(
+                app_server,
+                failure_input_state,
+                prompt,
+                recovery_turn,
+                Some(turn_id.as_str()),
+                autonomous,
+                err,
+            )
+            .await;
             return;
         }
         self.chat_widget
             .commit_safety_buffered_retry_submission(retry_display);
     }
 
-    fn fail_safety_buffered_branch(
+    async fn fail_safety_buffered_branch(
         &mut self,
+        app_server: &mut AppServerSession,
         input_state: Option<ThreadInputState>,
         prompt: UserMessage,
+        recovery_turn: AppCommand,
+        interrupted_turn_id: Option<&str>,
+        autonomous: bool,
         err: impl std::fmt::Display,
     ) {
+        let autonomous = autonomous && self.chat_widget.alab_autonomous_root_active();
+        let source_was_running = self.chat_widget.is_user_turn_pending_or_running();
         self.chat_widget.restore_thread_input_state(
-            input_state,
+            input_state.clone(),
             ThreadInputStateRestoreMode {
-                preserve_in_flight_turn: false,
+                preserve_in_flight_turn: autonomous && source_was_running,
             },
         );
         self.chat_widget.cancel_safety_buffered_retry_submission();
-        self.chat_widget.restore_user_message_to_composer(prompt);
         self.chat_widget
             .add_error_message(format!("Failed to retry with a faster model: {err}"));
+        if autonomous {
+            // ALAB(daybreak): recover through ALab's bounded continuation, never a human-only draft.
+            super::alab_safety_recovery::continue_after_failure(
+                self,
+                app_server,
+                recovery_turn,
+                input_state,
+                prompt,
+                interrupted_turn_id,
+            )
+            .await;
+        } else {
+            self.chat_widget.restore_user_message_to_composer(prompt);
+        }
     }
 }
 

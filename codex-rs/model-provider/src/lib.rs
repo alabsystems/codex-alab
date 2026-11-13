@@ -8,6 +8,7 @@ mod client_auth;
 mod combined_auth;
 mod gateway_auth;
 mod gateway_export;
+#[path = "../../alab-core/glue/gateway_request_recovery.rs"] pub mod alab_gateway_recovery; // ALAB(accounts): source-scoped export recovery retains the existing provider retry bound.
 mod gcp;
 mod models_endpoint;
 mod models_identity;

@@ -1040,6 +1040,7 @@ See the Codex keymap documentation for supported actions and examples."
             feedback_audience,
             environment_manager,
             app_server_target,
+            app_server_backend_id: Some(app_server.backend_id()),
             pending_right_click_paste: None,
             right_click_paste_environment: super::right_click_paste::PasteEnvironment::detect(),
             reconnect: ReconnectState {
@@ -1067,8 +1068,10 @@ See the Codex keymap documentation for supported actions and examples."
             pending_thread_titles: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
+            backend_registry: Default::default(),
             agents_overview,
             side_threads: HashMap::new(),
+            saved_openings: Default::default(),
             sidebars: HashMap::new(),
             side_companions: HashMap::new(),
             zoomed_thread: None,
@@ -1136,6 +1139,10 @@ See the Codex keymap documentation for supported actions and examples."
                 cli_version(), // ALAB(version): running executable identity
                 /*server_version*/ None,
             );
+        }
+        if let Some(thread_id) = app.current_displayed_thread_id() {
+            app.backend_registry
+                .observe(app_server.backend_id(), thread_id);
         }
         if start_in_agents_overview {
             app.open_agents_overview(&app_server);
@@ -1293,7 +1300,7 @@ See the Codex keymap documentation for supported actions and examples."
 
         #[cfg(not(debug_assertions))]
         let pre_loop_exit_reason = if let Some(latest_version) = upgrade_version {
-            let control = Box::pin(app.handle_event(
+            let control = crate::boxed_future!(app.handle_event( // ALAB(startup-stack): construct the event outside the startup poll frame.
                 tui,
                 &mut app_server,
                 AppEvent::InsertHistoryCell(Box::new(UpdateAvailableHistoryCell::new(
@@ -1501,7 +1508,7 @@ See the Codex keymap documentation for supported actions and examples."
                         }
                         AppRunControl::Continue
                     }
-                    Some(event) = app_event_rx.recv() => {
+                    Some(event) = app.saved_openings.next_event(&mut app_event_rx) => {
                         let switch_backend = match &event {
                             AppEvent::ChooseNewSessionCheckout { name } | AppEvent::NewSession { name }
                                 if multi_backend => app.other_new_session_backend(&backends).await
@@ -1535,7 +1542,8 @@ See the Codex keymap documentation for supported actions and examples."
                                 parked_side_completions.entry(*backend_id).or_default().push(event);
                                 continue;
                             }
-                            AppEvent::StartupThreadStarted { backend_id, .. } => {
+                            AppEvent::SavedSideChatsLoaded { backend_id, .. }
+                            | AppEvent::StartupThreadStarted { backend_id, .. } => {
                                 backends.slot(*backend_id).unwrap_or(displayed_session)
                             }
                             _ => displayed_session,
@@ -1544,7 +1552,7 @@ See the Codex keymap documentation for supported actions and examples."
                         // and protected-input drain when replay completes.
                         let had_visible_modal = app.chat_widget.has_active_modal()
                             && !app.awaiting_side_replay(tui);
-                        match Box::pin(app.handle_event(tui, backends.session_at_mut(event_session), event)).await {
+                        match crate::boxed_future!(app.handle_event(tui, backends.session_at_mut(event_session), event)).await { // ALAB(startup-stack): construct the event outside the startup poll frame.
                             Ok(AppRunControl::Continue) => {
                                 if is_initial_session_header {
                                     waiting_for_initial_session_header = false;
@@ -1620,12 +1628,15 @@ See the Codex keymap documentation for supported actions and examples."
                                 backends.defer_side_startup(event);
                             }
                             Some(event) if owner != displayed_owner || !app.reconnect.offline => {
-                                if let Some(session) = backends.session(owner) {
-                                    app.handle_polled_backend_event(session, displayed_owner, event).await;
+                                if let Some(slot) = backends.slot(owner) {
+                                    let (session, parked_inputs) = backends.session_and_parked_inputs(slot);
+                                    app.handle_polled_backend_event(session, displayed_owner, parked_inputs, event).await;
                                 }
                             }
                             Some(_) => {}
                             None => {
+                                app.agents_overview
+                                    .invalidate_discovery(owner, owner == displayed_owner);
                                 if owner == displayed_owner {
                                     if app.reconnect.offline && app.pending_startup_thread_start {
                                         reconnect = None;

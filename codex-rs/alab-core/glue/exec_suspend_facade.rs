@@ -12,6 +12,14 @@ use std::io;
 use tokio::sync::oneshot;
 
 pub(super) enum Request {
+    BootstrapForest {
+        request: codex_app_server::in_process::ForestBootstrapRequest,
+        response: oneshot::Sender<io::Result<codex_app_server::in_process::BootstrappedForest>>,
+    },
+    ActivateForest {
+        primary: ThreadId,
+        response: oneshot::Sender<io::Result<()>>,
+    },
     Bootstrap {
         request: codex_app_server::in_process::ExecBootstrapRequest,
         response: oneshot::Sender<io::Result<codex_app_server::in_process::BootstrappedExec>>,
@@ -25,6 +33,10 @@ pub(super) enum Request {
         turn: String,
         configuration: Box<codex_core::config::ExecConfiguration>,
         response: oneshot::Sender<io::Result<SuspendedExec>>,
+    },
+    ActivateIdleTree {
+        thread: ThreadId,
+        response: oneshot::Sender<io::Result<()>>,
     },
     ActivateTree {
         thread: ThreadId,
@@ -83,6 +95,12 @@ pub(super) fn start(sender: InProcessClientSender, request: Request) {
     // root and descendant cleanup. Dropping the caller does not cancel it.
     tokio::spawn(async move {
         match request {
+            Request::BootstrapForest { request, response } => {
+                let _ = response.send(sender.bootstrap_upgrade_forest(request).await);
+            }
+            Request::ActivateForest { primary, response } => {
+                let _ = response.send(sender.activate_upgrade_forest(primary).await);
+            }
             Request::Bootstrap { request, response } => {
                 let _ = response.send(sender.bootstrap_exec(request).await);
             }
@@ -96,6 +114,9 @@ pub(super) fn start(sender: InProcessClientSender, request: Request) {
                 response,
             } => {
                 let _ = response.send(sender.suspend_exec_turn(thread, turn, *configuration).await);
+            }
+            Request::ActivateIdleTree { thread, response } => {
+                let _ = response.send(sender.activate_idle_exec_tree(thread).await);
             }
             Request::ActivateTree {
                 thread,
@@ -187,6 +208,69 @@ impl InProcessAppServerClient {
         receive
             .await
             .map_err(|_| io::Error::other("exec tree activation reply was lost"))?
+    }
+}
+
+impl InProcessAppServerClient {
+    pub async fn activate_idle_exec_tree(&self, thread: ThreadId) -> io::Result<()> {
+        let (response, receive) = oneshot::channel();
+        self.command_tx
+            .send(ClientCommand::AlabExecSuspend(Request::ActivateIdleTree {
+                thread,
+                response,
+            }))
+            .await
+            .map_err(|_| io::Error::other("idle exec activation worker is unavailable"))?;
+        receive
+            .await
+            .map_err(|_| io::Error::other("idle exec activation reply was lost"))?
+    }
+}
+
+impl InProcessAppServerClient {
+    pub async fn bootstrap_upgrade_forest(
+        &self,
+        request: codex_app_server::in_process::ForestBootstrapRequest,
+    ) -> io::Result<codex_app_server::in_process::BootstrappedForest> {
+        self.request_handle()
+            .bootstrap_upgrade_forest(request)
+            .await
+    }
+
+    pub async fn activate_upgrade_forest(&self, primary: ThreadId) -> io::Result<()> {
+        self.request_handle().activate_upgrade_forest(primary).await
+    }
+}
+
+impl super::InProcessAppServerRequestHandle {
+    pub async fn bootstrap_upgrade_forest(
+        &self,
+        request: codex_app_server::in_process::ForestBootstrapRequest,
+    ) -> io::Result<codex_app_server::in_process::BootstrappedForest> {
+        let (response, receive) = oneshot::channel();
+        self.command_tx
+            .send(ClientCommand::AlabExecSuspend(Request::BootstrapForest {
+                request,
+                response,
+            }))
+            .await
+            .map_err(|_| io::Error::other("forest bootstrap worker is unavailable"))?;
+        receive
+            .await
+            .map_err(|_| io::Error::other("forest bootstrap reply was lost"))?
+    }
+    pub async fn activate_upgrade_forest(&self, primary: ThreadId) -> io::Result<()> {
+        let (response, receive) = oneshot::channel();
+        self.command_tx
+            .send(ClientCommand::AlabExecSuspend(Request::ActivateForest {
+                primary,
+                response,
+            }))
+            .await
+            .map_err(|_| io::Error::other("forest activation worker is unavailable"))?;
+        receive
+            .await
+            .map_err(|_| io::Error::other("forest activation reply was lost"))?
     }
 }
 

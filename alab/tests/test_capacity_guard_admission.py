@@ -9,12 +9,14 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "smoke/capacity_exec.py"
+sys.path.insert(0, str(SOURCE.parent))
 FIXTURE_PARENT = None
 FIXTURES = []
 

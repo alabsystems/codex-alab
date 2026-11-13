@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:57:16.126311+00:00",
+  "source": "086e0c7247697d387d158c9eb43c9cef6e474cce",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "suite::mcp_tool_exposure::code_mode_refreshes_direct_tool_routing_between_turns::responses",
+      "status": "ok"
+    },
+    {
+      "name": "suite::mcp_tool_exposure::code_mode_refreshes_direct_tool_routing_between_turns::responses_lite",
+      "status": "ok"
+    },
+    {
+      "name": "suite::cyber_access_program::recover_turn_restores_start_options_without_making_them_sticky::standalone_tool_output",
+      "status": "ok"
+    },
+    {
+      "name": "suite::cyber_access_program::recover_turn_restores_start_options_without_making_them_sticky::user_input",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-turn-routing-native-r2.sh",
+      "sha256": "bcfa244b7194e4bf9af73ab9204569590d3feb61bff98e73b393d4e1addc6044"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-turn-routing-native-r2.log",
+      "sha256": "35135c5e9ac484a07ab342af459acbc4b41cabfd14a75942ddf0e99d0567ccc7"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-turn-routing-native-r2.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Four native integration tests passed across two nonempty selections, zero failed/ignored. Responses and Responses Lite change direct-only routing across turns; interrupted user-input and standalone-tool-output turns restore routing/access-program options after restart without making them sticky. No skip reported. Child inheritance has its separate library result. Does not qualify all recovery, native credential images, full gate, complete intake or adoption."
+}

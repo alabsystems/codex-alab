@@ -876,6 +876,10 @@ impl NativeMember {
     }
 }
 impl core::Member for NativeMember {
+    fn runtime_upgrade(&self) -> Option<Arc<dyn codex_alab_core::runtime_upgrade::Host>> {
+        Some(runtime_upgrade::host(self.transport.clone()))
+    }
+
     #[cfg(debug_assertions)]
     fn debug_close_work(&self) -> io::Result<()> {
         self.work_snapshot()?.conn.close();
@@ -1452,3 +1456,12 @@ fn parse_use(
 #[cfg(test)]
 #[path = "source_member_tests.rs"]
 mod tests;
+
+#[path = "source_runtime_upgrade.rs"]
+mod runtime_upgrade;
+
+/// Connect supervision only after actual native settlement. Claim adoption
+/// still requires native verification on the new connection's kernel peer.
+pub async fn connect_settled_runtime_client(endpoint: Endpoint, options: crate::Options) -> Result<crate::Client, crate::Error> {
+    crate::runtime_claim::settled_client(endpoint, options).await
+}

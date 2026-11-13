@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:11:32.647617+00:00",
+  "source": "a7a857d1665cdb8fa8ff1c43aed072393e13fea8",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "chatwidget::tests::exec_flow::replayed_background_terminals_belong_to_the_displayed_thread",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::mcp_resource::caller_metadata::stdio_resource_receives_caller_metadata",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::mcp_resource::mcp_resource_read_returns_resource_contents",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::mcp_resource_origin::widget_reads_survive_history_modes_compaction_restarts_and_app_only_visibility",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-resource-metadata-native.sh",
+      "sha256": "39f70ab30eba8a045dad6d0b658aef0d433488d0b2cf32f3e1cd995e91ac301f"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-resource-metadata-native.log",
+      "sha256": "66bcd339486fa89f4656437b57fa18d808d98339822b2d1f983b7cb89caf66fb"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-resource-metadata-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Four nonempty native selections passed, zero failed or ignored, no reported skip. Covers fork-own terminal restoration/exits during listing, stdio caller metadata/reserved-key rejection, hosted app target metadata and origin-bound widget reads across history/compaction/restart. test_stdio_server prerequisite built successfully. Does not qualify later MCP status owner fix, all account routing, full gate, complete intake or adoption."
+}

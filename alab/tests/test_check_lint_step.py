@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FAKE_CARGO = """#!/bin/sh
 '''exec' {python} -I "$0" "$@"
 ' '''
-import json, os, shlex, subprocess, sys
+import json, os, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 if Path(__file__).parent.name == "deps":
@@ -87,7 +87,7 @@ with open(fake / "calls", "a") as log:
 with open(fake / "environments.jsonl", "a") as log:
     log.write(json.dumps({{"args": logged, "CARGO_BUILD_JOBS": os.environ.get("CARGO_BUILD_JOBS"),
                           "RUST_TEST_THREADS": os.environ.get("RUST_TEST_THREADS"),
-                          "side": side, "target": os.environ.get("CARGO_TARGET_DIR"),
+                          "side": side, "workspace": str(here), "target": os.environ.get("CARGO_TARGET_DIR"),
                           "build": os.environ.get("CARGO_BUILD_BUILD_DIR"),
                           "v8": {{key: os.environ.get(key) for key in
                                   ("RUSTY_V8_ARCHIVE", "RUSTY_V8_SRC_BINDING_PATH")}},
@@ -118,6 +118,38 @@ if mode.get("cache_ownership") and any(word in args for word in ("run", "build",
             marker.write_text("unmanaged")
     with (fake / "compiled.jsonl").open("a") as log:
         log.write(json.dumps({{"side": side, "args": args, "target": str(effective_target)}}) + "\\n")
+helpers = {{
+    "alab-unit-runner": ("alab-unit-runner", "codex-alab-unit-runner", "src/main.rs"),
+    "test_stdio_server": ("rmcp-client", "codex-rmcp-client", "src/bin/test_stdio_server.rs"),
+    "codex-code-mode-host": ("code-mode-host", "codex-code-mode-host", "src/main.rs"),
+    "codex": ("cli", "codex-cli", "src/main.rs"),
+}}
+def helper_record(name, output, workspace=here):
+    directory, package, source = helpers[name]
+    provider = workspace / directory
+    return {{"reason": "compiler-artifact",
+            "package_id": "path+" + provider.as_uri() + "#" + package + "@0.0.0",
+            "manifest_path": str(provider / "Cargo.toml"),
+            "target": {{"kind": ["bin"], "crate_types": ["bin"], "name": name,
+                       "src_path": str(provider / source), "test": name != "alab-unit-runner"}},
+            "profile": {{"test": False}}, "executable": str(output),
+            "filenames": [str(output)], "fresh": True}}
+
+def write_helper(output, name, label=None):
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.is_symlink():
+        output.unlink()
+    elif output.is_dir():
+        output.rmdir()
+    startup = ""
+    if name == "codex":
+        startup = ('if [ "$1" = --version ]; then\\n' +
+                   ("exit 17\\n" if mode.get("cli_failure") == side else
+                    "touch " + shlex.quote(str(output) + ".ready") + "\\n") + "fi\\n")
+    log = "printf '%s\\n' " + shlex.quote(side + ":" + (label or name)) + " >> " + shlex.quote(str(fake / "helper-invocations")) + "\\n"
+    output.write_text("#!/bin/sh\\n" + log + startup + "printf '%s\\n' '" + name + "'\\n")
+    output.chmod(0o755)
+
 def require_v8():
     for key, filename in (("RUSTY_V8_ARCHIVE", "archive"), ("RUSTY_V8_SRC_BINDING_PATH", "binding")):
         path = Path(os.environ.get(key, "/missing"))
@@ -135,21 +167,43 @@ elif args[:1] == ["metadata"]:
     if "--offline" in args and side in mode.get("metadata_failures", {{}}):
         print("fixture missing locked dependency: " + side, file=sys.stderr)
         sys.exit(mode["metadata_failures"][side])
+    metadata_here = Path(args[args.index("--manifest-path") + 1]).parent if "--manifest-path" in args else here
+    runner_metadata = "--manifest-path" in args
+    if runner_metadata and side == mode.get("runner_side", side) and mode.get("runner_metadata") == "wrong_tree":
+        metadata_here = here
+    metadata_target = effective_target
+    if runner_metadata and side == mode.get("runner_side", side) and mode.get("runner_metadata") == "wrong_target":
+        metadata_target = Path(os.environ["ALAB_FAKE_LIBRARY_MANIFEST"]).parent / "target"
     packages = []
-    for manifest in sorted(here.glob("*/Cargo.toml")):
+    for manifest in sorted(metadata_here.glob("*/Cargo.toml")):
         name = next(line.split('"')[1] for line in manifest.read_text().splitlines()
                     if line.startswith("name"))
-        targets = [{{"kind": ["lib"], "name": name.replace("-", "_"),
-                    "src_path": str(manifest.parent / "src/lib.rs"), "test": True}}]
+        targets = []
+        if (manifest.parent / "src/lib.rs").is_file():
+            targets.append({{"kind": ["lib"], "name": name.replace("-", "_"),
+                            "src_path": str(manifest.parent / "src/lib.rs"), "test": True}})
+        if (manifest.parent / "src/main.rs").is_file():
+            binary = {{"codex-cli": "codex", "codex-alab-unit-runner": "alab-unit-runner"}}.get(name, name)
+            targets.append({{"kind": ["bin"], "crate_types": ["bin"], "name": binary,
+                            "src_path": str(manifest.parent / "src/main.rs"), "test": name != "codex-alab-unit-runner"}})
+        for source in sorted((manifest.parent / "src/bin").glob("*.rs")):
+            targets.append({{"kind": ["bin"], "crate_types": ["bin"], "name": source.stem,
+                            "src_path": str(source), "test": True}})
         if (manifest.parent / "build.rs").exists():
             targets.append({{"kind": ["custom-build"], "name": "build-script-build",
                             "src_path": str(manifest.parent / "build.rs"), "test": False}})
         identifier = "path+" + manifest.parent.as_uri() + "#" + name + "@0.0.0"
         packages.append({{"name": name, "id": identifier, "version": "0.0.0",
                          "manifest_path": str(manifest), "targets": targets}})
-    print(json.dumps({{"packages": packages, "workspace_root": str(here),
-                      "target_directory": str(effective_target),
-                      "workspace_members": [package["id"] for package in packages]}}))
+    document = {{"packages": packages, "workspace_root": str(metadata_here),
+                "target_directory": str(metadata_target),
+                "workspace_members": [package["id"] for package in packages]}}
+    with (fake / "metadata-observations.jsonl").open("a") as record:
+        record.write(json.dumps({{"side": side, "runner": runner_metadata, "document": document}}) + "\\n")
+    if runner_metadata:
+        with (fake / "runner-metadata.jsonl").open("a") as record:
+            record.write(json.dumps({{"side": side, "document": document}}) + "\\n")
+    print(json.dumps(document))
 elif "tippy" in args:
     require_v8()
     lines = fake / (side + ".jsonl")
@@ -171,8 +225,61 @@ elif "build" in args:
                     "--bin", "alab-unit-runner", "--message-format=json-render-diagnostics"]
         if args != expected or packages != {{"codex-alab-unit-runner"}}:
             sys.exit("fake cargo: unexpected native runtime build " + " ".join(args))
-        print(json.dumps({{"reason": "compiler-artifact", "target": {{"kind": ["bin"], "name": "alab-unit-runner"}},
-                          "executable": os.environ["ALAB_FAKE_UNIT_RUNNER"]}}))
+        authoritative = Path(os.environ["ALAB_FAKE_LIBRARY_MANIFEST"]).parent
+        output = effective_target / "native runner output/alab-unit-runner"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if output.is_symlink():
+            output.unlink()
+        shutil.copy2(os.environ["ALAB_FAKE_UNIT_RUNNER"], output)
+        output.chmod(0o755)
+        artifact_mode = mode.get("runner_artifacts") if side == mode.get("runner_side", side) else None
+        record = helper_record("alab-unit-runner", output, authoritative)
+        if artifact_mode == "missing":
+            sys.exit(0)
+        if artifact_mode == "only_harness":
+            record["profile"]["test"] = True
+        elif artifact_mode == "wrong_provider":
+            record["package_id"] = "path+" + (authoritative / "core").as_uri() + "#codex-core@0.0.0"
+        elif artifact_mode == "wrong_manifest":
+            record["manifest_path"] = str(authoritative / "core/Cargo.toml")
+        elif artifact_mode == "wrong_source":
+            record["target"]["src_path"] = str(authoritative / "alab-unit-runner/src/runtime.rs")
+        elif artifact_mode == "wrong_kind":
+            record["target"]["kind"] = ["bin", "example"]
+        elif artifact_mode == "missing_profile":
+            record.pop("profile")
+        elif artifact_mode == "numeric_profile":
+            record["profile"]["test"] = 0
+        elif artifact_mode in ("outside", "symlink_escape"):
+            outside = fake / "outside-runner"
+            shutil.copy2(os.environ["ALAB_FAKE_UNIT_RUNNER"], outside)
+            if artifact_mode == "outside":
+                record["executable"] = str(outside)
+            else:
+                output.unlink()
+                output.symlink_to(outside)
+        elif artifact_mode == "nonexec":
+            output.chmod(0o644)
+        if artifact_mode == "noise":
+            for flavor in ("harness", "provider"):
+                noise = output.with_name("unselected-" + flavor)
+                noise.write_text("#!/bin/sh\\nprintf '%s\\n' unselected >> " + shlex.quote(str(fake / "unselected-runner")) + "\\nexit 99\\n")
+                noise.chmod(0o755)
+                other = helper_record("alab-unit-runner", noise, authoritative)
+                if flavor == "harness":
+                    other["profile"]["test"] = True
+                else:
+                    other["package_id"] = "path+" + (authoritative / "core").as_uri() + "#codex-core@0.0.0"
+                    other["manifest_path"] = str(authoritative / "core/Cargo.toml")
+                    other["target"]["src_path"] = str(authoritative / "core/src/bin/alab-unit-runner.rs")
+                print(json.dumps(other))
+        print(json.dumps(record))
+        with (fake / "runner-artifacts.jsonl").open("a") as records:
+            records.write(json.dumps({{"side": side, "record": record}}) + "\\n")
+        if artifact_mode == "ambiguous":
+            other = output.with_name("alab-unit-runner-other")
+            shutil.copy2(output, other)
+            print(json.dumps(helper_record("alab-unit-runner", other, authoritative)))
         sys.exit(0)
     if (not binaries or binaries - providers.keys() or packages - set(providers.values())
             or any(providers[name] not in packages for name in binaries)
@@ -184,24 +291,60 @@ elif "build" in args:
         require_v8()
     for name in sorted(binaries):
         output = Path(os.environ["CARGO_TARGET_DIR"]) / "native helper output" / name
-        output.parent.mkdir(parents=True, exist_ok=True)
-        if mode.get("artifacts") == "directory" and name == "test_stdio_server":
-            output.mkdir(exist_ok=True)
-        else:
-            startup = ""
-            if name == "codex":
-                startup = ('if [ "$1" = --version ]; then\\n' +
-                           ("exit 17\\n" if mode.get("cli_failure") == side else
-                            "touch " + shlex.quote(str(output) + ".ready") + "\\n") + "fi\\n")
-            output.write_text("#!/bin/sh\\n" + startup + "printf '%s\\n' '" + name + "'\\n")
-            output.chmod(0o755)
-        if mode.get("artifacts") == "missing" and name == "test_stdio_server":
+        write_helper(output, name)
+        artifact_mode = (mode.get("artifacts") if name == mode.get("artifact_helper", "test_stdio_server")
+                         and side == mode.get("artifact_side", side) else None)
+        record = helper_record(name, output)
+        if artifact_mode == "missing":
             continue
-        record = {{"reason": "compiler-artifact", "target": {{"kind": ["bin"], "name": name}},
-                   "executable": str(output)}}
+        if artifact_mode == "directory":
+            output.unlink()
+            output.mkdir()
+        elif artifact_mode == "nonexec":
+            output.chmod(0o644)
+        elif artifact_mode == "outside":
+            output = fake / ("outside-" + name)
+            write_helper(output, name)
+            record["executable"] = str(output)
+        elif artifact_mode == "symlink_escape":
+            outside = fake / ("outside-" + name)
+            write_helper(outside, name)
+            output.unlink()
+            output.symlink_to(outside)
+        elif artifact_mode == "only_harness":
+            record["profile"]["test"] = True
+        elif artifact_mode == "wrong_provider":
+            record["package_id"] = "path+" + (here / "core").as_uri() + "#codex-core@0.0.0"
+        elif artifact_mode == "wrong_manifest":
+            record["manifest_path"] = str(here / "core/Cargo.toml")
+        elif artifact_mode == "wrong_source":
+            record["target"]["src_path"] = str(here / helpers[name][0] / "src/lib.rs")
+        elif artifact_mode == "wrong_kind":
+            record["target"]["kind"] = ["bin", "example"]
+        elif artifact_mode == "missing_profile":
+            record.pop("profile")
+        elif artifact_mode == "numeric_profile":
+            record["profile"]["test"] = 0
+        elif artifact_mode == "another_tree":
+            record = helper_record(name, output, Path(os.environ["ALAB_FAKE_LIBRARY_MANIFEST"]).parent)
+        if artifact_mode == "noise":
+            harness = output.with_name(name + "-harness")
+            write_helper(harness, name, "unselected-harness")
+            harness_record = helper_record(name, harness)
+            harness_record["profile"]["test"] = True
+            print(json.dumps(harness_record))
+            other = output.with_name(name + "-other-provider")
+            write_helper(other, name, "unselected-provider")
+            other_record = helper_record(name, other)
+            other_record.update(package_id="path+" + (here / "core").as_uri() + "#codex-core@0.0.0",
+                                manifest_path=str(here / "core/Cargo.toml"))
+            other_record["target"]["src_path"] = str(here / "core/src/bin" / (name + ".rs"))
+            print(json.dumps(other_record))
         print(json.dumps(record))
-        if mode.get("artifacts") == "ambiguous" and name == "test_stdio_server":
-            print(json.dumps(dict(record, executable=str(output) + "-other")))
+        if artifact_mode == "ambiguous":
+            other = output.with_name(name + "-other")
+            write_helper(other, name, "ambiguous-second")
+            print(json.dumps(helper_record(name, other)))
 elif "test" in args:
     if "--lib" in args:
         target = Path(os.environ.get("CARGO_TARGET_DIR", str(here / "target")))
@@ -373,16 +516,25 @@ class CheckLintStepTests(unittest.TestCase):
         rs = self.repo / "codex-rs"
         self.write(rs / ".gitignore", "/target/\n")
         self.write(rs / "Cargo.toml",
-                   '[workspace]\nmembers = ["cli", "core", "code-mode-host", "codex-mcp", "alab-*"]\n')
+                   '[workspace]\nmembers = ["cli", "core", "rmcp-client", "code-mode-host", "codex-mcp", "alab-*"]\n')
         for path, name in (("cli", "codex-cli"), ("core", "codex-core"),
-                           ("code-mode-host", "codex-code-mode-host"), ("codex-mcp", "codex-mcp")):
+                           ("rmcp-client", "codex-rmcp-client"), ("code-mode-host", "codex-code-mode-host"), ("codex-mcp", "codex-mcp")):
             self.write(rs / path / "Cargo.toml", f'[package]\nname = "{name}"\nversion = "0.0.0"\n')
             self.write(rs / path / "src/lib.rs", "pub fn upstream() {}\n")
+        for name in ("test_stdio_server", "codex", "codex-code-mode-host"):
+            self.write(rs / "core/src/bin" / (name + ".rs"), "fn main() {}\n")
+        for directory, source in (("rmcp-client", "src/bin/test_stdio_server.rs"),
+                                  ("cli", "src/main.rs"), ("code-mode-host", "src/main.rs")):
+            self.write(rs / directory / source, "fn main() {}\n")
         self.write(rs / "cli/build.rs", "fn main() {}\n")
         self.git("init", "-q", "-b", "main")
         self.commit("upstream")
         self.git("update-ref", "refs/remotes/upstream/main", "HEAD")
-        for name in ("check.sh", "lib.sh", "lint.jq", "retention.py", "unit-tests.sh", "unit_results.py", "command_guard.py"):
+        for name in (
+            "check.sh", "lib.sh", "lint.jq", "retention.py", "unit-tests.sh", "unit_results.py",
+            "command_guard.py", "upstream_gate.py", "upstream_intake.py", "features.toml", "native_helpers.py",
+            "pristine_state.py", "qualification.py", "source_content.py",
+        ):
             self.write(self.repo / "alab" / name, (ROOT / "alab" / name).read_text())
         # The shared resolver's own tests validate upstream code and pinned hashes.
         # This boundary proves check.sh supplies the actual tree/host/cache and
@@ -393,6 +545,12 @@ class CheckLintStepTests(unittest.TestCase):
                    '[package]\nname = "codex-alab-core"\nversion = "0.0.0"\n')
         self.write(rs / "alab-core/src/lib.rs", "pub fn alab() {}\n")
         self.write(rs / "alab-core/build.rs", "fn main() {}\n")
+        self.write(rs / "alab-unit-runner/Cargo.toml",
+                   '[package]\nname = "codex-alab-unit-runner"\nversion = "0.0.0"\n'
+                   '[[bin]]\nname = "alab-unit-runner"\npath = "src/main.rs"\ntest = false\nbench = false\n')
+        self.write(rs / "alab-unit-runner/src/main.rs", "fn main() {}\n")
+        self.write(rs / "alab-unit-runner/src/runtime.rs", "// native runtime fixture\n")
+        self.write(rs / "core/src/bin/alab-unit-runner.rs", "fn main() {}\n")
         for path in ("cli", "core"):
             self.write(rs / path / "src/lib.rs",
                        f"pub fn upstream() {{}}\n// ALAB({path}): a hook\n")
@@ -829,6 +987,50 @@ class CheckLintStepTests(unittest.TestCase):
         self.assertEqual(code, 1, stderr)
         self.assertFalse(any(" tippy " in call for call in self.calls("ours")))
 
+    def test_writable_pristine_cache_cannot_replace_the_actual_comparison(self):
+        self.unit_mode(ours="fail", pristine="ok")
+        # Supply the removed reuse path's shell-level key prerequisites, so an
+        # accidental restoration cannot pass this test by merely missing a key.
+        self.write(self.repo / "trust.lock", "fixture compiler lock\n")
+        self.commit("provide the former cache key prerequisites")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        cache = Path(self.environment["ALAB_CARGO_HOME"]) / "alab-pristine-verdicts"
+        forged = cache / "candidate-supplied.json"
+        supplied = json.dumps({"failed_tests": ["native::behavior"], "observed": False})
+        self.write(forged, supplied)
+        attempted = self.fake / "pristine-cache-attempts.jsonl"
+        controller = self.repo / "codex-rs/target/debug/codex-release"
+        # Model a cache reader that answers from data a candidate child can write.
+        # The gate must obtain a fresh pristine result even when this reports a hit.
+        reader = """#!/bin/sh
+'''exec' {python} -I "$0" "$@"
+' '''
+import json, os, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+fake = Path(os.environ["ALAB_FAKE_CARGO_DIR"])
+with (fake / "pristine-cache-attempts.jsonl").open("a") as log:
+    log.write(json.dumps(args) + "\\n")
+assert args[0] == "pristine-reuse", args
+plan = json.loads(Path(args[args.index("--plan") + 1]).read_text())
+cache = Path(os.environ["ALAB_CARGO_HOME"]) / "alab-pristine-verdicts/candidate-supplied.json"
+known = json.loads(cache.read_text())["failed_tests"]
+assert all(copy["test"] in known for copy in plan["failed"])
+Path(args[args.index("--out") + 1]).write_text(json.dumps({{
+    "failed": plan["failed"], "passed": [], "selected_libraries": 0,
+    "executed_copies": 0, "reused_verdicts": {{"observed": False}},
+}}))
+"""
+        self.write(controller, reader.format(python=shlex.quote(sys.executable)))
+        controller.chmod(0o755)
+        code, stderr = self.check(CLEAN)
+        self.assertEqual(code, 1, stderr)
+        self.assertTrue(self.unit_children("pristine"), "the pristine test must actually run")
+        self.assertIn("fails with ALab's layer", stderr)
+        self.assertFalse(attempted.exists(), "child-writable exceptions must not be consulted")
+        self.assertEqual(forged.read_text(), supplied, "withdrawal must not delete existing data")
+
     def test_native_helpers_keep_the_pristine_comparison_independent(self):
         self.unit_mode(ours="fail", pristine="ok")
         code, stderr = self.check(CLEAN)
@@ -900,7 +1102,7 @@ class CheckLintStepTests(unittest.TestCase):
                 self.assertTrue(any("--lib" in args for args in pristine), pristine)
                 self.assertTrue(any("build" in args for args in pristine), pristine)
                 for args in pristine:
-                    if "alab-unit-runner" in args:
+                    if "alab-unit-runner" in args or ("metadata" in args and "--manifest-path" in args):
                         # ALab's own runner, built from ALab's manifest.
                         self.assertEqual(self.overrides(args), [], args)
                     else:
@@ -932,20 +1134,177 @@ class CheckLintStepTests(unittest.TestCase):
                 self.assertEqual(self.unit_children(side), [])
                 self.assertFalse(any(" build " in call for call in self.calls(side)))
 
-    def test_native_helper_artifacts_must_identify_each_executable(self):
-        for artifacts in ("missing", "ambiguous"):
-            with self.subTest(artifacts=artifacts):
-                self.unit_mode(ours="ok", pristine="ok", artifacts=artifacts)
-                (self.fake / "environments.jsonl").unlink(missing_ok=True)
+    def test_runner_uses_alab_source_and_each_active_target_with_noise(self):
+        override = self.vendor_toolchain_source()
+        self.unit_mode(ours="fail", pristine="ok", runner_artifacts="noise")
+        code, stderr = self.check(CLEAN)
+        self.assertEqual(code, 1, stderr)
+        self.assertIn("fails with ALab's layer", stderr)
+        authoritative = self.repo / "codex-rs"
+        observed = [json.loads(line) for line in (self.fake / "metadata-observations.jsonl").read_text().splitlines()]
+        pristine = [row["document"] for row in observed if row["side"] == "pristine" and not row["runner"]]
+        self.assertTrue(pristine)
+        for document in pristine:
+            self.assertNotEqual(document["workspace_root"], str(authoritative))
+            self.assertFalse(any(package["name"] == "codex-alab-unit-runner" for package in document["packages"]))
+        metadata = [json.loads(line) for line in (self.fake / "runner-metadata.jsonl").read_text().splitlines()]
+        self.assertEqual({row["side"] for row in metadata}, {"ours", "pristine"})
+        artifacts = [json.loads(line) for line in (self.fake / "runner-artifacts.jsonl").read_text().splitlines()]
+        for row in artifacts:
+            record = row["record"]
+            self.assertEqual(record["manifest_path"], str(authoritative / "alab-unit-runner/Cargo.toml"))
+            self.assertEqual(record["target"]["src_path"], str(authoritative / "alab-unit-runner/src/main.rs"))
+            self.assertIs(record["profile"]["test"], False)
+        self.assertFalse((self.fake / "unselected-runner").exists())
+        children = [json.loads(line) for line in (self.fake / "environments.jsonl").read_text().splitlines()]
+        for side in ("ours", "pristine"):
+            libraries = self.unit_children(side)
+            self.assertTrue(libraries)
+            target = Path(libraries[0]["target"])
+            for row in (r for r in metadata if r["side"] == side):
+                self.assertEqual(row["document"]["workspace_root"], str(authoritative))
+                self.assertEqual(row["document"]["target_directory"], str(target))
+            runner = target / "native runner output/alab-unit-runner"
+            self.assertEqual(runner.read_bytes(), RUNNER.read_bytes())
+            for child in libraries:
+                configs = [arg.split(".runner=", 1)[1] for arg in child["args"] if ".runner=" in arg]
+                if configs:
+                    self.assertEqual(json.loads(configs[0])[0], str(runner))
+            for child in (c for c in children if c["side"] == side):
+                args = child["args"]
+                if "--manifest-path" in args:
+                    self.assertEqual(args[args.index("--manifest-path") + 1], str(authoritative / "Cargo.toml"))
+                    self.assertEqual(self.overrides(args), [])
+            if side == "pristine":
+                self.assertFalse((Path(libraries[0]["workspace"]) / "alab-unit-runner").exists())
+                self.assertNotEqual(Path(libraries[0]["workspace"]), authoritative)
+                self.assertTrue(any(self.overrides(c["args"]) == [override] for c in libraries))
+
+
+    def test_runner_artifact_identity_is_checked_before_library_preparation(self):
+        for variant in ("missing", "ambiguous", "only_harness", "wrong_provider",
+                        "wrong_manifest", "wrong_source", "wrong_kind",
+                        "missing_profile", "numeric_profile"):
+            with self.subTest(variant=variant):
+                self.unit_mode(ours="ok", pristine="ok", runner_artifacts=variant)
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 1, stderr)
+                self.assertEqual(self.unit_children("ours"), [], "no library --no-run or execution before runner admission")
+                self.assertTrue(any("--bin alab-unit-runner" in call for call in self.calls("ours")))
+                self.assertIn("runtime helper artifact", stderr)
+
+    def test_runner_paths_are_checked_before_library_preparation(self):
+        for variant in ("outside", "symlink_escape", "nonexec"):
+            with self.subTest(variant=variant):
+                self.unit_mode(ours="ok", pristine="ok", runner_artifacts=variant)
+                self.clear_helper_observations()
                 code, stderr = self.check(CLEAN)
                 self.assertEqual(code, 1, stderr)
                 self.assertEqual(self.unit_children("ours"), [])
+                self.assertTrue(any("--bin alab-unit-runner" in call for call in self.calls("ours")))
+                self.assertIn("helper", stderr)
+
+    def test_pristine_runner_metadata_cannot_adopt_the_tested_tree_or_candidate_target(self):
+        for variant in ("wrong_tree", "wrong_target"):
+            with self.subTest(variant=variant):
+                self.unit_mode(ours="fail", pristine="ok", runner_metadata=variant, runner_side="pristine")
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 1, stderr)
+                self.assertTrue(self.unit_children("ours"))
+                self.assertEqual(self.unit_children("pristine"), [])
+                self.assertIn("helper metadata belongs to another", stderr)
+
+    def test_native_helper_artifacts_must_identify_each_executable(self):
+        for artifacts in ("missing", "ambiguous", "only_harness", "wrong_provider",
+                          "wrong_manifest", "wrong_source", "wrong_kind",
+                          "missing_profile", "numeric_profile"):
+            with self.subTest(artifacts=artifacts):
+                self.unit_mode(ours="ok", pristine="ok", artifacts=artifacts)
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 1, stderr)
+                self.assertEqual(self.unit_children("ours"), [])
+                self.assertEqual(self.helper_invocations("ours"), [])
+                self.assertIn("helper", stderr)
 
     def test_native_helper_artifact_directories_are_not_executables(self):
         self.unit_mode(ours="ok", pristine="ok", artifacts="directory")
         code, stderr = self.check(CLEAN)
         self.assertEqual(code, 1, stderr)
         self.assertEqual(self.unit_children("ours"), [])
+
+    def helper_invocations(self, side):
+        path = self.fake / "helper-invocations"
+        return [line for line in path.read_text().splitlines() if line.startswith(side + ":")] if path.exists() else []
+
+    def clear_helper_observations(self):
+        for name in ("calls", "environments.jsonl", "helper-invocations"):
+            (self.fake / name).unlink(missing_ok=True)
+
+    def hook_mcp(self):
+        self.write(self.repo / "codex-rs/codex-mcp/src/lib.rs",
+                   "pub fn upstream() {}\n// ALAB(version): request identity\n")
+        self.commit("hook MCP")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+    def test_native_helper_paths_must_be_regular_executables_inside_the_target(self):
+        for artifacts in ("outside", "symlink_escape", "nonexec"):
+            with self.subTest(artifacts=artifacts):
+                self.unit_mode(ours="ok", pristine="ok", artifacts=artifacts)
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 1, stderr)
+                self.assertEqual(self.unit_children("ours"), [])
+                self.assertEqual(self.helper_invocations("ours"), [])
+                self.assertTrue(any("--bin test_stdio_server" in call for call in self.calls("ours")))
+                self.assertIn("helper", stderr)
+
+    def test_runtime_helpers_ignore_real_harness_and_other_provider_artifacts(self):
+        self.hook_mcp()
+        for helper in ("test_stdio_server", "codex-code-mode-host", "codex"):
+            with self.subTest(helper=helper):
+                self.unit_mode(ours="fail", pristine="ok", artifacts="noise", artifact_helper=helper)
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 1, stderr)
+                self.assertIn("fails with ALab's layer", stderr)
+                for side in ("ours", "pristine"):
+                    self.assert_prepared(side)
+                    self.assertTrue(self.helper_invocations(side))
+                    self.assertFalse(any("unselected" in call for call in self.helper_invocations(side)))
+                    for child in self.unit_children(side):
+                        self.assertEqual(child["helpers"]["CARGO_BIN_EXE_codex"],
+                                         str(Path(child["target"]) / "native helper output/codex"))
+
+    def test_cli_helper_artifact_identity_and_path_are_preconditions(self):
+        self.hook_mcp()
+        for artifacts in ("missing", "ambiguous", "only_harness", "wrong_provider",
+                          "wrong_manifest", "wrong_source", "outside", "symlink_escape", "nonexec"):
+            with self.subTest(artifacts=artifacts):
+                self.unit_mode(ours="ok", pristine="ok", artifacts=artifacts, artifact_helper="codex")
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 1, stderr)
+                self.assertEqual(self.unit_children("ours"), [])
+                self.assertEqual(self.helper_invocations("ours"), [], "even the CLI prewarm must wait for admission")
+                self.assertTrue(any("-p codex-cli --bin codex" in call for call in self.calls("ours")))
+                self.assertIn("helper", stderr)
+
+    def test_pristine_helper_artifacts_cannot_claim_the_candidate_source(self):
+        self.hook_mcp()
+        for helper in ("test_stdio_server", "codex-code-mode-host", "codex"):
+            with self.subTest(helper=helper):
+                self.unit_mode(ours="fail", pristine="ok", artifacts="another_tree",
+                               artifact_helper=helper, artifact_side="pristine")
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 1, stderr)
+                self.assertTrue(self.unit_children("ours"))
+                self.assertEqual(self.unit_children("pristine"), [])
+                self.assertEqual(self.helper_invocations("pristine"), [])
+                self.assertIn("no unique runtime helper artifact", stderr)
 
     def test_helper_fixture_obeys_requested_targets_and_providers(self):
         cargo = self.fake / "targo"

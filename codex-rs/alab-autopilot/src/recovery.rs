@@ -125,6 +125,46 @@ pub(crate) fn capture(
     })
 }
 
+/// The recovery intent of the usage wall `state` stands at for failed turn `turn_id`, where no
+/// decision has been made at it: the account handoff asked for at that wall owns the point
+/// (`follow_renewal`), so [`capture`] is never reached, and without this the process after a
+/// restart would hold the handoff's intent with no wall, and no reset to stop asking at. It is
+/// decided again when restored, from the wall's own reset: `not_before_ms` is the point's own
+/// moment, which holds nothing back. `None` for any other point.
+pub(crate) fn capture_asked_wall(
+    thread: &str,
+    turn_id: &str,
+    state: &ThreadState,
+    now: Instant,
+    epoch: u64,
+) -> Option<Recovery> {
+    let point = state.point.as_ref().filter(|point| !point.aborted)?;
+    if state.point_turn_id.as_deref() != Some(turn_id) {
+        return None;
+    }
+    let Some(Wall::Usage {
+        reset_at,
+        reset_label,
+    }) = &point.wall
+    else {
+        return None;
+    };
+    let point_at_ms = epoch_of(point.at, now, epoch);
+    Some(Recovery {
+        thread: thread.to_owned(),
+        turn_id: turn_id.to_owned(),
+        point_at_ms,
+        not_before_ms: point_at_ms,
+        by_autopilot: point.by_autopilot,
+        by_person: point.by_person,
+        wall: RecoveryWall::Usage {
+            reset_at_ms: reset_at.map(|at| epoch_of(at, now, epoch)),
+            reset_label: reset_label.clone(),
+            quota: None,
+        },
+    })
+}
+
 /// A stale writer record cannot resurrect a failure a newer rollout point replaced.
 fn current_failed_turn(items: &[RolloutItem], recovery: &Recovery) -> bool {
     let crate::resume_history::NativePoint::Complete(complete) =

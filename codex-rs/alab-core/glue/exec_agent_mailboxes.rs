@@ -135,6 +135,44 @@ impl LocalAgentRuntime {
     /// Called only after root original-turn admission. Prepend the old queue to
     /// any newer mail without emitting receive/consume events during installation.
     pub(crate) fn restore_exec_mailboxes(&self, messages: Vec<ExecMailboxMessage>) -> Result<()> {
+        self.restore_exec_mailboxes_with_notification(messages, true)
+    }
+
+    pub(crate) fn restore_exec_mailboxes_quiet(
+        &self,
+        messages: Vec<ExecMailboxMessage>,
+    ) -> Result<()> {
+        self.restore_exec_mailboxes_with_notification(messages, false)
+    }
+
+    pub(crate) fn activate_exec_mailboxes(&self) -> Result<()> {
+        let queues = self
+            .mailboxes
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let queues = queues
+            .as_ref()
+            .ok_or_else(|| CodexErr::InvalidRequest("agent runtime is closed".into()))?;
+        for mailbox in queues.values() {
+            mailbox.state.send_if_modified(|state| {
+                let pending = !mailbox.pending.is_empty();
+                if *state == pending {
+                    false
+                } else {
+                    *state = pending;
+                    true
+                }
+            });
+        }
+        Ok(())
+    }
+
+    fn restore_exec_mailboxes_with_notification(
+        &self,
+        messages: Vec<ExecMailboxMessage>,
+        notify: bool,
+    ) -> Result<()> {
         if messages.is_empty() {
             return Ok(());
         }
@@ -161,7 +199,9 @@ impl LocalAgentRuntime {
             let mailbox = queues.entry(thread).or_default();
             old.append(&mut mailbox.pending);
             mailbox.pending = old;
-            mailbox.state.send_replace(true);
+            if notify {
+                mailbox.state.send_replace(true);
+            }
         }
         Ok(())
     }
@@ -313,5 +353,42 @@ mod tests {
             .collect();
         assert_eq!(accepted, captured);
         assert_eq!(frozen.len(), accepted.len() + 1);
+    }
+
+    #[test]
+    fn quiet_controller_restore_retains_order_without_publishing_until_activation() {
+        let runtime = super::super::super::LocalAgentControl::default().runtime;
+        let thread = ThreadId::new();
+        let mut watched = runtime.mailboxes.watch(thread);
+        let message = |text: &str| ExecMailboxMessage {
+            thread,
+            receive_id: Some(text.into()),
+            communication: PendingAgentMessage::from(
+                codex_protocol::protocol::InterAgentCommunication::new(
+                    codex_protocol::AgentPath::root(),
+                    codex_protocol::AgentPath::root(),
+                    Vec::new(),
+                    text.into(),
+                    false,
+                ),
+            ),
+        };
+        runtime
+            .restore_exec_mailboxes_quiet(vec![message("retained")])
+            .unwrap();
+        assert!(!*watched.borrow());
+        assert!(!watched.has_changed().unwrap());
+        assert_eq!(runtime.exec_mailboxes().unwrap().len(), 1);
+        runtime.activate_exec_mailboxes().unwrap();
+        assert!(*watched.borrow_and_update());
+        runtime.activate_exec_mailboxes().unwrap();
+        assert!(
+            !watched.has_changed().unwrap(),
+            "activation is not a second delivery"
+        );
+        assert_eq!(
+            runtime.exec_mailboxes().unwrap()[0].receive_id.as_deref(),
+            Some("retained")
+        );
     }
 }

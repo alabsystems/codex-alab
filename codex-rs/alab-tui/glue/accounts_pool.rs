@@ -6,18 +6,50 @@
 use super::ChatWidget;
 use super::DetailsView;
 use crate::app_event::AppEvent;
+use crate::app_event_sender::AppEventSender;
+#[cfg(unix)]
+use crate::clock_format::ClockFormat;
+use codex_alab_tui::accounts_ui::Update;
+use codex_alab_tui::accounts_ui::View;
 use codex_alab_tui::aterm as codex_alab_aterm;
 use codex_protocol::ThreadId;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
 
 const VIEW_ID: &str = "alab-accounts";
 
+/// One sentence for the pane and for a refused `/accounts use|auto`.
 #[cfg(unix)]
-fn describe(snapshot: &codex_alab_aterm::accounts::Snapshot) -> String {
+pub(super) const CHANGES_UNAVAILABLE: &str = "Account changes are unavailable on this host.";
+
+#[cfg(test)]
+#[path = "accounts_pool_order_tests.rs"]
+mod order_tests;
+
+fn spawn_snapshot(
+    view: Weak<Mutex<View>>,
+    thread_id: Option<ThreadId>,
+    tx: AppEventSender,
+    fetch: impl Future<Output = Result<String, String>> + Send + 'static,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let token = view.upgrade()?.lock().ok()?.begin_snapshot();
+    Some(tokio::spawn(async move {
+        let result = fetch.await;
+        tx.send(AppEvent::AlabAccountsReady {
+            view,
+            thread_id,
+            text: Update::Snapshot { token, result },
+        });
+    }))
+}
+
+#[cfg(unix)]
+fn describe(snapshot: &codex_alab_aterm::accounts::Snapshot, clock_format: ClockFormat) -> String {
+    let date_time_format = format!("{} %Z", clock_format.date_time_format());
     let mut lines = vec!["Subscription accounts · cached native observations".to_owned()];
     lines.push(if snapshot.assignment.account_id.is_some() {
         "Current account is marked below.".into()
@@ -66,7 +98,7 @@ fn describe(snapshot: &codex_alab_aterm::accounts::Snapshot) -> String {
                 .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
                 .map(|time| {
                     time.with_timezone(&chrono::Local)
-                        .format("%d %b %H:%M %Z")
+                        .format(&date_time_format)
                         .to_string()
                 })
                 .unwrap_or_else(|| "unavailable".into());
@@ -79,12 +111,12 @@ fn describe(snapshot: &codex_alab_aterm::accounts::Snapshot) -> String {
                 .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
                 .map(|time| time
                     .with_timezone(&chrono::Local)
-                    .format("%d %b %H:%M %Z")
+                    .format(&date_time_format)
                     .to_string())
                 .unwrap_or_else(|| "unavailable".into())
         ));
     }
-    lines.push("\nAccount changes are unavailable on this host.".into());
+    lines.push(format!("\n{CHANGES_UNAVAILABLE}"));
     lines.join("\n")
 }
 
@@ -140,11 +172,11 @@ impl ChatWidget {
         self.alab_fetch_accounts(weak, thread_id, tx);
     }
 
-    pub(crate) fn alab_accounts_view(&mut self) -> Weak<Mutex<String>> {
+    pub(crate) fn alab_accounts_view(&mut self) -> Weak<Mutex<View>> {
         self.bottom_pane.dismiss_view_by_id(VIEW_ID);
-        let text = Arc::new(Mutex::new(
+        let text = Arc::new(Mutex::new(View::new(
             "Loading subscription accounts from aterm…".to_owned(),
-        ));
+        )));
         let weak = Arc::downgrade(&text);
         let thread_id = self.thread_id();
         let refresh = self.app_event_tx.clone();
@@ -156,7 +188,7 @@ impl ChatWidget {
                 move || {
                     let text = text
                         .lock()
-                        .map(|text| text.clone())
+                        .map(|view| view.text().to_owned())
                         .unwrap_or_else(|_| "Account view unavailable".into());
                     Paragraph::new(text).wrap(Wrap { trim: false })
                 },
@@ -176,7 +208,7 @@ impl ChatWidget {
 
     pub(crate) fn alab_refresh_accounts(
         &self,
-        view: Weak<Mutex<String>>,
+        view: Weak<Mutex<View>>,
         thread_id: Option<ThreadId>,
     ) {
         if self.thread_id() == thread_id
@@ -192,12 +224,14 @@ impl ChatWidget {
 
     fn alab_fetch_accounts(
         &self,
-        weak: Weak<Mutex<String>>,
+        weak: Weak<Mutex<View>>,
         thread_id: Option<ThreadId>,
-        tx: crate::app_event_sender::AppEventSender,
+        tx: AppEventSender,
     ) {
         #[cfg(unix)]
-        tokio::spawn(async move {
+        let clock_format = self.clock_format;
+        #[cfg(unix)]
+        let fetch = async move {
             let result = match codex_alab_aterm::Client::connect_accounts_self().await {
                 Ok(Some(client)) => {
                     let birth = codex_alab_tui::identity::current()
@@ -207,7 +241,7 @@ impl ChatWidget {
                         Some(birth) => client
                             .accounts_snapshot(&birth)
                             .await
-                            .map(|snapshot| describe(&snapshot)),
+                            .map(|snapshot| describe(&snapshot, clock_format)),
                         None => Err(codex_alab_aterm::Error::BadRequest(
                             "process identity unavailable".into(),
                         )),
@@ -216,26 +250,19 @@ impl ChatWidget {
                 Ok(None) => Err(codex_alab_aterm::Error::Closed),
                 Err(error) => Err(error),
             };
-            let text = result.unwrap_or_else(|error| failure(&error).to_owned());
-            tx.send(AppEvent::AlabAccountsReady {
-                view: weak,
-                thread_id,
-                text,
-            });
-        });
+            result.map_err(|error| failure(&error).to_owned())
+        };
         #[cfg(not(unix))]
-        tx.send(AppEvent::AlabAccountsReady {
-            view: weak,
-            thread_id,
-            text: "Native account inspection is unavailable on this platform.".into(),
-        });
+        let fetch =
+            async { Err("Native account inspection is unavailable on this platform.".into()) };
+        let _ = spawn_snapshot(weak, thread_id, tx, fetch);
     }
 
     pub(crate) fn alab_accounts_ready(
         &mut self,
-        view: Weak<Mutex<String>>,
+        view: Weak<Mutex<View>>,
         thread_id: Option<ThreadId>,
-        text: String,
+        text: Update,
     ) {
         if self.thread_id() != thread_id
             || self
@@ -247,8 +274,8 @@ impl ChatWidget {
         }
         if let Some(view) = view.upgrade()
             && let Ok(mut current) = view.lock()
+            && current.apply(text)
         {
-            *current = text;
             self.request_redraw();
         }
     }
@@ -316,14 +343,26 @@ mod tests {
         while ops.try_recv().is_ok() {}
         let original_thread = chat.thread_id();
         let old = chat.alab_accounts_view();
-        chat.alab_accounts_ready(old.clone(), original_thread, "two cached accounts".into());
+        chat.alab_accounts_ready(
+            old.clone(),
+            original_thread,
+            Update::Observation("two cached accounts".into()),
+        );
         assert!(render_bottom_popup(&chat, 80).contains("two cached accounts"));
         let current = chat.alab_accounts_view();
         assert!(old.upgrade().is_none());
-        chat.alab_accounts_ready(old, original_thread, "stale secretless metadata".into());
+        chat.alab_accounts_ready(
+            old,
+            original_thread,
+            Update::Observation("stale secretless metadata".into()),
+        );
         assert!(!render_bottom_popup(&chat, 80).contains("stale secretless metadata"));
         chat.thread_id = Some(ThreadId::new());
-        chat.alab_accounts_ready(current.clone(), original_thread, "wrong thread".into());
+        chat.alab_accounts_ready(
+            current.clone(),
+            original_thread,
+            Update::Observation("wrong thread".into()),
+        );
         assert!(!render_bottom_popup(&chat, 80).contains("wrong thread"));
         chat.bottom_pane.dismiss_view_by_id(VIEW_ID);
         assert!(current.upgrade().is_none());
@@ -424,7 +463,7 @@ mod tests {
                 auto: false,
             },
         };
-        let text = describe(&snapshot);
+        let text = describe(&snapshot, ClockFormat::TwentyFourHour);
         assert!(text.contains("Spare subscription"));
         assert!(text.contains("usage unavailable"));
         assert!(text.contains("stale usage"));

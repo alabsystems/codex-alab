@@ -10,6 +10,9 @@
 //! they keep testing upstream's behavior; `alab/check.sh` gates on them. ALab's own tests
 //! activate the switch themselves.
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
@@ -89,25 +92,30 @@ pub mod auth_lock;
 pub mod boxes;
 pub mod capacity;
 pub mod compaction;
+pub mod context_host;
+pub mod goal_clock;
 pub mod goal_recovery;
 pub mod goal_stops;
 pub mod home;
 pub mod mail;
+pub mod managed_auth;
 pub mod manager_catalog;
 pub mod manager_source_epoch;
-pub mod managed_auth;
-pub mod context_host;
 pub mod native_preload;
+pub mod native_reader_retirement;
 pub mod native_source;
 pub mod native_source_launch;
 pub mod native_source_lifetime;
 pub mod native_source_retirement;
-pub mod native_reader_retirement;
 pub mod native_source_use;
 pub mod native_target;
 pub mod quota;
 pub mod renewal;
+pub mod runtime_upgrade;
 pub mod session;
+pub mod upgrade_barrier;
+pub mod upgrade_completion;
+pub mod upgrade_startup_hold;
 pub mod version;
 pub mod wake;
 

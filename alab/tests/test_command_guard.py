@@ -491,7 +491,7 @@ signal.pause()
         self.assert_reaped()
 
     @unittest.skipUnless(hasattr(select, "kqueue"), "requires macOS kqueue")
-    def test_disk_kqueue_timeout_keeps_the_original_exit_registration(self):
+    def test_disk_observer_prefers_kqueue_and_keeps_the_original_exit_registration(self):
         changes, checks, timeouts = [], [], []
 
         class PollQueue:
@@ -506,12 +506,86 @@ signal.pause()
                 return [select.kevent(123, filter=select.KQ_FILTER_PROC,
                                       fflags=select.KQ_NOTE_EXIT)]
 
-        with mock.patch.object(GUARD.select, "kqueue", PollQueue):
-            GUARD.observe_exit_kqueue(123, lambda: checks.append(True), 0.25)
+        floor = mock.Mock()
+        floor.check.side_effect = lambda: checks.append(True)
+        with (mock.patch.object(GUARD.select, "kqueue", PollQueue),
+              mock.patch.object(GUARD.os, "waitid", create=True,
+                                side_effect=AssertionError("kqueue must observe the disk-guarded exit")),
+              mock.patch.object(GUARD.time, "sleep",
+                                side_effect=AssertionError("kqueue must wait on the exit notification"))):
+            GUARD.observe_exit_with_disk(123, floor, 0.25)
         self.assertEqual(len(checks), 2)
         self.assertEqual(len(changes[0]), 1)
         self.assertEqual(changes[1], [])
         self.assertEqual(timeouts, [0.25, 0.25])
+
+    @unittest.skipUnless(hasattr(select, "kqueue"), "requires macOS kqueue")
+    def test_disk_kqueue_error_is_not_retried_with_waitid(self):
+        space = type("Space", (), {"f_bavail": 35 * 2**30, "f_frsize": 1})()
+        queue = mock.Mock()
+        queue.control.side_effect = OSError(errno.EPERM, "controlled observer refusal")
+        with (self.tracked_spawn(),
+              mock.patch.object(GUARD.os, "statvfs", return_value=space) as measured,
+              mock.patch.object(GUARD.select, "kqueue", return_value=queue),
+              mock.patch.object(GUARD.os, "waitid", create=True) as waitid,
+              self.assertRaises(OSError) as failed):
+            GUARD.run([sys.executable, "-I", "-B", "-c",
+                       "import signal; signal.alarm(20); signal.pause()"],
+                      disk_floor=GUARD.DiskFloor(["/"], 20))
+        self.assertEqual(failed.exception.errno, errno.EPERM)
+        self.assertEqual(measured.call_count, 2, "prelaunch and observer both check disk")
+        waitid.assert_not_called()
+        queue.close.assert_called_once_with()
+        self.assert_reaped()
+
+    @unittest.skipUnless(hasattr(os, "waitid"), "requires waitid")
+    def test_disk_waitid_fallback_checks_between_nonreaping_polls(self):
+        calls = mock.Mock()
+        floor = mock.Mock()
+        calls.attach_mock(floor.check, "check")
+        with (mock.patch.object(GUARD, "select", object()),
+              mock.patch.object(GUARD.os, "waitid", create=True,
+                                side_effect=[None, object()]) as waitid,
+              mock.patch.object(GUARD.os, "waitpid") as waitpid,
+              mock.patch.object(GUARD.time, "sleep") as sleep):
+            calls.attach_mock(waitid, "waitid")
+            calls.attach_mock(sleep, "sleep")
+            GUARD.observe_exit_with_disk(123, floor, 0.25)
+            waitpid.assert_not_called()
+        poll = mock.call.waitid(os.P_PID, 123, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+        self.assertEqual(calls.mock_calls, [mock.call.check(), poll, mock.call.sleep(0.25),
+                                           mock.call.check(), poll])
+
+    @unittest.skipUnless(hasattr(os, "waitid"), "requires waitid")
+    def test_disk_waitid_fallback_propagates_resource_and_observer_errors(self):
+        for resource_failure in (True, False):
+            with self.subTest(resource_failure=resource_failure):
+                floor = mock.Mock()
+                error = (GUARD.DiskSpaceError("controlled disk refusal") if resource_failure
+                         else OSError(errno.EPERM, "controlled observer refusal"))
+                if resource_failure:
+                    floor.check.side_effect = error
+                with (mock.patch.object(GUARD, "select", object()),
+                      mock.patch.object(GUARD.os, "waitid", create=True, side_effect=error) as waitid,
+                      mock.patch.object(GUARD.os, "waitpid") as waitpid,
+                      mock.patch.object(GUARD.time, "sleep") as sleep,
+                      self.assertRaises(type(error)) as failed):
+                    GUARD.observe_exit_with_disk(123, floor, 0.25)
+                self.assertIs(failed.exception, error)
+                floor.check.assert_called_once_with()
+                self.assertEqual(waitid.call_count, 0 if resource_failure else 1)
+                waitpid.assert_not_called()
+                sleep.assert_not_called()
+
+    @unittest.skipUnless(hasattr(os, "waitid"), "requires waitid")
+    def test_unrestricted_observer_keeps_the_blocking_nonreaping_waitid(self):
+        with (mock.patch.object(GUARD.select, "kqueue", create=True) as kqueue,
+              mock.patch.object(GUARD.os, "waitid", create=True) as waitid,
+              mock.patch.object(GUARD.os, "waitpid") as waitpid):
+            GUARD.observe_exit(123)
+        waitid.assert_called_once_with(os.P_PID, 123, os.WEXITED | os.WNOWAIT)
+        waitpid.assert_not_called()
+        kqueue.assert_not_called()
 
 
 if __name__ == "__main__":

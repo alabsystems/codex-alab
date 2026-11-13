@@ -25,6 +25,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
+#[path = "exec_idle_restore.rs"]
+mod idle_restore;
+pub use idle_restore::ExecIdleRestore;
+
 #[path = "exec_child_identity.rs"]
 mod identity;
 
@@ -40,8 +44,7 @@ type RestoreResult = Result<Arc<ExecRestoredChild>, String>;
 pub struct ExecRestoredChild {
     thread: Arc<CodexThread>,
     recovery: Option<ExecRecoveryOptions>,
-    idle: Mutex<Option<PreparedExecIdleInput>>,
-    idle_outcome: OnceLock<tokio::sync::watch::Receiver<Option<Result<(), String>>>>,
+    idle: Option<Arc<ExecIdleRestore>>,
     pin: Mutex<Option<tokio::sync::OwnedRwLockReadGuard<()>>>,
 }
 impl ExecRestoredChild {
@@ -51,22 +54,17 @@ impl ExecRestoredChild {
     pub fn recovery(&self) -> Option<&ExecRecoveryOptions> {
         self.recovery.as_ref()
     }
-    /// Wake ordinary mailbox delivery only after the tree's launch is released.
-    pub fn activate_idle_inputs(&self) -> Result<(), String> {
-        let outcome = self
-            .idle_outcome
-            .get()
-            .ok_or("idle input was not restored")?;
-        match outcome.borrow().as_ref() {
-            Some(Ok(())) => exec_input_state::activate_idle(&self.thread.session),
-            _ => Err("idle input restoration did not succeed".into()),
-        }
+    /// Wake delivery after all queues are installed and tree launch is released.
+    pub async fn activate_idle_inputs(&self) -> Result<(), String> {
+        self.idle
+            .as_ref()
+            .ok_or("child has no retained idle input")?
+            .activate()
+            .await
     }
-    /// Restore an idle member's retained mail after fresh native admission.
-    /// Does not wake delivery or release residency; bootstrap must install
-    /// every idle queue before activating children and releasing their pins.
-    /// A cancelled waiter cannot abandon an admitted installation; retries of this
-    /// operation report its recorded result without enqueuing the mail again.
+
+    /// Install after fresh native admission without waking delivery. Retries and
+    /// cancelled waiters reconcile the same shared idle-member operation.
     pub async fn restore_idle_inputs(
         self: &Arc<Self>,
         admit: impl FnOnce(
@@ -76,65 +74,11 @@ impl ExecRestoredChild {
         > + Send
         + 'static,
     ) -> Result<(), String> {
-        let owner = Arc::clone(self);
-        let mut outcome = self
-            .idle_outcome
-            .get_or_init(move || {
-                let (send, receive) = tokio::sync::watch::channel(None);
-                tokio::spawn(async move {
-                    let result = async {
-                        if owner.recovery.is_some()
-                            || owner
-                                .idle
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .is_none()
-                        {
-                            return Err("child has no retained idle input".into());
-                        }
-                        let _pin = Arc::clone(&owner.thread.residency_gate).read_owned().await;
-                        let state = owner
-                            .thread
-                            .session
-                            .services
-                            .local_agent_runtime
-                            .upgrade()
-                            .map_err(|e| e.to_string())?;
-                        if !state
-                            .threads
-                            .read()
-                            .await
-                            .get(&owner.thread.session.thread_id)
-                            .is_some_and(|current| Arc::ptr_eq(current, &owner.thread))
-                            || !owner.thread.is_running()
-                        {
-                            return Err("idle input owner is no longer registered".into());
-                        }
-                        admit(owner.thread.session.thread_id).await?;
-                        let input = owner
-                            .idle
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take()
-                            .ok_or("idle input was already taken")?;
-                        exec_input_state::install_idle(&owner.thread.session, input).await?;
-                        Ok(())
-                    }
-                    .await;
-                    let _ = send.send_replace(Some(result));
-                });
-                receive
-            })
-            .clone();
-        loop {
-            if let Some(result) = outcome.borrow_and_update().clone() {
-                return result;
-            }
-            outcome
-                .changed()
-                .await
-                .map_err(|_| "idle restoration owner exited without a result".to_owned())?;
-        }
+        self.idle
+            .as_ref()
+            .ok_or("child has no retained idle input")?
+            .restore(admit)
+            .await
     }
     pub fn release_residency_pin(&self) {
         self.pin
@@ -151,7 +95,7 @@ pub struct ExecPreparedChildRestore {
 struct Plan {
     parent: Arc<CodexThread>,
     root: ThreadId,
-    turn: String,
+    turn: Option<String>,
     node: ExecThreadSnapshot,
     fresh: CodexThreadSettingsOverrides,
     roots: Vec<SelectedCapabilityRoot>,
@@ -159,8 +103,18 @@ struct Plan {
     idle: Option<PreparedExecIdleInput>,
 }
 
+struct ExecTreeShutdownComplete;
+
 impl CodexThread {
-    pub async fn verify_exec_restored_snapshot(
+    pub(crate) fn exec_tree_shutdown_complete(&self) -> bool {
+        self.session
+            .services
+            .thread_extension_data
+            .get::<ExecTreeShutdownComplete>()
+            .is_some()
+    }
+
+    pub async fn finish_exec_snapshot_restore(
         &self,
         node: &ExecThreadSnapshot,
         startup: &codex_protocol::protocol::ThreadSettingsSnapshot,
@@ -179,7 +133,15 @@ impl CodexThread {
             node,
             &history,
             &[startup.clone(), self.thread_settings_snapshot().await],
-        )
+        )?;
+        if node.recovery().is_none() {
+            crate::session::alab_exec_recovery_options::restore_idle_status(
+                &self.session,
+                &history.items,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Stop a failed destination and join all members of its local runtime.
@@ -190,7 +152,12 @@ impl CodexThread {
             .await
             .map_err(|error| error.to_string());
         let members = shutdown.wait().await.map_err(|error| error.to_string());
-        root.and(members)
+        root.and(members)?;
+        self.session
+            .services
+            .thread_extension_data
+            .insert(ExecTreeShutdownComplete);
+        Ok(())
     }
 
     pub fn exec_thread_id(&self) -> ThreadId {
@@ -263,7 +230,7 @@ impl CodexThread {
             plan: Mutex::new(Some(Plan {
                 parent,
                 root: tree.root(),
-                turn: tree.turn().into(),
+                turn: tree.turn().map(str::to_owned),
                 node,
                 fresh,
                 roots: fresh_roots,
@@ -279,7 +246,7 @@ fn validate_owner(
     parent: &Arc<CodexThread>,
     threads: &std::collections::HashMap<ThreadId, Arc<CodexThread>>,
     root: ThreadId,
-    turn: &str,
+    turn: Option<&str>,
 ) -> Result<(), String> {
     let registered = threads
         .get(&parent.session.thread_id)
@@ -293,7 +260,12 @@ fn validate_owner(
             &runtime.registry,
             &root_thread.session.services.local_agent_runtime.registry,
         )
-        || exec_input_state::pending_origin(&root_thread.session) != Some((root, turn.into()))
+        || match turn {
+            Some(turn) => {
+                exec_input_state::pending_origin(&root_thread.session) != Some((root, turn.into()))
+            }
+            None => !idle_restore::pending_root(root_thread),
+        }
     {
         return Err("replacement tree has no matching pending original-root input".into());
     }
@@ -443,7 +415,7 @@ impl Plan {
         let _parent_pin = Arc::clone(&self.parent.residency_gate).read_owned().await;
         {
             let threads = state.threads.read().await;
-            validate_owner(&self.parent, &threads, self.root, &self.turn)?;
+            validate_owner(&self.parent, &threads, self.root, self.turn.as_deref())?;
             if threads.contains_key(&self.node.thread()) {
                 return Err("restored child is already loaded".into());
             }
@@ -504,8 +476,32 @@ impl Plan {
         {
             return Err("captured dynamic tools are absent from the replacement parent".into());
         }
+        let exec = self
+            .parent
+            .thread_extension_data()
+            .get::<HeadlessExec>()
+            .is_some()
+            || self
+                .parent
+                .thread_extension_data()
+                .get::<codex_alab_core::quota::ExecQuotaMember>()
+                .is_some();
+        if self.node.recovery().is_some() && !exec {
+            return Err("active exec recovery requires the destination host's exec policy".into());
+        }
         let mut options = StartThreadOptions::new(config.clone());
         options.thread_extension_init = self.init;
+        if let Some(hold) = self
+            .parent
+            .thread_extension_data()
+            .get::<codex_alab_core::upgrade_startup_hold::Fence>()
+        {
+            options.thread_extension_init.insert((*hold).clone());
+        }
+        self.node
+            .restrict_root_capabilities(&mut options.thread_extension_init);
+        self.node
+            .stage_helper_restore(&mut options.thread_extension_init);
         if let Some(memory) = self.node.ephemeral_history() {
             options = match self.node.recovery() {
                 Some(recovery) => {
@@ -513,9 +509,12 @@ impl Plan {
                         .clone()
                         .prepare_start(options, self.node.thread(), recovery.turn())?
                 }
-                None => memory
+                None if exec => memory
                     .clone()
                     .prepare_idle_start(options, self.node.thread())?,
+                None => memory
+                    .clone()
+                    .prepare_idle_runtime_start(options, self.node.thread())?,
             };
         } else {
             let stored = state
@@ -586,9 +585,11 @@ impl Plan {
             Some(self.parent.session.inherited_environment_snapshot().await);
         options.dynamic_tools = self.node.dynamic_tools().to_vec();
         options.disabled_plugin_ids = settings.disabled_plugin_ids.clone();
-        options.thread_extension_init.insert(HeadlessExec);
+        if exec {
+            options.thread_extension_init.insert(HeadlessExec);
+            options.turn_extension_init.insert(HeadlessExec);
+        }
         options.thread_extension_init.insert(ExecRestoredMember);
-        options.turn_extension_init.insert(HeadlessExec);
         let control = runtime.control(self.parent.session.session_id());
         let is_v2 = matches!(
             self.node.source(),
@@ -643,23 +644,9 @@ impl Plan {
             if child.session.services.selected_capability_roots != self.roots {
                 return Err("child startup changed capability selection".into());
             }
-            child.flush_rollout().await.map_err(|e| e.to_string())?;
-            let current = child
-                .exec_recovery_history()
-                .await
-                .map_err(|e| e.to_string())?;
-            verify_loaded_history(
-                &self.node,
-                &current,
-                &[startup_settings, child.thread_settings_snapshot().await],
-            )?;
-            if self.node.recovery().is_none() {
-                crate::session::alab_exec_recovery_options::restore_idle_status(
-                    &child.session,
-                    &current.items,
-                )
+            child
+                .finish_exec_snapshot_restore(&self.node, &startup_settings)
                 .await?;
-            }
             Ok(())
         }
         .await;
@@ -682,10 +669,11 @@ impl Plan {
             slot.commit(child.session.thread_id);
         }
         Ok(ExecRestoredChild {
+            idle: self
+                .idle
+                .map(|input| ExecIdleRestore::new(Arc::clone(&child), input)),
             thread: child,
             recovery: self.node.recovery().cloned(),
-            idle: Mutex::new(self.idle),
-            idle_outcome: OnceLock::new(),
             pin: Mutex::new(pin),
         })
     }

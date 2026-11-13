@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "kind": "native-full-gate-observation",
+  "observed_at": "2026-11-10T16:58:27.191454+00:00",
+  "source": "c7a636bc201c806db1a7bcabf1ab21bbe0c2b15d",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "command": "alab/check.sh",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "tree": "9e3ecca1051a2231f7a9ed4fce5f5904f77e5f43b0f9dd18da59204efe3040bb",
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "reviewed_structural_hook_loss": {
+    "enabled": true,
+    "topics": [
+      "core-test-fixtures",
+      "exec-tree",
+      "startup-test-fixture",
+      "typed-auth-pair-consolidation"
+    ],
+    "decision": "alab/upstream/c875667eb8-resolution.md"
+  },
+  "results": {
+    "selected_upstream_libraries": 38,
+    "candidate_failed_copies": 20,
+    "isolated_candidate_failed_copies": 17,
+    "isolated_candidate_passed_copies": 3,
+    "isolated_candidate_executed_copies": 20,
+    "pristine_failed_copies": 17,
+    "pristine_executed_copies": 17
+  },
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-gate-37103-c7a636bc20-native.log",
+      "sha256": "3f6cd568a65828f007c83fbaef9e3f9fbb6ebcf63c3c897725434160cab1e5f3"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-gate-37103-c7a636bc20-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-c7a636bc20/unit-main.json",
+      "sha256": "131c56b7d264187bd745e2f40579ef47e5cfcea087c1292361ae9de34c11350c"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-c7a636bc20/unit-alone.json",
+      "sha256": "bf5fa6388d1647791861adeb33d4988b651b5ac7394d52904d002e8b132753e5"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-c7a636bc20/unit-pristine.json",
+      "sha256": "0737d1790df5fa3488415a14d97a6ceedbcc540ff9e38e62b884164e991f3d86"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-c7a636bc20/unit.log",
+      "sha256": "0495767471df2c999a8b2dfa1f748ddbf5e1a58f77fe9c3746e42275452ed64b"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-c7a636bc20/alone.log",
+      "sha256": "87235778de5d093b50f4d98cf553603619d3b043e66cb4ed7414f3b10e4751dd"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-c7a636bc20/pristine.log",
+      "sha256": "9641f5fec6e0c914b6d4d0b25132f816ab77147e26f000552829329b0f099986"
+    }
+  ],
+  "limits": "Full check.sh controller69018 terminal exit0 and sidecar0. Includes MCP status owner correction and its regression fixture. Twenty failed copies reran individually: three passed, seventeen failed and reproduced on pristine upstream by exact package/target/test identity. Those remain failures. Predates gateway cookie framing correction0c75dc7d2d. Does not prove complete intake, platform execution, publication or installed adoption."
+}

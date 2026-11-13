@@ -70,6 +70,14 @@ conflicts about once a quarter. Upstream lands about 44 commits a day.
   resumes an unattended sync that stopped this way; after your own `--continue`, rerun it.
 - A new clone runs `alab/setup.sh --train-rerere` once. Never push to `upstream`.
 
+## Trying local builds
+- Run a completed package's `bin/codex` directly to test it. This leaves the managed
+  `codex` command and automatic signed updates intact; never link a build just to
+  try it or adopt a release.
+- `aterm pkg link codex` selects a persistent local development channel and disables
+  signed updates for `codex`. Use it only when the task explicitly calls for that
+  channel, with its updater maintained. Ordinary upgrades use `aterm pkg update codex`.
+
 ## Toolchain and gate
 - Build with the Trust toolchain, in your own worktree (each `target/` is 12 to 15 GB):
   `targo --unverified build -p codex-cli --bin codex` in `codex-rs/`, which is what the
@@ -83,6 +91,8 @@ conflicts about once a quarter. Upstream lands about 44 commits a day.
   caches. Both use native explicit-target admission and refuse compiler overrides or
   `ALAB_CONTAIN=0`; neither selects from the global current shim. The gate takes no options
   (`--help` aside):
+  - each newly integrated upstream commit has a valid committed intake decision against
+    `origin/main`; hook-baseline and hook-loss exceptions do not bypass review admission;
   - no `ALAB` hook in an upstream file went missing;
   - the codex binary builds from the committed lockfile and runs;
   - every `codex-rs/alab-*` crate passes its tests;

@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:43:52.167075+00:00",
+  "source": "c58e35eb6779aa4283dd0901666ecc9c6f9a3309",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "config::runtime_auth_tests::managed_runtime_mode_pins_defaults_and_rejects_overrides",
+      "status": "ok"
+    },
+    {
+      "name": "config::runtime_auth_tests::unmanaged_runtime_modes_and_legacy_boolean_requirements_work",
+      "status": "ok"
+    },
+    {
+      "name": "app_server_session::cloud_project::tests::unsupported_or_non_repository_origins_leave_the_thread_blank",
+      "status": "ok"
+    },
+    {
+      "name": "app_server_session::cloud_project::tests::github_origins_are_normalized_without_credentials_or_query_strings",
+      "status": "ok"
+    },
+    {
+      "name": "app_server_session::cloud_project::tests::cloud_starts_use_each_requests_host_project_without_caching",
+      "status": "ok"
+    },
+    {
+      "name": "sanitized_git_url::tests::http_query_and_fragment_are_outside_the_authority",
+      "status": "ok"
+    },
+    {
+      "name": "history_cell::messages::tests::typed_prompt_markdown_keeps_the_prompt_gutter_and_links",
+      "status": "ok"
+    },
+    {
+      "name": "transcript_view::copy_mode::tests::copying_the_whole_typed_prompt_preserves_markdown_source",
+      "status": "ok"
+    },
+    {
+      "name": "insert_history::tests::vt100_preserves_bold_at_the_start_of_a_typed_prompt",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-managed-project-prompts-native.sh",
+      "sha256": "35481fb8fcc78fea81846918f210227c8e49792917362f843adf8f07ee9f0a04"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-managed-project-prompts-native.log",
+      "sha256": "3d9751c26308edd540f082efe4c62122c22e79a24e075c816947aaff42fe2da7"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-managed-project-prompts-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Nine actual passes: managed runtime mode defaults/conflicts and legacy parsing (2), private Cloud project normalization/rejection/per-request routing fixtures (3), HTTP Git authority sanitization (1), typed prompt gutter/links, whole Markdown copy and VT100 intensity transition (3). No live Cloud provisioning or complete Realtime/runtime-auth matrix claimed. Full gate/adoption separate."
+}

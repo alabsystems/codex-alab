@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "base": "87b7bdbf2efb9cb6fb15d821ef535061012c0138",
+  "target": "ac54a05173d090b9fdfa181ea49b92f45aff2681",
+  "frontier": "87b7bdbf2efb9cb6fb15d821ef535061012c0138",
+  "commits": [
+    {
+      "sha": "ac54a05173d090b9fdfa181ea49b92f45aff2681",
+      "subject": "Add a Signer Service backend for macOS notarization (#60695)",
+      "paths": [
+        ".github/scripts/macos-signing/notarize_macos_binary_with_akv.sh",
+        ".github/scripts/macos-signing/notarize_with_akv.py",
+        ".github/scripts/macos-signing/test_notarize_with_akv.py"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "defer-activation",
+      "reason": "Merge official history and retain the existing .github removal policy. These three scripts implement OpenAI release notarization, while ALab packages through its own signing path.",
+      "evidence": [
+        "Reviewed both signing implementations and the new mocked OIDC refresh test. The new backend validates signer key and algorithm, refreshes JWT signing tokens and redacts signer transport errors.",
+        "Resolved all three modify/delete conflicts through the existing .github entry in alab/removed-paths. No executable source or ALab packaging code changes."
+      ],
+      "revisit": "Reassess if ALab adopts OpenAI's Signer Service deployment and GitHub OIDC release flow."
+    }
+  ]
+}

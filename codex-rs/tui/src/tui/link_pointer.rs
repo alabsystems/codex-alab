@@ -127,3 +127,5 @@ impl Tui {
 #[cfg(test)]
 #[path = "link_pointer_tests.rs"]
 mod tests;
+
+#[cfg(unix)] #[path = "../../../alab-tui/glue/upgrade_pointer.rs"] mod alab_upgrade_pointer; // ALAB(upgrade): retain pointer cleanup ownership across exec.

@@ -1,0 +1,169 @@
+{
+  "schema": 1,
+  "source": "2ca50eef46184a2e47bb5455c4fecc437ee0eb1a",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "inventory_sha256": "a0f3598caae2fb31a277dfab298c991e72aa7bcf7e749834e5cd94abc6b2fdfb",
+  "features": [
+    {
+      "id": "account-isolation",
+      "scenarios": [
+        {
+          "description": "Switch accounts during async budget checks and WebSocket reuse.",
+          "checks": []
+        },
+        {
+          "description": "Race refresh and assignment; refuse unavailable source ownership.",
+          "checks": []
+        },
+        {
+          "description": "Retain a paired HTTP client across actual direct-reader replacement and Ready; refuse its next request without sending it.",
+          "checks": [
+            {
+              "source": "2ca50eef46184a2e47bb5455c4fecc437ee0eb1a",
+              "status": 0,
+              "command": [
+                "alab_run_focused",
+                "1",
+                "alab_build_command",
+                "targo",
+                "--unverified",
+                "test",
+                "--locked",
+                "-p",
+                "codex-login",
+                "--lib",
+                "native_managed_direct_reader_owns_real_reader_lifetime",
+                "--",
+                "--nocapture"
+              ],
+              "reason": "The actual managed direct-reader fixture first receives an HTTP body through the credential-paired caller transport, then replaces ReaderLoaded and publishes Ready. The retained client must refuse its next request and the server must observe exactly one request. This covers direct-reader transport replacement, not a live Cloud service.",
+              "tests": [
+                "auth::manager::alab_native_member::tests::native_managed_direct_reader_owns_real_reader_lifetime"
+              ],
+              "log": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-focused-results.7JbhON",
+              "log_sha256": "e11d3856e868c986522f1a7e55243c391b961d3cdc4503916a75b3b6f24b4b9b"
+            }
+          ]
+        },
+        {
+          "description": "Retain Cloud clients across source retirement, reject incompatible credential/factory pairing, and preserve destination restrictions.",
+          "checks": []
+        }
+      ]
+    },
+    {
+      "id": "exec-handoff",
+      "scenarios": [
+        {
+          "description": "Suspend with queued input, active review and nested children.",
+          "checks": []
+        },
+        {
+          "description": "Restore sampling counters, audio metadata and review budgeting; reject malformed snapshots.",
+          "checks": []
+        },
+        {
+          "description": "Cancel before and after destination child registration.",
+          "checks": []
+        }
+      ]
+    },
+    {
+      "id": "provider-recovery",
+      "scenarios": [
+        {
+          "description": "Advised and unadvised overload, invalid compaction and retry exhaustion.",
+          "checks": []
+        },
+        {
+          "description": "Natural reset, earned reset, duplicate receipt, account switch and long-wait cancellation.",
+          "checks": []
+        }
+      ]
+    },
+    {
+      "id": "model-discovery",
+      "scenarios": [
+        {
+          "description": "Catalog-only launch, source-dependent capability, stale cache and unavailable account.",
+          "checks": []
+        },
+        {
+          "description": "Fresh embedded/remote startup, profile precedence and cleared model selection.",
+          "checks": []
+        }
+      ]
+    },
+    {
+      "id": "native-session",
+      "scenarios": [
+        {
+          "description": "Missing or stale native claim, explicit hold, sign-in attention and crash restart.",
+          "checks": []
+        }
+      ]
+    },
+    {
+      "id": "product-policy",
+      "scenarios": [
+        {
+          "description": "Packaged/default/profile/project/CLI precedence inside and outside aterm.",
+          "checks": []
+        },
+        {
+          "description": "Vanilla mode and live-experience changes during sleeping workers.",
+          "checks": []
+        }
+      ]
+    },
+    {
+      "id": "native-ui",
+      "scenarios": [
+        {
+          "description": "Switch conversations with stashed structured drafts and parked backends.",
+          "checks": []
+        },
+        {
+          "description": "Resize, hide overlays and disable pets with cached frames.",
+          "checks": []
+        }
+      ]
+    },
+    {
+      "id": "security-notices",
+      "scenarios": [
+        {
+          "description": "Verified absence, present notice, old server, timeout and identity changes while a request is pending.",
+          "checks": []
+        }
+      ]
+    },
+    {
+      "id": "skill-discovery",
+      "scenarios": [
+        {
+          "description": "Missing root, root creation, vendor reinstall and actual skill edits.",
+          "checks": []
+        }
+      ]
+    },
+    {
+      "id": "build-and-adoption",
+      "scenarios": [
+        {
+          "description": "Compiler/source identity mismatch, source race, hook loss and package rollback.",
+          "checks": []
+        }
+      ]
+    },
+    {
+      "id": "qualification-fixtures",
+      "scenarios": [
+        {
+          "description": "Backend drain failure, persistent child cleanup and native watcher delivery.",
+          "checks": []
+        }
+      ]
+    }
+  ]
+}

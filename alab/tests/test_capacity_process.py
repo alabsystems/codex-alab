@@ -18,6 +18,7 @@ from unittest import mock
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "smoke/capacity_exec.py"
+sys.path.insert(0, str(SOURCE.parent))
 FIXTURE_PARENT = None
 FIXTURES = []
 
@@ -158,6 +159,31 @@ worker.wait(timeout=5)
                 self.assertEqual(result, code)
                 self.assert_worker_stopped(root)
 
+    def test_a_failed_interaction_keeps_its_own_error_and_closes_the_childs_pipes(self):
+        root, env = self.fixture()
+
+        class Stopped(Exception):
+            pass
+
+        def interact(child, _stdout):
+            deadline = time.monotonic() + 10
+            while not (root / "leader-ready").exists():
+                self.assertLess(time.monotonic(), deadline, "fixture leader never became ready")
+                time.sleep(0.005)
+            # Buffered, and never read: closing this pipe has to flush it to a child
+            # the runner has by then stopped.
+            child.stdin.write(b"never read\n")
+            raise Stopped("the interaction's own error")
+
+        with self.tracked_run(root):
+            with self.assertRaises(Stopped):
+                self.probe.run(sys.executable,
+                               ["-I", "-B", str(root / "leader.py"), str(root), "wait"],
+                               root, env, "interact", interact=interact)
+        self.assert_worker_stopped(root)
+        guardian = self.children[0]
+        self.assertTrue(guardian.stdin.closed and guardian.stdout.closed)
+
     def test_signal_exit_preserves_the_negative_raw_status(self):
         root, env = self.fixture()
         with self.tracked_run(root):
@@ -173,6 +199,7 @@ worker.wait(timeout=5)
 from pathlib import Path
 root = Path({str(root)!r})
 signal.alarm(20)
+sys.path.insert(0, {str(SOURCE.parent)!r})
 spec = importlib.util.spec_from_file_location("capacity_sigterm", {str(SOURCE)!r})
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)

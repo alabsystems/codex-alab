@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "kind": "full-gate-failed-observation",
+  "source": "ea169a014d3eb6e4f3193ac151337a49523f940f",
+  "upstream": "a2b7c4a655a124c3e798b7744c5f83397eb2ada3",
+  "exit": 1,
+  "log": "${HOME}/.ubd/codex-alignment-full-gate-a2b7-r1.log",
+  "log_sha256": "073b2ce1df0f72cc31b727b23ccedbb1ad284d6e9e5d0a4367ccaec987f70e66",
+  "review_admission": {
+    "commits": 433,
+    "reviewed": 433
+  },
+  "finding": "ALab exec_review_registration.rs startup host receipt now returns Result; unused_must_use at line182. Adapt to upstream startup semantics retaining registered runtime on unconfirmed acceptance.",
+  "limits": "Lint gate refused before runtime gate completion. No source qualification, package selection or adoption claim."
+}

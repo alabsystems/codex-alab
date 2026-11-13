@@ -50,6 +50,8 @@ impl AgentsOverviewView {
             line(
                 if state.connection_notice.is_some() {
                     "Reconnecting…"
+                } else if state.history.is_some() {
+                    "No matching tasks"
                 } else if state.loading && self.rows.is_empty() {
                     "Loading tasks…"
                 } else if state.refresh_failed {
@@ -84,7 +86,7 @@ impl AgentsOverviewView {
                 .right_aligned()
                 .render(updated, buf);
         }
-        let reference = chrono::Utc::now();
+        let reference = codex_alab_tui::fixture_clock::utc_now(); // ALAB(test-clock): synchronous fixtures can fix the reference; product builds read the real clock.
         let height = usize::from(viewport.height);
         state.page_height = height;
         let mut start = state.scroll.min(entries.len().saturating_sub(height));
@@ -121,7 +123,15 @@ impl AgentsOverviewView {
                         },
                         style,
                     );
-                    let label = if state.loading {
+                    let label = if let Some(search) = &state.history {
+                        if search.loading {
+                            "Searching history…"
+                        } else if search.failed {
+                            "Show more (retry)"
+                        } else {
+                            "Show more matches"
+                        }
+                    } else if state.loading {
                         "Loading more…"
                     } else if state.refresh_failed {
                         "Show more (retry)"
@@ -160,6 +170,7 @@ impl AgentsOverviewView {
                     })
                     .count();
                 let total = (0..self.rows.len())
+                    .filter(|&i| state.includes_row(&self.rows[i]))
                     .filter(|&candidate| self.same_group(state.grouping, candidate, index))
                     .count();
                 let count = if count == total {

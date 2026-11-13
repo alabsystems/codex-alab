@@ -68,6 +68,7 @@ async fn routed_payload(payload: String) -> ApiError {
         drop(tx_message);
     });
     let mut socket = WsStream {
+        max_message_bytes: None,
         tx_command,
         rx_message,
         pump_task,

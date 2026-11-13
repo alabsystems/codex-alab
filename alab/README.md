@@ -26,10 +26,15 @@ it needs no functional hook.
 | `daily.sh` | the unattended wrapper: stepwise sync, status, journal, LaunchAgent |
 | `CONTRACT.md` | the native harness: what codex-alab does itself in aterm, and the wire between them |
 | `check.sh` | the gate a sync passes before it lands |
-| `delta.sh` | the ALab layer, measured: where the next conflict will come from |
+| `qualification.py` | run the unchanged native gate and retain its log and exact before/after source identities outside the source tree |
+| `delta.sh`, `hook_topics.py` | upstream diff/conflict risk; `--topics [REV]` inventories committed local hooks without an upstream remote, using the shared Python 3.11+ extractor |
 | `upstream_intake.py` | snapshot an exact upstream range and validate complete, current review decisions; qualification remains separate |
+| `upstream_gate.py` | require committed review coverage before checking a newly integrated upstream range; reject missing, stale or ambiguous decisions |
 | `upstream_status.py` | report local main/upstream identities, integrated frontier and lag; fetch, qualification and installed adoption remain unknown without evidence |
-| `features.toml`, `feature_inventory.py` | behavior contracts and hook-topic ownership; validate with Python 3.11+, separately from semantic qualification |
+| `features.toml`, `feature_inventory.py` | behavior contracts and hook-topic ownership at one commit; `python3 alab/feature_inventory.py [--source REV]` defaults to committed `HEAD`, separately from semantic qualification |
+| `feature_evidence.py`, `feature_gate.py`, `python_test_results.py` | source-bound named scenario declarations, portable log bundles, Python workflow execution and affected-feature admission before sync compilation |
+| `upstream_status.py`, `artifact_status.py` | local source/review lag plus optional explicit packaged, selected and running artifact identities; no qualification or promotion is inferred |
+| `account_registry_probe.py` | read-only OpenAI account associations for a registry machine; reports duplicate names and checks a requested count without authenticating or changing accounts |
 | `github_push.py` | publish an exact fast-forward main through Agh using a fresh admitted transport clone while preserving the source clone's guards |
 | `package.sh` | build a codex package and advance its already selected local artifact channel |
 | `local_update.py` | poll origin/main for that selected local channel; prepare its separate LaunchAgent |
@@ -145,12 +150,43 @@ run:
    `owned-paths` resolved and those resolved by hand, how many files `removed-paths`
    dropped, whether the lockfile was re-resolved, and any upstream change to a watched
    path.
-5. Runs `check.sh`, then pushes to `origin main` as a fast-forward. If `origin/main`
+5. Runs `check.sh` through `qualification.py`, then pushes to `origin main` as a fast-forward. If `origin/main`
    moved meanwhile, the sync merges the new ALab commits in, checks again, and pushes.
    Repeated races stay in this run, with backoff from 1 s up to 60 s. A retry requires
    Git's per-ref fast-forward rejection and a successful fetch proving that main advanced
    without rewriting history and has commits the sync lacks. Authentication, transport and
    remote-hook failures still stop, as do conflicts and failed checks.
+
+Pristine upstream reuse uses the same fresh-index source observer as qualification.
+It rejects hidden content or executable-mode changes and staged intent-to-add work,
+while allowing ignored build outputs. The comparison index lives in the explicit
+`TMPDIR` (or `/tmp`) outside source and Git metadata, so reuse also works inside
+the read-only source profile without changing the actual index. The helper runs
+with the existing `ALAB_PYTHON` or system Python 3.9 or newer and needs no TOML parser.
+Newly created trees are checked after checkout hooks run. A failed check leaves
+the source, its registration and its build outputs in place and refuses reuse.
+
+Each check attempt records its combined output and source, tree, origin base and integrated
+upstream identities under the shared Git directory's `alab-qualification/<source>/run-*`.
+Only a zero gate exit with identical clean before/after Git state qualifies that source.
+The observer checks staged changes against the commit and checks working files through
+a fresh private Git index, so index exemptions or cached stat data cannot hide edits.
+It leaves the real index unchanged and explicitly includes untracked files.
+The requested execution root must match Git's canonical worktree root. Committed
+submodules are checked independently against their exact gitlink commits, including
+nested submodules; missing or unbound child worktrees cannot supply clean evidence.
+External clean/process/smudge filters are disabled for source observation so they cannot
+substitute committed bytes for changed working files. Ident-attributed regular files
+must match either their committed blob bytes or Git's exact checkout conversion;
+arbitrary expanded `$Id: ...$` payloads cannot supply clean evidence. Builtin text/EOL
+rules remain effective. Current observations use schema 5; older records remain
+historical and cannot supply a qualified source without a new run under these
+observation rules.
+Failed attempts retain their logs and exit status. This local observation does not replace
+the native gate or attest to artifact promotion or model entitlement. To report it explicitly,
+pass `--qualification-record /absolute/path/to/record.json` to `upstream_status.py`; the
+reader checks the source tree and log hash. An absent or invalid record cannot imply a
+qualified source. Records may be moved together with their sibling `gate.log`.
 
 GitHub reads use `github.py`; writes use `github_push.py` and Agh's atomic
 expected-ref operation. A fresh transport clone avoids changing the source
@@ -167,6 +203,9 @@ merge and a person's `--continue` that failed: each waits (exit 5) for `--contin
 the push, a run was killed mid-check) has no such record, and the next run resumes it: it
 re-applies what the sync resolves by itself, checks again and lands it before syncing
 further.
+
+`--no-check` requires `--no-push` and only stages a merge locally. A later
+`--continue` runs the gate before publishing; it cannot publish with `--no-check`.
 
 `--stepwise` is what the unattended runner uses. It probes the upstream range without
 touching a worktree or the clone's index (`git merge-tree`, a binary search, a few
@@ -187,6 +226,16 @@ upstream change, with its commit message and PR, instead of a day's worth.
 
 `--continue` lands the merge in progress only; upstream commits beyond it wait for the
 next run.
+
+If `check.sh` stops at upstream review admission, use the sync worktree named by
+`alab/sync.sh --status`. Use the base and integrated upstream SHA reported by
+the failed gate when creating or validating the intake record. Those identities
+describe the candidate, even if the fetched upstream branch has since advanced.
+Record the decisions under `alab/upstream/` in a file ending in `-intake.json`,
+commit it in the sync worktree, and run `alab/sync.sh --continue`. A stepwise
+prefix can use an existing reviewed batch that covers its commits. The intake
+report names missing decisions so the resolver can complete the review before
+restarting the native checks. See [the intake workflow](design/upstream-alignment.md).
 
 ### What the sync resolves by itself
 
@@ -434,7 +483,7 @@ alab_project_run "$repo" "" /bin/bash -c '
   upstream_base="$(git merge-base HEAD upstream/main)"
   pristine="$(alab_pristine "$repo" "$upstream_base")"
   alab_pristine_at "$repo" "$upstream_base"
-  build_target="$(alab_check_targets_ready "$repo" "$pristine" "$repo/codex-rs/target")"
+  build_target="$(alab_check_targets_ready "$repo" "$pristine" "${CARGO_TARGET_DIR:-$repo/codex-rs/target}")"
   pristine_target="$(alab_real "$pristine/codex-rs/target")"
   export CARGO_TARGET_DIR="$build_target"
   alab_contained --pristine "$pristine" --read "$ATPKG_PROJECT_FRONT" \
@@ -696,8 +745,12 @@ On Apple-silicon macOS, atpkg's signed index distributes codex-alab as the manag
 `[programs.codex]` names `repo = "codex-alab"`, and the channel pins its production build.
 `aterm pkg install codex` installs it; `aterm pkg update codex` follows the channel, and
 `aterm pkg which codex` reports the installed source and build. Public `vX.Y.0` releases
-are source snapshots of codex-alab's own line (`v0.1.0` on, Decision 8); production binaries
-still carry the dev version described below, and tell OpenAI's servers the client version.
+are source snapshots of codex-alab's own line (`v0.1.0` on, Decision 8). Published
+production packages now carry regular versions: `0.5.0`, build `2026111101`, is available
+in the [signed package release](https://github.com/alabsystems/codex-alab/releases/tag/atpkg-codex-2026111101).
+The older development-version convention recorded below describes historical packages.
+Package release tags remain GitHub prereleases under the publisher's existing policy;
+the signed atpkg index selects production packages, independently of GitHub's latest tag.
 The ALab lane orders builds by signed build number, never by comparing that version with
 OpenAI's (`aterm`'s `crates/atpkg/src/alab.rs` and `cli_alab_tests.rs`). Other targets keep
 the vendor lane.
@@ -707,10 +760,16 @@ the vendor lane.
 an installed ALab build is kept if the index no longer pins one, rather than replaced by
 OpenAI's build.
 
-`alab/package.sh` builds the same package layout locally. A development link takes
-priority over managed updates; unlinking restores the previously installed managed build
-and preserves any pin. If there was no managed build, install one after unlinking. Once
-an ALab package under `<out>/codex` is selected, successful packages in that same output
+`alab/package.sh` builds the same package layout locally. To try a build, run its
+`<pkgdir>/bin/codex` directly; packaging prints the runnable command. This leaves the
+managed `codex` selection and signed updates intact. Use `aterm pkg update codex` to
+adopt a published release.
+
+A development link selects a persistent local channel and takes priority over managed
+updates. Use one only for a deliberately maintained local channel, with the local
+updater below enabled; it is not needed to test a build. Unlinking restores the
+previously installed managed build and preserves any pin. If there was no managed
+build, install one after unlinking. Once an ALab package under `<out>/codex` is selected, successful packages in that same output
 automatically advance it. The source must descend from the selected source on
 `origin/main`, and its version must advance. Other checkout links and sources stay put.
 `--no-promote` builds without changing selection. `ALAB_ATERM` names the aterm executable
@@ -731,6 +790,11 @@ creating it. A busy cache exits 75 and the next scheduled poll looks again. This
 a hint: the fetched entry must claim the same canonical lock for the build/promote
 transaction, and a race to a busy cache also returns 75. A failed build or refused
 selection reports failure without an unconditional retry.
+
+Promotion and update Git operations use the explicitly supplied repository;
+inherited Git redirection and global/system Git configuration cannot substitute
+another clone's refs or metadata directory. The same Git environment reaches
+the fetched controller, guardian and build, while their non-Git settings remain.
 
 The packager's upstream fetch has a 120-second deadline inside the already owned
 transaction group. A timeout stops and reaps Git, fails the transaction, and lets
@@ -753,8 +817,17 @@ commit's controller in a private detached source worktree. Its controller, guard
 promotion code, packager and ALab helpers advance together even when the supplied checkout
 stays behind or holds owner edits. Git operations and the status journal retain the
 original `--repo`. The public `--fixed-source COMMIT --expected-checkout CHECKOUT
---expected-prefix PREFIX` mode requires an exact clean controller checkout, uses the
-dispatcher's interpreter, fetches no second tip and creates no second source worktree.
+--expected-prefix PREFIX --controller-binding JSON` mode requires the dispatcher's
+bounded pre-checkout source binding, uses the dispatcher's interpreter, fetches no second
+tip and creates no second source worktree.
+The source is allocated outside the active checkout in private `.ubd` scratch. The existing
+package-source owner records its empty Git registration before checkout, admits the exact
+checkout transition, and checks source, commit, common directory and registration identities
+again in the fetched public entry and its guarded transaction. A fresh index detects tracked
+changes hidden from ordinary status; unexpected index state, ignored files or Git metadata
+refuse execution and cleanup. The source helper runs with the updater's isolated Git
+environment. Each helper operation has a 60-second deadline; failed or timed-out creation
+keeps its reservation and any registration for inspection.
 It chooses its own same-version cache guardian and private transaction entry; private
 guardian contracts no longer cross source versions. The fixed entry rechecks the original
 verbatim selected checkout and resolved prefix under that guardian's cache lock, preserving
@@ -768,7 +841,8 @@ missing or unfamiliar records still reach the controller, which refuses any inva
 before building or selecting. Older bootstraps need one source refresh for this boundary.
 A private source-only call without original custody or the current owning-guardian
 contract still fails closed. Older bootstraps that use the private handoff need one
-source refresh to adopt the public dispatcher; the new public mode then lets the
+source refresh to adopt the public dispatcher and its pre-checkout binding; no binding is
+inferred from an already checked-out source. The new public mode then lets the
 guardian and its private caller advance together. Journal snapshots never grant authority.
 An unchanged source hint ends a no-op poll without creating a controller worktree or granting
 any package authority. Before allocating a controller for newer source, the dispatcher
@@ -782,16 +856,18 @@ to controller cleanup: a marker or unknown policy keeps both registered source t
 and empty paths left by failed registration. Older bootstraps need refreshing for this
 cleanup behavior. The dispatcher keeps the controller source until the fetched public
 entry and its guardian exit. Without preservation policy, exact clean source-only
-controller worktrees are then removed normally, using their own retention helper;
-this source-only Git cleanup occurs after the build guardian releases the cache.
+controller worktrees are then removed normally, after rechecking their original binding
+and their own retention helper. This source-only Git cleanup occurs after the build
+guardian releases the cache.
 Every nonzero or interrupted public handoff preserves its whole source worktree,
 even if it looks clean: a failed wrapper does not establish that its guardian or
 children have stopped. Successful cleanup relies on the fetched public mode's contract
 that exit 0 follows guardian cleanup; the dispatcher does not independently observe
 another guardian's process group.
-Tracked changes, untracked files, ignored output or an unreadable state preserve the whole
-path for inspection. Build/artifact retention policy still applies to the packager's own
-worktrees and outputs.
+Tracked changes (including mode changes hidden by `core.filemode=false`), untracked files,
+ignored output, private worktree refs, preservation locks or an unreadable state preserve
+the whole path and registration for inspection. Build/artifact retention policy still
+applies to the packager's own worktrees and outputs.
 
 The controller supports Python 3.9 or newer; native package builds require Python 3.11 or
 newer. Use an explicit capable, durable aterm executable; a development app bundle kept
@@ -866,8 +942,8 @@ alab/package.sh --upstream-base    # print the upstream base line HEAD's release
 alab/package.sh --any-commit       # package a commit that is not on origin/main
 alab/package.sh --rebuild          # package a commit again (a fixed packager, a new compiler)
 alab/package.sh --no-promote       # build without advancing the selected artifact channel
-aterm pkg link codex <pkgdir> bin/codex   # choose a local artifact channel initially
-aterm pkg unlink codex                    # restore the previously installed managed build
+<pkgdir>/bin/codex                 # try this package; managed updates stay active
+aterm pkg update codex             # adopt the current signed release
 ```
 
 `--out <dir>` and `--keep <n>` say where packages go and how many stay. A commit that is
@@ -1193,12 +1269,25 @@ hook-created notes, refs and audit records remain unowned.
 Older receipts without this creation proof stay intact and receive a new generation.
 Before compilation and return, validation checks the actual staged index and reads file
 content against a fresh committed-tree index. Command-local Git settings disable
-fsmonitor callbacks and untracked caches during these custody queries and removal;
-normal checkout and reference hooks remain enabled. A failed admission stops compilation.
-Repository-local inherited path and index redirects are removed while caller Git
-configuration remains effective. The final ordinary removal also suppresses configured
-clean/process filter callbacks after the last metadata check. If converted content then
-looks dirty without its filter, Git refuses removal and preserves the source.
+fsmonitor callbacks, untracked caches and external clean/process/smudge filters during custody
+comparisons and removal; builtin Git text conversion remains effective. Ident-attributed
+regular files receive the same comparison with committed bytes or exact checkout bytes
+as qualification. Normal checkout and reference hooks remain enabled. Converted
+checkout content that differs without its external filter fails admission and stays
+intact. A failed admission stops compilation.
+Repository-local inherited path and index redirects are removed, including the scalar
+`GIT_CONFIG` file selector that otherwise redirects only filter discovery. Consistent
+caller configuration through `GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS` and global/system
+configuration remains effective. The final ordinary removal suppresses the same external
+filters after the last metadata check and preserves any source Git considers dirty.
+Symlink comparisons and final removal enforce the committed file type even when
+`core.symlinks=false` would make Git accept a regular-file replacement. Committed
+gitlinks may remain absent or empty and uninitialized; initialized child repositories
+must match the recorded commit and pass the same physical-source and index checks,
+including nested children. These checks also apply when root manifests carry known
+version stamps. Sources containing gitlinks are retained at cleanup: a parent source
+receipt does not grant ownership of child repository creation or deletion, and Git's
+final removal check ignores files added beneath uninitialized gitlink paths.
 
 Historical sources needing manifest/lock version stamps, explicit worktree retention,
 and clone preservation still use fresh private worktrees. Historical tool-only stamps
@@ -1453,6 +1542,30 @@ the local-only packaging and future published-lane plans in Decisions 3 and 6.
      a baseline whose branch point that commit has merged: what `--ledger-row` prints there.
      Every row's `baseline_commit` must be the commit `rust-v<baseline>` names here, the rows
      of other versions included.
+     Amended 2026-11-11 after a newly published upstream patch tag blocked an
+     already qualified source: discovery of a tag is not integration of code.
+     A newer patch in the same upstream major/minor preserves the recorded
+     baseline only when its branch point was already integrated in every
+     historical commit carrying that version's row. A newly integrated branch
+     point or another upstream minor still requires a product bump. New ledger
+     rows continue to select the newest integrated stable; client floors still
+     use current upstream discovery, and every recorded tag/commit binding is
+     checked unchanged. This keeps a frozen candidate releasable without
+     treating subsequent upstream integration as the same release.
+     Amended 2026-11-12, because that left the source release of an already published
+     package refusable by upstream's next minor stable: release eligibility is read from
+     the row the claim froze, never from a tag found afterwards. Any newer stable, a
+     patch or the next minor, preserves the recorded baseline when its branch point was
+     already integrated in every commit carrying that version's row; the claim held
+     that code, and only its name arrived later. The release's client floor is then the
+     recorded baseline's as well (the next minor above it, as when the version was
+     claimed and its package built), so `--release-check` no longer moves a frozen
+     source's floor with upstream discovery. A branch point integrated after the row
+     was recorded, an older stable, an unknown point or a moved tag still requires a
+     product bump, and a development package's client line still takes the live floor.
+     `codex-release prepare` holds the binary to the same committed facts: it reads no
+     upstream ref, and refuses a source whose `alab/client-version` is not above its
+     recorded baseline's line.
    - **Refinements, each the fail-closed choice an owner ruling could relax.** A historical
      ledger that does not parse refuses every later release (its rows cannot be told apart
      from a change). A row once changed refuses for good, even restored, because that
@@ -1992,7 +2105,7 @@ OpenAI's `0.164.0` (`codex-old`):
 | effective config (`config/read`), outside aterm and with `TERM_PROGRAM=aterm` | codex-alab with no `config.toml` reads what OpenAI's build reads with ALab's defaults as its `config.toml`: 19 ALab defaults outside aterm, 22 inside; the only other differences, `tui.alab_interface` (and inside aterm `tui.alab_progress`), are ALab's own keys, read from the layers |
 | ALab defaults overridable | the six ALab feature defaults each flip back by `config.toml`, `-c features.<f>=…` and `--enable`/`--disable` |
 | `mcp list --json` | both list the server `config.toml` declares |
-| `CODEX_HOME` after one exec | 23 paths in both, codex-alab's own names read as the vendor's; codex-alab writes nothing OpenAI's build does not, and nothing under its names; it skips the plugin marketplace sync (2 paths) and the three removed bundled skills (37 files) |
+| `CODEX_HOME` after one exec | 23 paths in both, codex-alab's own names read as the vendor's; codex-alab writes nothing OpenAI's build does not, and nothing under its names; it skips the plugin marketplace sync (2 paths) and, when this row was measured on 2026-10-23, the three bundled skills (37 files): 804409c9e4 (2026-10-27) restored them under `skills/.alab-system`, and the row has not been measured again |
 | auth | `login --with-api-key` writes `auth.json`, `login status` reads it, in both |
 
 Negative controls, each a wrapped package the check must fail: `-m` removed from every page,
@@ -2099,8 +2212,10 @@ the usage poll that feeds the status line, automatic thread titles (they name at
 the Responses WebSocket prewarm at session start (model traffic: the first turn's
 connection), the workspace cloud-config bundle (business, edu and enterprise plans only: their
 admins' policy), the queue's 10 s SQLite poll (`codex queue`, local), and `codex doctor`/`codex
-app` (on demand only). Removed files: the bundled `imagegen`, `openai-docs` and
-`skill-installer` skills (`alab/removed-paths`).
+app` (on demand only). The bundled `imagegen`, `openai-docs` and `skill-installer` skills,
+removed on 2026-10-17, were restored on 2026-10-27 (804409c9e4) so Vanilla mode matches
+OpenAI's build; they are unpacked under `skills/.alab-system` and listed in every session's
+skill catalog, Enhanced mode included.
 
 **Measured, 2026-10-17.** Each of `codex exec` (one turn), `codex app-server` (initialize and a
 thread) and the TUI (one turn, 75 s) ran against a mock ChatGPT backend with a scratch

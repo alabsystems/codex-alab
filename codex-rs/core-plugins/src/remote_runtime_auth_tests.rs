@@ -135,7 +135,7 @@ async fn plugin_runtime_auth_shares_registration_and_strips_cross_origin_auth() 
         );
         assert!(server.received_requests().await.unwrap().is_empty());
         slot.set(Arc::new(RuntimeAuthManager::new(
-            credentials,
+            Arc::clone(&credentials), // ALAB(test): keep the real manager for the fixture's policy-account publication.
             AgentHostAuthorization::InstallationId {
                 installation_id: Uuid::nil(),
             },
@@ -186,6 +186,7 @@ async fn plugin_runtime_auth_shares_registration_and_strips_cross_origin_auth() 
             pending.send().await,
             Err(RouteAwareRequestError::Policy(NetworkPolicyDenied::Revoked))
         ));
+        credentials.reload_with_cached_auth().await.unwrap(); // ALAB(test): explicitly recapture credentials for the republished account; old captures stay revoked.
         let response = config
             .authenticated_request(Method::GET, &url, &auth)
             .await

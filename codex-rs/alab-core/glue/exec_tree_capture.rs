@@ -32,11 +32,13 @@ pub struct ExecCapturedThread {
     thread: ThreadId,
     parent: Option<ThreadId>,
     source: SessionSource,
+    root_capabilities_restricted: bool,
     configuration: ExecConfiguration,
     settings: CodexThreadSettingsOverrides,
     dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     capability_roots: Vec<codex_protocol::capabilities::SelectedCapabilityRoot>,
     ephemeral_history: Option<super::ExecEphemeralHistory>,
+    helper: Option<crate::agent::helper_daybreak::turn::alab_exec_helper::Snapshot>,
     recovery: Option<ExecRecoveryOptions>,
     review: Option<crate::ExecReviewSnapshot>,
     history: codex_thread_store::StoredThreadHistory,
@@ -67,6 +69,9 @@ impl ExecCapturedThread {
     pub fn source(&self) -> &SessionSource {
         &self.source
     }
+    pub fn root_capabilities_restricted(&self) -> bool {
+        self.root_capabilities_restricted
+    }
     pub fn configuration(&self) -> &ExecConfiguration {
         &self.configuration
     }
@@ -81,6 +86,11 @@ impl ExecCapturedThread {
     }
     pub fn ephemeral_history(&self) -> Option<&super::ExecEphemeralHistory> {
         self.ephemeral_history.as_ref()
+    }
+    pub(crate) fn helper(
+        &self,
+    ) -> Option<&crate::agent::helper_daybreak::turn::alab_exec_helper::Snapshot> {
+        self.helper.as_ref()
     }
     pub fn recovery(&self) -> Option<&ExecRecoveryOptions> {
         self.recovery.as_ref()
@@ -145,6 +155,11 @@ impl CodexThread {
         let mut members = Vec::with_capacity(threads.len());
         let mut root_review = root_review;
         for thread in threads {
+            let role = if Arc::ptr_eq(&thread, &root) {
+                "root"
+            } else {
+                "child"
+            };
             let snapshot = thread.config_snapshot().await;
             let parent = snapshot.parent_thread_id;
             // Validate configuration portability before stopping any member.
@@ -180,7 +195,7 @@ impl CodexThread {
                         thread
                             .prepare_exec_child(&seal)
                             .await
-                            .map_err(|e| e.to_string())?,
+                            .map_err(|e| format!("exec child preparation: {e}"))?,
                     )
                 } else {
                     thread.validate_exec_idle_inputs(&seal).await?;
@@ -194,7 +209,7 @@ impl CodexThread {
                     thread
                         .exec_recovery_history()
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| format!("exec idle {role} preflight history: {e}"))?;
                     None
                 }
             };
@@ -202,7 +217,7 @@ impl CodexThread {
             let evidence = thread
                 .exec_recovery_history()
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("exec {role} preflight history: {e}"))?;
             super::ephemeral::HistoryEvidence::capture(&evidence)?.restore(evidence.thread_id)?;
             members.push(Member {
                 thread,
@@ -384,7 +399,9 @@ impl Plan {
             .zip(&recovery)
             .filter_map(|(member, recovery)| recovery.is_none().then_some(member.thread.as_ref()))
             .collect::<Vec<_>>();
-        let inputs = ExecInputBatch::capture_with_idle(&active, &idle).await?;
+        let inputs = ExecInputBatch::capture_with_idle(&active, &idle)
+            .await
+            .map_err(|e| format!("exec stopped tree input capture: {e}"))?;
         inputs.validate(self.root.session.thread_id, &self.turn)?;
         let mut threads = Vec::with_capacity(self.members.len());
         let mut reviews = std::collections::HashMap::new();
@@ -398,16 +415,24 @@ impl Plan {
                     .ok_or("review delegate disappeared from capture")?;
                 reviews.insert(
                     member.thread.session.thread_id,
-                    review.snapshot(&child.thread).await?,
+                    review
+                        .snapshot(&child.thread)
+                        .await
+                        .map_err(|e| format!("exec stopped review capture: {e}"))?,
                 );
             }
         }
         for (member, recovery) in self.members.into_iter().zip(recovery) {
+            let role = if member.thread.session.thread_id == self.root.session.thread_id {
+                "root"
+            } else {
+                "child"
+            };
             let history = member
                 .thread
                 .exec_recovery_history()
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("exec stopped {role} history: {e}"))?;
             let expected = recovery.as_ref().map(ExecRecoveryOptions::turn);
             if super::ephemeral::open_turn(&history.items) != expected {
                 return Err("captured child history changed its terminal state".into());
@@ -422,10 +447,19 @@ impl Plan {
             let mut settings = member.thread.restorable_thread_settings().await;
             settings.turn_extension_init = None;
             let dynamic_tools = member.thread.session.dynamic_tools().await.to_vec();
+            let root_capabilities_restricted = member
+                .thread
+                .session
+                .state
+                .lock()
+                .await
+                .session_configuration
+                .root_capabilities_restricted;
             threads.push(ExecCapturedThread {
                 thread: member.thread.session.thread_id,
                 parent: member.parent,
                 source: member.thread.session_source.clone(),
+                root_capabilities_restricted,
                 configuration,
                 settings,
                 dynamic_tools,
@@ -436,6 +470,9 @@ impl Plan {
                     .selected_capability_roots
                     .clone(),
                 ephemeral_history,
+                helper: crate::agent::helper_daybreak::turn::alab_exec_helper::Snapshot::capture(
+                    &member.thread.session,
+                ),
                 recovery,
                 review: reviews.remove(&member.thread.session.thread_id),
                 history,
@@ -451,6 +488,95 @@ impl Plan {
         Ok(captured)
     }
 }
+
+/// Retain final data from every committed member in this root's local tree.
+pub(super) async fn capture_idle(
+    root: &CodexThread,
+    inventory: &crate::CommittedUpgradeInventory,
+    invocation: &ExecConfiguration,
+) -> Result<(Vec<ExecCapturedThread>, ExecInputBatch), String> {
+    if root.session_source.is_non_root_agent() || !inventory.protects_member(root) {
+        return Err("idle tree capture requires its committed original root".into());
+    }
+    if !root.exec_tree_shutdown_complete() {
+        return Err("idle tree capture requires joined runtime producer shutdown".into());
+    }
+    let mut members = Vec::new();
+    for thread in inventory
+        .threads()
+        .iter()
+        .filter(|thread| root.shares_exec_tree(thread))
+    {
+        if !inventory.protects_member(thread) {
+            return Err("idle tree capture changed manager membership".into());
+        }
+        members.push(Member {
+            thread: Arc::clone(thread),
+            parent: thread.config_snapshot().await.parent_thread_id,
+            active: None,
+            review: None,
+        });
+    }
+    let members = order_members(root.exec_thread_id(), members)?;
+    let idle = members
+        .iter()
+        .map(|member| member.thread.as_ref())
+        .collect::<Vec<_>>();
+    let inputs = ExecInputBatch::capture_idle_root(root.exec_thread_id(), &[], &idle).await?;
+    let mut nodes = Vec::with_capacity(members.len());
+    for member in members {
+        nodes.push(capture_idle_node(&member.thread, member.parent, invocation).await?);
+    }
+    Ok((nodes, inputs))
+}
+
+async fn capture_idle_node(
+    thread: &CodexThread,
+    parent: Option<ThreadId>,
+    invocation: &ExecConfiguration,
+) -> Result<ExecCapturedThread, String> {
+    let history = thread
+        .exec_recovery_history()
+        .await
+        .map_err(|e| e.to_string())?;
+    if super::ephemeral::open_turn(&history.items).is_some() {
+        return Err("idle tree member retains an open turn".into());
+    }
+    let configuration = capture_configuration(thread, invocation).await?;
+    let mut settings = thread.restorable_thread_settings().await;
+    settings.turn_extension_init = None;
+    let root_capabilities_restricted = thread
+        .session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .root_capabilities_restricted;
+    Ok(ExecCapturedThread {
+        thread: thread.exec_thread_id(),
+        parent,
+        source: thread.session_source.clone(),
+        root_capabilities_restricted,
+        configuration,
+        settings,
+        dynamic_tools: thread.session.dynamic_tools().await.to_vec(),
+        capability_roots: thread.session.services.selected_capability_roots.clone(),
+        ephemeral_history: thread.exec_idle_ephemeral_history().await?,
+        helper: crate::agent::helper_daybreak::turn::alab_exec_helper::Snapshot::capture(
+            &thread.session,
+        ),
+        recovery: None,
+        review: None,
+        history,
+    })
+}
+
+#[path = "exec_upgrade_forest.rs"]
+mod upgrade_forest;
+pub use upgrade_forest::CommittedUpgradeForest;
+pub use upgrade_forest::DecodedUpgradeForest;
+pub use upgrade_forest::PreparedUpgradeForest;
+pub use upgrade_forest::UpgradeForestSnapshot;
 
 #[cfg(test)]
 #[path = "exec_tree_capture_tests.rs"]

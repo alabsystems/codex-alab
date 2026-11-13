@@ -31,7 +31,7 @@ impl Renderable for SafetyBufferingHeader {
 #[derive(Debug)]
 struct ActiveSafetyBuffering {
     turn_id: String,
-    last_prompt_had_retry: bool,
+    last_retry_model: Option<String>,
     agent_message_started: bool,
 }
 
@@ -107,12 +107,15 @@ impl ChatWidget {
         replay_kind: Option<ReplayKind>,
     ) {
         let ModelSafetyBufferingUpdatedNotification {
+            thread_id,
             turn_id,
             show_buffering_ui,
             faster_model,
             ..
         } = notification;
-        if matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages))
+        // ALAB(daybreak): reject cross-thread notifications before changing current-turn UI.
+        if !self.alab_safety_buffering_matches_thread(&thread_id)
+            || matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages))
             || !self.turn_lifecycle.agent_turn_running
             || self.safety_recourse.is_some()
             || self.turn_lifecycle.last_turn_id.as_deref() != Some(turn_id.as_str())
@@ -156,18 +159,42 @@ impl ChatWidget {
             && retry_turn.is_some()
             && retry_prompt.is_some()
             && thread_id.is_some();
+        let retry_offer = faster_model.clone().filter(|_| can_offer_retry);
         let previous_active = self
             .safety_buffering
             .active
             .as_ref()
             .filter(|active| active.turn_id == turn_id);
-        let should_show_prompt =
-            previous_active.is_none_or(|active| active.last_prompt_had_retry != can_offer_retry);
+        let retry_offer_changed =
+            previous_active.is_none_or(|active| active.last_retry_model != retry_offer);
+        let autonomous = self.alab_autonomous_root_active();
+        let autonomous_retry = autonomous
+            && retry_turn
+                .as_ref()
+                .is_some_and(|turn| self.alab_autonomous_safety_retry_allowed(turn));
+        let should_show_prompt = retry_offer_changed && !autonomous;
         self.safety_buffering.active = Some(ActiveSafetyBuffering {
             turn_id: turn_id.clone(),
-            last_prompt_had_retry: can_offer_retry,
+            last_retry_model: retry_offer,
             agent_message_started: false,
         });
+        // ALAB(daybreak): a headless harness cannot answer a retry confirmation; use the
+        // server-selected treatment through the same validated interrupt/fork path instead.
+        if can_offer_retry && autonomous_retry && retry_offer_changed {
+            if let (Some(model), Some(turn), Some(prompt), Some(thread_id)) =
+                (faster_model, retry_turn, retry_prompt, thread_id)
+            {
+                self.app_event_tx.send(AppEvent::RetrySafetyBufferedTurn {
+                    thread_id,
+                    turn_id,
+                    model,
+                    turn,
+                    prompt,
+                    autonomous: true,
+                });
+            }
+            return;
+        }
 
         let status_details = if can_offer_retry {
             format!("{SAFETY_BUFFERING_HEADER} {SAFETY_BUFFERING_MESSAGE_WITH_RETRY}")
@@ -283,6 +310,7 @@ impl ChatWidget {
                             model: model.clone(),
                             turn: turn.clone(),
                             prompt: prompt.clone(),
+                            autonomous: false,
                         });
                     })],
                     dismiss_on_select: true,

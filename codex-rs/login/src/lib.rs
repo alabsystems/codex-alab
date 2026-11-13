@@ -44,6 +44,7 @@ pub use auth::AuthDotJson;
 pub use auth::AuthHeaders;
 pub use auth::AuthKeyringBackendKind;
 pub use auth::AuthManager;
+#[path = "../../alab-core/glue/credential_output.rs"] pub mod alab_credential_export; // ALAB(accounts): expose checked output without a fallible formatting implementation.
 pub use auth::AuthManagerConfig;
 pub use auth::AuthManagerInitializationError;
 pub use auth::AuthOwner;

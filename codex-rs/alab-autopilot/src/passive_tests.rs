@@ -71,6 +71,9 @@ mod login_watch_tests;
 #[path = "fact_read_tests.rs"]
 mod fact_read_tests;
 
+#[path = "renewal_follow_handoff_tests.rs"]
+mod renewal_follow_handoff_tests;
+
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -3417,7 +3420,36 @@ async fn an_upgrade_that_met_a_hold_looks_again_at_its_lift() {
             left_to_person: None,
         }));
     h.fake.set_status("hold", "1");
-    assert!(!h.autopilot.try_upgrade().await);
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let deciding = format!("upgrade waits: {} is deciding", h.rt.key());
+        let deciding_count = || {
+            h.sup
+                .journal()
+                .iter()
+                .filter(|line| line.as_str() == deciding.as_str())
+                .count()
+        };
+        loop {
+            let before = deciding_count();
+            assert!(!h.autopilot.try_upgrade().await);
+            if noted(&h, "upgrade not now (aterm says not now: Hold)") == 1 {
+                break;
+            }
+            assert_eq!(
+                deciding_count(),
+                before + 1,
+                "only an initial claim evaluation may defer this hold check: {:?}",
+                h.sup.journal()
+            );
+            // A busy attempt armed its own short relook. Let that real task finish before
+            // the first Hold read arms the hour-long wait whose lift this test exercises.
+            while h.autopilot.upgrade_relook_pending() {
+                tokio::task::yield_now().await;
+            }
+        }
+    })
+    .await
+    .expect("the initial claim evaluation and preliminary upgrade relook drain");
     assert_eq!(
         noted(&h, "upgrade not now (aterm says not now: Hold)"),
         1,

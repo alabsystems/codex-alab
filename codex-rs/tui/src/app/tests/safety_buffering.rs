@@ -48,6 +48,9 @@ enum SafetyRetryScenario {
     PendingPermissions,
     InterruptedPrevious,
     UnsupportedPermissions,
+    AutonomousOnce,
+    AutonomousFailure,
+    AutonomousWithoutAuthority,
 }
 
 fn response_chunks(response_id: &str) -> Vec<StreamingSseChunk> {
@@ -140,7 +143,7 @@ async fn next_turn_started(
     }
 }
 
-async fn wait_for_turn_completed(
+pub(super) async fn wait_for_turn_completed(
     app: &mut App,
     app_server: &mut AppServerSession,
     thread_id: ThreadId,
@@ -242,7 +245,13 @@ async fn safety_recourse_handles_a_policy_block() -> Result<()> {
         app.chat_widget
             .apply_external_edit(UNSENT_DRAFT.to_string());
         loop {
-            let event = server.next_event().await.expect("moderation metadata");
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(5), server.next_event())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("timed out waiting for {domain} moderation metadata")
+                    })
+                    .expect("moderation metadata");
             let is_metadata = matches!(&event.event, AppServerEvent::ServerNotification(notification)
             if matches!(notification.as_ref(), ServerNotification::TurnModerationMetadata(_)));
             app.handle_backend_event(&server, event).await;
@@ -272,7 +281,10 @@ async fn safety_recourse_handles_a_policy_block() -> Result<()> {
             continue;
         }
         if domain == "bio" {
-            assert!(loading.contains("Finding an explanation and safer ways to continue…"));
+            assert!(
+                loading
+                    .contains("I can’t help with this request. Preparing alternative suggestions…")
+            );
             assert!(notice.contains("research and safety considerations."));
             continue;
         }
@@ -660,7 +672,9 @@ stream_max_retries = 0
         None
     );
 
-    crate::app::alab_test_assertions::repeated_inline(|| insta::assert_snapshot!(app.chat_widget.composer_text_with_pending(), @"")); // ALAB(test-assertions): both interrupt cases call this helper; preserve the exact empty-composer assertion.
+    crate::app::alab_test_assertions::repeated_inline(
+        || insta::assert_snapshot!(app.chat_widget.composer_text_with_pending(), @""),
+    ); // ALAB(test-assertions): both interrupt cases call this helper; preserve the exact empty-composer assertion.
     assert!(
         std::iter::from_fn(|| app_event_rx.try_recv().ok())
             .all(|event| !matches!(event, AppEvent::CodexOp(AppCommand::UserTurn { .. })))
@@ -740,6 +754,18 @@ async fn run_safety_retry(
     committed_steer: Option<&str>,
     scenario: SafetyRetryScenario,
 ) -> Result<()> {
+    let autonomous = matches!(
+        scenario,
+        SafetyRetryScenario::AutonomousOnce
+            | SafetyRetryScenario::AutonomousFailure
+            | SafetyRetryScenario::AutonomousWithoutAuthority
+    );
+    let automatic_event = matches!(
+        scenario,
+        SafetyRetryScenario::AutonomousOnce | SafetyRetryScenario::AutonomousFailure
+    );
+    let shared = Box::leak(Box::new(codex_alab_tui::boxes::Shared::new()));
+    let _scope = codex_alab_tui::boxes::scoped(shared);
     let (active_chunks, release_active_response) = gated_response_chunks(
         "active-response",
         ev_completed_with_tokens("active-response", /*total_tokens*/ 100),
@@ -880,6 +906,31 @@ goals = true
         /*initial_user_message*/ None,
     )
     .await?;
+    if automatic_event {
+        let key = source_thread_id.to_string();
+        let config = app.chat_widget.config_ref();
+        shared.observe(
+            &codex_alab_tui::session::Frame {
+                primary_thread: Some(&key),
+                displayed_thread: Some(&key),
+                rollout_path: None,
+                cwd: config.cwd.as_path(),
+                model: app.chat_widget.current_model(),
+                codex_home: &config.codex_home,
+                embedded: true,
+                state: codex_alab_tui::session::ProgramState::Idle,
+                draft_empty: true,
+                queued_input: false,
+                popup_open: false,
+                editor_open: false,
+                pending_user_turn: false,
+            },
+            codex_alab_tui::boxes::now_ms(),
+        );
+        shared.note_root_thread(&key);
+        shared.set_claim(Some("codex-alab@test".into()));
+        shared.set_autopilot(codex_alab_tui::session::Autopilot::Active);
+    }
     while app_event_rx.try_recv().is_ok() {}
 
     if let Some(previous_prompt) = previous_prompt {
@@ -1025,6 +1076,7 @@ goals = true
             model: FASTER_MODEL.to_string(),
             turn: active_turn.clone(),
             prompt: UserMessage::from(RETRY_PROMPT),
+            autonomous,
         },
     ))
     .await;
@@ -1033,7 +1085,20 @@ goals = true
     assert_eq!(app.active_thread_id, Some(source_thread_id));
     assert_eq!(app.chat_widget.thread_id(), Some(source_thread_id));
     app.primary_thread_id = Some(source_thread_id);
-    while app_event_rx.try_recv().is_ok() {}
+    let mut automatic_retry = None;
+    while let Ok(event) = app_event_rx.try_recv() {
+        if automatic_event
+            && matches!(
+                &event,
+                AppEvent::RetrySafetyBufferedTurn {
+                    autonomous: true,
+                    ..
+                }
+            )
+        {
+            automatic_retry = Some(event);
+        }
+    }
 
     if scenario == SafetyRetryScenario::UnsupportedPermissions {
         app_server
@@ -1062,6 +1127,7 @@ goals = true
                 model: FASTER_MODEL.to_string(),
                 turn: active_turn.clone(),
                 prompt: UserMessage::from(RETRY_PROMPT),
+                autonomous,
             },
         ))
         .await;
@@ -1143,18 +1209,23 @@ goals = true
         .await;
     }
 
-    Box::pin(app.retry_safety_buffered_turn(
-        &mut tui,
-        &mut app_server,
-        SafetyBufferedRetry {
-            thread_id: source_thread_id,
-            turn_id: active_turn_id.clone(),
-            model: FASTER_MODEL.to_string(),
-            turn: active_turn,
-            prompt: UserMessage::from(RETRY_PROMPT),
-        },
-    ))
-    .await;
+    if let Some(retry) = automatic_retry {
+        Box::pin(app.handle_event(&mut tui, &mut app_server, retry)).await?;
+    } else {
+        Box::pin(app.retry_safety_buffered_turn(
+            &mut tui,
+            &mut app_server,
+            SafetyBufferedRetry {
+                thread_id: source_thread_id,
+                turn_id: active_turn_id.clone(),
+                model: FASTER_MODEL.to_string(),
+                turn: active_turn,
+                prompt: UserMessage::from(RETRY_PROMPT),
+                autonomous,
+            },
+        ))
+        .await;
+    }
     assert_eq!(app.voice_owner_thread_id(), Some(voice_owner));
 
     if scenario == SafetyRetryScenario::UnsupportedPermissions {
@@ -1181,6 +1252,26 @@ goals = true
         insta::assert_snapshot!(
             lines_to_single_string(&error_cell.display_lines(/*width*/ 200)),
             @"■ Failed to retry with a faster model: the selected permission profile cannot be safely represented by the legacy app-server sandbox policy; select a named or legacy-compatible permission profile"
+        );
+        if let Some(release_active_response) = release_active_response.take() {
+            let _ = release_active_response.send(());
+        }
+        let _ = release_steered_response.send(());
+        let _ = release_previous_response.send(());
+        let _ = release_retry_response.send(());
+        app_server.shutdown().await?;
+        server.shutdown().await;
+        return Ok(());
+    }
+
+    if scenario == SafetyRetryScenario::AutonomousWithoutAuthority {
+        assert_eq!(app.chat_widget.thread_id(), Some(source_thread_id));
+        let source = app_server
+            .thread_read(source_thread_id, /*include_turns*/ true)
+            .await?;
+        assert_eq!(
+            source.turns.last().map(|turn| &turn.status),
+            Some(&TurnStatus::InProgress)
         );
         if let Some(release_active_response) = release_active_response.take() {
             let _ = release_active_response.send(());
@@ -1243,6 +1334,7 @@ goals = true
                     model,
                     turn,
                     prompt,
+                    autonomous,
                 }) => {
                     break SafetyBufferedRetry {
                         thread_id,
@@ -1250,6 +1342,7 @@ goals = true
                         model,
                         turn,
                         prompt,
+                        autonomous,
                     };
                 }
                 Ok(_) => continue,
@@ -1266,11 +1359,23 @@ goals = true
     }
 
     if let Some(draft) = failing_draft {
-        assert_eq!(
-            app.chat_widget.composer_text_with_pending(),
+        let expected = if scenario == SafetyRetryScenario::AutonomousFailure {
+            draft.to_string()
+        } else {
             format!("{RETRY_PROMPT}\n{draft}")
-        );
+        };
+        assert_eq!(app.chat_widget.composer_text_with_pending(), expected);
         assert_eq!(app.chat_widget.thread_id(), Some(source_thread_id));
+        if scenario == SafetyRetryScenario::AutonomousFailure {
+            assert!(app.chat_widget.is_user_turn_pending_or_running());
+            let recovery_turn_id =
+                next_turn_started(&mut app, &mut app_server, source_thread_id).await;
+            assert_ne!(recovery_turn_id, active_turn_id);
+            assert_eq!(
+                app.active_turn_id_for_thread(source_thread_id).await,
+                Some(recovery_turn_id)
+            );
+        }
         if let Some(release_active_response) = release_active_response.take() {
             let _ = release_active_response.send(());
         }
@@ -1441,9 +1546,16 @@ goals = true
         retry_request_index + 1
     };
     assert!(
-        user_input_texts(&request_bodies[goal_continuation_request_index])
+        request_bodies[goal_continuation_request_index]["input"]
+            .as_array()
+            .expect("goal continuation model input")
             .iter()
-            .any(|text| text.contains(RETRY_GOAL)),
+            .any(|item| {
+                item["type"] == "function_call_output"
+                    && item["namespace"] == "agent"
+                    && item["name"] == "goal_objective"
+                    && item["output"] == RETRY_GOAL
+            }),
         "inherited goal continuation should resume after the explicit retry"
     );
 
@@ -1542,6 +1654,39 @@ async fn safety_retry_preserves_unconfirmed_permissions_on_its_first_turn() -> R
         /*failing_draft*/ None,
         /*committed_steer*/ None,
         SafetyRetryScenario::PendingPermissions,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn autonomous_safety_retry_runs_through_the_real_event_dispatch() -> Result<()> {
+    run_safety_retry(
+        /*previous_prompt*/ None,
+        /*failing_draft*/ None,
+        /*committed_steer*/ None,
+        SafetyRetryScenario::AutonomousOnce,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn autonomous_safety_retry_failure_continues_without_a_blocking_draft() -> Result<()> {
+    run_safety_retry(
+        Some(PREVIOUS_PROMPT),
+        Some(UNSENT_DRAFT),
+        /*committed_steer*/ None,
+        SafetyRetryScenario::AutonomousFailure,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn autonomous_safety_retry_rechecks_authority_before_interrupting() -> Result<()> {
+    run_safety_retry(
+        /*previous_prompt*/ None,
+        /*failing_draft*/ None,
+        /*committed_steer*/ None,
+        SafetyRetryScenario::AutonomousWithoutAuthority,
     )
     .await
 }

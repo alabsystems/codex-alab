@@ -29,8 +29,8 @@ use crossterm::event::{self};
 use crossterm::execute;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
-use crossterm::terminal::disable_raw_mode;
-use crossterm::terminal::enable_raw_mode;
+use codex_alab_tui::terminal_modes::disable_raw_mode; // ALAB(upgrade): retain one terminal mode owner across startup screens.
+use codex_alab_tui::terminal_modes::enable_raw_mode; // ALAB(upgrade): capture the original mode before startup raw input.
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
@@ -340,7 +340,7 @@ pub(crate) async fn select_oss_provider(
         crate::tui::discard_pending_terminal_input()?;
 
         loop {
-            if let Event::Key(key_event) = event::read()?
+            if let Event::Key(key_event) = codex_alab_tui::read_input_event(event::read)? // ALAB(upgrade-input): protected startup reads use the same input owner.
                 && let Some(selection) = widget.handle_key_event(key_event)
             {
                 break Ok(OssProviderSelection {

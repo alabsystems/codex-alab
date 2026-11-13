@@ -1320,7 +1320,11 @@ impl ModelClient {
 
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
         for item in input {
-            if item.id().is_some_and(|id| !id.is_prefixed()) {
+            // A provider can echo a bare reserved prefix or return an opaque ID.
+            if item
+                .id()
+                .is_some_and(|id| id.allocation().is_none() && !id.is_prefixed())
+            {
                 item.set_id(/*new_id*/ None);
             }
             if !self.state.content_item_kinds_enabled {
@@ -1790,7 +1794,7 @@ impl ModelClientSession {
                     session_telemetry,
                     api_provider: client_setup.api_provider,
                     auth_revision: client_setup.auth_revision,
-                    api_auth: client_setup.api_auth,
+                    api_auth: Arc::clone(&client_setup.api_auth), // ALAB(accounts): retain rejected request auth for source-specific gateway recovery.
                     http_client_factory: client_setup.http_client_factory,
                     auth_owner: client_setup.auth_owner,
                     responses_metadata: &websocket_metadata,
@@ -1817,7 +1821,7 @@ impl ModelClientSession {
                             &mut auth_recovery,
                             &mut provider_auth_recovery_attempted,
                             session_telemetry,
-                            &provider,
+                            codex_model_provider::alab_gateway_recovery::RequestRecovery::new(&provider, &client_setup.api_auth), // ALAB(accounts): recover only the gateway export used by this request.
                             self.client.event_sender.as_ref(),
                             responses_metadata.turn_id.as_deref(),
                         )
@@ -2073,6 +2077,14 @@ impl ResponsesHttpExecutor<'_> {
             let kind = codex_extension_api::ModelRequestKind::Generation;
             crate::model_request::check_budget(&self.client.request_contributors, &thread_id, kind)
                 .await?;
+            // An account switch during the check requires fresh request setup.
+            if client_setup
+                .auth_owner
+                .as_ref()
+                .is_some_and(|owner| !owner.is_current())
+            {
+                continue;
+            }
             let interceptors = crate::model_request::prepare(
                 &self.client.request_contributors,
                 &thread_id,
@@ -2092,7 +2104,7 @@ impl ResponsesHttpExecutor<'_> {
             let client = ApiResponsesClient::new(
                 transport,
                 client_setup.api_provider,
-                client_setup.api_auth,
+                Arc::clone(&client_setup.api_auth), // ALAB(accounts): retain the failed request's exact export context.
             )
             .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
             let stream_result = client.stream_request(request, options).await;
@@ -2128,7 +2140,7 @@ impl ResponsesHttpExecutor<'_> {
                             &mut auth_recovery,
                             &mut provider_auth_recovery_attempted,
                             session_telemetry,
-                            &self.client.state.provider,
+                            codex_model_provider::alab_gateway_recovery::RequestRecovery::new(&self.client.state.provider, &client_setup.api_auth), // ALAB(accounts): recovery cannot invalidate a newer source's cache.
                             event_sender,
                             responses_metadata.turn_id.as_deref(),
                         )
@@ -2257,7 +2269,7 @@ impl ModelClientSession {
                     session_telemetry,
                     api_provider: client_setup.api_provider,
                     auth_revision: client_setup.auth_revision,
-                    api_auth: client_setup.api_auth,
+                    api_auth: Arc::clone(&client_setup.api_auth), // ALAB(accounts): retain rejected request auth for source-specific gateway recovery.
                     http_client_factory: client_setup.http_client_factory,
                     auth_owner: client_setup.auth_owner,
                     runtime_id: client_setup.runtime_id,
@@ -2283,7 +2295,7 @@ impl ModelClientSession {
                             &mut auth_recovery,
                             &mut provider_auth_recovery_attempted,
                             session_telemetry,
-                            &provider,
+                            codex_model_provider::alab_gateway_recovery::RequestRecovery::new(&provider, &client_setup.api_auth), // ALAB(accounts): recover only the gateway export used by this request.
                             self.client.event_sender.as_ref(),
                             responses_metadata.turn_id.as_deref(),
                         )
@@ -2303,7 +2315,12 @@ impl ModelClientSession {
                 )
                 .await?;
                 // An account switch during the check requires fresh request setup and a new socket.
-                if self.websocket_session.auth_owner != self.client.auth_owner() {
+                if self
+                    .websocket_session
+                    .auth_owner
+                    .as_ref()
+                    .is_some_and(|owner| !owner.is_current())
+                {
                     continue;
                 }
             }
@@ -2563,6 +2580,10 @@ impl ModelClientSession {
                 while let Some(event) = stream.next().await {
                     match event {
                         Ok(ResponseEvent::Completed { .. }) => break,
+                        Err(err) if err.requires_http_fallback() => {
+                            self.try_switch_fallback_transport(session_telemetry, model_info);
+                            break;
+                        }
                         Err(err) => return Err(err),
                         _ => {}
                     }
@@ -2732,9 +2753,10 @@ fn map_response_stream(
     let routing_affinity = api_stream.routing_affinity.take();
     let upstream_request_id = api_stream.upstream_request_id.take();
     let interrupt = api_stream.interrupt.take();
+    let events = crate::model_request::intercept_stream(Box::pin(api_stream), interceptors);
     let mut stream = map_response_events(
         upstream_request_id,
-        crate::model_request::intercept_stream(Box::pin(api_stream), interceptors),
+        events,
         session_telemetry,
         inference_trace_attempt,
         client,
@@ -2825,6 +2847,7 @@ where
                     response_id,
                     token_usage,
                     usage_metadata,
+                    reasoning_removals,
                     end_turn,
                 }) => {
                     feedback_tags!(last_model_response_id = &response_id);
@@ -2849,6 +2872,7 @@ where
                             response_id,
                             token_usage,
                             usage_metadata,
+                            reasoning_removals,
                             end_turn,
                         }))
                         .await
@@ -3044,10 +3068,11 @@ async fn handle_unauthorized(
     auth_recovery: &mut Option<UnauthorizedRecovery>,
     provider_auth_recovery_attempted: &mut bool,
     session_telemetry: &SessionTelemetry,
-    provider: &SharedModelProvider,
+    alab_request: codex_model_provider::alab_gateway_recovery::RequestRecovery<'_>, // ALAB(accounts): carry the rejected request's provider and captured gateway recovery together.
     event_sender: Option<&Sender<ProtocolEvent>>,
     turn_id: Option<&str>,
 ) -> Result<UnauthorizedRecoveryExecution> {
+    let provider = alab_request.provider(); // ALAB(accounts): keep recovery messages and errors tied to the same selected provider.
     let debug = extract_response_debug_context(&transport);
     if !*provider_auth_recovery_attempted {
         *provider_auth_recovery_attempted = true;
@@ -3061,7 +3086,7 @@ async fn handle_unauthorized(
                 EventMsg::AuthRecoveryStarted,
             );
         }
-        match provider.recover_from_unauthorized().await {
+        match alab_request.recover().await { // ALAB(accounts): source-specific gateway recovery preserves the original retry budget.
             Ok(ProviderUnauthorizedRecovery::Recovered) => {
                 if let Some(messages) = messages {
                     emit_auth_recovery_event(

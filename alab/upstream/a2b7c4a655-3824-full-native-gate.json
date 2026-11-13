@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "kind": "full-native-gate-qualification",
+  "source": "3824fb1933ecf309c43a6e6f44ce18b639ac7f6f",
+  "upstream": "a2b7c4a655a124c3e798b7744c5f83397eb2ada3",
+  "exit": 0,
+  "log": "${HOME}/.ubd/codex-alignment-full-gate-a2b7-r2.log",
+  "log_sha256": "9933cddd8a859192313a8874a58914dcea23221f6ea97158f5b7d81fc1bb5c0e",
+  "states": {
+    "unit-main": {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-a2b7-r2/unit-main/state.json",
+      "sha256": "95e487dfce9d239564bbe5681e4324f585bc6d813ac587d78b1a662429bb666c"
+    },
+    "unit-alone": {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-a2b7-r2/unit-alone/state.json",
+      "sha256": "2ecb3469eaaee88950eb80cc0ec5781bf227362938cde6526e1059aa7e2a4113"
+    },
+    "unit-pristine": {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-a2b7-r2/unit-pristine/state.json",
+      "sha256": "1d697e39b350973f3cb77e5d4f3b6ee4e205351475fe664b531ea760529dabb8"
+    }
+  },
+  "review_admission": {
+    "commits": 433,
+    "reviewed": 433
+  },
+  "lane": "Protected native explicit-unverified Trust15698, qualified atpkg-publish producer, locked commit and full preserved upstream unit graph. No compiler override or formal proof claim.",
+  "results": [
+    "ALab Tippy no findings;40 upstream diagnostics set aside",
+    "CLI built and actual --version ran",
+    "ALab-owned test phase completed with no failures and4ignored tests, including native real-reader Cloud transport contract",
+    "38 hooked upstream libraries judged against pristine upstream",
+    "Official consent fixture correction permits pristine source compilation; no pristine source patch or test-graph pruning"
+  ],
+  "passed_alone": [
+    "passes alone, as upstream runs it (not gating): codex-tui/codex_tui: app::tests::fork_releases_a_provisional_saved_chat_on_its_original_connection",
+    "passes alone, as upstream runs it (not gating): codex-tui/codex_tui: app::tests::saved_chat_replays_approval_after_a_stale_runtime_close",
+    "passes alone, as upstream runs it (not gating): codex-tui/codex_tui: app::tests::sidebar_reopens_saved_side_chat_after_restart"
+  ],
+  "shared_upstream_failures": [
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-app-server-daemon/codex_app_server_daemon: update_loop::tests::manual_update_restarts_local_daemon_with_automatic_updates_disabled",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-app-server-daemon/codex_app_server_daemon: update_loop::tests::manual_update_restarts_managed_daemon_with_automatic_updates_disabled",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-app-server-daemon/codex_app_server_daemon: update_loop::tests::unsupported_request_preserves_updater_schedule",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-app-server-transport/codex_app_server_transport: transport::unix_socket_tests::control_socket_acceptor_upgrades_and_forwards_websocket_text_messages_and_pings",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-app-server-transport/codex_app_server_transport: transport::unix_socket_tests::control_socket_file_is_private_after_bind",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-app-server-transport/codex_app_server_transport: transport::unix_socket_tests::long_control_socket_paths_connect_to_distinct_daemons",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-app-server-transport/codex_app_server_transport: transport::unix_socket_tests::shutdown_is_only_accepted_on_managed_local_socket_for_its_own_pid",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-app-server-transport/codex_app_server_transport: transport::websocket::compression_tests::local_socket_compression_negotiates_and_retains_history",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-core/codex_core: session::tests::guardian_tests::exec_command_allows_sticky_turn_permissions_without_inline_request_permissions_feature",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-core/codex_core: tools::handlers::multi_agents::tests::spawn_agent_reapplies_runtime_sandbox_after_role_config",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-exec-server/codex_exec_server: server::process_otel_tests::exported_sandbox_denial_keeps_launch_identity_and_separate_exit_outcome",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-exec-server/codex_exec_server: shell_snapshot_file::tests::unnamed_snapshot_preserves_stdin_and_closes_read_only_carrier::bash",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-exec-server/codex_exec_server: shell_snapshot_file::tests::unnamed_snapshot_preserves_stdin_and_closes_read_only_carrier::zsh",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-protocol/codex_protocol: permission_profile_intersection::tests::macos_system_path_aliases_share_the_same_physical_permissions",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-protocol/codex_protocol: permissions::local_aliases::tests::equivalent_alias_entries_keep_restrictive_precedence",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-protocol/codex_protocol: permissions::local_aliases::tests::local_aliases_keep_read_only_and_deny_overrides",
+    "fails on upstream a2b7c4a65 alone too (not gating): codex-protocol/codex_protocol: permissions::tests::preserving_mutable_paths_normalizes_top_level_aliases_consistently"
+  ],
+  "limits": [
+    "17 selected failures reproduce on pristine upstream in this native lane; this is not an all-upstream-tests-pass claim.",
+    "Three TUI cases fail in the combined run but pass alone.",
+    "Native macOS qualification does not prove Windows/Linux runtime behavior or live Cloud/model service entitlement.",
+    "No new package, installation, selection or running-agent adoption is covered by this receipt."
+  ]
+}

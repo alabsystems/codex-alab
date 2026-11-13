@@ -255,7 +255,7 @@ async fn old_empty_fetch_cannot_settle_a_newer_accepted_notice() -> Result<()> {
         });
         let mut server = auth_server(&app.config).await?;
         let mut tui = crate::tui::test_support::make_test_tui()?;
-        let old = crate::security_setup::prefetch_using(
+        let old = crate::security_setup::alab_notices::prefetch_using(
             &app.config,
             &server,
             app.app_event_tx.clone(),
@@ -265,7 +265,7 @@ async fn old_empty_fetch_cannot_settle_a_newer_accepted_notice() -> Result<()> {
         .unwrap();
         old_seen.await?;
         app.chat_widget.invalidate_security_setup();
-        let new = crate::security_setup::prefetch_using(
+        let new = crate::security_setup::alab_notices::prefetch_using(
             &app.config,
             &server,
             app.app_event_tx.clone(),
@@ -423,7 +423,7 @@ async fn empty_fetch(case: EmptyCase) -> Result<()> {
         }
         let mut server = auth_server(&server_config).await?;
         let mut tui = crate::tui::test_support::make_test_tui()?;
-        let fetch = crate::security_setup::prefetch_using(
+        let fetch = crate::security_setup::alab_notices::prefetch_using(
             &app.config,
             &server,
             app.app_event_tx.clone(),

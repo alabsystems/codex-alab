@@ -135,6 +135,7 @@ use std::sync::MutexGuard;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
@@ -146,6 +147,14 @@ use tokio::sync::watch;
 use crate::Endpoint;
 use crate::conn::read_line;
 use crate::wire::pct_encode;
+
+#[path = "fake_handshake.rs"]
+mod handshake;
+pub use handshake::HandshakeEvent;
+pub use handshake::HandshakeEvents;
+pub use handshake::HandshakeIoError;
+use handshake::HandshakeLog;
+pub use handshake::HandshakeStage;
 
 /// Which aterm the fake plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -655,6 +664,7 @@ struct FakeEntry {
 }
 
 struct State {
+    handshake: HandshakeLog,
     mode: Mode,
     /// The release `version` answers ([`FakeAterm::set_version`]).
     version: String,
@@ -710,6 +720,13 @@ struct State {
     digest: BTreeMap<String, FakeEntry>,
     digest_revision: u64,
     reply_once: BTreeMap<String, String>,
+    reply_sequences: BTreeMap<String, VecDeque<String>>,
+    /// Exact commands answered with the same raw bytes every time
+    /// ([`FakeAterm::reply_always`]); a `reply_once` for the same command goes first.
+    reply_always: BTreeMap<String, String>,
+    /// What `codex-accounts snapshot` answers ([`FakeAterm::set_account_pool`]); `None`: an
+    /// aterm that does not know the verb.
+    account_pool: Option<FakePool>,
     /// This session's task record's state (`working`, `done`, `stalled`, `exited`), as
     /// `@self task` answers it; `None` answers `OK task -` (no record).
     task: Option<String>,
@@ -749,6 +766,35 @@ struct State {
     refuse_mail_stream: bool,
     next_conn: u64,
     changes: watch::Sender<u64>,
+}
+
+/// The account pool a fake aterm shows its session ([`FakeAterm::set_account_pool`]).
+struct FakePool {
+    birth: String,
+    own: Option<String>,
+    accounts: serde_json::Value,
+}
+
+impl FakePool {
+    /// aterm's `codex-accounts` snapshot (`snapshot_in`), bound to `request` and to the peer
+    /// that asked: it carries no credential and grants no selection.
+    fn snapshot(&self, sid: &str, request: &str, peer_pid: Option<u32>) -> serde_json::Value {
+        serde_json::json!({
+            "schema": 1,
+            "observed_at": 1_800_000_000,
+            "request": request,
+            "session": {
+                "sid": sid,
+                "process_pid": peer_pid.unwrap_or_else(std::process::id),
+                "process_birth": self.birth,
+                "epoch": "fake-host-epoch",
+            },
+            "revision": "0".repeat(64),
+            "assignment": {"account_id": self.own, "mode": "unknown"},
+            "accounts": self.accounts,
+            "capabilities": {"add": false, "select": false, "auto": false},
+        })
+    }
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -887,6 +933,16 @@ impl State {
         if let Some(reply) = self.reply_once.remove(line) {
             return reply;
         }
+        if let Some(reply) = self
+            .reply_sequences
+            .get_mut(line)
+            .and_then(VecDeque::pop_front)
+        {
+            return reply;
+        }
+        if let Some(reply) = self.reply_always.get(line) {
+            return reply.clone();
+        }
         let (selector, rest) = match line.strip_prefix('@') {
             Some(r) => match r.split_once(' ') {
                 Some((sel, rest)) => (Some(sel), rest),
@@ -983,6 +1039,18 @@ impl State {
             },
             "messages" => self.messages(tail),
             "inbox" => self.inbox(tail),
+            "codex-accounts" if self.account_pool.is_some() => {
+                match (
+                    &self.account_pool,
+                    tail.strip_prefix("snapshot schema=1 request="),
+                ) {
+                    (Some(pool), Some(request)) => format!(
+                        "OK codex-accounts {}\n",
+                        pool.snapshot(&self.sid, request, peer_pid)
+                    ),
+                    _ => "ERR codex-accounts invalid request\n".to_string(),
+                }
+            }
             "sessions" => format!("OK 1\n{} program=codex\n", self.sid),
             "task" if tail.trim().is_empty() => match &self.task {
                 Some(state) => format!(
@@ -1986,6 +2054,7 @@ impl FakeAterm {
         let listener = UnixListener::bind(&sock)?;
         let (changes_tx, changes) = watch::channel(0);
         let state = Arc::new(Mutex::new(State {
+            handshake: HandshakeLog::new(),
             mode,
             version: "0.0.0-fake".to_string(),
             sid: sid.clone(),
@@ -2025,6 +2094,9 @@ impl FakeAterm {
             digest: BTreeMap::new(),
             digest_revision: 0,
             reply_once: BTreeMap::new(),
+            reply_sequences: BTreeMap::new(),
+            reply_always: BTreeMap::new(),
+            account_pool: None,
             task: None,
             next_later: 0,
             panes: Vec::new(),
@@ -2055,7 +2127,9 @@ impl FakeAterm {
         let accept_state = Arc::clone(&state);
         let accept = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(serve(stream, Arc::clone(&accept_state)));
+                let accepted_at = Instant::now();
+                let observed = lock(&accept_state).handshake.accepted(accepted_at);
+                tokio::spawn(serve(stream, Arc::clone(&accept_state), observed));
             }
         });
         Ok(FakeAterm {
@@ -2104,6 +2178,12 @@ impl FakeAterm {
     /// Every request line served, in order.
     pub fn requests(&self) -> Vec<String> {
         lock(&self.state).requests.clone()
+    }
+
+    /// Bounded metadata for accepted connections and version replies. This contains no
+    /// authentication tokens, request bodies, reply contents, or wall-clock timestamps.
+    pub fn handshake_events(&self) -> HandshakeEvents {
+        lock(&self.state).handshake.snapshot()
     }
 
     /// Raise `owner`'s keyed attention, as another client would (`meta set attention
@@ -2503,6 +2583,41 @@ impl FakeAterm {
             .insert(command.to_string(), reply.to_string());
     }
 
+    /// Answer consecutive exact requests with a deterministic protocol sequence.
+    pub fn reply_sequence(&self, command: &str, replies: Vec<String>) {
+        lock(&self.state)
+            .reply_sequences
+            .insert(command.into(), replies.into());
+    }
+
+    /// Answer this exact command with these raw wire bytes every time, instead of applying
+    /// it, until [`FakeAterm::reply_always_clear`]: a host whose answer stands (aterm's
+    /// `waiting` to a handoff it has no destination for). A [`FakeAterm::reply_once`] for the
+    /// same command is used up first.
+    pub fn reply_always(&self, command: &str, reply: &str) {
+        lock(&self.state)
+            .reply_always
+            .insert(command.to_string(), reply.to_string());
+    }
+
+    /// Apply this exact command again (drop its [`FakeAterm::reply_always`]). Answers whether
+    /// one stood.
+    pub fn reply_always_clear(&self, command: &str) -> bool {
+        lock(&self.state).reply_always.remove(command).is_some()
+    }
+
+    /// Answer `codex-accounts snapshot` from this pool, as the session hosting the process
+    /// whose kernel birth is `birth`: `own` is the row aterm names as that session's (a real
+    /// one names none yet) and `accounts` the rows, as the wire carries them. `None` restores
+    /// an aterm that does not know the verb.
+    pub fn set_account_pool(&self, pool: Option<(&str, Option<&str>, serde_json::Value)>) {
+        lock(&self.state).account_pool = pool.map(|(birth, own, accounts)| FakePool {
+            birth: birth.to_string(),
+            own: own.map(str::to_string),
+            accounts,
+        });
+    }
+
     /// Dismiss `key`'s digest entry as the owner does: the key is then quiet. Answers whether
     /// there was one.
     pub fn dismiss_later(&self, key: &str) -> bool {
@@ -2735,7 +2850,12 @@ fn verb_of(line: &str) -> &str {
     rest.split_ascii_whitespace().next().unwrap_or("")
 }
 
-async fn serve(stream: UnixStream, state: Arc<Mutex<State>>) {
+fn observe_handshake(state: &Mutex<State>, conn: u64, stage: HandshakeStage) {
+    let at = Instant::now();
+    lock(state).handshake.record(conn, at, stage);
+}
+
+async fn serve(stream: UnixStream, state: Arc<Mutex<State>>, observed: u64) {
     let peer_pid = stream
         .peer_cred()
         .ok()
@@ -2759,14 +2879,20 @@ async fn serve(stream: UnixStream, state: Arc<Mutex<State>>) {
         return;
     }
     match read_line(&mut reader).await {
-        Ok(Some(first)) if first == format!("AUTH {token}") => {}
+        Ok(Some(first)) if first == format!("AUTH {token}") => {
+            observe_handshake(&state, observed, HandshakeStage::Authenticated);
+        }
         _ => {
+            observe_handshake(&state, observed, HandshakeStage::AuthenticationFailed);
             let _ = writer.write_all(b"ERR auth\n").await;
             return;
         }
     }
     while let Ok(Some(line)) = read_line(&mut reader).await {
         let verb = verb_of(&line).to_string();
+        if verb == "version" {
+            observe_handshake(&state, observed, HandshakeStage::VersionReceived);
+        }
         let mut gated = None;
         loop {
             let mut changes = {
@@ -2865,9 +2991,32 @@ async fn serve(stream: UnixStream, state: Arc<Mutex<State>>) {
             (reply, dropped.is_some())
         };
         if drop_reply {
+            if verb == "version" {
+                observe_handshake(&state, observed, HandshakeStage::VersionReplyDropped);
+            }
             break;
         }
-        if writer.write_all(reply.as_bytes()).await.is_err() {
+        if verb == "version" {
+            observe_handshake(
+                &state,
+                observed,
+                HandshakeStage::VersionWriteStarted {
+                    reply_bytes: reply.len(),
+                },
+            );
+        }
+        let written = writer.write_all(reply.as_bytes()).await;
+        if verb == "version" {
+            observe_handshake(
+                &state,
+                observed,
+                HandshakeStage::VersionWriteFinished {
+                    reply_bytes: reply.len(),
+                    error: written.as_ref().err().map(HandshakeIoError::from_error),
+                },
+            );
+        }
+        if written.is_err() {
             break;
         }
     }
@@ -2932,3 +3081,7 @@ async fn subscribe(
 #[cfg(test)]
 #[path = "fake_confirmation_tests.rs"]
 mod confirmation_tests;
+
+#[cfg(test)]
+#[path = "fake_handshake_tests.rs"]
+mod handshake_tests;

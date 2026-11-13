@@ -76,7 +76,7 @@ async fn packaged_defaults_reach_the_config() {
         "server version notice"
     );
     assert!(!config.tui_auto_recap, "automatic recaps");
-    // The aterm-only three hold inside aterm, and upstream's own values everywhere else.
+    // The aterm-only `[tui]` keys hold inside aterm, and upstream's own values everywhere else.
     let in_aterm = codex_alab_core::inside_aterm();
     assert_eq!(
         config.disable_paste_burst, in_aterm,

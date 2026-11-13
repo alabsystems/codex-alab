@@ -290,7 +290,9 @@ async fn all_four_ingresses_and_background_delivery_share_one_fifo() -> color_ey
             category: FeedbackCategory::Other,
             include_logs: false,
             feedback_audience: crate::bottom_pane::FeedbackAudience::External,
-            result: Ok("feedback".into()),
+            result: Ok(crate::app_event::FeedbackReceipt::Uploaded {
+                thread_id: "feedback".into(),
+            }),
         },
     ));
     ready(warning.send(ThreadBufferedEvent::Notification(Box::new(

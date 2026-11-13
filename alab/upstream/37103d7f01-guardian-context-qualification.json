@@ -1,0 +1,287 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:35:29.906078+00:00",
+  "source": "f97c3be3b643b88cae6614bb538124e1eb9b3a62",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "action::tests::other_actions_preserve_description_fields",
+      "status": "ok"
+    },
+    {
+      "name": "action::tests::mcp_projection_preserves_arguments_with_description_fields",
+      "status": "ok"
+    },
+    {
+      "name": "allocation::tests::groups_select_recent_whole_entries_and_redistribute_packing_gaps",
+      "status": "ok"
+    },
+    {
+      "name": "budget::tests::request_token_ranges_keep_boundary_values_in_the_lower_bucket",
+      "status": "ok"
+    },
+    {
+      "name": "budget::tests::section_costs_keep_multimodal_payloads_separate",
+      "status": "ok"
+    },
+    {
+      "name": "budget::tests::elastic_section_config_validates_entry_limits",
+      "status": "ok"
+    },
+    {
+      "name": "composition::tests::delivery_preserves_arbitrary_message_boundaries_and_rejects_them_for_sync",
+      "status": "ok"
+    },
+    {
+      "name": "budget::tests::request_estimate_reserves_images_independently_of_encoded_size",
+      "status": "ok"
+    },
+    {
+      "name": "composition::tests::long_text_and_file_image_delivery_is_lossless_bounded_and_fully_budgeted",
+      "status": "ok"
+    },
+    {
+      "name": "cursor::tests::delta_cursor_tracks_collected_entries_across_sliding_window_retention",
+      "status": "ok"
+    },
+    {
+      "name": "enforcement::tests::budget_reserves_existing_context_and_preserves_required_messages",
+      "status": "ok"
+    },
+    {
+      "name": "enforcement::tests::image_accounting_preserves_later_eviction_policy",
+      "status": "ok"
+    },
+    {
+      "name": "enforcement::tests::native_agent_admission_uses_current_history_and_preserves_identity",
+      "status": "ok"
+    },
+    {
+      "name": "enforcement::tests::planned_action_budget_omits_descriptions_without_changing_arguments",
+      "status": "ok"
+    },
+    {
+      "name": "composition::tests::sender_restrictions_survive_budget_trimming_for_both_reviewers",
+      "status": "ok"
+    },
+    {
+      "name": "allocation::tests::whole_images_use_defaults_and_charge_shared_framing_once",
+      "status": "ok"
+    },
+    {
+      "name": "history::tests::compaction_summary_is_excluded_without_dropping_user_messages",
+      "status": "ok"
+    },
+    {
+      "name": "history::tests::each_kind_evicts_its_own_oldest_entries_without_reordering",
+      "status": "ok"
+    },
+    {
+      "name": "budget::tests::section_estimate_bounds_the_delivered_message",
+      "status": "ok"
+    },
+    {
+      "name": "history::tests::elastic_storage_keeps_full_entries_past_the_fixed_count_bound_and_on_replay",
+      "status": "ok"
+    },
+    {
+      "name": "history::tests::inherited_manual_approvals_stay_out_of_review_after_checkpoint_replay",
+      "status": "ok"
+    },
+    {
+      "name": "history::tests::elastic_byte_overflow_evicts_whole_non_user_entries_to_the_low_watermark",
+      "status": "ok"
+    },
+    {
+      "name": "history::tests::rollback_discards_assistant_sources_without_ordering_in_old_backups",
+      "status": "ok"
+    },
+    {
+      "name": "history::tests::rollback_keeps_the_earlier_prefix_or_clears_an_evicted_boundary",
+      "status": "ok"
+    },
+    {
+      "name": "history::tests::oversized_user_images_preserve_text_and_metadata_in_order",
+      "status": "ok"
+    },
+    {
+      "name": "images::tests::file_images_are_selected_from_history_sources",
+      "status": "ok"
+    },
+    {
+      "name": "images::tests::image_selection_preserves_source_policy_order_and_both_limits",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::elastic::tests::entry_caps_bound_required_and_optional_text_preserving_metadata_and_opaque_payloads",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::elastic::tests::exact_actions_stay_whole_while_supporting_context_is_capped",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::source_tests::build_guardian_prompt_truncates_oversized_approval_reason",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::source_tests::elastic_repl_rendering_keeps_stored_text_images_and_omissions",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::source_tests::elastic_root_preparation_preserves_captured_messages",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::transcript::tests::build_guardian_transcript_preserves_recent_tool_context_when_user_history_is_large",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::transcript::tests::build_guardian_transcript_reserves_separate_budget_for_tool_evidence",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::transcript::tests::fixed_preparation_caps_text_and_omits_whole_native_entries",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::transcript::tests::profiles_preserve_distinct_retention_and_original_numbering",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::transcript::tests::profiles_reserve_the_newest_five_tool_entries_for_aggregate_enforcement",
+      "status": "ok"
+    },
+    {
+      "name": "preparation::transcript::tests::transcript_json_keeps_forged_roles_inside_the_original_entry",
+      "status": "ok"
+    },
+    {
+      "name": "registry_tests::registry_collects_target_specific_sections_in_registration_order",
+      "status": "ok"
+    },
+    {
+      "name": "registry_tests::registry_skips_optional_sections_and_stops_on_missing_required_evidence",
+      "status": "ok"
+    },
+    {
+      "name": "registry_tests::reused_registry_preserves_section_identity_and_source_roles",
+      "status": "ok"
+    },
+    {
+      "name": "retained_instructions::tests::coalesced_repl_text_cannot_attest_to_host_omission_delivery",
+      "status": "ok"
+    },
+    {
+      "name": "retained_instructions::tests::delivery_uses_source_revision_and_complete_host_metadata",
+      "status": "ok"
+    },
+    {
+      "name": "retained_instructions::tests::instructions_preserve_source_order_and_whole_records",
+      "status": "ok"
+    },
+    {
+      "name": "retained_instructions::tests::legacy_verified_answers_keep_distinct_source_order",
+      "status": "ok"
+    },
+    {
+      "name": "retained_instructions::tests::ordinary_exchanges_keep_roles_and_drop_assistant_context_before_restrictions",
+      "status": "ok"
+    },
+    {
+      "name": "retained_instructions::tests::transcript_original_requires_complete_source_proof_and_survives_budgeting",
+      "status": "ok"
+    },
+    {
+      "name": "reviews::tests::previous_reviews_checks_count_and_size_without_rewriting_fragments",
+      "status": "ok"
+    },
+    {
+      "name": "reviews::tests::review_delivery_requires_complete_host_metadata_and_preserves_distinct_completions",
+      "status": "ok"
+    },
+    {
+      "name": "transcript::tests::collect_guardian_transcript_entries_includes_recent_tool_calls_and_output",
+      "status": "ok"
+    },
+    {
+      "name": "transcript::tests::encrypted_messages_preserve_order_and_budget_for_both_reviewers",
+      "status": "ok"
+    },
+    {
+      "name": "transcript::tests::excluded_tool_calls_still_attribute_included_results",
+      "status": "ok"
+    },
+    {
+      "name": "transcript::tests::heartbeat_references_preserve_positions_changes_and_human_messages",
+      "status": "ok"
+    },
+    {
+      "name": "transcript::tests::outputs_with_call_ids_or_explicit_names_are_retained",
+      "status": "ok"
+    },
+    {
+      "name": "transcript::tests::registered_transcript_filters_roles_and_preserves_node_repl_tool_attribution",
+      "status": "ok"
+    },
+    {
+      "name": "transcript::tests::reused_registry_applies_current_history_sources_and_preserves_originals",
+      "status": "ok"
+    },
+    {
+      "name": "truncation::tests::truncation_preserves_prefix_suffix_and_utf8_boundaries",
+      "status": "ok"
+    },
+    {
+      "name": "trusted_skills::tests::bounds_escaped_skill_paths_without_corrupting_json_or_utf8",
+      "status": "ok"
+    },
+    {
+      "name": "trusted_skills::tests::preserves_multiple_invoked_skill_paths",
+      "status": "ok"
+    },
+    {
+      "name": "trusted_tool::tests::trusted_tool_context_attests_only_the_matching_source_and_identity",
+      "status": "ok"
+    },
+    {
+      "name": "history::tests::tool_metadata_is_retained_without_changing_retention_size",
+      "status": "ok"
+    },
+    {
+      "name": "trusted_tool::tests::trusted_tool_context_has_a_hard_token_budget",
+      "status": "ok"
+    },
+    {
+      "name": "history::tests::byte_limits_are_independent_and_oversized_items_do_not_clear_history",
+      "status": "ok"
+    },
+    {
+      "name": "enforcement::tests::recovery_shortens_older_history_only_after_optional_evidence",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-context-native.sh",
+      "sha256": "dea74541b3a8ff57d905380f3bf0409c90299f21059449382ae0572c24d33896"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-context-native.log",
+      "sha256": "0483eef56f22a33b20f9f155667ffa8d4ae99ce7e4758d29516395923eafeedd"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-context-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Whole codex-guardian-context library: 64 passed, zero failed/ignored/filtered, one helper-admitted selection. Covers library allocation, retained-source deduplication, framing, section budgets and byte-bounded history. Does not prove core config/approval/resume integrations, native credential image lifecycle, full gate, complete intake, all platforms or adoption."
+}

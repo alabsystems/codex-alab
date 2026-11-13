@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:32:06.158672+00:00",
+  "source": "425e01a08aac57bf581202ab2d5324b02fdd4938",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "session_recovery_tests::last_failed_session_releases_the_shared_connection",
+      "status": "ok"
+    },
+    {
+      "name": "session_recovery_tests::quiet_session_reuses_its_worker_connection",
+      "status": "ok"
+    },
+    {
+      "name": "session_recovery_tests::only_missing_sessions_reopen_without_replaying_execution",
+      "status": "ok"
+    },
+    {
+      "name": "session_recovery_tests::grpc_session_pins_output_mode_across_recovery_and_shutdown",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-grpc-recovery-native.sh",
+      "sha256": "b6d8dfd579d4316968e96d5b735f4affbab611ce572cac48ef3c609e020e5a7e"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-grpc-recovery-native.log",
+      "sha256": "af404ce2a0ef0bee9489e7893d5b8c2d626c9b62707be4e7a0330a66c2e1bf24"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-grpc-recovery-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "One helper-admitted nonempty suite, four passed, zero failed/ignored. Real loopback gRPC fixtures cover quiet worker connection reuse, release after last failed session, missing-session recovery without replay and pinned output mode. Does not qualify remote production hosts, full gate, credential image lifecycle, complete intake, all platforms or adoption."
+}

@@ -54,7 +54,7 @@ pub(crate) async fn program_for_turn(
                 },
             })
             .await;
-        let Ok(result) = result else {
+        let Some(result) = model_list_result(result, enabled)? else {
             return Ok(None);
         };
         if let Some(selected) = result.data.into_iter().find(|entry| entry.model == model) {
@@ -93,6 +93,20 @@ pub(crate) async fn program_for_turn(
     }
 }
 
+// ALAB(daybreak-discovery): explicit Daybreak must not silently degrade when discovery fails.
+fn model_list_result<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    enabled: bool,
+) -> anyhow::Result<Option<T>> {
+    match result {
+        Ok(result) => Ok(Some(result)),
+        Err(_) if !enabled => Ok(None),
+        Err(error) => Err(anyhow::anyhow!(
+            "Daybreak availability could not be determined from the connected server's model catalog: {error}"
+        )),
+    }
+}
+
 async fn read_account(
     client: &InProcessAppServerClient,
     request_ids: &mut RequestIdSequencer,
@@ -109,4 +123,42 @@ async fn read_account(
             anyhow::anyhow!("Daybreak account availability could not be determined: {error}")
         })?;
     Ok(account.account)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_daybreak_rejects_a_catalog_failure() {
+        let error = model_list_result(
+            Err::<(), _>(std::io::Error::other("catalog offline")),
+            /*enabled*/ true,
+        )
+        .expect_err("enabled Daybreak must not silently lose its selection");
+        assert!(error.to_string().contains("catalog offline"));
+    }
+
+    #[test]
+    fn disabled_daybreak_preserves_automatic_treatment_on_catalog_failure() {
+        assert_eq!(
+            model_list_result(
+                Err::<(), _>(std::io::Error::other("catalog offline")),
+                /*enabled*/ false,
+            )
+            .expect("disabled Daybreak should preserve automatic treatment"),
+            None
+        );
+    }
+
+    #[test]
+    fn successful_catalog_replies_pass_through_for_both_preferences() {
+        for enabled in [false, true] {
+            assert_eq!(
+                model_list_result(Ok::<_, std::io::Error>(7), enabled)
+                    .expect("successful catalog reply"),
+                Some(7)
+            );
+        }
+    }
 }

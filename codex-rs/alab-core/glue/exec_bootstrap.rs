@@ -216,7 +216,7 @@ mod tests {
                     "model": "fixture", "reasoning_effort": null, "developer_instructions": null
                 }},
                 "summary": "auto", "approval_policy": "never",
-                "approvals_reviewer": "user", "disabled_plugin_ids": []
+                "disabled_plugin_ids": []
             }
         }))?;
         let value = serde_json::to_value(Checkpoint::new(options, None))?;

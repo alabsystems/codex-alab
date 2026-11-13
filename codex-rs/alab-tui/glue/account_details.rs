@@ -9,6 +9,7 @@ use super::ChatWidget;
 use super::interface;
 use crate::app_event::AppEvent;
 use crate::app_event::RateLimitRefreshOrigin;
+use crate::clock_format::ClockFormat;
 use crate::keymap::ListKeymap;
 use crate::render::renderable::Renderable;
 use codex_alab_tui::interface::InterfaceStatus;
@@ -33,7 +34,9 @@ mod assignment_pool;
 
 const VIEW_ID: &str = "alab-account";
 
-struct AccountDetailsHeader;
+struct AccountDetailsHeader {
+    clock_format: ClockFormat,
+}
 
 fn quota_line(label: &str, meter: Option<&str>, reset: Option<&str>, stale: bool) -> String {
     match (meter, reset) {
@@ -102,11 +105,12 @@ impl AccountDetailsHeader {
                 if quota.sample_count == 1 { "" } else { "s" }
             )));
             lines.push(Line::from(quota.sparkline(40)));
+            let date_time_format = format!("{} %Z", self.clock_format.date_time_format());
             let local_time = |seconds| {
                 chrono::DateTime::from_timestamp(seconds, 0)
                     .map(|time| {
                         time.with_timezone(&chrono::Local)
-                            .format("%d %b %H:%M %Z")
+                            .format(&date_time_format)
                             .to_string()
                     })
                     .unwrap_or_else(|| "Unavailable".to_string())
@@ -192,11 +196,12 @@ impl Renderable for AccountDetailsHeader {
     }
 }
 
-fn account_view(keymap: ListKeymap) -> DetailsView {
+fn account_view(keymap: ListKeymap, clock_format: ClockFormat) -> DetailsView {
+    let header = AccountDetailsHeader { clock_format };
     DetailsView::new(
         VIEW_ID,
         "Account details",
-        || AccountDetailsHeader.paragraph(),
+        move || header.paragraph(),
         "Close",
         None,
         keymap,
@@ -230,7 +235,10 @@ impl ChatWidget {
         {
             return;
         }
-        self.show_bottom_pane_view(Box::new(account_view(self.bottom_pane.list_keymap())));
+        self.show_bottom_pane_view(Box::new(account_view(
+            self.bottom_pane.list_keymap(),
+            self.clock_format,
+        )));
         if self.should_prefetch_rate_limits() {
             self.alab_request_reset_details();
             self.app_event_tx.send(AppEvent::RefreshRateLimits {

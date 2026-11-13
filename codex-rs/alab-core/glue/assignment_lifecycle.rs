@@ -732,7 +732,9 @@ async fn prepare_session(
             {
                 return Err(Refused::Busy);
             }
-            session.mark_mcp_runtime_dirty();
+            session.mark_mcp_runtime_dirty(
+                crate::thread_manager::McpRefreshReason::RuntimeAuthChanged,
+            );
             session.refresh_mcp_if_dirty().await;
             if !session
                 .services
@@ -921,6 +923,7 @@ mod tests {
     }
     fn submission(id: &str, op: Op) -> Submission {
         Submission {
+            alab_upgrade: Vec::new(), // ALAB(upgrade): the native sender supplies admission.
             id: id.into(),
             op,
             turn_extension_init: None,

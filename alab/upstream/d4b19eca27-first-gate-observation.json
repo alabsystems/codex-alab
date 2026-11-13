@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "source": "7a74d26ccdad3f72a4a0dc546584128091338b7a",
+  "integrated_upstream": "d4b19eca27895e704f9929a70ad80abdd9588728",
+  "gate_exit": 1,
+  "stage": "Trust 15698 Tippy",
+  "review_admission": "105 of 105 upstream commits covered.",
+  "log": {
+    "path": "${HOME}/.ubd/codex-alignment-d4b1-full-gate.log",
+    "sha256": "a3bfb5dae07f157e6901d12a8ac5a7b7c7ee658c6e9cbac40f62e1a4dcb94bbc"
+  },
+  "findings": [
+    "Missing imports in the composed TUI security notice prefetch.",
+    "Retired proxy drain helper and stale startup witness binding in the startup fixture.",
+    "Private turn_start and missing experimental environments field in ALab TUI fixtures."
+  ],
+  "adaptations": [
+    "a38e737d1b",
+    "19f13d6d83"
+  ],
+  "limits": "Compilation stopped before CLI and runtime checks. Adaptations require their own gate."
+}

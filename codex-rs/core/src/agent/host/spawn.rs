@@ -38,7 +38,7 @@ async fn prepare_spawn_inputs(
     AppServerClientMetadata,
 )> {
     let runtime = &parent.session.services.local_agent_runtime;
-    let _membership = runtime.admit_start()?;
+    let _membership = runtime.admit_exec_producer()?; // ALAB(upgrade): inheritance preparation revokes a pending transfer before reading source state.
     let state = runtime.upgrade()?;
     let ChildSpawnSettings {
         config,
@@ -117,7 +117,7 @@ pub(super) async fn create_spawn(
         ));
     }
     let runtime = &parent.session.services.local_agent_runtime;
-    let membership = runtime.admit_start()?;
+    let membership = runtime.admit_exec_producer()?; // ALAB(upgrade): host child publication and owned cleanup retain producer admission.
     let state = runtime.upgrade()?;
     if state
         .threads

@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "kind": "focused-qualification-observations",
+  "observed_at": "2026-11-10T12:31:39.431533+00:00",
+  "upstream": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "source": "b9e8ee65e5d6ac683a4c31f9dac84a21929afc91",
+  "exit_code": 0,
+  "log": "${HOME}/.ubd/codex-alignment-b32-features-native.log",
+  "log_sha256": "c6fec42b7a80fa2bf59abd34712f34002cabf3ed6d9f04bb5b2c62c038da51f6",
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "suites": [
+    {
+      "package": "codex-app-server-protocol",
+      "target": "lib",
+      "filter": "stable_precomputed_exports_match_schema_fixtures",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 324
+    },
+    {
+      "package": "codex-app-server-protocol",
+      "target": "lib",
+      "filter": "experimental_precomputed_exports_match_generated",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 324
+    },
+    {
+      "package": "codex-rmcp-client",
+      "target": "lib",
+      "filter": "oauth_discovery::tests::",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 267
+    },
+    {
+      "package": "codex-tcp-tunnel",
+      "target": "lib",
+      "filter": "",
+      "passed": 20,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    {
+      "package": "codex-thread-store",
+      "target": "lib",
+      "filter": "local::search_threads::tests::",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 289
+    },
+    {
+      "package": "codex-app-server",
+      "target": "all",
+      "filter": "saved_attached_thread_upgrade_restart_and_delete",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 1782
+    },
+    {
+      "package": "codex-app-server",
+      "target": "all",
+      "filter": "thread_list_respects_search_term_filter",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 1784
+    },
+    {
+      "package": "codex-cli",
+      "target": "cloud_config",
+      "filter": "tcp_tunnel_ssh_enforces_cloud_requirements_before_gateway_connection",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 8
+    }
+  ],
+  "full_gate_qualified": false,
+  "limits": "All eight actual selections completed. Combined outer log includes stderr and passed the skip/count checker after terminal status 0; prior per-selection tee captured stdout only. Covers canonical stable/experimental protocol, published OAuth metadata, entire tunnel library, local thread search, three attached-thread restart/recovery variants, provider/source filters and real CLI cloud policy fixture. No live Portals/model entitlement, Linux/Windows behavior or complete feature contract inferred."
+}

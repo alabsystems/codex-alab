@@ -6,7 +6,6 @@
 Builds nothing. All provider requests, credentials and PTY output stay in --output.
 """
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +15,7 @@ import subprocess
 import time
 
 import capacity_exec as probe
+import native_host_record
 import renewal_follow as native
 
 ORIGINAL_INSTRUCTIONS = "Retain the original handoff configuration marker."
@@ -131,17 +131,21 @@ class Model(native.Model):
                                   f'developer_instructions = {json.dumps(CHANGED_INSTRUCTIONS)}', 1))
                 self.model_changed = True
             self.usage_reads.append("source" if old_token else "target")
-            full = self.all_exhausted or old_token or (self.chain and (
-                (new_token and self.middle_exhausted) or (next_token and not self.middle_exhausted)))
-            if self.review and self.review.control:
-                full = False
-        return {"plan_type": "pro", "rate_limit": {
-            "allowed": not full, "limit_reached": full,
-            "primary_window": {"used_percent": 0, "limit_window_seconds": 18000,
-                               "reset_at": int(time.time()) + 3600},
-            "secondary_window": {"used_percent": 100 if full else 0,
-                                 "limit_window_seconds": 604800,
-                                 "reset_at": int(time.time()) + 86400}}}
+        # The reply names the login it is for and is one the client decodes, as the TUI
+        # fixture's is: the same logins (native.fake_auth) read the same provider.
+        return self.usage_body("old" if old_token else "next" if next_token else "new")
+
+    def week_spent(self, old_token, new_token, next_token=False):
+        # The exec fixture's own rule, as it was: its source is spent from the start.
+        if self.review and self.review.control:
+            return False
+        return bool(self.all_exhausted or old_token or (self.chain and (
+            (new_token and self.middle_exhausted) or (next_token and not self.middle_exhausted))))
+
+    def limit_headers(self, generation, wall=False, usage=None):
+        # None: this fixture's source is spent before its first, answered request, so
+        # headers that agree with its usage would put a spent week on a 200.
+        return {}
 
     def reply(self, body, generation=None):
         if self.review:
@@ -461,15 +465,7 @@ def main():
                   "token-usage qualification uses the pending-mail JSON scenario")
     build, manifest, codex = probe.package_records(args.package.resolve(strict=True))
     host = args.host.resolve(strict=True)
-    host_record_file = host.parent / "build.json"
-    probe.require(host_record_file.is_file() and not host_record_file.is_symlink()
-                  and host_record_file.stat().st_size <= 1024 * 1024, "native host build record missing")
-    host_record = json.loads(host_record_file.read_text())
-    host_sha = hashlib.sha256(host.read_bytes()).hexdigest()
-    probe.require(isinstance(host_record.get("source"), str)
-                  and re.fullmatch(r"[0-9a-f]{40}", host_record["source"])
-                  and host_record.get("host_sha256") == host_sha,
-                  "native host image does not match its recorded source build")
+    host_record = native_host_record.load(host)
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
     env = probe.fresh_environment(root)
@@ -481,7 +477,7 @@ def main():
                   ephemeral=args.ephemeral, review=args.review)
     server, worker = native.serve(model)
     report = {"passed": False, "source": build["source"], "version": manifest["version"],
-              "nativeHost": {"source": host_record["source"], "sha256": host_sha},
+              "nativeHost": native_host_record.summary(host_record),
               "dropConsumeAck": args.drop_consume_ack or args.stop_after_consume,
               "chain": args.chain, "exhausted": args.exhausted,
               "human": args.human, "ephemeral": args.ephemeral, "review": args.review,
@@ -554,6 +550,9 @@ def main():
             exhausted_since = None
             try:
                 while time.monotonic() < deadline:
+                    # A reply the fixture could not build is answered 500, which the client
+                    # takes for "usage unknown": the walled turn would poll to the deadline.
+                    native.require_no_fixture_fault(model)
                     ready, _, _ = select.select([process.stdout], [], [], .1)
                     if ready:
                         data = os.read(process.stdout.fileno(), 65536)
@@ -587,6 +586,8 @@ def main():
 
         probe.COMMAND_TIMEOUT_SECONDS = 230
         code = probe.run(host, ["--renewal-config", str(root / "fixture.json")], root, env, "native-host", interact=drive)
+        # Before any verdict: a fault after the loop's last pass explains what follows it.
+        native.require_no_fixture_fault(model)
         probe.require(code == 0, "native host failed")
         text = (root / "pty.log").read_text(errors="replace").replace("\r", "")
         if args.exhausted or args.stop_after_consume:
@@ -761,6 +762,7 @@ def main():
                 report["pendingMailCountAtReplacement"] = json.loads(lost.read_text())["count"]
         server.shutdown()
         worker.join()
+        server.server_close()
         probe.write_json(root / "result.json", report)
     print(json.dumps(report, indent=2))
     return 0

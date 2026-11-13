@@ -169,6 +169,7 @@ where
 {
     #[allow(clippy::print_stderr)]
     fn drop(&mut self) {
+        if codex_alab_tui::terminal_modes::preserve_on_exit() { return; } // ALAB(upgrade): actual committed custody retains the cursor through exec.
         // Attempt to restore the cursor state
         if let Err(err) = self.reset_cursor_style() {
             eprintln!("Failed to reset the cursor style: {err}");
@@ -1504,3 +1505,5 @@ mod tests {
         );
     }
 }
+
+#[cfg(unix)] #[path = "../../alab-tui/glue/upgrade_viewport.rs"] mod alab_upgrade_viewport; // ALAB(upgrade): carry the existing viewport and visible inline history without terminal I/O.

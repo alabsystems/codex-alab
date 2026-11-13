@@ -61,10 +61,8 @@ pub(crate) fn prefetch(
     tx: AppEventSender,
     request_id: Uuid,
 ) {
-    let _ = prefetch_using(config, server, tx, request_id, Default::default()); // ALAB(notices): keep reminder delivery scoped to its fetch
+    let _ = alab_notices::prefetch_using(config, server, tx, request_id, Default::default()); // ALAB(notices): keep reminder delivery scoped to its fetch
 }
-
-pub(crate) use alab_notices::prefetch_using; // ALAB(notices): observe and settle app-server results under App request custody.
 
 #[path = "../../alab-tui/glue/security_setup.rs"] pub(crate) mod alab_notices; // ALAB(notices): the account-security notice's routing lives in codex-rs/alab-tui
 

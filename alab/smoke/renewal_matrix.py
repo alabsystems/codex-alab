@@ -10,6 +10,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import native_host_record
+
 BASE_CASES = ("happy", "lost-signal-ack", "panic-before-signal", "lost-consume-ack",
               "late-hold", "owner-stop")
 CASES = BASE_CASES + ("weekly-quota", "weekly-quota-rollback", "weekly-quota-exhausted", "weekly-quota-chain", "grace-beyond-budget", "post-signal-resume", "owner-stop-after-signal",
@@ -18,6 +20,22 @@ CASES = BASE_CASES + ("weekly-quota", "weekly-quota-rollback", "weekly-quota-exh
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def pinned_inputs(host, package):
+    """Every file whose bytes decide what a matrix run does and what it accepts.
+
+    Their hashes are written to qualification.json before the first case and compared
+    around every case: the controller and what it imports (the model, the provider
+    fixture that decides what is served, the host record's rules that decide which host
+    is accepted, the guardian), the host and its record, and the package under test.
+    """
+    smoke = Path(__file__).resolve().parent
+    return (Path(__file__).resolve(), smoke / "renewal_follow.py", smoke / "capacity_exec.py",
+            smoke / "provider_fixture.py", smoke / "native_host_record.py",
+            smoke.parent / "command_guard.py", host, host.parent / "build.json",
+            package / "bin" / "codex", package / "alab-build.json",
+            package / "codex-package.json")
 
 
 def main():
@@ -33,10 +51,22 @@ def main():
     package = args.package.resolve(strict=True)
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
-    pinned = (Path(__file__).resolve(), controller, controller.with_name("capacity_exec.py"),
-              controller.parent.parent / "command_guard.py", host,
-              host.parent / "build.json", package / "bin" / "codex",
-              package / "alab-build.json", package / "codex-package.json")
+    manifest = root / "qualification.json"
+    try:
+        refusal = native_host_record.not_qualifying(native_host_record.load(host))
+        native_host_record.require_aterm_name(host)
+        # This file is the qualification: `passed` is read without the record's sentence.
+        native_host_record.require(refusal is None, "the native host record qualifies no "
+            f"run: {refusal}; run a case singly with renewal_follow.py for trial evidence")
+    except RuntimeError as error:
+        # Refuse before anything is hashed, and say what to do: no case has run.
+        message = str(error) if (host.parent / "build.json").exists() else (
+            "native host build record missing; run native_host_record.py")
+        manifest.write_text(json.dumps({"passed": False, "error": message, "cases": []},
+                                       indent=2) + "\n")
+        print(message, file=sys.stderr)
+        return 1
+    pinned = pinned_inputs(host, package)
     requested = args.case or CASES
     if len(set(requested)) != len(requested):
         parser.error("each case may be requested only once")
@@ -46,7 +76,6 @@ def main():
               "allAvailableCasesPassed": False,
               "coversLiveEmailAuthentication": False, "coversAllActivationRequirements": False,
               "inputs": {str(path): digest(path) for path in pinned}, "cases": []}
-    manifest = root / "qualification.json"
 
     def save():
         manifest.write_text(json.dumps(report, indent=2) + "\n")

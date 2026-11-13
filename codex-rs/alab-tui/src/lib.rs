@@ -9,22 +9,33 @@
 //! `glue/banner_cell.rs` and its composer border's codex side in `glue/composer_border.rs`
 //! (both off under codex-tui's own tests unless a glue test forces them).
 
-pub mod banner;
-mod assignment_record;
 #[cfg(unix)]
 mod assignment;
+mod assignment_record;
+pub mod banner;
 
 /// Native account observation used by the ALab-owned TUI glue.
 pub use codex_alab_aterm as aterm;
 
 use codex_alab_core::active;
 
+pub mod accounts_ui;
 pub mod boxes;
 pub mod context;
 pub mod daemon_packages;
 pub mod enrollment_ui;
+pub mod fixture_clock;
 pub mod goal_interrupt;
 pub mod identity;
+#[cfg(unix)]
+pub mod input;
+pub mod terminal_modes;
+#[cfg(unix)]
+pub mod upgrade_terminal;
+#[cfg(unix)]
+pub mod upgrade_startup;
+#[cfg(unix)]
+pub mod upgrade_state;
 pub mod interface;
 pub mod life;
 pub mod login;
@@ -42,9 +53,23 @@ pub mod record;
 pub mod resume_argv;
 pub mod service_tier;
 pub mod session;
+#[cfg(feature = "test-support")]
+mod snapshot_fixtures;
+#[cfg(feature = "test-support")]
+pub mod test_diagnostics;
+#[cfg(feature = "test-support")]
+pub mod test_paths;
+#[cfg(all(unix, any(test, feature = "test-support")))]
+pub mod test_pty;
+#[cfg(feature = "test-support")]
+pub mod test_tasks;
 pub mod trust;
 pub mod turns;
 pub mod upgrade;
+pub mod upgrade_admission;
+pub mod upgrade_exec_custody;
+mod upgrade_host;
+pub mod upgrade_target;
 pub mod waiting;
 
 /// Whether the TUI fetches OpenAI's announcement feed (`tui/src/tooltips.rs`): a GET to
@@ -146,3 +171,27 @@ mod upgrade_tests;
 #[cfg(test)]
 #[path = "waiting_tests.rs"]
 mod waiting_tests;
+
+/// Input infrastructure stays with the same owner through enhanced/vanilla mode changes.
+pub fn read_input_event(
+    fallback: impl FnOnce() -> std::io::Result<crossterm::event::Event>,
+) -> std::io::Result<crossterm::event::Event> {
+    #[cfg(unix)]
+    if input::owned() {
+        return input::read();
+    }
+    fallback()
+}
+
+pub fn cursor_position(
+    fallback: impl FnOnce() -> std::io::Result<ratatui::layout::Position>,
+) -> std::io::Result<ratatui::layout::Position> {
+    #[cfg(unix)]
+    {
+        input::cursor_position(fallback)
+    }
+    #[cfg(not(unix))]
+    {
+        fallback()
+    }
+}

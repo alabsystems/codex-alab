@@ -129,6 +129,31 @@ impl ExecPendingInputs {
         Ok(groups.remove(0))
     }
 
+    pub(crate) fn select_groups(&self, selected: &[usize]) -> Result<Self, String> {
+        self.clone().restore_groups()?;
+        let mut items = Vec::new();
+        let mut ends = Vec::new();
+        for &index in selected {
+            let end = *self
+                .group_ends
+                .get(index)
+                .ok_or("input group selection is out of bounds")?;
+            let start = if index == 0 {
+                0
+            } else {
+                self.group_ends[index - 1]
+            };
+            items.extend_from_slice(&self.items[start..end]);
+            ends.push(items.len());
+        }
+        Ok(Self {
+            version: self.version,
+            items,
+            publications: self.publications.clone(),
+            group_ends: ends,
+        })
+    }
+
     pub(crate) fn restore_groups(self) -> Result<Vec<Vec<TurnInput>>, String> {
         if self.version != 2 {
             return Err("unsupported accepted-input snapshot version".into());

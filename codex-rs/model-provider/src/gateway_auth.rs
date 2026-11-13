@@ -15,7 +15,8 @@ use codex_protocol::error::Result;
 
 /// Resolves gateway request credentials and exposes the optional interactive OAuth session.
 #[derive(Debug)]
-pub struct GatewayAuthManager(GatewayCredentialSource);
+pub struct GatewayAuthManager(GatewayCredentialSource, alab_source::Owner); // ALAB(accounts): retain source selection independently from captured exports.
+#[path = "../../alab-core/glue/gateway_source_scope.rs"] pub(crate) mod alab_source; // ALAB(accounts): per-primary source selection uses the canonical upstream cache.
 
 #[derive(Debug)]
 enum GatewayCredentialSource {
@@ -37,6 +38,7 @@ impl GatewayAuthManager {
                 provider,
                 credential_export,
                 owner,
+                alab_source::CacheKey::new(owner.application_network_policy().for_current_account()), // ALAB(accounts): cache entries retain their exact source/account.
             )),
             GatewayOAuthConfig::OAuth(settings) => GatewayCredentialSource::OAuth(
                 state
@@ -44,7 +46,7 @@ impl GatewayAuthManager {
                     .map_err(|_| "failed to create provider OAuth HTTP client".to_string())?,
             ),
         };
-        Ok(Self(source))
+        Ok(Self(source, alab_source::Owner::new(provider, owner))) // ALAB(accounts): no retained credential is rebound by a source transition.
     }
 
     pub(crate) async fn prepare_retry(&self) -> ProviderUnauthorizedRecovery {
@@ -65,9 +67,18 @@ impl GatewayAuthManager {
         }
     }
 
+    pub(crate) fn without_interactive_login(self: &Arc<Self>) -> Arc<Self> {
+        let GatewayCredentialSource::OAuth(session) = &self.0 else {
+            return Arc::clone(self);
+        };
+        Arc::new(Self(GatewayCredentialSource::OAuth(Arc::new(
+            session.as_ref().clone().without_interactive_login(),
+        )), self.1.clone())) // ALAB(accounts): catalog OAuth clones preserve source selection ownership.
+    }
+
     pub async fn resolve_access_token(&self) -> Result<Arc<str>> {
         match &self.0 {
-            GatewayCredentialSource::Export(export) => export.token().await,
+            GatewayCredentialSource::Export(export) => export.alab_owned_token().await, // ALAB(accounts): caller cancellation cannot release source custody before the command ends.
             GatewayCredentialSource::OAuth(session) => session
                 .resolve_access_token()
                 .await

@@ -582,6 +582,7 @@ pub(crate) fn denied(status: &str) -> bool {
 struct State {
     policy: Option<HarnessPolicy>,
     claimed: bool,
+    native: Option<crate::runtime_claim::Receipt>,
     /// Same-holder sets ([`Client::reconfirm`]) sent since the claim was last taken.
     reconfirms: u64,
 }
@@ -592,6 +593,7 @@ struct State {
 struct SharedState {
     auth_identity: crate::conn::AuthIdentity,
     state: Mutex<State>,
+    claim_gate: tokio::sync::Semaphore,
 }
 
 /// One aterm session's client. Cheap to clone; every clone shares the one connection.
@@ -608,6 +610,10 @@ pub struct Client {
 }
 
 impl Client {
+    pub(crate) fn adopt_runtime_claim(&self, receipt: crate::runtime_claim::Receipt) {
+        self.lock().native = Some(receipt);
+    }
+
     pub(crate) fn endpoint_sid(&self) -> &str {
         &self.endpoint.sid
     }
@@ -640,6 +646,7 @@ impl Client {
             shared: Arc::new(SharedState {
                 auth_identity,
                 state: Mutex::new(State::default()),
+                claim_gate: tokio::sync::Semaphore::new(1),
             }),
         })
     }
@@ -800,6 +807,12 @@ impl Client {
     /// `harness policy` answered `OK effective=on` on this connection; then `status` must
     /// show the claim ours AND proven, else it is given back at once.
     pub async fn claim(&self) -> Result<ClaimOutcome, Error> {
+        let _claim = self
+            .shared
+            .claim_gate
+            .acquire()
+            .await
+            .map_err(|_| Error::Closed)?;
         match self.lock().policy.as_ref() {
             None => {
                 return Ok(ClaimOutcome::NotPermitted(
@@ -813,6 +826,19 @@ impl Client {
                 )));
             }
             Some(_) => {}
+        }
+        let native = self.lock().native.clone();
+        if let Some(native) = native {
+            if !native.check(self).await? {
+                self.lock().claimed = false;
+                return Ok(ClaimOutcome::Unproven);
+            }
+            let mut state = self.lock();
+            let changed = !state.claimed;
+            state.claimed = true;
+            state.native = None;
+            state.reconfirms = 0;
+            return Ok(ClaimOutcome::Held { changed });
         }
         let line = format!("@{} meta set supervisor {}", self.endpoint.sid, self.holder);
         let reply = self
@@ -874,7 +900,9 @@ impl Client {
         let reply = self
             .on_self(&format!("meta unset supervisor holder={}", self.holder))
             .await?;
-        ok_text(&reply).map(|_| ())
+        ok_text(&reply)?;
+        self.lock().native = None;
+        Ok(())
     }
 
     /// Whether a re-confirm was sent since the claim was last taken: then `status` showing the
@@ -1002,6 +1030,49 @@ impl Client {
         } else {
             HeldOutcome::Unsupported(reply.status)
         })
+    }
+
+    /// Publish a diagnostic continuation decision on this client's proven claim.
+    /// Unsupported hosts may refuse this additive observation without affecting work.
+    pub async fn harness_activity(
+        &self,
+        reason: &str,
+        wait_ms: Option<u64>,
+        sequence: u64,
+    ) -> Result<(), Error> {
+        if !matches!(
+            reason,
+            "person"
+                | "composing"
+                | "dialog"
+                | "paused"
+                | "working"
+                | "ready"
+                | "retry"
+                | "waiting"
+        ) {
+            return Err(Error::BadRequest("unknown continuation activity".into()));
+        }
+        if self.holds_claim() {
+            let wait = wait_ms.map_or_else(|| "-".into(), |ms| ms.to_string());
+            // Observations must never occupy the claim's command queue. The server
+            // proves this connection's process beside the existing claim; no new
+            // claim is acquired, renewed, or released by this diagnostic transport.
+            let opened = crate::conn::open(&self.endpoint.sock, self.options.timeout).await?;
+            let conn = Conn::spawn(opened, self.options.timeout);
+            let result = conn
+                .request(
+                    &format!(
+                        "@{} meta set harness_activity reason={reason} wait_ms={wait} seq={sequence}",
+                        self.endpoint.sid
+                    ),
+                    Framing::Status,
+                )
+                .await;
+            conn.close();
+            result?;
+        }
+        Ok(())
     }
 
     /// Say Land's hold in aterm as its own Land hold is said (CONTRACT §5 visibility, gap 11:

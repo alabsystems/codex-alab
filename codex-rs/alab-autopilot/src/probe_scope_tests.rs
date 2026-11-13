@@ -20,6 +20,10 @@ use crate::repo::*;
 use crate::repo_tests::repo;
 use crate::repo_tests::scratch_git;
 
+#[path = "probe_cargo_copy_tests.rs"]
+#[cfg(unix)]
+mod cargo_copy_tests;
+
 fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
 }

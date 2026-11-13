@@ -17,6 +17,17 @@ use codex_app_server_protocol::WarningNotification;
 const REALTIME_STOP_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 1);
 
 impl App {
+    pub(super) fn displayed_conversation_backend_id(&self) -> Option<crate::backend_id::BackendId> {
+        self.current_displayed_thread_id()
+            .and_then(|thread_id| {
+                self.thread_event_channels
+                    .get(&thread_id)
+                    .and_then(|channel| channel.backend_id)
+                    .or_else(|| self.backend_registry.owner(thread_id))
+            })
+            .or(self.app_server_backend_id)
+    }
+
     pub(super) async fn stop_realtime_conversation(&mut self, app_server: &mut AppServerSession) {
         let thread_id = self
             .background_voice
@@ -134,6 +145,9 @@ impl App {
         let Some(active_id) = self.active_thread_id else {
             return;
         };
+        if let Some(pane) = self.sidebars.get_mut(&Some(active_id)) {
+            pane.opening = None;
+        }
         let input_state = self.chat_widget.capture_thread_input_state();
         let recap_progress = self.recap.progress();
         if let Some(channel) = self.thread_event_channels.get_mut(&active_id) {
@@ -158,7 +172,12 @@ impl App {
             .keys()
             .copied()
             .chain(self.agent_navigation.tracked_thread_ids())
-            .filter(|id| !self.side_threads.contains_key(id))
+            .filter(|id| {
+                !self.side_threads.contains_key(id)
+                    && !self
+                        .saved_openings
+                        .preparing(*id, self.thread_event_channels.get(id))
+            })
         {
             self.agents_overview
                 .dispatched_requests
@@ -263,11 +282,18 @@ impl App {
         target_session: &crate::resume_picker::SessionTarget,
     ) -> bool {
         if self.chat_widget.has_provider_error()
+            || self.chat_widget.thread_stream_disconnected
             || self.active_thread_id != Some(target_session.thread_id)
             || self
                 .thread_event_channels
                 .get(&target_session.thread_id)
-                .is_some_and(|channel| channel.attachment() != ThreadEventAttachment::Live)
+                .is_some_and(|channel| {
+                    channel.attachment() != ThreadEventAttachment::Live
+                        || (channel.history_may_be_incomplete
+                            && channel
+                                .backend_id
+                                .is_none_or(|owner| owner == target_session.backend_id))
+                })
         {
             return false;
         };
@@ -304,6 +330,12 @@ impl App {
         thread_id: ThreadId,
         request: &ServerRequest,
     ) -> std::io::Result<Option<ThreadInteractiveRequest>> {
+        if self
+            .saved_openings
+            .preparing(thread_id, self.thread_event_channels.get(&thread_id))
+        {
+            return Ok(None);
+        }
         let thread_label = Some(self.thread_label(thread_id));
         Ok(match request {
             ServerRequest::CommandExecutionRequestApproval { params, .. } => {
@@ -592,13 +624,11 @@ impl App {
 
         crate::session_log::log_outbound_op(&op);
 
-        if self.try_resolve_app_server_request(thread_id, &op).await? {
+        if crate::boxed_future!(self.try_resolve_app_server_request(thread_id, &op)).await? { // ALAB(startup-stack): release request construction before polling.
             return Ok(());
         }
 
-        let submitted = match self
-            .try_submit_active_thread_op_via_app_server(app_server, thread_id, &op)
-            .await
+        let submitted = match crate::boxed_future!(self.try_submit_active_thread_op_via_app_server(app_server, thread_id, &op)).await // ALAB(startup-stack): release operation construction before polling.
         {
             Ok(submitted) => submitted,
             Err(error) => {
@@ -844,7 +874,7 @@ impl App {
             AppCommand::SetThreadName { name } => {
                 let name = name.to_string();
                 app_server.thread_set_name(thread_id, name.clone()).await?;
-                self.chat_widget.expect_manual_thread_name(thread_id, name);
+                self.chat_widget.display_thread_name(thread_id, name);
                 self.cancel_thread_title_generation(thread_id);
                 Ok(true)
             }
@@ -1033,7 +1063,11 @@ impl App {
                 continue;
             }
 
-            if store.lock().await.has_pending_thread_approvals() {
+            let pending = {
+                let store = store.lock().await;
+                store.attachment_prefix.is_none() && store.has_pending_thread_approvals()
+            };
+            if pending {
                 pending_thread_ids.insert(thread_id);
                 // Approval requests can arrive before the thread's metadata.
                 if self.agent_navigation.get(&thread_id).is_none() {
@@ -1075,6 +1109,7 @@ impl App {
         if self.abandoned_side_threads.contains(&thread_id) {
             return Ok(());
         }
+        self.track_side_chat_title(thread_id, &notification);
         if self.current_displayed_thread_id() == Some(thread_id)
             && let ServerNotification::TurnCompleted(notification) = &notification
         {
@@ -1164,7 +1199,10 @@ impl App {
             // Lifecycle responses already contain authoritative session state. Their rollout may
             // not exist until the first turn, so inferring it again can wait through reader retries.
             let already_has_session = match self.thread_event_channels.get(&thread_id) {
-                Some(channel) => channel.store.lock().await.session.is_some(),
+                Some(channel) => {
+                    let store = channel.store.lock().await;
+                    store.session.is_some() || store.attachment_prefix.is_some()
+                }
                 None => false,
             };
 
@@ -1573,8 +1611,11 @@ impl App {
         self.recap.seed_from_turns(&turns, now);
         self.schedule_recap_check(thread_id, now);
 
-        self.chat_widget
-            .replay_thread_turns(turns, ReplayKind::ResumeInitialMessages);
+        self.chat_widget.replay_backend_thread_turns(
+            turns,
+            ReplayKind::ResumeInitialMessages,
+            &self.app_server_target,
+        );
         if should_buffer_initial_replay {
             self.app_event_tx
                 .send(AppEvent::EndInitialHistoryReplayBuffer);
@@ -1605,6 +1646,7 @@ impl App {
                 }
             }
         }
+        crate::app_server_session::alab_upgrade_receiver::attached(thread_id, self.chat_widget.thread_id()).await?; // ALAB(exec-recovery): commit continuation only after real UI attachment and replay.
         self.chat_widget
             .set_initial_user_message_submit_suppressed(/*suppressed*/ false);
         self.chat_widget.submit_initial_user_message_if_pending();
@@ -1821,7 +1863,6 @@ impl App {
                 )
             })
             .collect::<Vec<_>>();
-        self.refresh_mcp_startup_expected_servers_from_config();
         let should_buffer_replay = !snapshot.turns.is_empty() || !snapshot.events.is_empty();
         if should_buffer_replay {
             self.app_event_tx
@@ -1873,8 +1914,11 @@ impl App {
             },
         );
         if !snapshot.turns.is_empty() {
-            self.chat_widget
-                .replay_thread_turns(snapshot.turns, ReplayKind::ThreadSnapshot);
+            self.chat_widget.replay_backend_thread_turns(
+                snapshot.turns,
+                ReplayKind::ThreadSnapshot,
+                &self.app_server_target,
+            );
         }
         for (event, changes) in snapshot.events.into_iter().zip(request_changes) {
             reasoning_replay.before_event(&event, &mut self.chat_widget);
@@ -2147,7 +2191,9 @@ impl App {
             // thread, so unrelated shutdowns cannot consume this marker.
             self.pending_shutdown_exit_thread_id = None;
         }
+        // Sidebar chats use their first prompt until they receive an explicit name.
         let automatic_title_user_message = if self.chat_widget.thread_name().is_none()
+            && !(self.side_retention_enabled(tui) && self.active_side_parent_thread_id().is_some())
             && let ThreadBufferedEvent::Notification(notification) = &event
             && let ServerNotification::ItemCompleted(notification) = notification.as_ref()
             && let ThreadItemPayload::UserMessage { content, .. } = &notification.item.payload
@@ -2178,7 +2224,7 @@ impl App {
                 app_server,
                 thread_id,
                 ThreadTitleDestination::Automatic,
-                super::thread_title::thread_title_prompt(&user_message),
+                &user_message,
             );
         }
         if !had_active_modal

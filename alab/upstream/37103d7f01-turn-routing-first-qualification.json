@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:56:56.218761+00:00",
+  "source": "eaf4f30836b0067647747cb8dc53337bfcafa5bc",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "tools::handlers::multi_agents::tests::child_agents_inherit_thread_routing_when_parent_overrides_it_for_one_turn",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-turn-routing-native.sh",
+      "sha256": "a279f6b39b93117842c2521b92bc4432562b7fa3f14017f5bbbdd4d48492cabf"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-turn-routing-native.log",
+      "sha256": "76fdc0a61815801f2587d296cbe0242d13de9d7fe1eba94272eba44745456257"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-turn-routing-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Child-agent thread-default routing inheritance library fixture passed; 3190 other unit tests filtered out. Two integration selections did not run because the controller incorrectly named suite as a test target; Cargo reported no such target. Overall exit1 retained as negative evidence. Corrected all binary selections are a separate run; no integration recovery, full gate, complete intake or adoption claim."
+}

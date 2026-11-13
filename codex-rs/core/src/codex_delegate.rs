@@ -215,7 +215,7 @@ pub(crate) fn forward_session_io(io: Arc<SessionIo>, cancel_token: CancellationT
 
     // Forward public events from the sub-agent to the consumer.
     let caller_io = SessionIo {
-        tx_sub: tx_ops,
+        tx_sub: io.tx_sub.redirect(tx_ops), // ALAB(upgrade): forwarding retains the native manager identity.
         rx_event: rx_sub,
         agent_status: io.agent_status.clone(),
         session_loop_termination: io.session_loop_termination.clone(),
@@ -296,6 +296,7 @@ pub(crate) async fn run_codex_thread_one_shot(
     // Bridge events so we can observe completion and shut down automatically.
     let (tx_bridge, rx_bridge) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     let ops_tx = io.tx_sub.clone();
+    let ops_for_closed = ops_tx.clone(); // ALAB(upgrade): retain identity before the bridge owns its sender.
     let agent_status = io.agent_status.clone();
     let session_loop_termination = io.session_loop_termination.clone();
     let io_for_bridge = io;
@@ -310,6 +311,7 @@ pub(crate) async fn run_codex_thread_one_shot(
             if should_shutdown {
                 let _ = ops_tx
                     .send(Submission {
+                        alab_upgrade: Vec::new(), // ALAB(upgrade): the native sender supplies admission.
                         id: "shutdown".to_string(),
                         op: Op::Shutdown {},
                         turn_extension_init: None,
@@ -336,7 +338,7 @@ pub(crate) async fn run_codex_thread_one_shot(
         session,
         SessionIo {
             rx_event: rx_bridge,
-            tx_sub: tx_closed,
+            tx_sub: ops_for_closed.redirect(tx_closed), // ALAB(upgrade): closed one-shot IO keeps the original manager identity.
             agent_status,
             session_loop_termination,
         },

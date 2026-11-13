@@ -32,10 +32,10 @@ pub use codex_protocol::turn_input::TurnStartOptions;
 pub use responses_metadata::CodexResponsesMetadata;
 pub use turn_metadata::detached_memory_responses_metadata;
 mod codex_thread;
-pub use agent::control::exec_tree_gate::{ExecTreeSeal, ExecPreparedChildRestore, ExecRestoredChild, ExecRestoredMember}; // ALAB(exec-tree): typed start barrier, not recovery authority.
+pub use agent::control::exec_tree_gate::{ExecTreeSeal, ExecPreparedChildRestore, ExecRestoredChild, ExecIdleRestore, ExecRestoredMember, UpgradeManagerBarrier, CommittedUpgradeInventory}; // ALAB(exec-tree): typed start barrier, not recovery authority.
 pub use tasks::alab_exec_launch::{ExecLaunchBarrier, ExecLaunchPermit}; // ALAB(exec-tree): bind launch ordering to fresh runtimes and original turns.
 pub use tasks::review_recovery::{ExecFrozenReview, ExecReviewSnapshot}; // ALAB(exec-review): closed-source review data is not execution authority.
-pub use session::alab_exec_recovery_options::{ExecTreeSnapshot, ExecThreadSnapshot, ExecCapturedTree, ExecCapturedThread, ExecPreparedTree, ExecPreparedChild, ExecEphemeralHistory, ExecInputSnapshot, ExecInputBatch, PreparedExecInputBatch, PreparedExecIdleInput, ExecRecoveryOptions, quota_observation::{ExecQuotaWall, ExecQuotaWatch}}; // ALAB(exec-recovery): typed original settings and history, not execution authority.
+pub use session::alab_exec_recovery_options::{ExecTreeSnapshot, ExecThreadSnapshot, ExecCapturedTree, ExecCapturedThread, ExecPreparedTree, PreparedUpgradeForest, CommittedUpgradeForest, UpgradeForestSnapshot, DecodedUpgradeForest, ExecPreparedChild, ExecEphemeralHistory, ExecInputSnapshot, ExecInputBatch, PreparedExecInputBatch, PreparedExecIdleInput, ExecRecoveryOptions, quota_observation::{ExecQuotaWall, ExecQuotaWatch}}; // ALAB(exec-recovery): typed original settings and history, not execution authority.
 mod thread_input;
 pub use thread_input::InputWaitOutcome;
 mod turn_extension_data;
@@ -85,6 +85,7 @@ pub use agent::types::MessageDeliveryMode;
 pub use agent::types::ResolvedMultiAgentV2UsageHints;
 pub use agent::types::SpawnAgentForkMode;
 pub use agent::types::SpawnAgentOptions;
+pub use agent::types::SpawnProgramSource;
 pub use rollout_budget::RolloutBudgetReminder;
 mod agent_communication;
 pub use agent_communication::PendingAgentMessage;
@@ -196,6 +197,7 @@ pub use thread_manager::AgentTreeShutdownFailureReason;
 pub use thread_manager::AgentTreeShutdownReport;
 pub use thread_manager::ForkSnapshot;
 pub use thread_manager::InternalSessionParent;
+pub use thread_manager::McpRefreshReason;
 pub use thread_manager::NewThread;
 pub use thread_manager::PromptCacheKey;
 pub use thread_manager::StartThreadOptions;
@@ -281,6 +283,7 @@ pub use client::X_CODEX_TURN_METADATA_HEADER;
 pub use client_common::Prompt;
 pub use client_common::ResponseEvent;
 pub use client_common::ResponseStream;
+pub use code_mode_host::ProcessOwnedGrpcCodeModeSessionProvider;
 pub use codex_prompts::REVIEW_PROMPT;
 pub use codex_runtime_agent_instance::resolve_installation_id;
 pub use compact::content_items_to_text;

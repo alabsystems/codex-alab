@@ -41,7 +41,7 @@ class LocalUpdateJobTests(unittest.TestCase):
         FIXTURES.LocalUpdateTests.setUp(self)
         tooling = self.repo / "alab"
         tooling.mkdir()
-        for name in ("local_update.py", "promote.py", "lib.sh", "command_guard.py", "retention.py",
+        for name in ("local_update.py", "promote.py", "lib.sh", "command_guard.py", "retention.py", "package_source.py", "source_content.py",
                      "package_cache.py"):
             shutil.copyfile(ROOT / "alab" / name, tooling / name)
         self.cache = self.home / "cache"
@@ -151,6 +151,23 @@ with Path({str(self.journal)!r}).open("a") as stream:
             "--repo", str(self.repo), "--out", str(self.out), "--prefix", str(self.prefix),
             *arguments]
         return self.run_command(command, self.environment)
+
+    def fixed_controller_command(self, controller, binding):
+        return [sys.executable, "-I", "-B", str(controller / "alab/local_update.py"),
+                "--repo", str(self.repo), "--out", str(self.out), "--prefix", str(self.prefix),
+                "--fixed-source", binding["commit"], "--expected-checkout", str(self.old),
+                "--expected-prefix", str(self.prefix), "--controller-binding",
+                FIXTURES.UPDATE.controller_binding_text(binding)]
+
+    def registered_controller_paths(self):
+        return sorted(row.removeprefix("worktree ")
+                      for row in self.git("worktree", "list", "--porcelain").splitlines()
+                      if row.startswith("worktree ")
+                      and Path(row.removeprefix("worktree ")).name.startswith("alab-local-controller-"))
+
+    def allocated_disk_controller_paths(self):
+        root = self.disk_temporary / ".ubd"
+        return sorted(str(path) for path in root.glob("alab-local-controller-*"))
 
     def run_command(self, command, environment):
         child = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
@@ -304,6 +321,148 @@ with Path({str(self.journal)!r}).open("a") as stream:
         self.assertEqual(self.journal.read_bytes(), before)
         self.assertEqual(self.calls.read_bytes(), calls)
 
+    def channel_context(self):
+        return FIXTURES.UPDATE.channel_context(self.out, {
+            "initial_selected_checkout": str(self.old),
+            "initial_selected_source": self.old_source,
+            "initial_selected_version": self.old.name})
+
+    def test_channel_display_refuses_replaced_destination(self):
+        update = FIXTURES.UPDATE
+        for symlink in (True, False):
+            with self.subTest(symlink=symlink):
+                context = self.channel_context()
+                held = self.home / "held-channel"
+                replacement = self.home / "unrelated-channel"
+                replacement.mkdir()
+                sentinel = replacement / update.CHANNEL_STATUS
+                sentinel.write_bytes(b"unrelated channel\n")
+                self.root.rename(held)
+                if symlink:
+                    self.root.symlink_to(replacement, target_is_directory=True)
+                else:
+                    replacement.rename(self.root)
+                try:
+                    self.assertFalse(update.record_channel_status(
+                        context, 0, "completed", "selecting", {"target_source": self.source}))
+                    actual = replacement if symlink else self.root
+                    self.assertEqual((actual / update.CHANNEL_STATUS).read_bytes(), b"unrelated channel\n")
+                    self.assertFalse(list(actual.glob(".alab-local-update-display-*")))
+                    self.assertFalse(list(held.glob(".alab-local-update-display-*")))
+                finally:
+                    if symlink:
+                        self.root.unlink()
+                    else:
+                        self.root.rename(replacement)
+                    held.rename(self.root)
+                    shutil.rmtree(replacement)
+
+    def test_channel_display_rename_during_write_stays_in_held_directory(self):
+        update = FIXTURES.UPDATE
+        context = self.channel_context()
+        held = self.home / "held-channel"
+        replacement = self.home / "unrelated-channel"
+        replacement.mkdir()
+        (replacement / update.CHANNEL_STATUS).write_bytes(b"unrelated channel\n")
+        fdopen = os.fdopen
+        renamed = False
+
+        class RenameOnWrite:
+            def __init__(inner, fd, *args, **kwargs):
+                inner.stream = fdopen(fd, *args, **kwargs)
+
+            def __enter__(inner):
+                inner.stream.__enter__()
+                return inner
+
+            def write(inner, data):
+                nonlocal renamed
+                written = inner.stream.write(data)
+                self.root.rename(held)
+                replacement.rename(self.root)
+                renamed = True
+                return written
+
+            def __exit__(inner, *args):
+                return inner.stream.__exit__(*args)
+
+        try:
+            with mock.patch.object(update.os, "fdopen", RenameOnWrite):
+                self.assertFalse(update.record_channel_status(
+                    context, 0, "completed", "selecting", {"target_source": self.source}))
+            self.assertTrue(renamed)
+            self.assertEqual((self.root / update.CHANNEL_STATUS).read_bytes(), b"unrelated channel\n")
+            self.assertFalse((held / update.CHANNEL_STATUS).exists())
+            self.assertFalse(list(held.glob(".alab-local-update-display-*")))
+            self.assertFalse(list(self.root.glob(".alab-local-update-display-*")))
+        finally:
+            if renamed:
+                self.root.rename(replacement)
+                held.rename(self.root)
+            shutil.rmtree(replacement)
+
+    def test_channel_display_repeated_writes_close_descriptors_and_remove_temps(self):
+        update = FIXTURES.UPDATE
+        context = self.channel_context()
+        opened = []
+        open_file = os.open
+
+        def record_open(*args, **kwargs):
+            fd = open_file(*args, **kwargs)
+            opened.append(fd)
+            return fd
+
+        for count, (phase, code) in enumerate(
+                (("building", None), ("selecting", None), ("completed", 0)), start=3):
+            self.package(self.source, count)  # Normal publication changes this directory's entries.
+            with mock.patch.object(update.os, "open", side_effect=record_open):
+                self.assertTrue(update.record_channel_status(
+                    context, code, phase, "selecting" if code is not None else phase,
+                    {"target_source": self.source}))
+            for fd in opened:
+                with self.assertRaises(OSError) as closed:
+                    os.fstat(fd)
+                self.assertEqual(closed.exception.errno, errno.EBADF)
+            opened.clear()
+            record = json.loads((self.root / update.CHANNEL_STATUS).read_bytes())
+            self.assertEqual(record["phase"], phase)
+            self.assertEqual(record["complete"], code is not None)
+            self.assertEqual(record["initial_source"], self.old_source)
+            self.assertFalse(list(self.root.glob(".alab-local-update-display-*")))
+
+    def test_channel_display_failed_stream_open_closes_descriptors_and_removes_temp(self):
+        update = FIXTURES.UPDATE
+        context = self.channel_context()
+        opened = []
+        open_file = os.open
+
+        def record_open(*args, **kwargs):
+            fd = open_file(*args, **kwargs)
+            opened.append(fd)
+            return fd
+
+        with mock.patch.object(update.os, "open", side_effect=record_open), \
+                mock.patch.object(update.os, "fdopen", side_effect=OSError("private stream failure")):
+            self.assertFalse(update.record_channel_status(context, 0, "completed", "selecting", {}))
+        self.assertEqual(len(opened), 2, "both directory and temporary file were opened")
+        for fd in opened:
+            with self.assertRaises(OSError) as closed:
+                os.fstat(fd)
+            self.assertEqual(closed.exception.errno, errno.EBADF)
+        self.assertFalse(list(self.root.glob(".alab-local-update-display-*")))
+        self.assertFalse((self.root / update.CHANNEL_STATUS).exists())
+
+    def test_channel_display_temporary_collision_preserves_the_existing_file(self):
+        update = FIXTURES.UPDATE
+        context = self.channel_context()
+        existing = self.root / ".alab-local-update-display-collision"
+        existing.write_bytes(b"pre-existing owner data\n")
+        with mock.patch.object(update.secrets, "token_hex", return_value="collision"):
+            self.assertFalse(update.record_channel_status(context, 0, "completed", "selecting", {}))
+        self.assertTrue(existing.is_file())
+        self.assertEqual(existing.read_bytes(), b"pre-existing owner data\n")
+        self.assertFalse((self.root / update.CHANNEL_STATUS).exists())
+
     def test_channel_display_failure_and_interruption_cannot_change_the_transaction(self):
         update = FIXTURES.UPDATE
         display_path = self.root / update.CHANNEL_STATUS
@@ -316,12 +475,12 @@ with Path({str(self.journal)!r}).open("a") as stream:
         self.assertTrue(update.record_channel_status(
             context, None, "building", "building", {"target_source": self.source}))
         before = display_path.read_bytes()
-        replace = Path.replace
+        replace = os.replace
 
-        def refuse_display(path, destination):
-            if Path(destination) == display_path:
+        def refuse_display(path, destination, **kwargs):
+            if destination == update.CHANNEL_STATUS:
                 raise OSError("private injected display failure")
-            return replace(path, destination)
+            return replace(path, destination, **kwargs)
 
         def successful_update(*_args, progress, **_kwargs):
             progress("fetching", **initial)
@@ -330,7 +489,7 @@ with Path({str(self.journal)!r}).open("a") as stream:
             progress("selecting")
             return True, "selected private fixture"
 
-        with mock.patch.object(Path, "replace", refuse_display), \
+        with mock.patch.object(update.os, "replace", refuse_display), \
                 mock.patch.object(update, "update_once", successful_update):
             self.assertEqual(update.run_locked(arguments), 0)
         self.assertEqual(self.selected(), self.new)
@@ -339,12 +498,12 @@ with Path({str(self.journal)!r}).open("a") as stream:
         self.assertEqual(journal["exit"], 0)
         self.assertTrue(journal["complete"])
 
-        def interrupt_display(path, destination):
-            if Path(destination) == display_path:
+        def interrupt_display(path, destination, **kwargs):
+            if destination == update.CHANNEL_STATUS:
                 raise KeyboardInterrupt
-            return replace(path, destination)
+            return replace(path, destination, **kwargs)
 
-        with mock.patch.object(Path, "replace", interrupt_display):
+        with mock.patch.object(update.os, "replace", interrupt_display):
             with self.assertRaises(KeyboardInterrupt):
                 update.record_channel_status(context, 0, "completed", "selecting", {})
         self.assertEqual(display_path.read_bytes(), before, "interruption never publishes a prefix")
@@ -495,10 +654,10 @@ while True:
         self.keep_scratch = True
         controller = self.repo / "alab/local_update.py"
         controller.write_text(controller.read_text().replace(
-            '    args = parser().parse_args(argv)\n',
+            '    print(f"alab: local update: {reason}", flush=True)\n',
             '    if source is not None:\n'
             '        (ROOT / "retained-controller-audit").write_text("preserve this fixture\\n")\n'
-            '    args = parser().parse_args(argv)\n', 1))
+            '    print(f"alab: local update: {reason}", flush=True)\n', 1))
         self.git("add", "alab/local_update.py")
         return self.publish_next_source()
 
@@ -528,7 +687,8 @@ while True:
                 status = json.loads((self.repo / ".git/alab-local-update.status.json").read_text())
                 self.assertEqual(status["exit"], 1)
                 self.assertEqual(status["initial_selected_checkout"], str(self.old))
-                self.assertTrue((Path(status["controller_path"]) / "retained-controller-audit").is_file())
+                self.assertIn("--fixed-source must name an exact source commit", done.stdout)
+                self.assertIn("--fixed-source must name an exact source commit", status["reason"])
 
     def test_dispatcher_uses_fetched_guardian_when_repo_names_another_tree(self):
         fresh = self.publish_preserved_controller()
@@ -641,13 +801,18 @@ sys.exit(code)
         marker.write_bytes(original)
         marker.chmod(0o600)
         self.cache.mkdir()
-        with (self.cache / ".alab-package.lockf").open("a") as stream:
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            code = FIXTURES.UPDATE.run_locked([
-                "--repo", str(self.repo), "--out", str(self.out),
-                "--prefix", str(other), "--aterm", self.aterm], source=fresh,
-                expected_checkout=str(self.old), expected_prefix=str(self.prefix),
-                guardian_contract=FIXTURES.UPDATE.GUARDIAN_CONTRACT)
+        with FIXTURES.UPDATE.controller_checkout(self.repo, fresh) as (controller, binding):
+            with ((self.cache / ".alab-package.lockf").open("a") as stream,
+                  mock.patch.object(FIXTURES.UPDATE, "ROOT", controller)):
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                code = FIXTURES.UPDATE.run_locked([
+                    "--repo", str(self.repo), "--out", str(self.out),
+                    "--prefix", str(other), "--aterm", self.aterm,
+                    "--fixed-source", fresh, "--expected-checkout", str(self.old),
+                    "--expected-prefix", str(self.prefix), "--controller-binding",
+                    FIXTURES.UPDATE.controller_binding_text(binding)], source=fresh,
+                    expected_checkout=str(self.old), expected_prefix=str(self.prefix),
+                    guardian_contract=FIXTURES.UPDATE.GUARDIAN_CONTRACT)
         self.assertEqual(code, 0)
         self.assertEqual(self.marker.read_bytes(), original)
         self.assertEqual(marker.read_bytes(), original)
@@ -779,50 +944,244 @@ assert nested.returncode == 75, (nested.returncode, nested.stdout, nested.stderr
         for path, contents in preserved.items():
             self.assertEqual(path.read_bytes(), contents)
 
+    def test_clean_controller_uses_private_external_source_and_removes_exact_registration(self):
+        with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as (controller, binding):
+            self.assertFalse(controller.is_relative_to(self.repo))
+            self.assertFalse(controller.is_relative_to(self.repo / ".git"))
+            self.assertEqual(controller.stat().st_mode & 0o777, 0o700)
+            entry = Path(binding["entry"])
+            self.assertTrue(entry.is_dir())
+            self.assertIn(str(controller), self.git("worktree", "list", "--porcelain"))
+        self.assertFalse(controller.exists())
+        self.assertFalse(entry.exists())
+        self.assertNotIn(str(controller), self.git("worktree", "list", "--porcelain"))
+
+    def test_hidden_source_changes_refuse_public_execution_and_preserve_cleanup(self):
+        self.keep_scratch = True
+        for kind in ("assume-unchanged", "skip-worktree", "stat-cache", "filemode"):
+            with self.subTest(kind=kind):
+                with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as (controller, binding):
+                    path = controller / "alab/lib.sh"
+                    original = path.read_bytes()
+                    if kind == "filemode":
+                        self.git("config", "core.filemode", "false")
+                        path.chmod((path.stat().st_mode & 0o777) ^ 0o111)
+                    elif kind == "stat-cache":
+                        self.git("config", "core.trustctime", "false")
+                        self.git("config", "core.checkStat", "minimal")
+                        os.utime(path, ns=(1_600_000_000_000_000_000,) * 2)
+                        FIXTURES.UPDATE.git(controller, "update-index", "--refresh")
+                        before = path.stat()
+                        path.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+                        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+                    else:
+                        FIXTURES.UPDATE.git(controller, "update-index", "--" + kind, "alab/lib.sh")
+                        path.write_bytes(original + b"\n# retained owner work\n")
+                    self.assertEqual(FIXTURES.UPDATE.git(controller, "status", "--porcelain"), "",
+                                     "CONTROL: ordinary Git status hides the owner change")
+                    evidence = (path.read_bytes(), path.stat().st_mode & 0o777,
+                                (Path(binding["entry"]) / "index").read_bytes())
+                    done = self.run_command(self.fixed_controller_command(controller, binding), self.environment)
+                    self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                    self.assertFalse(self.calls.exists())
+                    self.assertFalse(self.journal.exists())
+                self.assertTrue(controller.is_dir())
+                self.assertTrue(Path(binding["entry"]).is_dir())
+                self.assertEqual((path.read_bytes(), path.stat().st_mode & 0o777,
+                                  (Path(binding["entry"]) / "index").read_bytes()), evidence)
+                for name in ("core.filemode", "core.trustctime", "core.checkStat"):
+                    subprocess.run(["git", "-C", str(self.repo), "config", "--unset", name],
+                                   capture_output=True, check=False)
+
+    def test_filtered_source_change_refuses_public_execution_without_running_filter(self):
+        self.keep_scratch = True
+        original = self.home / "original-lib.sh"
+        callback = self.home / "filter-called"
+        executed = self.home / "changed-lib-executed"
+        filter_script = self.home / "clean-filter.py"
+        filter_script.write_text(
+            "from pathlib import Path\nimport sys\n"
+            f"Path({str(callback)!r}).touch()\n"
+            f"sys.stdout.buffer.write(Path({str(original)!r}).read_bytes())\n")
+        with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as (controller, binding):
+            path = controller / "alab/lib.sh"
+            original.write_bytes(path.read_bytes())
+            path.write_bytes(original.read_bytes() +
+                             f"\nprintf changed > {shlex.quote(str(executed))}\n".encode())
+            (self.repo / ".git/info/attributes").write_text("alab/lib.sh filter=controller-clean\n")
+            self.git("config", "filter.controller-clean.clean",
+                     shlex.join([sys.executable, "-I", "-B", str(filter_script)]))
+            self.git("config", "filter.controller-clean.required", "true")
+            self.assertEqual(FIXTURES.UPDATE.git(controller, "diff", "--name-only", "HEAD", "--",
+                                                 "alab/lib.sh"), "",
+                             "CONTROL: the external filter conceals the changed source")
+            self.assertTrue(callback.exists())
+            callback.unlink()
+            evidence = (path.read_bytes(), (Path(binding["entry"]) / "index").read_bytes())
+            done = self.run_command(self.fixed_controller_command(controller, binding), self.environment)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertFalse(callback.exists(), "custody validation must not execute the filter")
+            self.assertFalse(executed.exists())
+            self.assertFalse(self.calls.exists())
+            self.assertFalse(self.journal.exists())
+        self.assertTrue(controller.is_dir())
+        self.assertTrue(Path(binding["entry"]).is_dir())
+        self.assertFalse(callback.exists())
+        self.assertEqual((path.read_bytes(), (Path(binding["entry"]) / "index").read_bytes()), evidence)
+
+    def test_replaced_symlink_refuses_public_execution_and_preserves_owner_file(self):
+        self.keep_scratch = True
+        (self.repo / "alab/fixture-link").symlink_to("lib.sh")
+        self.git("add", "alab/fixture-link")
+        self.git("commit", "-q", "-m", "controller symlink fixture")
+        revision = self.git("rev-parse", "HEAD")
+        with FIXTURES.UPDATE.controller_checkout(self.repo, revision) as (controller, binding):
+            path = controller / "alab/fixture-link"
+            self.assertTrue(path.is_symlink())
+            path.unlink()
+            path.write_text("lib.sh")
+            self.git("config", "core.symlinks", "false")
+            self.assertEqual(FIXTURES.UPDATE.git(controller, "diff", "--name-only", "HEAD", "--"), "",
+                             "CONTROL: ordinary Git hides the replaced symlink")
+            index = Path(binding["entry"]) / "index"
+            evidence = path.read_bytes(), index.read_bytes()
+            done = self.run_command(self.fixed_controller_command(controller, binding), self.environment)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertIn("source holds", done.stderr)
+            self.assertFalse(self.calls.exists())
+            self.assertFalse(self.journal.exists())
+        self.assertTrue(path.is_file())
+        self.assertFalse(path.is_symlink())
+        self.assertTrue(Path(binding["entry"]).is_dir())
+        self.assertEqual((path.read_bytes(), index.read_bytes()), evidence)
+
+    def test_ident_expansion_cannot_hide_code_from_public_controller_validation(self):
+        self.keep_scratch = True
+        library = self.repo / "alab/lib.sh"
+        library.write_text(library.read_text() + "\nprintf '%s\\n' '$Id$' >/dev/null\n")
+        (self.repo / ".gitattributes").write_text("alab/lib.sh ident\n")
+        self.git("add", "alab/lib.sh", ".gitattributes")
+        self.git("commit", "-q", "-m", "controller ident fixture")
+        revision = self.git("rev-parse", "HEAD")
+        witness = self.home / "ident-payload-executed"
+        with FIXTURES.UPDATE.controller_checkout(self.repo, revision) as (controller, binding):
+            library = controller / "alab/lib.sh"
+            expanded = library.read_text()
+            start = expanded.index("$Id: ")
+            end = expanded.index("$", start + 1) + 1
+            payload = ("$Id: '; printf changed > " + shlex.quote(str(witness)) +
+                       "; printf '%s\\n' '$")
+            library.write_text(expanded[:start] + payload + expanded[end:])
+            self.assertEqual(FIXTURES.UPDATE.git(controller, "hash-object", "--path=alab/lib.sh", "alab/lib.sh"),
+                             FIXTURES.UPDATE.git(controller, "rev-parse", revision + ":alab/lib.sh"),
+                             "CONTROL: Git's ident cleanup erases the added shell payload")
+            index = Path(binding["entry"]) / "index"
+            evidence = library.read_bytes(), index.read_bytes()
+            done = self.run_command(self.fixed_controller_command(controller, binding), self.environment)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertIn("ident", done.stderr)
+            self.assertFalse(witness.exists())
+            self.assertFalse(self.calls.exists())
+            self.assertFalse(self.journal.exists())
+        self.assertTrue(library.is_file())
+        self.assertTrue(Path(binding["entry"]).is_dir())
+        self.assertEqual((library.read_bytes(), index.read_bytes()), evidence)
+
+    def test_private_worktree_ref_refuses_public_execution_and_preserves_cleanup(self):
+        self.keep_scratch = True
+        with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as (controller, binding):
+            FIXTURES.UPDATE.git(controller, "update-ref", "refs/worktree/owner", self.source)
+            ref = Path(binding["entry"]) / "refs/worktree/owner"
+            original = ref.read_bytes()
+            self.assertEqual(FIXTURES.UPDATE.git(controller, "status", "--porcelain"), "")
+            done = self.run_command(self.fixed_controller_command(controller, binding), self.environment)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertIn("metadata changed", done.stderr)
+            self.assertFalse(self.calls.exists())
+        self.assertEqual(ref.read_bytes(), original)
+        self.assertTrue(controller.is_dir())
+
+    def test_checkout_hook_metadata_is_preserved_without_adopting_its_creation(self):
+        self.keep_scratch = True
+        hooks = self.home / "hooks"
+        hooks.mkdir()
+        hook = hooks / "post-checkout"
+        hook.write_text('#!/bin/sh\ngit update-ref refs/worktree/owner "$(git rev-parse HEAD)"\n')
+        hook.chmod(0o700)
+        self.git("config", "core.hooksPath", str(hooks))
+        before = self.git("worktree", "list", "--porcelain")
+        with self.assertRaisesRegex(RuntimeError, "metadata"):
+            with FIXTURES.UPDATE.controller_checkout(self.repo, self.source):
+                self.fail("a checkout hook's private worktree ref prevents admission")
+        after = self.git("worktree", "list", "--porcelain")
+        added = [Path(row.removeprefix("worktree ")) for row in after.splitlines()
+                 if row.startswith("worktree ") and row not in before.splitlines()]
+        self.assertEqual(len(added), 1)
+        controller = added[0]
+        self.assertTrue(controller.is_dir())
+        self.assertEqual(FIXTURES.UPDATE.git(controller, "rev-parse", "refs/worktree/owner"), self.source)
+
+    def test_public_controller_rejects_missing_malformed_and_mismatched_binding(self):
+        with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as (controller, binding):
+            command = self.fixed_controller_command(controller, binding)
+            for raw in (None, "{", "x" * (FIXTURES.UPDATE.CONTROLLER_BINDING_LIMIT + 1),
+                        FIXTURES.UPDATE.controller_binding_text({**binding, "schema": True}),
+                        FIXTURES.UPDATE.controller_binding_text({**binding, "source": str(self.repo)}),
+                        FIXTURES.UPDATE.controller_binding_text({**binding, "commit": self.old_source}),
+                        FIXTURES.UPDATE.controller_binding_text({**binding, "common": str(self.home)})):
+                with self.subTest(binding=raw and raw[:80]):
+                    done = self.run_command(command[:-2] if raw is None else [*command[:-1], raw],
+                                            self.environment)
+                    self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                    self.assertFalse(self.cache.exists())
+                    self.assertFalse(self.calls.exists())
+                    self.assertFalse(self.journal.exists())
+        self.assertFalse(controller.exists())
+
     def test_marked_clean_controller_is_kept_after_success_and_body_error(self):
         self.keep_scratch = True
         (self.repo / ".git/alab-preserve-builds").write_text("retain every worktree\n")
-        actual_git = FIXTURES.UPDATE.git
+        actual_custody = FIXTURES.UPDATE.controller_custody
         removed = []
 
-        def retained_git(repo, *arguments):
-            if arguments[:2] == ("worktree", "remove"):
+        def retained_custody(operation, *arguments):
+            if operation == "remove_fresh":
                 removed.append(Path(arguments[-1]))
-                return ""
-            return actual_git(repo, *arguments)
+                return None
+            return actual_custody(operation, *arguments)
 
         for fails in (False, True):
-            with self.subTest(body_error=fails), mock.patch.object(FIXTURES.UPDATE, "git", retained_git):
+            with self.subTest(body_error=fails), mock.patch.object(
+                    FIXTURES.UPDATE, "controller_custody", retained_custody):
                 failure = RuntimeError("owned fixture body error")
                 if fails:
                     with self.assertRaises(RuntimeError) as caught:
-                        with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as controller:
+                        with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as (controller, _binding):
                             raise failure
                     self.assertIs(caught.exception, failure)
                 else:
-                    with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as controller:
+                    with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as (controller, _binding):
                         pass
                 self.assertTrue(controller.is_dir())
-                self.assertEqual(actual_git(controller, "rev-parse", "HEAD"), self.source)
+                self.assertEqual(FIXTURES.UPDATE.git(controller, "rev-parse", "HEAD"), self.source)
                 self.assertEqual(removed, [])
 
     def test_marked_empty_failed_controller_registration_is_kept(self):
         self.keep_scratch = True
         (self.repo / ".git/alab-preserve-builds").write_text("retain failed worktree paths\n")
-        actual_git = FIXTURES.UPDATE.git
         allocated, removed = [], []
         failure = RuntimeError("owned registration failure")
 
-        def failed_git(repo, *arguments):
-            if arguments[:2] == ("worktree", "add"):
-                allocated.append(Path(arguments[-2]))
+        def failed_custody(operation, *arguments):
+            if operation == "create_fresh":
+                allocated.append(Path(arguments[1]))
                 raise failure
-            return actual_git(repo, *arguments)
+            self.fail("unbound source must not be adopted for cleanup")
 
         def retain_rmdir(path):
             removed.append(Path(path))
 
-        with (mock.patch.object(FIXTURES.UPDATE, "git", failed_git),
+        with (mock.patch.object(FIXTURES.UPDATE, "controller_custody", failed_custody),
               mock.patch.object(Path, "rmdir", retain_rmdir), self.assertRaises(RuntimeError) as caught):
             with FIXTURES.UPDATE.controller_checkout(self.repo, self.source):
                 self.fail("registration failed before yielding")
@@ -834,75 +1193,58 @@ assert nested.returncode == 75, (nested.returncode, nested.stdout, nested.stderr
 
     def test_unmarked_clean_controller_requests_normal_cleanup_without_deleting_evidence(self):
         self.keep_scratch = True
-        actual_git = FIXTURES.UPDATE.git
+        actual_custody = FIXTURES.UPDATE.controller_custody
         removed = []
 
-        def retained_git(repo, *arguments):
-            if arguments[:2] == ("worktree", "remove"):
+        def retained_custody(operation, *arguments):
+            if operation == "remove_fresh":
                 removed.append(Path(arguments[-1]))
-                return ""
-            return actual_git(repo, *arguments)
+                return None
+            return actual_custody(operation, *arguments)
 
-        with mock.patch.object(FIXTURES.UPDATE, "git", retained_git):
-            with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as controller:
+        with mock.patch.object(FIXTURES.UPDATE, "controller_custody", retained_custody):
+            with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as (controller, _binding):
                 pass
         self.assertEqual(removed, [controller])
         self.assertTrue(controller.is_dir(), "the normal cleanup request is recorded, never executed")
 
-    def test_failed_controller_cleanup_keeps_the_registration_error_and_directory(self):
+    def test_failed_controller_creation_preserves_unverified_partial_registration(self):
         self.keep_scratch = True
-        actual_git = FIXTURES.UPDATE.git
-        actual_iterdir = Path.iterdir
-        for stage in ("enumeration", "removal"):
-            with self.subTest(stage=stage):
-                allocated, removed, remove_requests = [], [], []
-                failure = RuntimeError("owned registration failure")
+        actual_custody = FIXTURES.UPDATE.controller_custody
+        captured = []
+        failure = RuntimeError("owned failure after source registration")
 
-                def failed_git(repo, *arguments):
-                    if arguments[:2] == ("worktree", "add"):
-                        allocated.append(Path(arguments[-2]))
-                        raise failure
-                    if arguments[:2] == ("worktree", "remove"):
-                        remove_requests.append(arguments)
-                        return ""
-                    return actual_git(repo, *arguments)
+        def failed_custody(operation, *arguments):
+            if operation == "create_fresh":
+                binding = actual_custody(operation, *arguments)
+                captured.append(binding)
+                raise failure
+            self.fail("failed creation supplies no binding authorizing cleanup")
 
-                def failed_iterdir(path):
-                    if stage == "enumeration" and allocated and path == allocated[0]:
-                        raise PermissionError(errno.EACCES, "owned enumeration failure")
-                    return actual_iterdir(path)
-
-                def failed_rmdir(path):
-                    removed.append(Path(path))
-                    raise OSError(errno.ENOTEMPTY, "owned removal failure")
-
-                with (mock.patch.object(FIXTURES.UPDATE, "git", failed_git),
-                      mock.patch.object(Path, "iterdir", failed_iterdir),
-                      mock.patch.object(Path, "rmdir", failed_rmdir),
-                      self.assertRaises(Exception) as caught):
-                    with FIXTURES.UPDATE.controller_checkout(self.repo, self.source):
-                        self.fail("registration failed before yielding")
-                self.assertEqual(len(allocated), 1)
-                self.assertTrue(allocated[0].is_dir())
-                self.assertEqual(list(actual_iterdir(allocated[0])), [])
-                self.assertEqual(remove_requests, [])
-                self.assertEqual(removed, [] if stage == "enumeration" else allocated)
-                self.assertIs(caught.exception, failure)
+        with (mock.patch.object(FIXTURES.UPDATE, "controller_custody", failed_custody),
+              self.assertRaises(RuntimeError) as caught):
+            with FIXTURES.UPDATE.controller_checkout(self.repo, self.source):
+                self.fail("registration failed before yielding")
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(len(captured), 1)
+        self.assertTrue(Path(captured[0]["source"]).is_dir())
+        self.assertTrue(Path(captured[0]["entry"]).is_dir())
+        self.assertIn(captured[0]["source"], self.git("worktree", "list", "--porcelain"))
 
     def test_unknown_controller_cleanup_policy_keeps_clean_source(self):
         self.keep_scratch = True
-        actual_git = FIXTURES.UPDATE.git
+        actual_custody = FIXTURES.UPDATE.controller_custody
         removed = []
 
-        def retained_git(repo, *arguments):
-            if arguments[:2] == ("worktree", "remove"):
+        def retained_custody(operation, *arguments):
+            if operation == "remove_fresh":
                 removed.append(Path(arguments[-1]))
-                return ""
-            return actual_git(repo, *arguments)
+                return None
+            return actual_custody(operation, *arguments)
 
         with (mock.patch.object(FIXTURES.UPDATE.runpy, "run_path", side_effect=OSError("unreadable policy")),
-              mock.patch.object(FIXTURES.UPDATE, "git", retained_git)):
-            with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as controller:
+              mock.patch.object(FIXTURES.UPDATE, "controller_custody", retained_custody)):
+            with FIXTURES.UPDATE.controller_checkout(self.repo, self.source) as (controller, _binding):
                 pass
         self.assertTrue(controller.is_dir())
         self.assertEqual(removed, [])
@@ -952,13 +1294,13 @@ os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
                 if kind == "ignored":
                     (self.repo / ".gitignore").write_text("owner-cache/\n")
                 controller.write_text(original.replace(
-                    '    args = parser().parse_args(argv)\n',
+                    '    print(f"alab: local update: {reason}", flush=True)\n',
                     '    if source is not None:\n'
                     f'        path = ROOT / {destination!r}\n'
                     '        path.parent.mkdir(parents=True, exist_ok=True)\n'
                     '        with path.open("a") as stream:\n'
                     '            stream.write("retained controller work\\n")\n'
-                    '    args = parser().parse_args(argv)\n', 1))
+                    '    print(f"alab: local update: {reason}", flush=True)\n', 1))
                 paths = ["alab/local_update.py"] + ([".gitignore"] if kind == "ignored" else [])
                 self.git("add", *paths)
                 fresh = self.publish_next_source()
@@ -1009,10 +1351,12 @@ os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
         wrapper.chmod(0o755)
         return str(tools) + os.pathsep + "/usr/bin:/bin:/usr/sbin:/sbin"
 
-    def disk_poll(self, low_path, *, unreadable=False):
+    def disk_poll(self, low_path, *, unreadable=False, temporary=None):
         # The bootstrap and real fetched guardian share only a simulated space
         # measurement. All Git worktree, handoff and refusal paths remain real.
         self.keep_scratch = True
+        self.disk_temporary = temporary or self.home / "controller temporary"
+        self.disk_temporary.mkdir(exist_ok=True)
         launcher = self.home / "disk-fixture-python"
         if not launcher.exists():
             launcher.write_text(PYTHON_ENTRY + f'''import json, os, runpy, sys
@@ -1046,7 +1390,7 @@ else:
         environment.update(PATH=self.minimal_path_with_git(), ALAB_PYTHON=str(launcher),
                            ALAB_CARGO_HOME=self.environment.get("ALAB_CARGO_HOME",
                                                                str(self.home / "cargo home")),
-                           TMPDIR=self.environment.get("TMPDIR", str(self.home / "temporary")),
+                           TMPDIR=str(self.disk_temporary),
                            ALAB_TEST_LOW_DISK=str(low_path),
                            ALAB_TEST_DISK_LOG=str(self.home / "disk-measurements.jsonl"),
                            ALAB_TEST_UNREADABLE_DISK="1" if unreadable else "0")
@@ -1067,8 +1411,7 @@ else:
             (self.home / f"low-disk-{attempt}-stdout").write_text(done.stdout)
             (self.home / f"low-disk-{attempt}-stderr").write_text(done.stderr)
             observations.append({"exit": done.returncode,
-                                 "controllers": sorted(str(p) for p in
-                                     (self.repo / ".git").glob("alab-local-controller-*"))})
+                                 "controllers": self.allocated_disk_controller_paths()})
             self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
             self.assertIn("19.00 GiB", done.stderr + done.stdout)
         (self.home / "low-disk-result.json").write_text(json.dumps(observations, indent=2) + "\n")
@@ -1097,13 +1440,14 @@ else:
         marker = self.marker.read_bytes()
         for path in (self.cache, self.out, self.home / "Developer", cargo, Path("/tmp"), temporary):
             with self.subTest(low=path):
-                done = self.disk_poll(path)
+                done = self.disk_poll(path, temporary=temporary)
                 self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
                 self.assertIn("19.00 GiB", done.stdout + done.stderr)
                 self.assertEqual(self.marker.read_bytes(), marker)
                 self.assertFalse(self.journal.exists())
                 self.assertFalse(self.calls.exists())
-                self.assertEqual(list((self.repo / ".git").glob("alab-local-controller-*")), [])
+                self.assertEqual(self.registered_controller_paths(), [])
+                self.assertEqual(self.allocated_disk_controller_paths(), [])
                 self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
 
     def test_sufficient_disk_preflight_keeps_successful_public_handoff(self):
@@ -1115,7 +1459,12 @@ else:
         self.assertEqual(json.loads(self.journal.read_text()), {"source": fresh, "lock": "held"})
         self.assertEqual(self.selected().name, f"0.164.0-dev.3+g{fresh[:9]}")
         self.assertTrue(self.calls.exists())
-        self.assertEqual(len(list((self.repo / ".git").glob("alab-local-controller-*"))), 1)
+        status = json.loads((self.repo / ".git/alab-local-update.status.json").read_text())
+        controller = Path(status["controller_path"])
+        self.assertTrue(controller.is_dir())
+        self.assertFalse(controller.is_relative_to(self.repo))
+        self.assertEqual(self.registered_controller_paths(), [str(controller)])
+        self.assertEqual(self.allocated_disk_controller_paths(), [str(controller)])
 
     def test_low_linked_output_volume_refuses_before_source_allocation(self):
         self.keep_scratch = True
@@ -1133,7 +1482,8 @@ else:
         self.assertEqual(self.marker.read_bytes(), marker)
         self.assertFalse(self.journal.exists())
         self.assertFalse(self.calls.exists())
-        self.assertEqual(list((self.repo / ".git").glob("alab-local-controller-*")), [])
+        self.assertEqual(self.registered_controller_paths(), [])
+        self.assertEqual(self.allocated_disk_controller_paths(), [])
         self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
 
     def test_unreadable_controller_volume_refuses_before_source_allocation(self):
@@ -1147,7 +1497,8 @@ else:
         self.assertEqual(self.marker.read_bytes(), marker)
         self.assertFalse(self.journal.exists())
         self.assertFalse(self.calls.exists())
-        self.assertEqual(list((self.repo / ".git").glob("alab-local-controller-*")), [])
+        self.assertEqual(self.registered_controller_paths(), [])
+        self.assertEqual(self.allocated_disk_controller_paths(), [])
         self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
 
     def test_dispatch_probe_refuses_nonregular_or_link_locks_without_fetching(self):
@@ -1227,16 +1578,22 @@ else:
                 self.assertEqual(self.selected(), self.old)
                 self.assertFalse(self.cache.exists())
                 self.assertFalse(self.calls.exists())
-        before = self.git("worktree", "list", "--porcelain")
-        done = self.run_job("--fixed-source", fresh, "--expected-checkout", str(self.old),
-                            "--expected-prefix", str(self.prefix))
-        self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
-        self.assertEqual(self.selected(), candidate)
-        self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
-        self.assertFalse(self.journal.exists(), "the exact published candidate requires no builder")
-        status = json.loads((self.repo / ".git/alab-local-update.status.json").read_text())
-        self.assertEqual(status["controller_source"], fresh)
-        self.assertEqual(status["controller_path"], str(self.repo))
+        with FIXTURES.UPDATE.controller_checkout(self.repo, fresh) as (controller, binding):
+            before = self.git("worktree", "list", "--porcelain")
+            done = self.run_command([
+                sys.executable, "-I", "-B", str(controller / "alab/local_update.py"),
+                "--repo", str(self.repo), "--out", str(self.out), "--prefix", str(self.prefix),
+                "--fixed-source", fresh, "--expected-checkout", str(self.old),
+                "--expected-prefix", str(self.prefix), "--controller-binding",
+                FIXTURES.UPDATE.controller_binding_text(binding)], self.environment)
+            self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
+            self.assertEqual(self.selected(), candidate)
+            self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
+            self.assertFalse(self.journal.exists(), "the exact published candidate requires no builder")
+            status = json.loads((self.repo / ".git/alab-local-update.status.json").read_text())
+            self.assertEqual(status["controller_source"], fresh)
+            self.assertEqual(status["controller_path"], str(controller))
+        self.assertFalse(controller.exists())
 
     def test_abnormal_public_handoff_preserves_source_with_a_remaining_child(self):
         self.keep_scratch = True
@@ -1314,6 +1671,20 @@ else:
                 self.assertEqual(shown.returncode, 0, shown.stderr)
                 self.assertEqual(json.loads(shown.stdout), status)
                 self.assertEqual(list(trimmed.iterdir()), [], "a trimmed sibling is unrelated")
+
+    def test_public_entry_ignores_inherited_repository_redirection(self):
+        foreign = self.home / "foreign repository"
+        self.git("init", "-q", str(foreign))
+        self.environment.update(GIT_DIR=str(foreign / ".git"), GIT_WORK_TREE=str(foreign))
+        done = self.run_job()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.selected(), self.new)
+        path = self.repo / ".git/alab-local-update.status.json"
+        status = json.loads(path.read_text())
+        self.assertTrue(status["complete"])
+        self.assertEqual(status["target_source"], self.source)
+        self.assertFalse((foreign / ".git/alab-local-update.status.json").exists())
+        self.assertFalse(self.journal.exists(), "the existing artifact needed no build")
 
     def test_corrupt_exact_source_manifest_records_failure_without_rebuilding(self):
         path = self.new / "codex-package.json"

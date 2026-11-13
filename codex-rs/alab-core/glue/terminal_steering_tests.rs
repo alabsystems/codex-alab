@@ -132,6 +132,7 @@ async fn parsed_failure_with_queued_steering(
     first: ResponseTemplate,
     expected: CodexErrorInfo,
     interrupt: bool,
+    expects_retry_advice: bool,
 ) {
     codex_alab_core::activate();
     let server = responses::start_mock_server().await;
@@ -343,15 +344,17 @@ async fn parsed_failure_with_queued_steering(
         assert!(matches!(error.details(), CodexErrorDetails::TurnAborted));
     } else {
         assert_eq!(error.to_codex_protocol_error(), expected);
+        if expected == CodexErrorInfo::SessionBudgetExceeded {
+            assert_eq!(
+                error.retry_delay(1),
+                None,
+                "session budgets never authorize a retry"
+            );
+        }
         let deadline = error
             .retry_after()
             .map(|advice| advice.deadline().into_std());
-        if matches!(
-            expected,
-            CodexErrorInfo::HttpConnectionFailed {
-                http_status_code: Some(401 | 403)
-            }
-        ) {
+        if expects_retry_advice {
             assert!(
                 deadline.is_some(),
                 "the fixture supplies provider Retry-After advice"
@@ -379,6 +382,14 @@ async fn parsed_failure_with_queued_steering(
                 .copied(),
             Some(deadline),
             "the real retry observer sees the same original absolute advice"
+        );
+        assert_eq!(
+            observations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            2,
+            "one seeded observation and one received failure; no duplicate publication"
         );
     }
 }
@@ -640,6 +651,11 @@ fn steering_cannot_erase_a_received_cyber_policy_refusal() -> std::io::Result<()
 }
 
 #[test]
+fn steering_cannot_erase_a_received_inference_hook_denial() -> std::io::Result<()> {
+    isolated("inference-hook")
+}
+
+#[test]
 fn steering_cannot_erase_a_received_invalid_prompt() -> std::io::Result<()> {
     isolated("invalid")
 }
@@ -647,6 +663,12 @@ fn steering_cannot_erase_a_received_invalid_prompt() -> std::io::Result<()> {
 #[test]
 fn steering_cannot_erase_a_received_quota_refusal() -> std::io::Result<()> {
     isolated("quota")
+}
+
+#[test]
+fn steering_cannot_erase_a_received_session_budget_refusal() -> std::io::Result<()> {
+    isolated("session-budget-sse")?;
+    isolated("session-budget-http")
 }
 
 #[test]
@@ -725,6 +747,11 @@ fn active_terminal_steering_child() {
     }
     let (response, expected, interrupt) = match case.as_str() {
         "cyber" => (failed("cyber_policy"), CodexErrorInfo::CyberPolicy, false),
+        "inference-hook" => (
+            failed("inference_hook_denied"),
+            CodexErrorInfo::InferenceHookDenied,
+            false,
+        ),
         "invalid" => (
             failed("invalid_prompt"),
             CodexErrorInfo::InvalidPrompt,
@@ -733,6 +760,22 @@ fn active_terminal_steering_child() {
         "quota" => (
             failed("insufficient_quota"),
             CodexErrorInfo::UsageLimitExceeded,
+            false,
+        ),
+        "session-budget-sse" => (
+            failed("budget_reached").insert_header("Retry-After", "120"),
+            CodexErrorInfo::SessionBudgetExceeded,
+            false,
+        ),
+        "session-budget-http" => (
+            ResponseTemplate::new(400)
+                .insert_header("Retry-After", "120")
+                .set_body_json(json!({"error": {
+                    "code": "budget_reached",
+                    "message": "This session budget is exhausted.",
+                    "headers": {"retry-after": "120"}
+                }})),
+            CodexErrorInfo::SessionBudgetExceeded,
             false,
         ),
         "permanent" => (
@@ -771,7 +814,14 @@ fn active_terminal_steering_child() {
         .build()
         .expect("owned fixture runtime")
         .block_on(bounded(parsed_failure_with_queued_steering(
-            response, expected, interrupt,
+            response,
+            expected,
+            interrupt,
+            /*expects_retry_advice*/
+            matches!(
+                case.as_str(),
+                "session-budget-http" | "permanent" | "policy-401" | "policy-403"
+            ),
         )));
     #[expect(
         clippy::print_stdout,

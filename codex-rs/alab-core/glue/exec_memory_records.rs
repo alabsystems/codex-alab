@@ -11,6 +11,9 @@ use codex_history::GuardianHistoryCheckpoint;
 use codex_history::RetainedContext;
 use codex_history::RetainedContextEvent;
 use codex_history::RolloutItem;
+use codex_protocol::ContextWindowId;
+use codex_protocol::ResponseItemId;
+use codex_protocol::ResponseItemIdAllocation;
 use codex_protocol::ThreadId;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::mcp::McpResourceOriginCheckpoint;
@@ -38,7 +41,10 @@ pub(super) enum MemoryRecord {
         tools: Vec<DynamicToolSpec>,
     },
     Response(MemoryItem),
-    InterAgentCommunication(InterAgentCommunication),
+    InterAgentCommunication {
+        item: InterAgentCommunication,
+        id_allocation: Option<ResponseItemIdAllocation>,
+    },
     InterAgentCommunicationMetadata {
         trigger_turn: bool,
     },
@@ -127,9 +133,9 @@ pub(super) struct MemoryCompacted {
     retained_context: Option<RetainedContext>,
     mcp_resource_origins: Option<McpResourceOriginCheckpoint>,
     window_number: Option<u64>,
-    first_window_id: Option<String>,
-    previous_window_id: Option<String>,
-    window_id: Option<String>,
+    first_window_id: Option<ContextWindowId>,
+    previous_window_id: Option<ContextWindowId>,
+    window_id: Option<ContextWindowId>,
     compaction_response_id: Option<String>,
     latest_token_usage_record: Option<TokenUsageRecord>,
     resume_metadata: Option<CompactionResumeMetadata>,
@@ -216,9 +222,14 @@ impl MemoryRecord {
                 tools: tools.clone(),
             },
             RolloutItem::ResponseItem(value) => Self::Response(MemoryItem::capture(value)?),
-            RolloutItem::InterAgentCommunication(value) => {
-                Self::InterAgentCommunication(value.clone())
-            }
+            RolloutItem::InterAgentCommunication(value) => Self::InterAgentCommunication {
+                item: value.clone(),
+                id_allocation: value
+                    .id
+                    .as_ref()
+                    .and_then(ResponseItemId::allocation)
+                    .cloned(),
+            },
             RolloutItem::InterAgentCommunicationMetadata { trigger_turn } => {
                 Self::InterAgentCommunicationMetadata {
                     trigger_turn: *trigger_turn,
@@ -244,7 +255,13 @@ impl MemoryRecord {
                 RolloutItem::DynamicToolsUpdated { thread_id, tools }
             }
             Self::Response(value) => RolloutItem::ResponseItem(value.restore()?),
-            Self::InterAgentCommunication(value) => RolloutItem::InterAgentCommunication(value),
+            Self::InterAgentCommunication {
+                mut item,
+                id_allocation,
+            } => {
+                item.id = super::codec::restore_id(item.id, id_allocation)?;
+                RolloutItem::InterAgentCommunication(item)
+            }
             Self::InterAgentCommunicationMetadata { trigger_turn } => {
                 RolloutItem::InterAgentCommunicationMetadata { trigger_turn }
             }
@@ -281,9 +298,14 @@ mod tests {
     fn compaction_keeps_nested_tool_outcomes_and_review_provenance() {
         let mut output = FunctionCallOutputPayload::from_text("completed tool".into());
         output.success = Some(false);
+        let model = serde_json::from_value(serde_json::json!({
+            "salt": "item", "ordinal": 1000, "value": 42
+        }))
+        .unwrap();
+        let id = ResponseItemId::generated("tool", model);
         let item = ResponseItemEnvelope {
             item: ResponseItem::CustomToolCallOutput {
-                id: None,
+                id: Some(id.clone()),
                 call_id: "original-call".into(),
                 name: None,
                 output,
@@ -295,6 +317,10 @@ mod tests {
                 ..Default::default()
             }),
         };
+        let window: ContextWindowId = serde_json::from_value(serde_json::json!({
+            "salt": "window", "ordinal": 1000, "value": 42
+        }))
+        .unwrap();
         let original = CompactedItem {
             message: "checkpoint".into(),
             replacement_history: Some(vec![item.clone()]),
@@ -302,12 +328,20 @@ mod tests {
             retained_context: Some(RetainedContext::default()),
             mcp_resource_origins: None,
             window_number: Some(2),
-            first_window_id: Some("first".into()),
-            previous_window_id: Some("previous".into()),
-            window_id: Some("current".into()),
+            first_window_id: Some(ContextWindowId::new_uuid_v7()),
+            previous_window_id: Some(ContextWindowId::new_uuid_v7()),
+            window_id: Some(window.clone()),
             compaction_response_id: Some("response".into()),
             latest_token_usage_record: None,
-            resume_metadata: None,
+            resume_metadata: Some(CompactionResumeMetadata {
+                next_item_ordinal: Some(1001),
+                rejected_audio_file_ids: Default::default(),
+                dynamic_tools: None,
+                multi_agent_version: None,
+                last_started_turn_id: None,
+                turn_attribution: None,
+                previous_turn_settings: None,
+            }),
         };
         let RolloutItem::Compacted(restored) =
             round_trip(&RolloutItem::Compacted(Box::new(original.clone())))
@@ -315,11 +349,116 @@ mod tests {
             panic!("compaction kind changed")
         };
         assert_eq!(*restored, original);
+        assert_eq!(
+            restored.resume_metadata.as_ref().unwrap().next_item_ordinal,
+            Some(1001)
+        );
+        assert_eq!(
+            restored.window_id.as_ref().unwrap().validated(),
+            Some(window)
+        );
+        assert_eq!(
+            restored
+                .window_id
+                .as_ref()
+                .unwrap()
+                .allocation()
+                .unwrap()
+                .ordinal(),
+            1000
+        );
+        assert_eq!(
+            restored.replacement_history.as_ref().unwrap()[0]
+                .item
+                .id()
+                .unwrap()
+                .allocation(),
+            id.allocation()
+        );
+        assert_eq!(
+            restored.guardian_history.as_ref().unwrap().0[0]
+                .item
+                .id()
+                .unwrap()
+                .allocation(),
+            id.allocation()
+        );
+    }
+
+    #[test]
+    fn inter_agent_allocation_survives_private_handoff() {
+        let mut item: InterAgentCommunication = serde_json::from_value(serde_json::json!({
+            "author": "/root", "recipient": "/root/child", "content": "retained input",
+            "trigger_turn": true
+        }))
+        .unwrap();
+        let model = serde_json::from_value(serde_json::json!({
+            "salt": "item", "ordinal": 1000, "value": 42
+        }))
+        .unwrap();
+        item.id = Some(ResponseItemId::generated("msg", model));
+        let expected = item.id.as_ref().unwrap().allocation().cloned();
+        let RolloutItem::InterAgentCommunication(restored) =
+            round_trip(&RolloutItem::InterAgentCommunication(item))
+        else {
+            panic!("communication kind changed")
+        };
+        assert_eq!(
+            restored.id.as_ref().unwrap().allocation(),
+            expected.as_ref()
+        );
+        let wire = serde_json::to_value(&restored).unwrap();
+        assert_eq!(wire["id"], "msg_item042");
+        assert!(wire.get("id_allocation").is_none());
+    }
+
+    #[test]
+    fn raw_and_private_events_retain_allocation_metadata() {
+        let model = serde_json::from_value(serde_json::json!({
+            "salt": "item", "ordinal": 1000, "value": 42
+        }))
+        .unwrap();
+        let id = ResponseItemId::generated("msg", model);
+        let mut item: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "message", "role": "assistant", "content": []
+        }))
+        .unwrap();
+        item.set_id(Some(id.clone()));
+        for event in [
+            EventMsg::RawResponseItem(RawResponseItemEvent { item: item.clone() }),
+            EventMsg::PrivateSessionEvent(PrivateSessionEvent {
+                thread_id: ThreadId::new(),
+                event: PrivateSessionEventPayload::RecordedItem(RawResponseItemEvent { item }),
+            }),
+        ] {
+            let RolloutItem::EventMsg(restored) = round_trip(&RolloutItem::EventMsg(event)) else {
+                panic!("event kind changed")
+            };
+            let item = match restored {
+                EventMsg::RawResponseItem(event) => event.item,
+                EventMsg::PrivateSessionEvent(PrivateSessionEvent {
+                    event: PrivateSessionEventPayload::RecordedItem(event),
+                    ..
+                }) => event.item,
+                _ => panic!("raw/private item kind changed"),
+            };
+            assert_eq!(item.id().unwrap().allocation(), id.allocation());
+        }
     }
 
     #[test]
     fn retained_delivery_remains_a_host_fact() {
-        let original = RetainedContextEvent::DeliveredAssistantMessage {
+        let revision = ResponseItemId::generated(
+            "retained",
+            serde_json::from_value(serde_json::json!({
+                "salt": "item", "ordinal": 1000, "value": 42
+            }))
+            .unwrap(),
+        );
+        let expected_allocation = revision.allocation().cloned();
+        let generator: codex_protocol::ItemIdGenerator =
+            std::sync::Arc::new(move |_| revision.clone());
+        let mut original = RetainedContextEvent::DeliveredAssistantMessage {
             message: RetainedUserMessage {
                 turn_id: "original-turn".into(),
                 message_id: Some("message".into()),
@@ -329,12 +468,28 @@ mod tests {
                 phase: None,
             },
             acceptance_order: 9,
+            retained_source: None,
         };
+        let mut live = RetainedContext::default();
+        assert!(live.record_and_capture(&mut original, &generator));
         let RolloutItem::RetainedContext(restored) =
             round_trip(&RolloutItem::RetainedContext(original.clone()))
         else {
             panic!("host fact became model input")
         };
         assert_eq!(restored, original);
+        let RetainedContextEvent::DeliveredAssistantMessage {
+            retained_source: Some(source),
+            ..
+        } = &restored
+        else {
+            panic!("confirmed delivery lost its retained source")
+        };
+        assert_eq!(source.revision.allocation(), expected_allocation.as_ref());
+        let no_new_revision: codex_protocol::ItemIdGenerator =
+            std::sync::Arc::new(|_| panic!("replay must preserve the captured revision"));
+        let mut replayed = RetainedContext::default();
+        assert!(replayed.record(&restored, &no_new_revision));
+        assert_eq!(replayed, live);
     }
 }

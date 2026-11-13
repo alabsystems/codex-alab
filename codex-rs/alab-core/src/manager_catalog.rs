@@ -24,6 +24,9 @@ pub use reader::Role;
 #[path = "manager_destination.rs"]
 mod destination;
 pub use destination::{DestinationFactory, DestinationRecord};
+#[path = "manager_upgrade.rs"]
+mod upgrade;
+pub use upgrade::CommittedUpgrade;
 #[derive(Clone, PartialEq, Eq)]
 enum Stamp {
     Manager(crate::assignment::Generations),
@@ -409,7 +412,14 @@ impl Registry {
             !seal.retiring.load(Ordering::Acquire)
                 && parent.is_some_and(|parent| parent.catalog_before(&self.gate, seal.epoch))
         });
-        let epoch = parent.map_or(state.epoch, Activity::catalog_epoch);
+        // A refused constructor belongs to the new deferred cohort, even when
+        // it attempted to inherit an old resource parent. It was never admitted
+        // into that parent's source cohort and cannot obstruct its retirement.
+        let epoch = if admitted {
+            parent.map_or(state.epoch, Activity::catalog_epoch)
+        } else {
+            state.epoch
+        };
         let record = Arc::new(Record {
             id: state.next,
             admitted_epoch: epoch,
@@ -549,6 +559,9 @@ impl Seal {
         Ok(())
     }
     pub fn begin_retirement(&self) -> Result<(), Refused> {
+        self.begin_retirement_if(|| true).map(|_| ())
+    }
+    fn begin_retirement_if(&self, decide: impl FnOnce() -> bool) -> Result<bool, Refused> {
         let state = self
             .registry
             .state
@@ -582,9 +595,22 @@ impl Seal {
                 return Err(Refused::Pending);
             }
         }
+        // Keep catalog admission closed through the host's final conditional
+        // decision. A refused decision must leave cancellation pre-effect.
+        let decision = std::panic::catch_unwind(std::panic::AssertUnwindSafe(decide));
+        match decision {
+            Ok(false) => return Ok(false),
+            Err(panic) => {
+                // Do not poison the catalog before the staging guard reopens it.
+                drop(records);
+                drop(state);
+                std::panic::resume_unwind(panic);
+            }
+            Ok(true) => {}
+        }
         self.state.effects.store(true, Ordering::Release);
         self.state.retiring.store(true, Ordering::Release);
-        Ok(())
+        Ok(true)
     }
     /// Drain only the actual old constructor epoch. Destination factories need a
     /// separate native-authorized continuation and cannot join this old cohort.

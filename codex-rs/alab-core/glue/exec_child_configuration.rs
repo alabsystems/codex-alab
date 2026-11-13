@@ -223,7 +223,18 @@ impl Preferences {
         &self,
         config: &mut Config,
         source_profile: Option<&PermissionProfile>,
+        current: &Config,
     ) -> std::io::Result<()> {
+        // Built-in definitions contain destination-owned runtime choices which
+        // are deliberately absent from portable preferences. Keep the freshly
+        // loaded definition when restoring that same built-in provider.
+        if self.provider.is_none()
+            && self.provider_id == current.model_provider_id
+            && config.model_provider_id == current.model_provider_id
+            && built_in_model_providers(None).contains_key(&self.provider_id)
+        {
+            config.model_provider.clone_from(&current.model_provider);
+        }
         config
             .base_instructions_provenance
             .clone_from(&self.base_provenance);

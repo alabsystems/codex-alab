@@ -446,6 +446,85 @@ pub(super) mod fixture;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn external_tokens_supply_runtime_actor_credential() {
+        use base64::Engine;
+
+        let home = tempfile::tempdir().unwrap();
+        let claims = serde_json::json!({
+            "iss": "https://auth.openai.com/", "session_id": "fixture-login",
+            "https://api.openai.com/auth": {
+                "user_id": "fixture-user", "chatgpt_account_id": "fixture-account"
+            }
+        });
+        let token = format!(
+            "header.{}.signature",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string())
+        );
+        login_with_chatgpt_auth_tokens(home.path(), &token, "fixture-account", None).unwrap();
+        let controller = codex_http_client::NetworkPolicyController::default();
+        let policy = controller.policy();
+        let manager = AuthManager::new(
+            home.path().to_path_buf(),
+            false,
+            AuthCredentialsStoreMode::Ephemeral,
+            None,
+            None,
+            AuthKeyringBackendKind::Direct,
+            AuthRouteConfig::from_http_client_factory(
+                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
+                    .with_network_policy(policy.clone()),
+            ),
+        )
+        .await;
+        assert!(controller.publish(
+            policy.revision(),
+            codex_http_client::DestinationPolicy::Unrestricted
+        ));
+        assert!(
+            manager.auth_cached().is_some(),
+            "external token was not loaded"
+        );
+        assert!(
+            manager.auth().await.is_some(),
+            "external auth became unavailable"
+        );
+        assert!(
+            manager.alab_catalog_cache_available(),
+            "catalog refused the loaded manager"
+        );
+        assert!(
+            manager.alab_member_cache_snapshot().is_some(),
+            "loaded source/cache pair was refused"
+        );
+        assert!(
+            manager.auth_with_http_client_factory().await.is_some(),
+            "runtime actor credential/factory pair was unavailable"
+        );
+        let captured = manager.auth_cached().unwrap();
+        policy.invalidate();
+        assert!(controller.publish(
+            policy.revision(),
+            codex_http_client::DestinationPolicy::Unrestricted
+        ));
+        let (_, refreshed_factory) = manager.auth_with_http_client_factory().await.unwrap();
+        assert!(
+            captured.alab_bind_http_client_factory(refreshed_factory).is_err(),
+            "a fresh cache read revived the retained credential"
+        );
+        manager.reload_with_cached_auth().await.unwrap();
+        assert!(
+            manager.auth_with_http_client_factory().await.is_some(),
+            "fresh credential capture after explicit reload was unavailable"
+        );
+        assert!(
+            captured
+                .alab_bind_http_client_factory(manager.http_client_factory())
+                .is_err(),
+            "reload revived the old credential capture"
+        );
+    }
     #[test]
     fn snapshot_retains_its_actual_epoch_but_catalog_backend_cannot_keep_the_domain_alive() {
         let manager =

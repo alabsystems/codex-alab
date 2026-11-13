@@ -115,7 +115,7 @@ fn remote_model(slug: &str) -> ModelInfo {
 
 fn bedrock_api_key_auth() -> CodexAuth {
     CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
-        alab_epoch: Default::default(), // ALAB(accounts): persistent fixtures begin without runtime provenance.
+        alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
         api_key: "bedrock-api-key-test".to_string(),
         region: "us-east-1".to_string(),
     })

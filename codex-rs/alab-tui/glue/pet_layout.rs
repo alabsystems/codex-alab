@@ -18,13 +18,6 @@ use ratatui::layout::Rect;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Widget;
 
-#[cfg(test)]
-impl ChatWidget {
-    pub(crate) fn alab_pet_picker_preview_visible_for_test(&self) -> bool {
-        self.pet_picker_preview_image_visible.get()
-    }
-}
-
 const MIN_TEXT_COLUMNS: u16 = 72;
 const GAP_COLUMNS: u16 = 2;
 // Upstream leaves one row below the sprite and allows two notification rows.

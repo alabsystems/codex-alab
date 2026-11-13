@@ -119,7 +119,7 @@ fn upgrade_ask_types_one_notice_and_re_execs_only_on_a_ready_answer() {
                     let request = h.requests.recv().await.expect("conditional upgrade");
                     assert!(lock(&h.autopilot.ask).ready());
                     assert_eq!(notices(&h), 1, "{:?}", h.fake.acts());
-                    assert!(request.decide(true));
+                    assert!(request.decide(true), "{:?}", h.autopilot.sup.journal());
                     wait_for_supervisor(|| h.shared.exec_pending()).await;
                 } else {
                     let (asks, said_ready) = {

@@ -239,6 +239,15 @@ pub(crate) fn publish(sess: &Session, turn: &TurnContext) -> Option<WaitLease> {
     Some(WaitLease { events, wall })
 }
 
+/// The rate limits the session's latest model response reported. They carry no
+/// account, permission or observation time, so the usage preflight uses them
+/// only as evidence against reusing an earlier clear reading.
+pub(crate) async fn response_limits(
+    sess: &Session,
+) -> Option<codex_protocol::protocol::RateLimitSnapshot> {
+    sess.state.lock().await.latest_rate_limits.clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,12 +257,15 @@ mod tests {
     fn wall(scope: &Arc<AuthRequestScope>) -> Arc<ExecQuotaWall> {
         Arc::new(ExecQuotaWall {
             options: ExecRecoveryOptions {
+                direct_only_tool_namespaces: None,
+                prompt_cache_ttl: None,
                 thread: ThreadId::new(),
                 turn: scope.turn.clone(),
                 review: false,
                 schema: None,
                 service_tier: None,
                 cyber_access_program: None,
+                helper_choice: None,
                 step: super::super::tests::saved().step,
             },
             scope: Arc::downgrade(scope),

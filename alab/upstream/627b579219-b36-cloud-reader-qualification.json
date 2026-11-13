@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T19:32:11.759022+00:00",
+  "source": "b36e7931d9d4471c29804e39dfd46eef2273a368",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "results": {
+    "tests": [
+      {
+        "name": "retained_cloud_transport_owns_its_actual_reader_and_destination_policy",
+        "status": "ok"
+      }
+    ],
+    "tippy": "--locked --no-deps -p codex-alab-cloud-contracts --all-targets -- -D warnings completed successfully"
+  },
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native-r4.sh",
+      "sha256": "71cf1ecb3b39fc8071947b2c492907760ab8445f9a7eefdbe016a7276a5bf082"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native-r4.log",
+      "sha256": "3506fc2e744a7ce240351519ab9bbc6a0e5e58833d0d1d3685407e192e5891c9"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native-r4.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Controller62769 terminal0 and sidecar0. Parent validated its isolated child success. Actual native direct-reader constructors, incompatible source pairing refusal, Cloud ListThreads over trusted local TLS/HTTP2 with exact synthetic auth/account headers, destination denial without an extra request, retained-client refusal after source EOF, second reader credential liveness, and both native captured-retirement acknowledgements completed. Tippy clean. This is deterministic cross-crate transport qualification, not a live Cloud backend/service entitlement or actual production connect-entry-point smoke. Does not replace the full gate, source publication or installed adoption."
+}

@@ -2,15 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
 SPEC = importlib.util.spec_from_file_location('intake', Path(__file__).parents[1] / 'upstream_intake.py')
 INTAKE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(INTAKE)
+
+SCHEMA_CASES = ((1, True), (True, False), (1.0, False), (2, False),
+                ('1', False), (None, False))
 
 
 class IntakeTests(unittest.TestCase):
@@ -48,6 +53,48 @@ class IntakeTests(unittest.TestCase):
         self.assertTrue(INTAKE.validate(self.expected, self.expected))
         self.assertEqual(INTAKE.validate(self.reviewed(), self.expected), [])
         self.assertEqual(self.expected['commits'][0]['paths'], [' model\nfile '])
+
+    def test_record_schema_requires_integer_one(self):
+        for schema, accepted in SCHEMA_CASES:
+            with self.subTest(schema=schema, kind=type(schema).__name__):
+                record = self.reviewed()
+                record['schema'] = schema
+                errors = INTAKE.validate(record, self.expected)
+                if accepted:
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertIn('stale or invalid schema', errors)
+
+    def test_validation_cli_requires_integer_catalog_schema(self):
+        (self.repo / 'alab').mkdir()
+        catalog = self.repo / 'alab/features.toml'
+        record = self.repo / 'review.json'
+        record.write_text(json.dumps(self.reviewed()))
+        for schema, accepted in SCHEMA_CASES:
+            with self.subTest(schema=schema, kind=type(schema).__name__):
+                header = '' if schema is None else f'schema = {json.dumps(schema)}\n'
+                catalog.write_text(header + '[[features]]\nid = "model-discovery"\n')
+                result = subprocess.run([
+                    sys.executable, '-I', str(Path(INTAKE.__file__)), 'validate',
+                    '--repo', str(self.repo), '--base', self.base, '--target', self.target,
+                    '--record', str(record)], capture_output=True, text=True, timeout=15)
+                if accepted:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('review coverage complete:', result.stdout)
+                else:
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn('unsupported feature inventory schema', result.stderr)
+                    self.assertNotIn('review coverage complete:', result.stdout)
+
+    def test_snapshot_cli_does_not_read_feature_inventory(self):
+        self.assertFalse((self.repo / 'alab/features.toml').exists())
+        record = self.repo / 'snapshot.json'
+        result = subprocess.run([
+            sys.executable, '-I', str(Path(INTAKE.__file__)), 'snapshot',
+            '--repo', str(self.repo), '--base', self.base, '--target', self.target,
+            '--record', str(record)], capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(record.read_text()), self.expected)
 
     def test_coverage_and_stale_base_are_rejected(self):
         for mutation in ('missing', 'duplicate', 'base', 'paths'):

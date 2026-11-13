@@ -1,8 +1,11 @@
 <!-- Copyright 2026 Andrew Yates; SPDX-License-Identifier: Apache-2.0 -->
 # Early usage restoration
 
-The root sampler also checks authenticated allowance before issuing each model request.
-At 95% usage it can redeem an earned
+The root sampler also checks authenticated allowance before issuing a model
+request. The first request of every turn reads current backend usage; a later
+request of that turn reuses a reading that permitted it only while the reading's
+headroom proves the 95% threshold out of reach, and reads again otherwise (see
+"Reusing a clear usage reading" below). At 95% usage it can redeem an earned
 reset before either the five-hour or weekly window is exhausted. Either window
 must be at least five minutes from its natural reset. Unknown identity or permission, nonordinary
 quota and explicit spend denial do not authorize this action. Already denied
@@ -50,12 +53,161 @@ allowance. Redemption binds the actual account, user and allowance cycle, retain
 the chosen credit and idempotency key before sending, and continues only after
 a fresh read confirms restored included usage. It never purchases credits.
 
+## Reusing a clear usage reading (2026-11-11)
+
+Until this change every root sampling request and every foreground compaction
+did one usage `GET` before its model call, under the per-account custody lock,
+after taking the account resource lease and loading the ledger: one read per
+tool round. A slow usage endpoint could add up to 45 seconds to each request,
+and cost every peer session on the account a five-second lock wait per request.
+
+A preflight read now excuses the later preflights of the same turn while it
+proves headroom. A reading counts as clear only when it permitted the request:
+the identity matched, ordinary usage was explicitly allowed, nothing was
+explicitly denied, and every ordinary five-hour and weekly window was below 95%.
+It holds while
+
+    0 <= now - read_at < min(60 s, (95 - used) * 4 s)
+
+where `used` is the larger of that reading's highest ordinary window and the
+highest window in the session's latest response rate limits for the ordinary
+(`codex`) bucket.
+
+| `used` | The reading is reused for |
+|---|---|
+| 80% or less | 60 s |
+| 85% | 40 s |
+| 90% | 20 s |
+| 94% | 4 s |
+| 95% or more | never: every request reads, as before |
+
+The constants are `PREFLIGHT_SECONDS_PER_POINT = 4.0` and
+`PREFLIGHT_CLEAR_MAX_SECONDS = 60.0` in
+`codex-rs/alab-quota-recovery/src/unix.rs`, beside the existing 95% threshold.
+The 60-second cap matches the TUI's resting usage poll.
+
+### Why this revisits the per-request read
+
+Commit `ae76084e34` (2026-11-06) removed a fixed 30-second interval one minute
+after it landed, because "a fixed sampling interval could miss rapid allowance
+consumption". That objection stands against a fixed interval and is the reason
+this rule is not one:
+
+- The window is not fixed. It shrinks continuously with headroom, from 60
+  seconds at 80% or less to nothing at 95%, where the every-request read
+  returns unchanged.
+- Response evidence overrides it. Model responses report the ordinary bucket's
+  windows and the session keeps the latest report; the next preflight judges
+  the reading against the higher of the two values. A response at 95% or more
+  ends the reuse at once.
+  That evidence carries no account, permission or observation time, so it can
+  only shorten the window: a stale or foreign high value costs extra reads, and
+  a low value excuses nothing. An unreadable value counts as full, a window of
+  unknown length counts as an ordinary one, and another limit family is ignored.
+- Redemption is unchanged. A reused reading never redeems. Every redemption
+  still follows a fresh authoritative read, in the same call and under the
+  custody lock.
+
+### The burn-rate assumption
+
+Usage grows only as requests complete. A reused reading can let a request start
+past 95% only if the whole account, across every session on it, consumed more
+than `95 - used` points within the window, which is more than 0.25 points a
+second since the reading. For the five-hour window that rate spends an entire
+allowance in under seven minutes, 45 times the rate that would last the window;
+for the weekly window it is about 1,500 times. This bound is an assumption from
+arithmetic, not a measurement of real accounts. Many heavy parallel sessions on
+a small plan are the case that could approach it; halving the constant to two
+seconds a point is the conservative alternative.
+
+Two granularities loosen the bound slightly, and both are recorded rather than
+compensated:
+
+- The usage endpoint reports whole percentages (`used_percent` is an integer in
+  the payload). If the backend truncates, a reading can understate usage by
+  just under one point, so at a reported 94% the four-second window is nominal
+  rather than proven. Whether it truncates or rounds was not measured.
+- Times are whole wall-clock seconds, so a comparison can run up to one second
+  long. `read_at` is taken before the request is sent, which errs the other
+  way. Host sleep counts toward the age. A wall clock stepped back past
+  `read_at` forces a read; one stepped back by less would have made the reading
+  look younger, so since 2026-11-12 the reading also carries a monotonic
+  instant and its age must be inside the window on both clocks.
+
+A miss is not a lost turn. The threshold is five points short of the wall, and
+a request that does meet the wall degrades to the existing reactive recovery:
+it redeems an earned reset and resumes the same request with its input and
+completed tool results.
+
+### Scope and what did not change
+
+- The clearance lives in the turn's `State`, in the turn store. The first
+  request of every turn reads, and nothing is shared between sessions, written
+  to disk or added to the custody ledger.
+- It is recorded at exactly one place: a preflight read that permitted the
+  request, after that read restored and released what the ledger held. A read
+  that redeemed, was denied, failed, timed out or belonged to another identity
+  records nothing, and any preflight that has to read discards the previous
+  clearance first.
+- `recover_weekly` discards it on entry. A wall contradicts a clear reading,
+  and recovery changes the ledger.
+- A reused reading takes no custody lock, no account resource lease and no HTTP
+  request.
+- Settling another process's ledger state (an uncertain acknowledgement that
+  fresh usage proves restored, or a committed credit receipt) can now wait for
+  this turn's next read, at most 60 seconds, and still precedes any redemption.
+- Lock contention still fails open: after five seconds without the custody lock
+  the request proceeds unchecked, and the lock is still held across the read.
+  Fewer reads make that rarer; changing it is a separate decision.
+- When an account has further metered limit families, the session keeps the
+  last family's response limits, so the response evidence sees nothing and the
+  rule falls back to the time bound alone.
+
+No upstream line changed. The response limits are read by ALab glue already
+mounted inside `crate::session` (`exec_quota_observation.rs`), which can see
+`Session.state` and `SessionState.latest_rate_limits`; an upstream rename of
+either breaks that glue's build at a sync.
+
+Rejected: a fixed interval (the removed design); excusing a read on the response
+limits alone (no time, identity or permission); a reading shared between
+processes or kept on disk (it would cut reads further, but adds shared state to
+a custody ledger, and remains a possible later step).
+
+### Validation
+
+`targo --unverified test -p codex-alab-quota-recovery` passed all 39 tests,
+including the three new ones in `clear_tests.rs`:
+`clear_reading_freshness_scales_with_headroom` (the pure rule and both usage
+extractors), `clear_preflight_reuses_one_usage_read_within_a_turn` (one `GET`
+for a turn's back-to-back preflights, a response at 96% forcing a second, a
+peer holding the custody lock not delaying a reused reading, and a new turn
+reading for itself) and `pressure_and_recovery_never_reuse_a_reading` (a
+reading at the threshold, exhausted, denied, for another account or under
+spend control records nothing and replaces an earlier clearance, and
+`recover_weekly` discards one). Removing either discard makes the third test
+fail. The usage endpoint cannot report a fractional percentage, so the
+sub-second window at 94.9% is asserted on the pure rule only.
+`targo --unverified test -p codex-core --lib
+weekly_reset_retries_original_local_and_remote_compaction` passed with its
+usage-read counts unchanged, since each compaction binds once.
+`targo tippy -p codex-alab-quota-recovery --all-targets` reported nothing in
+ALab's code.
+
+These were Trust `--unverified` checks on loopback fixtures, with no proof
+claim. Not run: `alab/smoke/weekly_reset.py`, the only coverage of the real
+sampler path, which needs a packaged binary and must be rerun before this rule
+ships. By reading, the one preflight it now skips is the healthy read before a
+case's second model request, which no case counts, and recovery discards the
+clearance before any later round. No packaged case yet asserts the reuse
+itself. The other account-handoff probes and the full sync gate were not run.
+
 ## Proactive reset qualification (2026-11-06)
 
 The installed build `0.165.0-dev.13586+g133286d36` predates the quota-recovery
 module. The previous implementation on main also waited for a weekly wall and
 refused a reset with less than twelve hours remaining. The new preflight checks
-both ordinary windows before each root sampling request and retains the same
+both ordinary windows before each root sampling request (since 2026-11-11 a
+clear reading is reused within its turn, see above) and retains the same
 request and completed tool results. The backend can refuse early redemption;
 reactive recovery remains available when a request exhausts its allowance.
 
@@ -134,6 +286,10 @@ reuse that key. An ambiguous operation is reconciled with its original key befor
 credit can be selected. Positive consumption, definitive rejection and usage
 permission are recorded separately; a healthy usage read never proves a credit
 was spent. Other quota handling remains in place when recovery cannot establish permission.
+
+The replies the rotation smokes serve for these endpoints, and the test that
+decodes them with this client, are described in `alab/PARALLEL-LOGINS.md`,
+"Rotation smokes against a recorded host".
 
 ### Earlier weekly-only qualification
 

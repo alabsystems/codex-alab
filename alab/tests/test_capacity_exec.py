@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -13,6 +14,7 @@ from unittest import mock
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "smoke/capacity_exec.py"
+sys.path.insert(0, str(SOURCE.parent))
 FIXTURE_PARENT = None
 FIXTURES = []
 
@@ -59,7 +61,7 @@ class CapacityExecTimingTests(unittest.TestCase):
             captured["handler"] = handler
             return server
 
-        with mock.patch.object(probe.http.server, "ThreadingHTTPServer", side_effect=fake_server), \
+        with mock.patch.object(probe.provider_fixture, "LoopbackHTTPServer", side_effect=fake_server), \
                 mock.patch.object(probe.threading, "Thread", return_value=thread):
             self.assertEqual(probe.serve(fake), (server, thread))
         handler = object.__new__(captured["handler"])

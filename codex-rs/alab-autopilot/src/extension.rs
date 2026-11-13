@@ -245,6 +245,11 @@ fn run_hook(hook: Box<dyn FnOnce() + Send>) {
     }
 }
 
+#[cfg(test)]
+type UpgradeTargetFixture = fn(
+    &'static codex_alab_core::session::Shared,
+) -> Result<codex_alab_tui::upgrade::PreparedExec, String>;
+
 /// One root thread's runtime state, kept in its thread store.
 pub struct ThreadRt {
     quota_wall: Mutex<Option<QuotaWall>>,
@@ -266,6 +271,21 @@ pub struct ThreadRt {
     renewal_ack_retry: Mutex<Option<Arc<renewal_follow::RenewalAckRetry>>>,
     /// A non-weekly wall keeps ordinary quota recovery until the next native start.
     quota_rotation_declined: AtomicU64,
+    /// THE USAGE WALL ON RECORD IS AN ASKED HANDOFF'S, named by its turn: the rotation ask
+    /// put it there, or found it there after a restart, beside an intent no receipt binds
+    /// (`carry_asked_wall`), and no decision at the point left it. Once the intent is
+    /// released and the wall's own decision leaves the point to a person, that recovery
+    /// comes off the record ([`Autopilot::drop_asked_wall_left_to_a_person`]). The mark is
+    /// of the turn, not of who published the recovery: a usage recovery standing under the
+    /// asked turn's id beside an unbound intent is the asked wall, a decision's own included
+    /// (one pass that let the point go can leave one, and the next pass marks it). Only a
+    /// recovery decided after the intent's release is left alone: that decision clears the
+    /// mark, so one that outlives a policy switched off stays as it did before the ask
+    /// carried any. Memory only: each pass of the ask sets it again.
+    asked_wall: Mutex<Option<String>>,
+    /// A bound weekly handoff's point is being kept while the host cannot be read
+    /// (`follow_renewal`): set so the journal says so once, and once more when it reads.
+    bound_host_unread: AtomicBool,
     /// Known original association, including a positively standalone turn.
     auth_wall_goal_origin: Mutex<Option<Option<String>>>,
     id: ThreadId,
@@ -695,6 +715,9 @@ mod wake_settle_handoff_tests;
 #[path = "inherited_settle_tests.rs"]
 mod inherited_settle_tests;
 
+#[path = "upgrade_inventory.rs"]
+mod upgrade_inventory;
+
 #[cfg(test)]
 #[path = "goal_upgrade_read_tests.rs"]
 mod goal_upgrade_read_tests;
@@ -851,6 +874,8 @@ impl ThreadRt {
             auth_observation: Mutex::new(None),
             renewal_ack_retry: Mutex::new(None),
             quota_rotation_declined: AtomicU64::new(u64::MAX),
+            asked_wall: Mutex::new(None),
+            bound_host_unread: AtomicBool::new(false),
             auth_wall_goal_origin: Mutex::new(None),
             id,
             key: id.to_string(),
@@ -1310,6 +1335,8 @@ pub struct Autopilot {
     /// An upgrade is being considered, or was requested (then for good).
     upgrading: AtomicBool,
     #[cfg(test)]
+    upgrade_target_fixture: Mutex<Option<UpgradeTargetFixture>>,
+    #[cfg(test)]
     upgrade_begin: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -1411,6 +1438,8 @@ impl Autopilot {
             watching_launch: AtomicBool::new(false),
             upgrading: AtomicBool::new(false),
             #[cfg(test)]
+            upgrade_target_fixture: Mutex::new(None),
+            #[cfg(test)]
             upgrade_begin: Mutex::new(None),
             #[cfg(test)]
             before_upgrade_take: Mutex::new(None),
@@ -1459,6 +1488,19 @@ impl Autopilot {
     #[cfg(test)]
     pub(crate) fn set_wake_read(&self, read: WakeRead) {
         *lock(&self.wake) = read;
+    }
+
+    /// Have the host's time asleep since boot read as `asleep` answers it, with no wake on
+    /// record: a host that slept is one whose answer grew ([`ThreadState::slept_to`]). Tests
+    /// only (the end-to-end tests' seam, so debug builds only).
+    #[cfg(any(test, debug_assertions))]
+    pub fn read_host_sleep_as(&self, asleep: impl Fn() -> Duration + Send + Sync + 'static) {
+        *lock(&self.wake) = Arc::new(move || {
+            Some(codex_alab_core::wake::Reading {
+                asleep: asleep(),
+                last: None,
+            })
+        });
     }
 
     /// The host's sleep, read now.
@@ -2334,42 +2376,62 @@ impl Autopilot {
         &self,
         decided: Option<&DecidedUpgradeAct>,
     ) -> upgrade::UpgradeFacts {
+        self.upgrade_facts_inventory(decided, None).await
+    }
+
+    async fn upgrade_facts_inventory(
+        &self,
+        decided: Option<&DecidedUpgradeAct>,
+        inventory: Option<&[Arc<CodexThread>]>,
+    ) -> upgrade::UpgradeFacts {
         #[cfg(test)]
         if let Some(facts) = lock(&self.facts_seam).clone() {
             return facts;
         }
         let shared = self.sup.shared();
         let mut threads = Vec::new();
-        let manager = lock(&self.thread_manager)
-            .clone()
-            .and_then(|weak| weak.upgrade());
-        let mut unresumable = match &manager {
-            Some(_) => codex_alab_tui::upgrade::exec_plan(shared).err(),
-            None => Some("no thread manager".to_string()),
-        };
-        if let Some(manager) = manager {
-            for id in manager.list_thread_ids().await {
-                let Ok(thread) = manager.get_thread(id).await else {
-                    continue;
-                };
-                let goal_active = match goal_status_read(&thread, id).await {
-                    Ok(status) => status == Some(codex_state::ThreadGoalStatus::Active),
-                    Err(error) => {
-                        // Unknown goal state proves neither absence nor work safe
-                        // to interrupt. The independent monitor retries this scan.
-                        unresumable.get_or_insert_with(|| {
-                            format!("could not read thread {id}'s goal: {error}")
-                        });
-                        false
+        let mut unresumable = codex_alab_tui::upgrade::exec_plan(shared).err();
+        let loaded = match inventory {
+            Some(inventory) => inventory.to_vec(),
+            None => {
+                let manager = lock(&self.thread_manager)
+                    .clone()
+                    .and_then(|weak| weak.upgrade());
+                let mut loaded = Vec::new();
+                if let Some(manager) = manager {
+                    for id in manager.list_thread_ids().await {
+                        match manager.get_thread(id).await {
+                            Ok(thread) => loaded.push(thread),
+                            Err(error) => {
+                                unresumable.get_or_insert_with(|| {
+                                    format!("could not inventory thread {id}: {error}")
+                                });
+                            }
+                        }
                     }
-                };
-                threads.push(upgrade::LoadedThread {
-                    id: id.to_string(),
-                    idle: at_rest(&thread.agent_status().await),
-                    background_terminals: thread.list_background_terminals().await.len(),
-                    goal_active,
-                });
+                } else {
+                    unresumable = Some("no thread manager".into());
+                }
+                loaded
             }
+        };
+        for thread in loaded {
+            let id = thread.exec_thread_id();
+            let goal_active = match goal_status_read(&thread, id).await {
+                Ok(status) => status == Some(codex_state::ThreadGoalStatus::Active),
+                Err(error) => {
+                    unresumable.get_or_insert_with(|| {
+                        format!("could not read thread {id}'s goal: {error}")
+                    });
+                    false
+                }
+            };
+            threads.push(upgrade::LoadedThread {
+                id: id.to_string(),
+                idle: at_rest(&thread.agent_status().await),
+                background_terminals: thread.list_background_terminals().await.len(),
+                goal_active,
+            });
         }
         // A paced act's wait crosses the re-exec in the record (FOREVER CRUISE: one is almost
         // always pending); any other wait would be lost by it. A WALL'S TRY'S WAIT holds it
@@ -2836,13 +2898,23 @@ impl Autopilot {
             }
         }
         let shared = self.sup.shared();
-        let target = shared
-            .launch()
-            .and_then(|launch| launch.upgrade_path())
-            .and_then(codex_alab_tui::upgrade::named_build)
-            .map_or_else(|| "the new build".to_string(), |p| p.display().to_string());
+        let Some(client) = self.sup.renewal_client() else {
+            codex_alab_tui::upgrade::update_pending(
+                "Update pending: the native control claim is unavailable",
+            );
+            return false;
+        };
+        let prepared = match self.prepare_upgrade_target(shared, &client).await {
+            Ok(prepared) => prepared,
+            Err(why) => {
+                codex_alab_tui::upgrade::update_pending(format!("Update pending: {why}"));
+                self.sup.note(format!("upgrade target admission: {why}"));
+                return false;
+            }
+        };
+        let target = prepared.plan().path.display().to_string();
         if !self.sup.acting() {
-            codex_alab_tui::upgrade::update_state("Update pending: this harness is passive");
+            codex_alab_tui::upgrade::update_pending("Update pending: this harness is passive");
             self.sup.note("upgrade: passive since the checks; not now");
             return false;
         }
@@ -2879,13 +2951,23 @@ impl Autopilot {
                 );
                 break 'handoff false;
             };
+            let mut inventory = match self.prepare_upgrade_inventory().await {
+                Ok(inventory) => inventory,
+                Err(why) => {
+                    codex_alab_tui::upgrade::update_pending(format!("Update pending: {why}"));
+                    self.relook_upgrade(clock() + UPGRADE_RELOOK, self.sup.claims());
+                    break 'handoff false;
+                }
+            };
+            // Use these handles throughout preparation. Reacquiring the registry
+            // could wait behind a new startup writer already blocked by our guard.
+            let native_threads = inventory.threads();
             // No earlier snapshot authorizes leave. Native changes throughout this fresh
             // asynchronous scan invalidate the token the actual TUI event must commit.
             let native_generation = shared.upgrade_generation();
-            let facts = match decided {
-                Some(_) => self.upgrade_facts_carrying(decided).await,
-                None => self.upgrade_facts().await,
-            };
+            let facts = self
+                .upgrade_facts_inventory(decided, Some(&native_threads))
+                .await;
             if decided.is_some_and(|act| !act.current(shared)) {
                 break 'handoff false;
             }
@@ -2913,7 +2995,7 @@ impl Autopilot {
             // The next image can inherit only the record, not this suspended timer.
             // Refuse before teardown if its carried act has not reached that record.
             if handoff.owed.is_some() && !write_through(shared).await {
-                codex_alab_tui::upgrade::update_state(
+                codex_alab_tui::upgrade::update_pending(
                     "Update pending: the session record could not save the carried act",
                 );
                 self.sup
@@ -2921,8 +3003,18 @@ impl Autopilot {
                 break 'handoff false;
             }
             let supervisor = Arc::clone(&self.sup);
-            if codex_alab_tui::upgrade::request_checked(shared, move || {
-                supervisor.commit_upgrade(&checked_policy, native_generation)
+            let resume = prepared.plan().clone();
+            if codex_alab_tui::upgrade::request_admitted(shared, prepared, move || {
+                if !upgrade_inventory::resume_matches(shared, &resume) {
+                    supervisor.note("upgrade: the prepared resume no longer matches this session");
+                    return false;
+                }
+                if !inventory.valid() {
+                    supervisor.note("upgrade: native start or queued input revoked the inventory");
+                    return false;
+                }
+                inventory
+                    .commit_if(|| supervisor.commit_upgrade(&checked_policy, native_generation))
             })
             .await
             {
@@ -2932,7 +3024,7 @@ impl Autopilot {
                 self.sup.note("upgrade: leaving like /exit for the exec");
                 true
             } else {
-                codex_alab_tui::upgrade::update_state(
+                codex_alab_tui::upgrade::update_pending(
                     "Update pending: the TUI could not leave safely; the current session keeps running",
                 );
                 self.sup.note("upgrade: the TUI gave no way to leave");
@@ -2953,6 +3045,27 @@ impl Autopilot {
         drop(handoff);
         drop(permits);
         left
+    }
+
+    /// Authenticate and prepare the exact replacement before committing teardown.
+    async fn prepare_upgrade_target(
+        &self,
+        shared: &'static codex_alab_core::session::Shared,
+        client: &codex_alab_aterm::Client,
+    ) -> Result<codex_alab_tui::upgrade::PreparedExec, String> {
+        #[cfg(test)]
+        {
+            let fixture = *lock(&self.upgrade_target_fixture);
+            if let Some(fixture) = fixture {
+                return fixture(shared);
+            }
+        }
+        codex_alab_tui::upgrade::prepare_admitted(
+            shared,
+            client,
+            std::time::Instant::now() + Duration::from_secs(60),
+        )
+        .await
     }
 
     /// Whether the upgrade's look again is pending ([`UPGRADE_RELOOK`], tests).
@@ -2984,6 +3097,25 @@ impl Autopilot {
             me.upgrade_relook.store(false, Ordering::SeqCst);
             me.consider_upgrade().await;
         });
+    }
+
+    /// Count the host's sleep at this thread's point: its real-time deadlines move back by the
+    /// time slept since they were last counted ([`ThreadState::slept_to`]), and the point
+    /// keeps the last wake for the decision's settle. A second call on the same reading moves
+    /// nothing, so each path that judges such a deadline calls this first: `evaluate`, and
+    /// the rotation ask, which owns the point before `evaluate`'s own count is reached
+    /// (`renewal_follow`).
+    fn count_host_sleep(&self, rt: &ThreadRt, now: Instant) {
+        let reading = self.wake_reading();
+        let mut state = lock(&rt.state);
+        if let Some(slept) = state.slept_to(reading.map(|r| r.asleep), now) {
+            self.sup.note(format!(
+                "{}: the host slept {} s; the point's real-time deadlines count it",
+                rt.key,
+                slept.as_secs()
+            ));
+        }
+        state.woke = reading.and_then(|r| r.last).map(|wake| wake.at);
     }
 
     /// Decide this thread's point and carry the decision out.
@@ -3079,18 +3211,7 @@ impl Autopilot {
         // since they were last counted, and the decision reads the last wake (its settle).
         // Read before the reach: a sleep clears the usage resume's ask, so the wake's network
         // is measured again.
-        let reading = self.wake_reading();
-        {
-            let mut state = lock(&rt.state);
-            if let Some(slept) = state.slept_to(reading.map(|r| r.asleep), now) {
-                self.sup.note(format!(
-                    "{}: the host slept {} s; the point's real-time deadlines count it",
-                    rt.key,
-                    slept.as_secs()
-                ));
-            }
-            state.woke = reading.and_then(|r| r.last).map(|wake| wake.at);
-        }
+        self.count_host_sleep(&rt, now);
         // The API's reach at the point's network wall, measured for its own route (the ask
         // renews its lease), before the state is held.
         let reach = self.reach_for(&rt);
@@ -4066,6 +4187,8 @@ impl Autopilot {
                     return false;
                 }
             }
+            // The wall on record is this decision's own from here on.
+            lock(&rt.asked_wall).take();
             let budget = {
                 #[cfg(test)]
                 {
@@ -4083,8 +4206,56 @@ impl Autopilot {
                 ));
                 return false;
             }
+        } else {
+            self.drop_asked_wall_left_to_a_person(rt, turn_id, decision);
         }
         true
+    }
+
+    /// THE ASKED WALL LEAVES THE RECORD WHEN ITS POINT IS LEFT TO A PERSON. While a handoff
+    /// is asked for, its usage wall is on record beside the intent (`carry_asked_wall`).
+    /// Released, the point is decided as any usage wall: a wait leaves its own recovery in
+    /// that one's place ([`Self::sync_recovery`]), but attention (`resume_limits` or
+    /// `limit_wait` off) leaves none, and the asked wall stayed. Nothing waits for that
+    /// reset any more, yet the TUI's usage poll ran at its recovery pace for as long as the
+    /// record held it (`codex_alab_tui::motion::usage_poll`), and a restart stood at the
+    /// wall again. So `decision`, attention at the point of `turn_id` with no intent
+    /// standing, takes it off. Only a wall the ask marked ([`ThreadRt::asked_wall`]): the
+    /// record's writer carries the change at its next write.
+    fn drop_asked_wall_left_to_a_person(
+        &self,
+        rt: &ThreadRt,
+        turn_id: &str,
+        decision: &decide::Decision,
+    ) {
+        if !matches!(decision.act, Act::Attention { .. }) {
+            return;
+        }
+        let shared = self.sup.shared();
+        let mut asked = lock(&rt.asked_wall);
+        if asked.as_deref() != Some(turn_id)
+            // Let go for one pass, not released: the ask still carries its wall.
+            || shared
+                .owed_act()
+                .is_some_and(|owed| owed.thread == rt.key && owed.renewal.is_some())
+        {
+            return;
+        }
+        asked.take();
+        if shared.recovery().is_some_and(|recovery| {
+            recovery.thread == rt.key
+                && recovery.turn_id == turn_id
+                && matches!(
+                    recovery.wall,
+                    codex_alab_core::session::RecoveryWall::Usage { .. }
+                )
+        }) {
+            shared.set_recovery(None);
+            self.sup.note(format!(
+                "{}: the released handoff's usage wall is left to a person; it leaves the record",
+                rt.key
+            ));
+        }
     }
 
     /// `bound` where the thread's goal still stands as the wall left it ([`same_wall_goal`]: no
@@ -4699,12 +4870,19 @@ impl Autopilot {
         let submitted = if auth_goal {
             match auth_wall.clone() {
                 Some(wall) => {
+                    let cyber_access_program = *lock(&rt.cyber_access_program);
                     thread
                         .recover_turn_if_idle(self.same_file_auth_request(
                             rt,
                             authority,
                             goal_runtime.clone(),
-                            wall,
+                            codex_protocol::turn_input::RecoverTurnRequest {
+                                prompt_cache_ttl: thread.recovery_prompt_cache_ttl(&wall),
+                                turn_id: wall,
+                                thread_settings: Default::default(),
+                                trace: None,
+                                cyber_access_program,
+                            },
                             auth_goal_id,
                             decision.act.clone(),
                         ))
@@ -7824,6 +8002,15 @@ pub fn classify(
             });
         }
     }
+    // Streaming refusals carry no HTTP status and share the protocol's generic
+    // connection error. Preserve the provider's terminal identity before choosing
+    // a network recovery ladder.
+    if matches!(details, CodexErrorDetails::AccessProgramNotEnabled(_)) {
+        return Some(Wall::Fatal {
+            why: "the requested access program is not enabled; correct account access before retrying"
+                .to_string(),
+        });
+    }
     Some(match error {
         CodexErrorInfo::ContextWindowExceeded => Wall::Context { auto_compact },
         CodexErrorInfo::UsageLimitExceeded => match details {
@@ -7853,6 +8040,9 @@ pub fn classify(
         },
         CodexErrorInfo::Unauthorized => Wall::Login,
         CodexErrorInfo::CyberPolicy => Wall::Policy,
+        CodexErrorInfo::InferenceHookDenied => Wall::Fatal {
+            why: "the workspace inference hook denied this request; automatic retry and fallback are stopped".to_string(),
+        },
         CodexErrorInfo::BioPolicy | CodexErrorInfo::MisalignmentPolicyViolation => Wall::Fatal {
             why: "the model's usage policy refused the turn".to_string(),
         },
@@ -8001,13 +8191,9 @@ impl ThreadLifecycleContributor<Config> for Autopilot {
             );
             // An Off that stood before this thread was its memory's business only before it.
             rt.off_seen.store(self.sup.offs(), Ordering::SeqCst);
-            // A THREAD THAT CARRIES ON ANOTHER'S WORK (edges-3; review of the needs-edges lane):
-            // plan mode's "clear context and implement" submits the plan as this thread starts,
-            // and a provider error's continuation fills its composer with "let's continue where
-            // we left off"; the TUI names each as it starts it. Its source worked (the plan's
-            // turn, or the one the provider's error ended, ended there), so this is no new
-            // session: past its opening, as aterm sees no taskless screen before the plan's
-            // turn. A new chat (`/new`, `/clear`) names none and opens its own.
+            // Pre-creation provider continuations pass their source before this
+            // root starts. A prepared plan already has a target: its own accepted
+            // prompt consumes the target-specific mark in on_item_completed.
             if self.sup.shared().take_continuation().is_some() {
                 lock(&rt.state).seed_worked();
             }
@@ -8141,6 +8327,7 @@ impl ThreadLifecycleContributor<Config> for Autopilot {
                 rt.stopped.store(true, Ordering::SeqCst);
                 lock(&rt.inherited_settle).take();
                 if Self::current_runtime(&kept, &rt) {
+                    self.sup.shared().discard_prepared_continuation(&rt.key);
                     self.sup.retire_description(&rt.description_owner);
                 }
             }
@@ -8271,6 +8458,25 @@ impl TurnLifecycleContributor for Autopilot {
                     tracing::warn!(thread = %retry_thread, turn = %retry_turn, "could not persist in-turn provider retry pacing");
                 }
             }));
+                // A creditless usage wall (a spent week, or a spent five-hour window the
+                // 429 itself names) ends this turn on its usage error only while account
+                // rotation would follow it (`follow_renewal`) and the host says it leaves
+                // that wall; otherwise the sampler keeps polling for an earned reset. Weak
+                // owners: the turn's store must not keep the autopilot or its thread alive.
+                let handoff_owner = self.me.clone();
+                let handoff_thread = Arc::downgrade(&rt);
+                input
+                    .turn_store
+                    .insert(codex_alab_core::quota::WallHandoff::new(move |wall| {
+                        let owner = handoff_owner.clone();
+                        let thread = handoff_thread.clone();
+                        async move {
+                            let (Some(me), Some(rt)) = (owner.upgrade(), thread.upgrade()) else {
+                                return false;
+                            };
+                            me.quota_handoff_ready(&rt, wall).await
+                        }
+                    }));
                 let accepted_turns = rt.accepted_turns.fetch_add(1, Ordering::SeqCst) + 1;
                 lock(&rt.inherited_settle).take();
                 let track = input.turn_store.get_or_init(TurnTrack::default);
@@ -8415,6 +8621,14 @@ impl TurnLifecycleContributor for Autopilot {
                         let kept = lock(&self.threads);
                         if rt.stopped.load(Ordering::SeqCst) || !Self::current_runtime(&kept, &rt) {
                             return;
+                        }
+                        if self
+                            .sup
+                            .shared()
+                            .take_prepared_continuation(&rt.key, &user_text(message))
+                            .is_some()
+                        {
+                            lock(&rt.state).seed_worked();
                         }
                         lock(&track.0).saw_regular_input = true;
                         // A regular message selects its own program, including Standard/None.

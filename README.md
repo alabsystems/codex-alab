@@ -85,13 +85,16 @@ They also cap `history.jsonl` at 8 MiB. One-line hooks in upstream files stop wh
 cannot reach: the announcement feed fetched at every launch, `git status`, HEAD and remote
 URLs in each turn's request metadata, the "Co-authored-by: Codex" git-attribution extension,
 the 4 MiB TRACE log ring, plan-ad buttons, the optional "try the new model" screen, and a
-model-catalog refresh every 4.5 minutes per tab (hourly instead). Measured by the drop-in
-check: on its first `codex exec` in a fresh `CODEX_HOME`, OpenAI's build cloned the plugin
-marketplace and unpacked 37 bundled skill files; codex-alab wrote neither, and wrote nothing
-that OpenAI's build does not.
+background model-catalog refresh every 4.5 minutes per tab (hourly instead; a launch and a
+`codex exec` still read the catalog online once). Measured by the drop-in check on
+2026-10-23: on its first `codex exec` in a fresh `CODEX_HOME`, OpenAI's build cloned the
+plugin marketplace and unpacked 37 bundled skill files; codex-alab wrote neither, and wrote
+nothing that OpenAI's build does not. Since 2026-10-27 codex-alab carries the same bundled
+`imagegen`, `openai-docs` and `skill-installer` skills again (Vanilla mode must match
+OpenAI's build) and unpacks them under `skills/.alab-system`; the marketplace is still
+never cloned.
 
-Removed from the tree: the bundled `imagegen`, `openai-docs` and `skill-installer` skills,
-and OpenAI's CI, Bazel build and npm/installer distribution
+Removed from the tree: OpenAI's CI, Bazel build and npm/installer distribution
 ([`alab/removed-paths`](alab/removed-paths)).
 
 Added:
@@ -106,7 +109,7 @@ Added:
   normal backoff. Interrupt the turn to stop waiting.
 - **The rainbow kitty.** A launch banner: aterm's codex kitty riding aterm's spectrum, with
   "bloatware-free · nag-free · optimized for aterm" beside it, what was measured against
-  OpenAI's Codex 0.163 as shipped (about 6× less memory, no background daemon, 1 HTTPS
+  OpenAI's Codex 0.164 as shipped on 2026-10-23 (about 6× less memory, no background daemon, 1 HTTPS
   connection open at idle instead of 5; `codex-rs/alab-tui/src/banner/claims.rs` holds the
   numbers and the date), and the upstream source the build is based on. Inside [aterm](https://github.com/alabsystems/aterm),
   Rainbow Kitty is also available through `/pets`, drawn from the binary and never downloaded.

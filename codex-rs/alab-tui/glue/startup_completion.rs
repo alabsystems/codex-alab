@@ -148,6 +148,51 @@ mod tests {
     use super::*;
     use tokio::sync::oneshot::error::TryRecvError;
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn attached_startup_does_not_hide_a_backend_drain_failure() {
+        use crate::app_server_session::AppServerSession;
+        use crate::app_server_session::ThreadParamsMode;
+        use crate::backend_id::BackendId;
+        use codex_app_server_client::AppServerClient;
+        use codex_app_server_client::CloudClient;
+        use codex_app_server_client::CloudOperation;
+
+        let home = Path::new("/fixture/drain-failure");
+        let id = ThreadId::new();
+        let mut witness = StartupWitness::observe(home);
+        assert!(attached(home, Some(id), false, Some(id), Some(id)));
+        let (client, mut commands, _events) = CloudClient::channel(1);
+        let session = AppServerSession::new(
+            BackendId::new(),
+            AppServerClient::Cloud(client),
+            ThreadParamsMode::Cloud,
+        );
+        let mut run = Box::pin(async move {
+            session.shutdown().await?;
+            Ok(AppExitInfo::fatal("backend drain unexpectedly succeeded"))
+        });
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(witness.until_attached_and_exited(&mut run), async {
+                let request = commands.recv().await.expect("real backend shutdown");
+                assert!(matches!(request.operation, CloudOperation::Shutdown));
+                request
+                    .response
+                    .send(Err(std::io::Error::other("injected backend drain failure")))
+                    .unwrap();
+            })
+        })
+        .await
+        .expect("in-memory backend shutdown must settle");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("injected backend drain failure")
+        );
+        drop(witness);
+        OBSERVER.with(|slot| assert!(slot.borrow().is_none()));
+    }
+
     #[test]
     fn only_the_successfully_attached_expected_thread_completes_startup() {
         let home = Path::new("/fixture/current");

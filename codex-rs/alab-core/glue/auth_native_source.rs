@@ -815,20 +815,16 @@ impl AuthManager {
         target_policy::document(&tokens, target, target_policy::Side::Destination)
     }
 
-    /// Proves the current managed grant before any healthy assignment commit.
-    pub async fn alab_native_source_fence(&self) -> std::io::Result<NativeSourceFence> {
+    /// The half of [`Self::alab_native_source_fence`] that asks no host and takes no lock:
+    /// this real manager's cached ChatGPT grant and the managed slot it is bound to.
+    fn alab_managed_grant(&self) -> std::io::Result<(crate::token_data::TokenData, String)> {
         self.alab_real_epoch()?;
-        let refresh = Arc::clone(&self.refresh_lock)
-            .acquire_owned()
-            .await
-            .map_err(|_| managed_auth::unavailable())?;
         if !codex_alab_core::is_alab_binary()
             || self.workload_identity_selected
             || self.has_external_auth()
         {
             return Err(managed_auth::unavailable());
         }
-        let expected = *self.auth_change_state_tx.borrow();
         let Some(CodexAuth::Chatgpt(current)) = self.auth_cached() else {
             return Err(managed_auth::unavailable());
         };
@@ -838,6 +834,24 @@ impl AuthManager {
         let slot = self
             .alab_managed_binding(&tokens)?
             .ok_or_else(managed_auth::unavailable)?;
+        Ok((tokens, slot))
+    }
+
+    /// Whether an assignment could ever fence this manager's source. Advisory: it is asked
+    /// before admission closes, and the fence repeats it under the refresh lock.
+    pub fn alab_assignment_source_admissible(&self) -> std::io::Result<()> {
+        self.alab_managed_grant().map(|_| ())
+    }
+
+    /// Proves the current managed grant before any healthy assignment commit.
+    pub async fn alab_native_source_fence(&self) -> std::io::Result<NativeSourceFence> {
+        self.alab_real_epoch()?;
+        let refresh = Arc::clone(&self.refresh_lock)
+            .acquire_owned()
+            .await
+            .map_err(|_| managed_auth::unavailable())?;
+        let expected = *self.auth_change_state_tx.borrow();
+        let (tokens, slot) = self.alab_managed_grant()?;
         // No local file lock is held across this authenticated host request.
         let source = native_source::source(&format!("{:032x}", rand::random::<u128>())).await?;
         if source.slot != slot || Some(source.path.as_path()) != self.alab_login_file().as_deref() {

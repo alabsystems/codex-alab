@@ -32,7 +32,7 @@ struct Upstream {
 
 impl Upstream {
     fn frame(&mut self, chat: &super::ChatWidget) {
-        let state = chat.alab_program_state();
+        let state = super::program_state_of(chat.desired_program_status());
         if self.last != Some(state) {
             self.bytes
                 .push_str(&turns::sequence(state).unwrap_or_default());
@@ -72,7 +72,6 @@ async fn mcp_startup_writes_no_working_and_begins_no_turn() {
     let (mut chat, _tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
     chat.thread_id = Some(ThreadId::new());
     let mut upstream = Upstream::default();
-    chat.set_mcp_startup_expected_servers(["slow".to_owned()]);
     frame(&mut chat, &mut upstream);
     mcp(&mut chat, "slow", McpServerStartupState::Starting);
     assert_eq!(
@@ -116,7 +115,6 @@ async fn a_turn_during_mcp_startup_is_reported_as_work() {
     let (mut chat, _tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
     chat.thread_id = Some(ThreadId::new());
     let mut upstream = Upstream::default();
-    chat.set_mcp_startup_expected_servers(["slow".to_owned()]);
     mcp(&mut chat, "slow", McpServerStartupState::Starting);
     frame(&mut chat, &mut upstream);
     chat.queue_user_message("first".into());
@@ -216,7 +214,11 @@ async fn under_standing_work_only_a_submitted_turn_begins_one() {
     frame(&mut chat, &mut upstream);
     turn(&mut chat, "t3", TurnStatus::InProgress);
     frame(&mut chat, &mut upstream);
-    assert_eq!(turns::aterm_turns(&upstream.bytes), 1, "RED: upstream");
+    assert_eq!(
+        turns::aterm_turns(&upstream.bytes),
+        3,
+        "native foreground status counts the intervening continuation too"
+    );
     let bytes = scope.take();
     let edge = [ProgramState::Idle, ProgramState::Working]
         .map(|w| turns::sequence(w).unwrap())

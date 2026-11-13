@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T17:43:23.463594+00:00",
+  "source": "aeef21c8f3377ad224deed29182f5033054fb765",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "schema_fixtures_tests::experimental_precomputed_exports_match_generated",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-protocol-native.sh",
+      "sha256": "e8056d53b0f3b3b1715ef4bf7f113c6aff17f1957203fe3c9be94c54dfa71523"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-protocol-native.log",
+      "sha256": "ee2cda2843320081098b261eaa5ff7c8481ac18a20eb95bbb5c152b2eb1bda1d"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-protocol-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Controller99226 terminal0 exact upstream627 merge source. Experimental compressed protocol exports match canonical generated TypeScript, JSON and internal JSON schema. Qualifies the decoded three-way schema conflict resolution preserving ALab changes and new allowInProgressTurn. Predates Cloud credential-binding hook; not full runtime, final composed main or adoption evidence."
+}

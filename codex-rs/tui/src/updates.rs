@@ -25,7 +25,7 @@ use crate::version::cli_version;
 pub(crate) use crate::updates_cache::dismiss_version;
 
 pub fn get_upgrade_version(config: &Config) -> Option<String> {
-    if !config.check_for_update_on_startup || is_source_build_version(cli_version()) {
+    if !codex_alab_core::version::vendor_updates_allowed() || !config.check_for_update_on_startup || is_source_build_version(cli_version()) { // ALAB(update): atpkg owns ALab updates even when the upstream check is enabled.
         // ALAB(version): running executable identity
         return None;
     }
@@ -151,7 +151,7 @@ async fn fetch_latest_github_release_version(
 /// Returns the latest version to show in a popup, if it should be shown.
 /// This respects the user's dismissal choice for the current latest version.
 pub fn get_upgrade_version_for_popup(config: &Config) -> Option<String> {
-    if !config.check_for_update_on_startup || is_source_build_version(cli_version()) {
+    if !codex_alab_core::version::vendor_updates_allowed() || !config.check_for_update_on_startup || is_source_build_version(cli_version()) { // ALAB(update): a cached upstream version must not offer a vendor installer for ALab.
         // ALAB(version): running executable identity
         return None;
     }

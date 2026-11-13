@@ -5,6 +5,7 @@
 //! its lifetime privately with the parent's manager. This authorizes no recovery.
 use super::ThreadManagerState;
 use crate::CodexThread;
+use crate::agent::control::exec_tree_gate::ExecStartAdmission;
 use crate::session::SessionIo;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -17,13 +18,12 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use std::sync::Arc;
 use std::sync::Weak;
-use tokio::sync::OwnedRwLockReadGuard;
 
 pub(crate) struct Registration {
     manager: Arc<ThreadManagerState>,
     parent: Arc<Session>,
     context: Arc<TurnContext>,
-    _start: OwnedRwLockReadGuard<()>,
+    _start: ExecStartAdmission,
 }
 
 struct Parent(Weak<Session>);
@@ -111,7 +111,7 @@ impl Registration {
         manager: Arc<ThreadManagerState>,
         parent: Arc<Session>,
         context: Arc<TurnContext>,
-        start: OwnedRwLockReadGuard<()>,
+        start: ExecStartAdmission,
     ) -> Result<Self> {
         let owner = Self {
             manager,
@@ -165,7 +165,7 @@ impl Registration {
             .services
             .thread_extension_data
             .insert(Parent(Arc::downgrade(&self.parent)));
-        let created = self
+        let (created, tier_acceptance) = self
             .manager
             .finalize_thread_spawn(
                 session,
@@ -173,14 +173,16 @@ impl Registration {
                 SessionSource::Internal(InternalSessionSource::Review),
             )
             .await?;
-        let (created, acceptance) = created;
-        if let Some(accepted) = acceptance {
-            accepted.await;
-        }
         let thread = created.thread;
         let result = thread.io.clone();
         watch_private_lifetime(&self.manager, &thread);
         crate::tasks::review_recovery::bind_child(&self.context, &self.parent, &thread)?;
+        // Registration and custody survive cancellation or failure of the startup receipt.
+        // As in upstream startup, a receipt error does not undo the registered runtime.
+        // Explicit settings requests report their own host acceptance failures.
+        if let Some(accepted) = tier_acceptance {
+            let _ = accepted.await;
+        }
         Ok(result)
     }
 }

@@ -62,6 +62,7 @@ async fn outage_at_reset(slow_request: bool) {
             "original-turn",
             Duration::from_secs(60),
             Some(reset),
+            None,
         ),
     )
     .await

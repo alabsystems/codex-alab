@@ -1,0 +1,180 @@
+{
+  "schema": 1,
+  "kind": "focused-qualification-observations",
+  "observed_at": "2026-11-10T12:52:22.018048+00:00",
+  "upstream": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "source": "08891a88c05a501de04b900536e6ca8a0538f3ba",
+  "outer_process_terminal": true,
+  "outer_exit_code": null,
+  "status_evidence": "All ten selections emitted the committed owned helper receipt after it checked the actual combined-output pipeline status was zero and rejected empty/skipped/incomplete suites. The outer exec handle was lost in truncated orchestration output; process 92363 was independently observed exited, but its numeric exit status was not recovered. No outer exit status is invented.",
+  "log": "${HOME}/.ubd/codex-alignment-b32-model-and-auth-native.log",
+  "log_sha256": "24ac2042ca7cbd70bb0be4f856a36554986b7ec1e21287e6567c96315bf28deb",
+  "controller": "${HOME}/.ubd/codex-alignment-b32-model-and-auth-native.sh",
+  "controller_sha256": "1df81e63c3b885ed82a622c4988f02e03134a55e1a3d325912878cf453f798df",
+  "capture_helper_sha256": "5eed567787ec71edddae7c1a855f0909606de027c374a0d522a17ec3be43e70e",
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "suites": [
+    {
+      "package": "codex-utils-model-facing-id",
+      "target": "generator",
+      "filter": "",
+      "command_exit_code": 0,
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0,
+      "tests": [
+        "rejects_empty_salts_on_restore",
+        "rejects_unsupported_snapshot_versions",
+        "persisted_ids_keep_the_salt_and_value_separate",
+        "salts_derive_the_seed_stored_in_snapshots",
+        "v1_known_outputs",
+        "v1_known_outputs_at_every_pool_boundary",
+        "wraps_after_the_last_u64_ordinal",
+        "exhausts_three_digit_ids_before_opening_the_six_digit_pool",
+        "serialized_snapshots_resume_the_sequence"
+      ]
+    },
+    {
+      "package": "codex-core",
+      "target": "all",
+      "filter": "remote_models_long_model_slug_is_sent_with_supported_reasoning",
+      "command_exit_code": 0,
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 3224,
+      "tests": [
+        "suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::custom",
+        "suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::empty_persistent_override",
+        "suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::persistent_override",
+        "suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::persistent"
+      ]
+    },
+    {
+      "package": "codex-core",
+      "target": "all",
+      "filter": "namespaced_model_slug_uses_catalog_metadata_without_fallback_warning",
+      "command_exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 3227,
+      "tests": [
+        "suite::remote_models::namespaced_model_slug_uses_catalog_metadata_without_fallback_warning"
+      ]
+    },
+    {
+      "package": "codex-core",
+      "target": "all",
+      "filter": "attached_side_chat_preserves_model_context_on_cold_resume",
+      "command_exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 3227,
+      "tests": [
+        "suite::scenarios::attached_side_chat_preserves_model_context_on_cold_resume"
+      ]
+    },
+    {
+      "package": "codex-tui",
+      "target": "lib",
+      "filter": "temporary_side_chat_sends_policy_on_its_first_request",
+      "command_exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 6343,
+      "tests": [
+        "app::tests::side_chat_policy_tests::temporary_side_chat_sends_policy_on_its_first_request"
+      ]
+    },
+    {
+      "package": "codex-core",
+      "target": "all",
+      "filter": "native_agent_review_requires_openai_on_start_and_resume",
+      "command_exit_code": 0,
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 3224,
+      "tests": [
+        "suite::scenarios::guardian_agent_messages::native_agent_review_requires_openai_on_start_and_resume::litellm",
+        "suite::scenarios::guardian_agent_messages::native_agent_review_requires_openai_on_start_and_resume::bedrock",
+        "suite::scenarios::guardian_agent_messages::native_agent_review_requires_openai_on_start_and_resume::openai_control",
+        "suite::scenarios::guardian_agent_messages::native_agent_review_requires_openai_on_start_and_resume::openai_treatment"
+      ]
+    },
+    {
+      "package": "codex-guardian-v2",
+      "target": "lib",
+      "filter": "decisions_reuses_saved_runtime_and_isolates_an_identical_explicit_key",
+      "command_exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 130,
+      "tests": [
+        "async_scorer::decisions::tests::decisions_reuses_saved_runtime_and_isolates_an_identical_explicit_key"
+      ]
+    },
+    {
+      "package": "codex-guardian-v2",
+      "target": "lib",
+      "filter": "decisions_preserves_platform_wif_credentials",
+      "command_exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 130,
+      "tests": [
+        "async_scorer::decisions::tests::decisions_preserves_platform_wif_credentials"
+      ]
+    },
+    {
+      "package": "codex-guardian-v2",
+      "target": "lib",
+      "filter": "decisions_startup_uses_thread_runtime_and_staging_destination",
+      "command_exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 130,
+      "tests": [
+        "async_scorer::extension::tests::decisions_lifecycle_tests::decisions_startup_uses_thread_runtime_and_staging_destination"
+      ]
+    },
+    {
+      "package": "codex-memories-write",
+      "target": "lib",
+      "filter": "memories_startup_uses_thread_runtime_and_keeps_custom_destinations_independent",
+      "command_exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 52,
+      "tests": [
+        "startup_tests::memories_startup_uses_thread_runtime_and_keeps_custom_destinations_independent"
+      ]
+    }
+  ],
+  "passed": 24,
+  "full_gate_qualified": false,
+  "limits": "Ten actual non-skipped selections, 24 passed, no failures or ignored tests. Covers ID allocator invariants, exact selected model/request metadata, attached cold-resume context, first temporary side-chat policy, OpenAI-only native review gating, saved runtime versus identical explicit key isolation, WIF preservation, staging Decisions startup and memory destination independence. Does not prove live model entitlement, all account-switch/cancellation races, Windows/Linux behavior, complete feature contracts or the full integration gate."
+}

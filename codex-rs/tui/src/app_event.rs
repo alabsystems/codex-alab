@@ -279,9 +279,15 @@ pub(crate) enum RecapTrigger {
 }
 
 #[derive(Debug)]
+pub(crate) enum SavedSideChatData {
+    Choices(Vec<crate::app_server_session::SideChat>),
+    LatestPrompts(std::collections::HashMap<ThreadId, String>),
+}
+
+#[derive(Debug)]
 pub(crate) struct AgentsOverviewThreadRefresh {
     pub(crate) cleared_unread: Vec<ThreadId>,
-    pub(crate) threads: std::collections::HashMap<ThreadId, Option<(Thread, bool)>>,
+    pub(crate) threads: std::collections::HashMap<ThreadId, Option<(Thread, bool, Option<String>)>>,
     pub(crate) last_messages: std::collections::HashMap<ThreadId, String>,
     pub(crate) recent_seed_complete: bool,
     pub(crate) discovery: Option<crate::app::agents_overview_discovery::AgentsOverviewDiscovery>,
@@ -307,11 +313,11 @@ pub(crate) enum CapturedSideStream {
 /// Presentation retained alongside the transcript while its composer is inactive.
 #[derive(Debug)]
 pub(crate) struct CapturedSideDisplay {
-    pub(crate) rendered_completion_turn_ids: std::collections::HashSet<String>,
+    pub(crate) rendered_completion_turn_ids: std::collections::HashMap<String, bool>,
     pub(crate) active: Option<Box<dyn HistoryCell>>,
     pub(crate) auxiliary: Vec<crate::terminal_hyperlinks::HyperlinkLine>,
     pub(crate) draft: Box<crate::bottom_pane::TextArea>,
-    pub(crate) status: Option<String>,
+    pub(crate) status_line: Option<crate::bottom_pane::footer_content::FooterContent>,
     pub(crate) work: Option<CapturedSideWork>,
     pub(crate) last_completed_agent_message: Option<(String, String)>,
     pub(crate) cwd: AbsolutePathBuf,
@@ -370,12 +376,19 @@ pub(crate) enum AppEvent {
     OpenAlabAutopilotTimer, // ALAB(interface): collect a timed Cruise deadline in the native picker.
     OpenAlabTasks, // ALAB(tasks): inspect this session's plan, local agents and terminals
     AlabEnrollment { view: std::sync::Weak<std::sync::Mutex<codex_alab_tui::enrollment_ui::View>>, thread_id: Option<ThreadId>, event: codex_alab_tui::enrollment_ui::Event }, // ALAB(accounts): enrollment remains a local authenticated native operation.
-    AlabAccountsRefresh { view: std::sync::Weak<std::sync::Mutex<String>>, thread_id: Option<ThreadId> }, // ALAB(accounts): refresh only the original open local view.
-    AlabAccountsReady { view: std::sync::Weak<std::sync::Mutex<String>>, thread_id: Option<ThreadId>, text: String }, // ALAB(accounts): sanitized metadata updates only the original view instance.
+    AlabAccountsRefresh { view: std::sync::Weak<std::sync::Mutex<codex_alab_tui::accounts_ui::View>>, thread_id: Option<ThreadId> }, // ALAB(accounts): refresh only the original open local view.
+    AlabAccountsReady { view: std::sync::Weak<std::sync::Mutex<codex_alab_tui::accounts_ui::View>>, thread_id: Option<ThreadId>, text: codex_alab_tui::accounts_ui::Update }, // ALAB(accounts): sanitized metadata updates only the original view instance.
     AlabTasksBack { thread_id: Option<ThreadId> }, // ALAB(tasks): a deferred detail Back belongs only to its original thread.
     AlabTasksRefresh { view: std::sync::Weak<()>, thread_id: Option<ThreadId>, selected_key: Option<String>, selected_index: Option<usize>, query: Option<String> }, // ALAB(tasks): refresh only the still-open local view
     AlabTaskDetails { thread_id: Option<ThreadId>, key: String }, // ALAB(tasks): resolve details from current native state
     ShowMoreAgentsOverview,
+    SearchAgentsOverview(Uuid, usize),
+    AgentsOverviewSearchPage {
+        id: Uuid,
+        rows: Vec<(Thread, bool)>,
+        cursor: crate::app::agents_overview_discovery::AgentsOverviewDiscovery,
+        ok: bool,
+    },
     RefreshViewedThread {
         backend_id: crate::backend_id::BackendId,
         thread_id: ThreadId,
@@ -383,6 +396,7 @@ pub(crate) enum AppEvent {
     },
     /// Create an empty thread from the command center.
     NewAgentsOverviewSession {
+        backend_id: Option<crate::backend_id::BackendId>,
         cwd: Option<AbsolutePathBuf>,
     },
     /// Update the agents overview after a background thread listing finishes.
@@ -396,6 +410,7 @@ pub(crate) enum AppEvent {
     },
     /// Create an empty session in a worktree from the selected project's default branch.
     NewAgentsOverviewWorktree {
+        backend_id: Option<crate::backend_id::BackendId>,
         cwd: Option<AbsolutePathBuf>,
     },
     AgentsOverviewWorktreeCreated(Result<crate::app::PendingWorktree, String>),
@@ -435,6 +450,7 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
         destination: ThreadTitleDestination,
         prompt: String,
+        fallback_title: Option<String>,
         effort: Option<ReasoningEffort>,
         result: Result<String, String>,
     },
@@ -475,7 +491,7 @@ pub(crate) enum AppEvent {
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 
-    /// Open a transient side conversation for the current thread.
+    /// Open a side conversation for the current thread.
     StartSide {
         parent_thread_id: ThreadId,
         user_message: Option<UserMessage>,
@@ -487,6 +503,35 @@ pub(crate) enum AppEvent {
         parent: ThreadId,
         request: uuid::Uuid,
         result: Result<Box<crate::app_server_session::SidebarFork>, String>,
+    },
+
+    SideChatRemovalFinished {
+        backend_id: crate::backend_id::BackendId,
+        target: ThreadId,
+        request: uuid::Uuid,
+        action: SideChatRemoval,
+        result: Result<(), String>,
+    },
+    SideChatArchived {
+        backend_id: crate::backend_id::BackendId,
+        target: ThreadId,
+    },
+
+    SavedChatPrepared {
+        target: crate::app::sidebar_loading::Target,
+        request: uuid::Uuid,
+        result: Box<crate::app::thread_attachment::Prepared>,
+    },
+    SavedChatReleased {
+        target: crate::app::sidebar_loading::Target,
+        request: uuid::Uuid,
+    },
+    StartQueuedSavedChat,
+    SavedSideChatsLoaded {
+        backend_id: crate::backend_id::BackendId,
+        parent: ThreadId,
+        request: uuid::Uuid,
+        result: Result<SavedSideChatData, String>,
     },
 
     /// Submit an op to the specified thread, regardless of current focus.
@@ -529,6 +574,7 @@ pub(crate) enum AppEvent {
         model: String,
         turn: AppCommand,
         prompt: UserMessage,
+        autonomous: bool, // ALAB(daybreak): revalidate automatic authority and recover without a human draft.
     },
 
     /// Fork before a blocked turn and send the selected safer follow-up.
@@ -739,12 +785,9 @@ pub(crate) enum AppEvent {
         enabled: bool,
     },
 
-    /// Clear the current context, start a fresh session, and submit an initial user message.
-    ///
-    /// This is the Plan Mode handoff path: the previous thread remains resumable, but the model
-    /// sees only the explicit prompt carried in `text` once the new session is configured.
-    ClearUiAndSubmitUserMessage {
-        text: String,
+    /// Start a fresh session with a reference to the approved plan file.
+    ImplementPlanInFreshSession {
+        plan: String,
     },
 
     /// Open the resume picker inside the running TUI session.
@@ -1337,6 +1380,7 @@ pub(crate) enum AppEvent {
     /// `deferred_history_cell` lets callers add the final stream tail to the
     /// transcript without first writing its provisional render to scrollback.
     ConsolidateAgentMessage {
+        phase: Option<codex_protocol::models::MessagePhase>,
         interrupted_item: Option<(String, String)>,
         source: String,
         copy_source: Option<String>,
@@ -1490,6 +1534,11 @@ pub(crate) enum AppEvent {
     PersistDaybreakSelection {
         thread_id: ThreadId,
         enabled: bool,
+    },
+    /// Disable Daybreak after explicit account-scoped metadata excludes it for the selected model.
+    DisableUnavailableDaybreak {
+        thread_id: ThreadId,
+        model: String,
     },
 
     /// Fetch the current catalog even when cached models produce no picker.
@@ -1744,13 +1793,16 @@ pub(crate) enum AppEvent {
         crate::bottom_pane::user_verification::UserVerificationRequest,
     ),
 
+    /// Open feedback for the active connection.
+    OpenFeedback,
+
     /// Open the feedback note entry overlay after the user selects a category.
     OpenFeedbackNote {
         category: FeedbackCategory,
         include_logs: bool,
     },
 
-    /// Open the upload consent popup for feedback after selecting a category.
+    /// Open the attachment consent popup for feedback after selecting a category.
     OpenFeedbackConsent {
         category: FeedbackCategory,
     },
@@ -1761,14 +1813,15 @@ pub(crate) enum AppEvent {
         reason: Option<String>,
         turn_id: Option<String>,
         include_logs: bool,
+        destination: FeedbackDestination,
     },
 
-    /// Result of a feedback upload request initiated by the TUI.
+    /// Delivery result for the thread that requested feedback.
     FeedbackSubmitted {
         origin_thread_id: Option<ThreadId>,
         category: FeedbackCategory,
         include_logs: bool,
-        result: Result<String, String>,
+        result: Result<FeedbackReceipt, String>,
     },
 
     /// Launch the external editor after a normal draw has completed.
@@ -1954,8 +2007,27 @@ pub(crate) enum FeedbackCategory {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FeedbackDestination {
+    OpenAi,
+    LocalZip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FeedbackReceipt {
+    Uploaded { thread_id: String },
+    Saved { path: String },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SideStartMode {
     Reuse,
     New,
+}
+
+/// Whether a sidebar action closes a live tab or also archives its saved conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SideChatRemoval {
+    CloseTab,
+    Archive,
 }

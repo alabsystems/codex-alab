@@ -33,6 +33,33 @@ use tokio_stream::Stream;
 
 use super::EventResult;
 
+/// Keep the reader choice stable through enhanced/vanilla presentation changes.
+/// The native subscription joins and retains parser state on its final drop.
+pub(super) enum Input {
+    #[cfg(unix)]
+    Owned(codex_alab_tui::input::InputStream),
+    Legacy(crossterm::event::EventStream),
+}
+impl Input {
+    pub(super) fn new() -> Self {
+        #[cfg(unix)]
+        if codex_alab_tui::input::owned() {
+            return Self::Owned(codex_alab_tui::input::InputStream::default());
+        }
+        Self::Legacy(crossterm::event::EventStream::new())
+    }
+}
+impl Stream for Input {
+    type Item = EventResult;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.get_mut() {
+            #[cfg(unix)]
+            Self::Owned(source) => source.poll_next(cx),
+            Self::Legacy(source) => Pin::new(source).poll_next(cx),
+        }
+    }
+}
+
 /// How long a candidate waits for the rest of a reply, which aterm writes in one piece.
 const REPLY_TIMEOUT: Duration = Duration::from_millis(/*millis*/ 50);
 /// The longest reply text held: aterm's are under 100 characters.
@@ -272,5 +299,58 @@ mod tests {
             stream.next().now_or_never().unwrap().unwrap().unwrap(),
             start
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+#[path = "owned_input_tests.rs"]
+mod owned_input_tests;
+
+/// Take custody from the actual input source while its higher-level filter is
+/// still present. A busy filter is allowed to finish normally before retrying.
+#[cfg(unix)]
+impl KittyReplies<Input> {
+    fn prepare_upgrade(&self) -> std::io::Result<codex_alab_tui::input::UpgradeInput> {
+        if !self.pending.is_empty() || !self.ready.is_empty() || self.deadline.is_some() {
+            return Err(std::io::Error::other(
+                "terminal reply filter still owns input",
+            ));
+        }
+        match &self.inner {
+            Input::Owned(input) => input.prepare_upgrade(),
+            Input::Legacy(_) => Err(std::io::Error::other(
+                "terminal source has no joined input custody",
+            )),
+        }
+    }
+}
+#[cfg(unix)]
+impl super::EventBroker<super::CrosstermEventSource> {
+    pub(crate) fn prepare_upgrade_capture(
+        &self,
+    ) -> std::io::Result<codex_alab_tui::upgrade_terminal::Prepared> {
+        codex_alab_tui::upgrade_terminal::Prepared::prepare(self.prepare_upgrade_input()?)
+    }
+    pub(crate) fn prepare_upgrade_input(
+        &self,
+    ) -> std::io::Result<codex_alab_tui::input::UpgradeInput> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*state {
+            super::EventBrokerState::Running(source) => source.events.prepare_upgrade(),
+            _ => Err(std::io::Error::other(
+                "terminal input source is not running",
+            )),
+        }
+    }
+}
+#[cfg(unix)]
+impl crate::tui::Tui {
+    pub(crate) fn alab_prepare_upgrade_capture(
+        &self,
+    ) -> std::io::Result<codex_alab_tui::upgrade_terminal::Prepared> {
+        self.event_broker.prepare_upgrade_capture()?.with_startup(self.alab_upgrade_startup_snapshot())
     }
 }

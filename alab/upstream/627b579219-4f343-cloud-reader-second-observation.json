@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "kind": "native-focused-failed-observation",
+  "observed_at": "2026-11-10T19:04:31.186551+00:00",
+  "source": "4f343a1c372da225cfbe9ffaacd1a1b74009ecfb",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "results": {
+    "parent_status": "failed",
+    "runtime_failure": "Timed out at final native-reader retirement wait. Native fixture omitted retire_captured; the trait default rejects captured preloads. Earlier sequential assertions for positive TLS/HTTP2 Cloud RPC, destination denial and retained-client source EOF refusal completed before the final failure.",
+    "tippy_status": "failed",
+    "tippy_diagnostics": [
+      "expect_used on Ready registration",
+      "expect_used on member census lock"
+    ]
+  },
+  "corrections": "891f412a93 adds exact captured preload/sequence/registration acknowledgement. Trait helpers now propagate explicit fixture I/O errors. Requires another complete native run.",
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native-r2.sh",
+      "sha256": "71cf1ecb3b39fc8071947b2c492907760ab8445f9a7eefdbe016a7276a5bf082"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native-r2.log",
+      "sha256": "be839227ec26e9b083b1ab768dc968ec14988e57a76f696a38e03095e981a632"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native-r2.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Controller87423 terminal1 and sidecar1. No passing parent or completed Cloud scenario qualification is claimed. The captured-retirement acknowledgement is a fixture correction; production code is unchanged. Main candidate gate and completed unselected package remain on e13e without this test-only crate."
+}

@@ -110,7 +110,7 @@ impl PreparedGuardianContext {
             .services
             .model_client
             .responses_websocket_enabled();
-        let options = crate::StartThreadOptions {
+        let mut options = crate::StartThreadOptions {
             prompt_cache_key: self.parent.services.model_client.prompt_cache_key_policy(),
             history_mode: Some(codex_protocol::protocol::ThreadHistoryMode::Paginated),
             internal_parent: Some(crate::thread_manager::InternalSessionParent {
@@ -144,6 +144,7 @@ impl PreparedGuardianContext {
             client_mcp_extensions: self.parent.services.client_mcp_extensions.clone(),
             ..crate::StartThreadOptions::new(config)
         };
+        crate::session::alab_exec_recovery_options::ephemeral::inherit_internal_owner(&self.parent.services.thread_extension_data, &mut options.thread_extension_init); // ALAB(exec-ephemeral): isolated Guardian startup retains the actual parent's memory-history ownership.
         (options, state)
     }
 

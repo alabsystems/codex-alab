@@ -43,7 +43,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
     let io = Arc::new(SessionIo {
-        tx_sub,
+        tx_sub: tx_sub.into(), // ALAB(upgrade): isolated queue admission.
         rx_event: rx_events,
         agent_status,
         session_loop_termination: completed_session_loop_termination(),
@@ -141,7 +141,7 @@ async fn forward_ops_preserves_submission_trace_context() {
     let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
     let io = Arc::new(SessionIo {
-        tx_sub,
+        tx_sub: tx_sub.into(), // ALAB(upgrade): isolated queue admission.
         rx_event: rx_events,
         agent_status,
         session_loop_termination: completed_session_loop_termination(),
@@ -151,6 +151,7 @@ async fn forward_ops_preserves_submission_trace_context() {
     let forward = tokio::spawn(forward_ops(Arc::clone(&io), rx_ops, cancel));
 
     let submission = Submission {
+        alab_upgrade: Vec::new(), // ALAB(upgrade): the native sender supplies admission.
         id: "sub-1".to_string(),
         op: Op::Interrupt,
         turn_extension_init: None,
@@ -262,11 +263,7 @@ async fn delegate_start_analytics_honors_child_opt_out_with_enabled_parent() {
         .services
         .analytics_events_client = client.clone();
     parent_session
-        .set_app_server_client_info(
-            Some("codex-test".to_string()),
-            Some("1.0.0".to_string()),
-            /*mcp_elicitations_auto_deny*/ false,
-        )
+        .set_app_server_client_info(Some("codex-test".to_string()), Some("1.0.0".to_string()))
         .await
         .expect("set parent client metadata");
 

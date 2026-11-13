@@ -877,6 +877,38 @@ baseline from: a row is recorded from a commit on origin/main, never a snapshot"
 fi
 if [[ "${release_check}" -eq 1 ]]; then
   [[ -n "${committed}" ]] || alab_die "${sha9} has no VERSION: a release needs one (Decision 8)"
+  # A release is judged by the baseline its ledger row froze when the version was claimed,
+  # never by a stable tag that appeared afterwards for upstream code the claim already
+  # held (alab/versions.py, checked). When the ledger check accepts such a later tag, the
+  # client floor is the recorded baseline's too: the next minor above it, as it was when
+  # the version was claimed and its package was built. One ledger check serves both the
+  # floor and the release; its refusal is reported where it always was, after the floor's.
+  ledger_status=-1 ledger_said=""
+  if [[ "${compound}" -eq 1 && -n "${baseline_commit}" ]]; then
+    package_origin_main
+    ledger_status=0
+    ledger_said="$("${versions_py[@]}" check --repo "${repo_root}" --commit "${commit}" \
+      --version "${committed}" --baseline "${baseline}" --baseline-commit "${baseline_commit}" \
+      --main refs/remotes/origin/main --released "${released_repo}" 2>&1)" || ledger_status=$?
+    recorded="${ledger_said#"${committed}"+codex.}"
+    if [[ "${ledger_status}" -eq 0 ]]; then
+      [[ "${recorded}" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] \
+        || alab_die "the version ledger named no baseline for ${committed} at ${sha9}"
+    fi
+    if [[ "${ledger_status}" -eq 0 && "${recorded}" != "${base_tag}" ]]; then
+      major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}"
+      alab_say "rust-v${base_tag} appeared after ${committed} froze rust-v${recorded}, whose \
+upstream code ${sha9} already held: the release keeps its recorded baseline and floor"
+      base_tag="${recorded}"
+      base_bp="$(git merge-base "refs/upstream-tags/rust-v${recorded}" refs/remotes/upstream/main)" \
+        || alab_die "cannot read the branch point of the recorded baseline rust-v${recorded}"
+      floor="${major}.$((minor + 1)).0"
+      behind=0
+      if (( v_major < major || (v_major == major && v_minor <= minor) )); then
+        behind=1
+      fi
+    fi
+  fi
   if [[ "${behind}" -eq 1 && "${own_line}" -eq 1 ]]; then
     alab_die "alab/client-version ${client_committed} at ${sha9} is below the floor ${floor}, the \
 next minor above rust-v${base_tag} (whose branch point ${base_bp:0:9} it has merged): a release \
@@ -900,11 +932,15 @@ its line is recorded in the version ledger, beside the upstream baseline it is b
   if [[ "${compound}" -eq 1 ]]; then
     [[ -n "${baseline_commit}" ]] || alab_die "${sha9} has no upstream history to derive its \
 baseline from: a release is checked from its commit on origin/main, never from a snapshot"
-    package_origin_main
-    release="$("${versions_py[@]}" check --repo "${repo_root}" --commit "${commit}" \
-      --version "${committed}" --baseline "${baseline}" --baseline-commit "${baseline_commit}" \
-      --main refs/remotes/origin/main --released "${released_repo}")" || alab_die "the version ledger refuses releasing \
+    if [[ "${ledger_status}" -ne 0 ]]; then
+      [[ -z "${ledger_said}" ]] || printf '%s\n' "${ledger_said}" >&2
+      alab_die "the version ledger refuses releasing \
 ${committed} from ${sha9} (above; alab/README.md, Decision 8)"
+    fi
+    release="${ledger_said}"
+    baseline="${release#*+codex.}"
+    baseline_commit="$(git rev-parse --verify "refs/upstream-tags/rust-v${baseline}^{commit}")" \
+      || alab_die "cannot read the validated frozen baseline rust-v${baseline}"
     alab_say "release ${release}: alab/versions.toml maps ${committed} to the upstream baseline \
 rust-v${baseline} (${baseline_commit:0:12})"
   fi
@@ -1008,23 +1044,7 @@ alab_project_selected || alab_die "packaging requires the native source-selected
 cargo="${ALAB_CARGO}"
 command -v "${cargo}" >/dev/null || alab_die "no selected compiler front ${cargo}"
 command -v otool >/dev/null || alab_die "no otool (the Xcode command line tools: xcode-select --install)"
-python="${ALAB_PYTHON:-}"
-if [[ -z "${python}" ]]; then
-  for p in /opt/homebrew/bin/python3.14 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 \
-    /opt/homebrew/bin/python3.11 \
-    "${pkg_prefix}/abrew/bin/python3.14" "${pkg_prefix}/abrew/bin/python3.13" \
-    "${pkg_prefix}/abrew/bin/python3.12" "${pkg_prefix}/abrew/bin/python3.11" \
-    "${HOME}/.local/share/uv/python"/cpython-3.*/bin/python3.[0-9]* \
-    python3; do
-    [[ "${p}" != *-config ]] || continue
-    if command -v "${p}" >/dev/null && "${p}" -I -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
-      python="${p}"
-      break
-    fi
-  done
-fi
-[[ -n "${python}" ]] && "${python}" -I -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null \
-  || alab_die "no Python >= 3.11 (upstream's packager needs tomllib): set ALAB_PYTHON"
+python="$(alab_python_311 "${pkg_prefix}")" || alab_die "packaging needs a TOML-capable interpreter"
 
 mkdir -p "${out}"
 out="$(cd "${out}" && pwd -P)"
@@ -1419,7 +1439,7 @@ alab_publish_package "${python}" "${staged}" "${pkgdir}" "${pkg_root}" "${pkg_pr
   "${commit}" "${promote}" || alab_die "package publication/promotion did not finish; the \
 smoke-validated package is kept at ${staged} or ${pkgdir} (above)"
 
-# ---- 7. link command, and pruning ----------------------------------------------------------
+# ---- 7. run command, and pruning ----------------------------------------------------------
 # alab/prune.py keeps the newest <n> and every package in use: the one atpkg links as codex
 # (its link marker <prefix>/links/codex, the bin/ shim and agents/ twin, read without ever
 # following a symlink into a binary, and aterm pkg which), any a running process executes
@@ -1429,15 +1449,22 @@ smoke-validated package is kept at ${staged} or ${pkgdir} (above)"
   || alab_say "pruning stopped (above); what it had not reached is kept"
 
 echo "package: ${pkgdir} ($(du -sh "${pkgdir}" | awk '{ print $1 }'))"
-echo "link it: aterm pkg link codex '${pkgdir}' bin/codex"
+# Testing a package must not replace the machine's managed update channel.
+# Bash %q preserves spaces, quotes and shell metacharacters in the runnable path.
+printf 'run it: %q\n' "${pkgdir}/bin/codex"
 # aterm reads a codex build's session record only once it has measured that build (its client
 # version, matched whole): until an aterm that did ships, this build's tabs log no turns.
 echo "measure it for aterm (${client_version}): in an aterm worktree, targo --unverified lab codex-measure --package '${pkgdir}', then land what it writes"
 }
 
 package_entry() {
+  if [[ $# -eq 1 && ( "$1" == -h || "$1" == --help ) ]]; then
+    package_main "$@"
+    return
+  fi
+  ALAB_PYTHON="$(alab_python_311)" || return $?
+  export ALAB_PYTHON
   local arg value=0 read_only=0 cache revision=HEAD resolved
-  local arguments=("$@")
   local output="${HOME}/.local/share/aterm/dev-builds/artifacts"
   # These modes never consume the package cache. Skip option values so a revision
   # or output path that happens to spell an option cannot select a different mode.
@@ -1468,12 +1495,14 @@ package_entry() {
   [[ "${resolved}" =~ ^[0-9a-f]{40}$ ]] || alab_die "source metadata named no full commit"
   alab_project_run "${repo_root}" "${resolved}" /bin/bash -c \
     '. "$1"; shift; package_selected_entry "$@"' alab-package \
-    "${repo_root}/alab/package.sh" "${arguments[@]}" --commit "${resolved}"
+    "${repo_root}/alab/package.sh" "$@" --commit "${resolved}"
 }
 
 # An existing cache guardian (local_update.py) uses the same native selection
 # without taking its already held cache lock again.
 package_locked_entry() {
+  ALAB_PYTHON="$(alab_python_311)" || return $?
+  export ALAB_PYTHON
   local source="$1"
   shift
   alab_project_run "${repo_root}" "${source}" /bin/bash -c \

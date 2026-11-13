@@ -164,7 +164,7 @@ fn custom_provider_does_not_inherit_ambient_bedrock_auth() {
     let provider =
         create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
     let ambient_auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
-        alab_epoch: Default::default(), // ALAB(accounts): persistent fixtures begin without runtime provenance.
+        alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
         api_key: "bedrock-api-key-test".to_string(),
         region: "us-east-1".to_string(),
     });
@@ -180,7 +180,7 @@ fn custom_provider_uses_explicit_bearer_instead_of_ambient_auth() {
         create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
     provider.experimental_bearer_token = Some("provider-token".into());
     let ambient_auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
-        alab_epoch: Default::default(), // ALAB(accounts): persistent fixtures begin without runtime provenance.
+        alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
         api_key: "bedrock-api-key-test".to_string(),
         region: "us-east-1".to_string(),
     });
@@ -297,7 +297,7 @@ fn header_auth_adds_predefined_headers() {
 fn openai_provider_rejects_bedrock_api_key_auth() {
     let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
     let auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
-        alab_epoch: Default::default(), // ALAB(accounts): persistent fixtures begin without runtime provenance.
+        alab_epoch: Default::default(), // ALAB(accounts): persistent payloads start without runtime source provenance.
         api_key: "bedrock-api-key-test".to_string(),
         region: "us-east-1".to_string(),
     });

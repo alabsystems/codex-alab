@@ -8,8 +8,8 @@ mod user_shell;
 #[path = "../../../alab-core/glue/exec_task_test_output.rs"] pub(crate) mod alab_test_output; // ALAB(exec-tree): fixtures complete with native task output and default MCP requirements.
 #[path = "../../../alab-core/glue/exec_launch_barrier.rs"]
 pub(crate) mod alab_exec_launch; // ALAB(exec-tree): all recovered tasks register before any may run.
-use alab_exec_launch::ExecTaskLaunch as _; // ALAB(exec-tree): a no-op for ordinary task starts.
 
+use crate::McpRefreshReason;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -31,6 +31,7 @@ use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
 
+use crate::agent::helper_daybreak::turn::HelperTurnAdmission;
 use crate::codex_thread::BackgroundTerminalInfo;
 use crate::config::Config;
 use crate::context::ContextualUserFragment;
@@ -311,7 +312,7 @@ impl Session {
             .enabled(Feature::ExecutorCapabilityDiscoveryV2)
         {
             // MCP contributors must project the new inventory even if their other inputs match.
-            self.request_mcp_runtime_reprojection();
+            self.request_mcp_runtime_reprojection(McpRefreshReason::TaskStartedExecutorDiscovery);
         }
         self.activate_plugin_selection(&turn_context).await;
         // Inherited or recovered roots are applied before task start. Otherwise this
@@ -419,6 +420,7 @@ impl Session {
         let task_future = async move {
             let ctx_for_finish = Arc::clone(&ctx);
             let mut task_result = async {
+                alab_exec_launch::admit(&session, &ctx, &task_cancellation_token).await?; // ALAB(exec-tree): register the recovered tree before host admission or task execution.
                 let input = match host_admission {
                     Some(provider) => admission::admit(
                         &session,
@@ -430,7 +432,7 @@ impl Session {
                     None => task_input,
                 };
                 task_for_run
-                    .run_with_exec_launch( // ALAB(exec-tree): register the recovered tree before running admitted tasks.
+                    .run(
                         Arc::clone(&session),
                         ctx,
                         input,
@@ -533,7 +535,7 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) {
-        let Ok(_exec_start) = self.services.local_agent_runtime.admit_exec_tree_start() else { return; }; // ALAB(exec-tree): retain pending mail when a handoff fences automatic starts.
+        let Some(_exec_start) = self.admit_exec_pending_work().await else { return; }; // ALAB(exec-tree): an empty post-turn probe must not revoke an upgrade; actual work retains admission.
         let Some(assignment_start) = crate::session::alab_assignment::automatic_start(self) else { return; }; // ALAB(accounts): retain pending input before extraction while a root assignment is pending.
         if !self.input_queue.has_pending_mailbox_items().await {
             return;
@@ -543,6 +545,7 @@ impl Session {
             return;
         };
 
+        let helper_admission = HelperTurnAdmission::capture(self);
         self.services
             .models_manager
             .refresh_after_auth_change(self.get_config().await.http_client_factory())
@@ -567,9 +570,10 @@ impl Session {
         };
         let (input, mut start_options) =
             self.input_queue.get_pending_input(&self.active_turn).await;
-        if !input.iter().any(
+        let triggered = input.iter().any(
             |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
-        ) {
+        );
+        if !triggered {
             // Queue-only wakes retain the previous turn context without selecting a new task.
             start_options = previous_options;
             start_options.cyber_access_program = self
@@ -582,6 +586,7 @@ impl Session {
             final_output_json_schema: start_options.final_output_json_schema,
             prompt_cache_ttl: start_options.prompt_cache_ttl,
             cyber_access_program: start_options.cyber_access_program,
+            helper_admission: triggered.then_some(helper_admission).flatten(),
         };
         let turn_context = match session_configuration {
             Some(configuration) => {

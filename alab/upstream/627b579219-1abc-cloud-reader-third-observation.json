@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "kind": "native-focused-failed-observation",
+  "observed_at": "2026-11-10T19:12:43.603193+00:00",
+  "source": "1abc659489192f7bcb2ba3308fa0bf192b1188d1",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "exit_code": 1,
+  "results": {
+    "parent_status": "failed",
+    "runtime_failure": "Final reader retirement wait timed out after the transport assertions. The fixture shadowed a denied HttpClientFactory with its Client, leaving that original source-owning factory alive until scope exit.",
+    "lint_observation": "Tippy completed compilation with no error diagnostic observed; whole controller failed and is not qualification."
+  },
+  "correction": "c8001bb7b5 names denied_factory separately and explicitly drops it before the final retirement wait; keeps all existing transport and retirement assertions. Requires a complete corrected run.",
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native-r3.sh",
+      "sha256": "71cf1ecb3b39fc8071947b2c492907760ab8445f9a7eefdbe016a7276a5bf082"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native-r3.log",
+      "sha256": "38db33f98c306a6e5d015a7360fc6a0740637220f918948463b2165e01091b2d"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native-r3.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Controller20012 terminal1 and sidecar1; no passing parent is claimed. Production code and the separate qualified-candidate package are unchanged."
+}

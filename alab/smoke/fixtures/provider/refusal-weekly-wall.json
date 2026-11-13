@@ -1,0 +1,21 @@
+{
+  "body": {
+    "error": {
+      "message": "Fixture weekly quota exhausted",
+      "plan_type": "pro",
+      "resets_at": 1800086400,
+      "type": "usage_limit_reached"
+    }
+  },
+  "headers": {
+    "x-codex-active-limit": "codex",
+    "x-codex-primary-reset-at": "1800003600",
+    "x-codex-primary-used-percent": "0",
+    "x-codex-primary-window-minutes": "300",
+    "x-codex-rate-limit-reached-type": "rate_limit_reached",
+    "x-codex-secondary-reset-at": "1800086400",
+    "x-codex-secondary-used-percent": "100",
+    "x-codex-secondary-window-minutes": "10080"
+  },
+  "status": 429
+}

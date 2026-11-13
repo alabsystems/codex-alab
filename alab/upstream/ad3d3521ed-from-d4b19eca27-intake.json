@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "base": "d4b19eca27895e704f9929a70ad80abdd9588728",
+  "target": "ad3d3521eddcee24cd6ce0d335d597544578c5e1",
+  "frontier": "d4b19eca27895e704f9929a70ad80abdd9588728",
+  "commits": [
+    {
+      "sha": "ad3d3521eddcee24cd6ce0d335d597544578c5e1",
+      "subject": "Avoid redundant reads and screen clears when switching side chats (#60675)",
+      "paths": [
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Reuse the attached online parent's existing lifecycle observation when returning from a side chat. Preserve the liveness read when reattachment is needed. A screen-preserving reset should leave no deferred clear.",
+      "evidence": [
+        "Reviewed the native parent selection predicates, preserving reset path, and regression changes."
+      ],
+      "revisit": "Verify attached and reattaching parent paths and screen preservation in the next TUI qualification."
+    }
+  ]
+}

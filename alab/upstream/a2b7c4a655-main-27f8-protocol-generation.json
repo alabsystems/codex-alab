@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "kind": "canonical-protocol-regeneration",
+  "rust_source": "def6b0bcba54de237e3a01f13c093524bdc83225",
+  "merge_checkpoint": "8f3522c384c8f1be083c4ab8f6780b0190a2e6f7",
+  "source_tree_equivalence": "The generation worktree and merge checkpoint have identical tracked trees.",
+  "logs": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-main-27f8-schema-native.log",
+      "sha256": "2f9930775a6297a33de20321a2512d459e43e4da338ffad6c5942805d9c87b9c"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-main-27f8-sdk-generation-r2.log",
+      "sha256": "9479ce9b7617c2061cef9759b16048d2aa3faa8a4faf38189d325c58eaf15109"
+    }
+  ],
+  "results": [
+    "Pinned Trust15698 native fixture writer executed successfully in both stable and experimental modes.",
+    "Canonical generation changed 3 JSON files, 2 TypeScript files and both compressed exports; retired the redundant ALab-only identity type.",
+    "Python SDK generated with frozen uv test group, datamodel-code-generator 0.64.0 and locked formatter; typed successful-empty payload and omitted field both parsed as expected."
+  ],
+  "limits": "Generation/parse observation only. Full native gate of the composed source is still pending."
+}

@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:53:53.097646+00:00",
+  "source": "4f8e8132ebd4522491219cb031c170af32f2b07d",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "ui_tree::render::prepare::tests::a_row_measures_whole_children_and_intervening_gaps",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::footer::footer_content::tests::clipped_links_keep_their_cells_after_a_halfwidth_katakana_grapheme",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::footer::footer_content::tests::arabic_prefix_keeps_link_on_the_painted_cells_at_exact_fit_and_overflow",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::footer::footer_content::tests::prepared_tree_uses_its_natural_width_and_paints_only_the_footer_viewport",
+      "status": "ok"
+    },
+    {
+      "name": "bottom_pane::chat_composer::effort_tests::extension_content_skips_the_effort_transition_in_both_directions",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-footer-helpers-native.sh",
+      "sha256": "12a8d703b910196c9e353663f1c9afc14008c653f6a6f111ac0205e38a33000c"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-footer-helpers-native.log",
+      "sha256": "f6a3288c2997e1bb030afdb396a6ebfff30713efd30227c6ad2234d2b76c2036"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-footer-helpers-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Five native tests passed across three nonempty selections: preparation measurement(1), footer content viewport/hyperlink fixtures(3), extension effort-transition both directions(1). The fourth terminal_hyperlinks::paragraph::tests:: selection was empty and correctly rejected, so overall exit is 1. Parent-module hyperlink tests are a separate corrected run. No broad footer/helper qualification, full gate, intake completion or adoption claim."
+}

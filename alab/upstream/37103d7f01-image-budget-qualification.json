@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:01:19.925408+00:00",
+  "source": "3de0427e4327fce1d1516bf2c0b37632444fe33b",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "suite::view_image::view_image_unified_budget_hides_detail_but_accepts_legacy_hints",
+      "status": "ok"
+    },
+    {
+      "name": "suite::view_image::view_image_unified_budget_stays_disabled_for_unsupported_model",
+      "status": "ok"
+    },
+    {
+      "name": "suite::view_image::user_turn_unified_image_budget_enforces_dimension_and_patch_limits",
+      "status": "ok"
+    },
+    {
+      "name": "suite::view_image::user_turn_unified_image_budget_supports_responses_lite_without_original_detail",
+      "status": "ok"
+    },
+    {
+      "name": "suite::image_rollout::resumed_history_only_emits_resize_notices_for_new_images",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-image-budget-native.sh",
+      "sha256": "99ef764cc2b52a0ae9aa8496f9facef60b55fb10899a1eb60b10df0cc1a70418"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-image-budget-native.log",
+      "sha256": "ce1509a40f9fc1d639c013b7ece442dcfd1f6ff7778b0ddc16a42434e2a01ab0"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-image-budget-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Five individually selected native integration tests passed, zero failed or ignored, no reported skip. Covers unified default advertised detail/legacy hints, unsupported-model fallback, dimension/patch bounds, Responses Lite without original-detail capability and historical replay/new-only resize notices. Other integration tests filtered out. Does not qualify every image entry point, native credential images, full gate, complete intake or adoption."
+}

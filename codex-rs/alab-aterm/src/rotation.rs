@@ -32,7 +32,9 @@ pub struct Receipt {
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// The source is not at a weekly wall; ordinary quota recovery still owns it.
+    /// The source is at no usage wall the host would leave for another account
+    /// (none at all, or one too near its own reset); ordinary quota recovery
+    /// still owns it.
     NotNeeded,
     Waiting(Option<Receipt>),
     Ready(Receipt),
@@ -255,6 +257,78 @@ mod tests {
         }
         let failure = parse("ERR secret-token-value").err().map(|e| e.to_string());
         assert!(failure.is_some_and(|error| !error.contains("secret-token-value")));
+    }
+
+    /// The fake's standing reply ([`crate::fake::FakeAterm::reply_always`]): a host with no
+    /// destination answers `waiting` at every ask, a one-time reply goes first, and once the
+    /// standing reply is cleared the fake answers the verb itself (it knows none).
+    #[tokio::test]
+    async fn a_host_whose_answer_stands_gives_it_at_every_ask() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let host = crate::fake::FakeAterm::start(dir.path(), crate::fake::Mode::Current)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let client = Client::connect(host.endpoint(), crate::Options::default())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        client
+            .harness_policy()
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        client
+            .claim()
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let origin = Origin {
+            thread: "00000000-0000-0000-0000-000000000001".into(),
+            turn: "00000000-0000-0000-0000-000000000002".into(),
+            identity: Identity {
+                account: "a".repeat(64),
+                user: "b".repeat(64),
+            },
+        };
+        let command = format!(
+            "@{} codex-rotation prepare thread={} turn={} source_account={} source_user={}",
+            host.sid(),
+            origin.thread,
+            origin.turn,
+            origin.identity.account,
+            origin.identity.user
+        );
+        host.reply_always(&command, "OK codex-rotation state=waiting\n");
+        for _ in 0..3 {
+            assert!(matches!(
+                client.rotation_prepare(&origin).await,
+                Ok(Outcome::Waiting(None))
+            ));
+        }
+        host.reply_once(&command, "OK codex-rotation state=not-needed\n");
+        assert!(matches!(
+            client.rotation_prepare(&origin).await,
+            Ok(Outcome::NotNeeded)
+        ));
+        assert!(matches!(
+            client.rotation_prepare(&origin).await,
+            Ok(Outcome::Waiting(None))
+        ));
+        // Another command is not answered by it.
+        let other = Origin {
+            turn: "00000000-0000-0000-0000-000000000003".into(),
+            ..origin.clone()
+        };
+        assert!(client.rotation_prepare(&other).await.is_err());
+        assert!(host.reply_always_clear(&command));
+        assert!(!host.reply_always_clear(&command));
+        assert!(
+            client.rotation_prepare(&origin).await.is_err(),
+            "the fake knows no codex-rotation verb of its own"
+        );
+        let asked = host
+            .requests()
+            .iter()
+            .filter(|request| request.contains("codex-rotation prepare"))
+            .count();
+        assert_eq!(asked, 7, "every ask reached the host and was recorded");
     }
 
     #[tokio::test]

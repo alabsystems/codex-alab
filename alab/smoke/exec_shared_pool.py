@@ -4,7 +4,6 @@
 """Exercise concurrent native exec sessions against one shared aterm account pool."""
 import argparse
 from contextlib import ExitStack
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -16,6 +15,7 @@ import time
 
 import capacity_exec as probe
 import exec_accounts
+import native_host_record
 import renewal_follow as native
 
 
@@ -99,21 +99,17 @@ def main():
     probe.require(not args.late_prepare or args.chain, "late preparation requires a target-changing chain")
     build, _, codex = probe.package_records(args.package.resolve(strict=True))
     host = args.host.resolve(strict=True)
-    host_record_file = host.parent / "build.json"
-    probe.require(host_record_file.is_file() and not host_record_file.is_symlink()
-                  and host_record_file.stat().st_size <= 1024 * 1024, "native host build record missing")
-    host_record = json.loads(host_record_file.read_text())
-    probe.require(isinstance(host_record.get("source"), str)
-                  and re.fullmatch(r"[0-9a-f]{40}", host_record["source"])
-                  and host_record.get("host_sha256") == hashlib.sha256(host.read_bytes()).hexdigest(),
-                  "native host does not match its build record")
+    host_record = native_host_record.load(host)
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
     common = probe.fresh_environment(root)
     common.update(ATERM_HARNESS_STATE=str(root / "host-state"), XDG_CONFIG_HOME=str(root / "config"))
     model = Cohort(root, args.sessions, args.canary_delay, args.chain)
     server, server_thread = native.serve(model)
-    report = {"passed": False, "source": build["source"], "nativeSource": host_record["source"],
+    report = {"passed": False, "source": build["source"],
+              # The record's attestation travels with its source: a trial host's commit is
+              # not a qualified one.
+              "nativeHost": native_host_record.summary(host_record),
               "sessions": args.sessions, "canaryDelay": args.canary_delay, "chain": args.chain,
               "completionBudgetSeconds": args.completion_timeout, "latePrepare": args.late_prepare,
               "sharedPool": str(root / "host-state")}
@@ -176,6 +172,8 @@ def main():
             deadline = time.monotonic() + args.completion_timeout + args.canary_delay
             exit_codes = [None] * args.sessions
             while time.monotonic() < deadline:
+                # A reply the fixture could not build would keep every walled turn polling.
+                native.require_no_fixture_fault(model)
                 if args.late_prepare and all((worker / "prepare-ack-paused").is_file() for worker in workers):
                     for worker in workers[1:]:
                         (worker / "continue-prepare-ack").touch(exist_ok=True)
@@ -208,6 +206,8 @@ def main():
                 (worker / "stop").touch()
             for process in processes:
                 probe.require(process.wait(timeout=60) == 0, "native cohort host failed")
+        # Before any verdict: a fault after the loop's last pass explains what follows it.
+        native.require_no_fixture_fault(model)
         probe.require(model.all_waiting.is_set(), "cohort did not overlap at the quota boundary")
         if args.late_prepare:
             probe.require(all((worker / "prepare-ack-paused").is_file() for worker in workers)
@@ -288,6 +288,7 @@ def main():
                 process.wait(timeout=60)
         server.shutdown()
         server_thread.join()
+        server.server_close()
         probe.write_json(root / "result.json", report)
     print(json.dumps(report, indent=2))
     return 0

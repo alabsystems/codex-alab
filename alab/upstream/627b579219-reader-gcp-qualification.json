@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T18:01:39.959333+00:00",
+  "source": "2ca50eef46184a2e47bb5455c4fecc437ee0eb1a",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "auth::manager::alab_native_member::tests::native_managed_direct_reader_owns_real_reader_lifetime",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::incremental_tools::incremental_tools_append_changed_catalog_without_rewriting_history::gcp_provider_id",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::incremental_tools::incremental_tools_append_changed_catalog_without_rewriting_history::gcp_provider_id_incremental",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-reader-gcp-native.sh",
+      "sha256": "3456f3a994dc24d0b5f585f856f26de740e1cde2d1de348c45ea6649907e6f13"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-reader-gcp-native.log",
+      "sha256": "c006a0a4ae344256addda8f21bfa248d0517f02df27325aadbbaf70bc8ed901a"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-reader-gcp-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Controller24788 terminal0 exact combined upstream627/current-main/Cloud-binding source. Actual native managed direct-reader HTTP fixture passed positive response/body and retained-client refusal after ReaderLoaded replacement/Ready, with exactly one server request. Both GCP catalog-update scenarios passed enabled/disabled, preserving historical inputs. Does not qualify actual Cloud protocol/service retirement, corrected TUI fixture source, final full gate or installed adoption."
+}

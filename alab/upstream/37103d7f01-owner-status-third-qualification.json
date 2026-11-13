@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:25:58.646533+00:00",
+  "source": "e39d4e84d600b5eaedbb7545f9d39ff34435d411",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "message_processor::workspace_routing_tests::background_routing_call_sites_skip_config::api_key",
+      "status": "ok"
+    },
+    {
+      "name": "message_processor::workspace_routing_tests::background_routing_call_sites_skip_config::signed_out",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-native-r3.sh",
+      "sha256": "d824380f446efdd25e522cf07f5131750f78f1cc57850c4adfb2fb31c84d5592"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-native-r3.log",
+      "sha256": "b26c617044b14f153cd7ca1e064a92b11d47dc30ace70fd420ed432698355630"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-native-r3.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Owner prerequisite passed; real status returned Unsupported because the fixture omitted trusted features.use_xaa opt-in. No MCP owner pass claimed. Routing cases passed (2). Later corrected run is separate."
+}

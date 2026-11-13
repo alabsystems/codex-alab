@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T17:01:57.798801+00:00",
+  "source": "0c75dc7d2daa9ae45a4b9a88d4b157bb69b51289",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "combined_auth::alab_cookie::tests::gateway_cookie_rejects_injected_pairs_without_echoing_credentials",
+      "status": "ok"
+    },
+    {
+      "name": "combined_auth::alab_cookie::tests::gateway_cookie_preserves_opaque_commas_and_sensitive_delivery",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gateway_auth::command_gateway_authenticates_without_an_oauth_grant_and_caches_the_token",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-gateway-cookie-native.sh",
+      "sha256": "c616d859dbb0a4616e88873249eb6f03cc2d62095b9f531f6f02f109244d777b"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-gateway-cookie-native.log",
+      "sha256": "e536ac6587f289db832acd982407ba9567b3cf70dd80416c649bdfc2b0b9fc0e"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-gateway-cookie-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Controller18587 terminal1. Two cookie boundary regressions and real command-backed gateway comma-token/cache integration passed. Incorrect provider-info filename filter gateway_oauth_tests:: selected zero tests and was rejected. This is a partial/negative observation, not a passing qualification. Correct module gateway_oauth::tests:: queued on formatted source. Full gate must include the cookie correction."
+}

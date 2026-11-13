@@ -5,8 +5,6 @@ use std::sync::atomic::Ordering;
 
 use codex_core::StartIfIdleSubmission;
 use codex_core::ThreadManager;
-use codex_core::TurnInput;
-use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
@@ -18,7 +16,7 @@ use crate::analytics::GoalAnalytics;
 use crate::analytics::GoalEventAttribution;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
-use crate::steering::continuation_steering_item;
+use crate::steering::continuation_request;
 use crate::steering::objective_updated_steering_item;
 use crate::tool::protocol_goal_from_state;
 use tokio::sync::Semaphore;
@@ -52,9 +50,11 @@ pub(crate) enum ActiveGoalStopReason {
 }
 
 struct GoalRuntimeInner {
+    alab_startup: std::sync::Mutex<Option<codex_alab_core::upgrade_startup_hold::Fence>>, // ALAB(upgrade): restored goals remain held through native forest activation.
     alab_auth_deferred: AtomicBool, // ALAB(renewal): pending original-turn recovery owns idle continuation.
     alab_auth_transient: std::sync::Mutex<(u64, bool)>, // ALAB(renewal): token-owned live-only recovery latch.
     alab_recovery: Arc<codex_alab_core::goal_recovery::GoalAdmissionRecovery>, // ALAB(goal-recovery): one recovery owner per runtime
+    alab_upgrade: Arc<codex_alab_core::upgrade_barrier::State>, // ALAB(upgrade): goal writers revoke preparation before they mutate state.
     thread_id: ThreadId,
     state_dbs: Arc<codex_state::StateRuntime>,
     analytics: GoalAnalytics,
@@ -109,9 +109,11 @@ impl GoalRuntimeHandle {
     ) -> Self {
         Self {
             inner: Arc::new(GoalRuntimeInner {
+                alab_startup: std::sync::Mutex::new(None), // ALAB(upgrade): only the actual bootstrap installs a startup hold.
                 alab_auth_deferred: AtomicBool::new(false), // ALAB(renewal): only an explicit pending receipt defers continuation.
                 alab_auth_transient: std::sync::Mutex::new((0, false)), // ALAB(renewal): no transient latch survives process recreation.
                 alab_recovery: Arc::default(), // ALAB(goal-recovery): initially no admission failure is owed
+                alab_upgrade: Arc::default(), // ALAB(upgrade): no process transfer is initially prepared.
                 thread_id,
                 state_dbs,
                 analytics: config.analytics,
@@ -129,7 +131,9 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) fn set_enabled(&self, enabled: bool) {
+        self.alab_startup_configuration_changing(enabled); // ALAB(upgrade): a changed goal policy revokes destination activation.
         self.inner.enabled.store(enabled, Ordering::Relaxed);
+        self.alab_goal_configuration_changed(); // ALAB(upgrade): a configuration change revokes a prepared goal handoff.
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
@@ -167,11 +171,7 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
-        self.inner
-            .goal_state_lock
-            .acquire()
-            .await
-            .map_err(|err| err.to_string())
+        self.alab_native_goal_state_permit().await // ALAB(upgrade): native admissions participate in the transfer's final decision.
     }
 
     pub async fn prepare_external_goal_mutation(&self) -> Result<(), String> {
@@ -431,6 +431,7 @@ impl GoalRuntimeHandle {
     }
 
     pub async fn restore_after_resume(&self) -> Result<(), String> {
+        if self.alab_startup_pending() { return Ok(()); } // ALAB(upgrade): source clock adoption precedes native accounting startup.
         if !self.is_enabled() {
             return Ok(());
         }
@@ -455,7 +456,7 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
-        if self.alab_auth_recovery_deferred() { return Ok(()); } // ALAB(renewal): receipt recovery must not race a new goal turn.
+        if self.alab_idle_continuation_deferred() { return Ok(()); } // ALAB(renewal): receipt recovery and committed upgrades must not race a new goal turn.
         if !self.tools_available() {
             self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): disabled goal execution retires admission recovery
             self.inner.accounting_state.clear_active_goal();
@@ -464,7 +465,7 @@ impl GoalRuntimeHandle {
         // Hold this through the read/start window so external set/clear cannot
         // change the goal after we read it but before the continuation launches.
         let _goal_state_permit = self.goal_state_permit().await?;
-        if self.alab_auth_recovery_deferred() { return Ok(()); } // ALAB(renewal): a queued continuation must recheck admission custody under the permit.
+        if self.alab_idle_continuation_deferred() { return Ok(()); } // ALAB(renewal): a queued continuation must recheck admission custody under the permit.
         if !self.inner.alab_recovery.permits_current_attempt() { return Ok(()); } // ALAB(goal-recovery): revalidate a recovery ticket under the existing goal mutation permit
 
         if self
@@ -512,18 +513,16 @@ impl GoalRuntimeHandle {
             .get::<TurnStartOptions>()
             .map(|options| options.as_ref().clone())
             .unwrap_or_default();
-        let item = continuation_steering_item(
+        let request = continuation_request(
             &protocol_goal_from_state(goal),
             thread.config().await.update_plan_enabled,
         );
 
         match thread
-            .start_turn_if_idle(
-                TurnInputRequest::new(TurnInput::ResponseItem(item)).on_start(TurnStartOptions {
-                    turn_trigger: Some("goal".to_string()),
-                    ..start_options
-                }),
-            )
+            .start_turn_if_idle(request.on_start(TurnStartOptions {
+                turn_trigger: Some("goal".to_string()),
+                ..start_options
+            }))
             .await
         {
             Ok(StartIfIdleSubmission::Started { turn_id, .. }) => {

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Actual App backend dispatch controls. Session selection uses the native widget's session
-//! handler; lifecycle notifications enter through handle_polled_backend_event, never State.
+//! handler and first-observed backend registry; lifecycle notifications enter through
+//! handle_polled_backend_event, never State. Conflicting native IDs cannot acquire a second owner.
 
 use super::*;
 use crate::app::tests::make_test_app_with_channels;
@@ -33,6 +34,10 @@ fn backend() -> AppServerSession {
 }
 
 fn select(app: &mut App, owner: BackendId, thread: ThreadId) {
+    assert!(
+        app.backend_registry.observe(owner, thread),
+        "a fixture cannot select a thread registered to another backend"
+    );
     app.alab_backend_bookkeeping.displayed(owner);
     let session = test_thread_session(thread, app.config.cwd.to_path_buf());
     app.active_thread_id = Some(thread);
@@ -79,9 +84,12 @@ async fn poll(
     owner: BackendId,
     event: AppServerEvent,
 ) {
+    // These lifecycle-only fixtures have no retained input for this backend.
+    let mut parked_inputs = Default::default();
     app.handle_polled_backend_event(
         session,
         displayed,
+        &mut parked_inputs,
         AppServerSessionEvent {
             backend_id: owner,
             event,
@@ -221,58 +229,200 @@ async fn parked_close_lag_and_disconnect_retire_only_their_observed_backend() {
 }
 
 #[tokio::test]
-async fn reused_native_thread_and_turn_ids_keep_the_other_backends_seen_owner() {
+async fn parked_thread_stream_loss_preserves_other_threads_and_backend_owners() {
     let shared: &'static boxes::Shared = Box::leak(Box::new(boxes::Shared::new()));
     let _scope = boxes::scoped(shared);
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
     let a = backend();
     let b = backend();
-    let same_thread = ThreadId::new();
+    let lost = ThreadId::new();
+    let sibling = ThreadId::new();
     select(&mut app, a.backend_id(), ThreadId::new());
-    app.ensure_thread_channel(same_thread);
-    poll(
-        &mut app,
-        &a,
-        a.backend_id(),
-        a.backend_id(),
-        started(same_thread, "same-turn"),
-    )
-    .await;
-    select(&mut app, b.backend_id(), ThreadId::new());
+    for thread in [lost, sibling] {
+        app.ensure_thread_channel(thread);
+        poll(
+            &mut app,
+            &a,
+            a.backend_id(),
+            a.backend_id(),
+            started(thread, "turn"),
+        )
+        .await;
+    }
+    let shown = ThreadId::new();
+    let side_b = ThreadId::new();
+    select(&mut app, b.backend_id(), shown);
+    app.ensure_thread_channel(side_b);
     poll(
         &mut app,
         &b,
         b.backend_id(),
         b.backend_id(),
-        started(same_thread, "same-turn"),
+        started(side_b, "turn"),
     )
     .await;
+    app.chat_widget.insert_str("keep the displayed draft");
+    let before = app.chat_widget.composer_text_with_pending();
     poll(
         &mut app,
         &a,
         b.backend_id(),
         a.backend_id(),
-        AppServerEvent::ServerNotification(Box::new(ServerNotification::ThreadClosed(
-            ThreadClosedNotification {
-                thread_id: same_thread.to_string(),
-            },
-        ))),
+        AppServerEvent::ThreadStreamReconnected(lost.to_string()),
     )
     .await;
     assert!(
-        shared.turn_seen_besides(None),
-        "A close cannot clear the identical key still owned by B"
+        app.alab_backend_bookkeeping.seen.borrow()[&a.backend_id()]
+            .contains(&(lost.to_string(), "turn".into()))
     );
+    assert!(!shared.tui_handled_end(&lost.to_string(), "turn"));
+    let error = serde_json::from_value(serde_json::json!({
+        "threadId": lost.to_string(), "turnId": "", "willRetry": false,
+        "error": { "message": "Cloud thread stream ended" }
+    }))
+    .unwrap();
+    poll(
+        &mut app,
+        &a,
+        b.backend_id(),
+        a.backend_id(),
+        AppServerEvent::ThreadStreamDisconnected(Box::new(error)),
+    )
+    .await;
+    poll(
+        &mut app,
+        &a,
+        b.backend_id(),
+        a.backend_id(),
+        AppServerEvent::ThreadStreamReconnected(lost.to_string()),
+    )
+    .await;
+    assert!(
+        !app.alab_backend_bookkeeping.seen.borrow()[&a.backend_id()]
+            .contains(&(lost.to_string(), "turn".into()))
+    );
+    assert!(!shared.tui_handled_end(&lost.to_string(), "turn"));
+    assert!(shared.turn_seen_besides(Some(&sibling.to_string())));
+    // Once B finishes its own turn, only A's sibling should remain seen.
     poll(
         &mut app,
         &b,
         b.backend_id(),
         b.backend_id(),
-        completed(same_thread, "same-turn"),
+        completed(side_b, "turn"),
+    )
+    .await;
+    assert!(!shared.turn_seen_besides(Some(&sibling.to_string())));
+    assert!(shared.turn_seen_besides(Some(&lost.to_string())));
+    assert_eq!(app.current_displayed_thread_id(), Some(shown));
+    assert_eq!(app.chat_widget.composer_text_with_pending(), before);
+    poll(
+        &mut app,
+        &a,
+        b.backend_id(),
+        a.backend_id(),
+        completed(sibling, "turn"),
     )
     .await;
     assert!(!shared.turn_seen_besides(None));
     assert!(app.alab_backend_bookkeeping.seen.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn conflicting_backend_notifications_preserve_the_registered_thread_owner() {
+    let shared: &'static boxes::Shared = Box::leak(Box::new(boxes::Shared::new()));
+    let _scope = boxes::scoped(shared);
+    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    app.chat_widget
+        .set_feature_enabled(crate::Feature::Goals, /*enabled*/ true);
+    let a = backend();
+    let b = backend();
+    let owned = ThreadId::new();
+    let shown_b = ThreadId::new();
+    select(&mut app, a.backend_id(), owned);
+    poll(
+        &mut app,
+        &a,
+        a.backend_id(),
+        a.backend_id(),
+        started(owned, "same-turn"),
+    )
+    .await;
+    poll(
+        &mut app,
+        &a,
+        a.backend_id(),
+        a.backend_id(),
+        AppServerEvent::ServerNotification(Box::new(active_goal(owned, "A's registered goal"))),
+    )
+    .await;
+    select(&mut app, b.backend_id(), shown_b);
+    poll(
+        &mut app,
+        &b,
+        b.backend_id(),
+        b.backend_id(),
+        AppServerEvent::ServerNotification(Box::new(active_goal(shown_b, "B's displayed goal"))),
+    )
+    .await;
+    app.chat_widget
+        .insert_str("B's draft survives conflicting IDs");
+    let before = app.chat_widget.composer_text_with_pending();
+    // These envelopes are authentic B events, but their native ID remains owned by A.
+    for event in [
+        started(owned, "same-turn"),
+        completed(owned, "same-turn"),
+        AppServerEvent::ServerNotification(Box::new(active_goal(owned, "conflicting B goal"))),
+        AppServerEvent::ServerNotification(Box::new(ServerNotification::ThreadGoalCleared(
+            ThreadGoalClearedNotification {
+                thread_id: owned.to_string(),
+            },
+        ))),
+        closed(owned),
+    ] {
+        poll(&mut app, &b, b.backend_id(), b.backend_id(), event).await;
+        assert_eq!(app.backend_registry.owner(owned), Some(a.backend_id()));
+        assert!(shared.turn_seen_besides(Some(&shown_b.to_string())));
+        assert_eq!(
+            shared.goal(&owned.to_string()).as_deref(),
+            Some("A's registered goal")
+        );
+        assert!(
+            !app.alab_backend_bookkeeping
+                .seen
+                .borrow()
+                .contains_key(&b.backend_id())
+        );
+        let goals = app.alab_backend_bookkeeping.goals.borrow();
+        let owners = &goals[&owned.to_string()];
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].owner, a.backend_id());
+    }
+    assert_eq!(app.current_displayed_thread_id(), Some(shown_b));
+    assert_eq!(app.chat_widget.composer_text_with_pending(), before);
+    poll(
+        &mut app,
+        &a,
+        b.backend_id(),
+        a.backend_id(),
+        AppServerEvent::ServerNotification(Box::new(ServerNotification::ThreadGoalCleared(
+            ThreadGoalClearedNotification {
+                thread_id: owned.to_string(),
+            },
+        ))),
+    )
+    .await;
+    assert!(shared.goal(&owned.to_string()).is_none());
+    assert!(shared.turn_seen_besides(Some(&shown_b.to_string())));
+    poll(&mut app, &a, b.backend_id(), a.backend_id(), closed(owned)).await;
+    assert!(!shared.turn_seen_besides(None));
+    assert!(app.alab_backend_bookkeeping.seen.borrow().is_empty());
+    assert_eq!(
+        shared.goal(&shown_b.to_string()).as_deref(),
+        Some("B's displayed goal")
+    );
+    assert_eq!(app.current_displayed_thread_id(), Some(shown_b));
+    assert_eq!(app.chat_widget.composer_text_with_pending(), before);
 }
 
 fn active_goal(thread: ThreadId, objective: &str) -> ServerNotification {
@@ -306,79 +456,6 @@ fn closed(thread: ThreadId) -> AppServerEvent {
 
 #[tokio::test]
 async fn parked_close_retires_snapshot_goals_without_erasing_the_displayed_owner() {
-    for collision in [false, true] {
-        let shared: &'static boxes::Shared = Box::leak(Box::new(boxes::Shared::new()));
-        let _scope = boxes::scoped(shared);
-        let (mut app, _events, _ops) = make_test_app_with_channels().await;
-        app.chat_widget
-            .set_feature_enabled(crate::Feature::Goals, /*enabled*/ true);
-        let a = backend();
-        let b = backend();
-        let thread_a = ThreadId::new();
-        let thread_b = if collision { thread_a } else { ThreadId::new() };
-        // These goals already stand in the native widget when its frame observes them;
-        // no routed GoalUpdated has populated backend bookkeeping for either one.
-        select(&mut app, a.backend_id(), thread_a);
-        app.chat_widget
-            .handle_server_notification(active_goal(thread_a, "same active objective"), None);
-        crate::app::alab_session::observe(&app);
-        assert_eq!(
-            shared.goal(&thread_a.to_string()).as_deref(),
-            Some("same active objective")
-        );
-        select(&mut app, b.backend_id(), thread_b);
-        app.chat_widget
-            .handle_server_notification(active_goal(thread_b, "same active objective"), None);
-        crate::app::alab_session::observe(&app);
-        app.chat_widget.insert_str("B's goal and draft remain");
-        let before = app.chat_widget.composer_text_with_pending();
-
-        poll(
-            &mut app,
-            &b,
-            b.backend_id(),
-            a.backend_id(),
-            closed(thread_a),
-        )
-        .await;
-        assert_eq!(
-            shared.goal(&thread_a.to_string()).as_deref(),
-            Some("same active objective"),
-            "a mismatched source owns no closure"
-        );
-        poll(
-            &mut app,
-            &a,
-            b.backend_id(),
-            a.backend_id(),
-            closed(thread_a),
-        )
-        .await;
-        if !collision {
-            assert!(shared.goal(&thread_a.to_string()).is_none());
-        }
-        assert_eq!(
-            shared.goal(&thread_b.to_string()).as_deref(),
-            Some("same active objective"),
-            "B survives even with the identical native key and objective"
-        );
-        assert_eq!(app.current_displayed_thread_id(), Some(thread_b));
-        assert_eq!(app.chat_widget.composer_text_with_pending(), before);
-        poll(
-            &mut app,
-            &b,
-            b.backend_id(),
-            b.backend_id(),
-            closed(thread_b),
-        )
-        .await;
-        assert!(shared.goal(&thread_b.to_string()).is_none());
-        assert!(app.alab_backend_bookkeeping.goals.borrow().is_empty());
-    }
-}
-
-#[tokio::test]
-async fn routed_goal_clear_restores_the_other_backend_owner_before_its_close() {
     let shared: &'static boxes::Shared = Box::leak(Box::new(boxes::Shared::new()));
     let _scope = boxes::scoped(shared);
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
@@ -386,27 +463,97 @@ async fn routed_goal_clear_restores_the_other_backend_owner_before_its_close() {
         .set_feature_enabled(crate::Feature::Goals, /*enabled*/ true);
     let a = backend();
     let b = backend();
-    let thread = ThreadId::new();
-    select(&mut app, a.backend_id(), thread);
+    let thread_a = ThreadId::new();
+    let thread_b = ThreadId::new();
+    // These goals already stand in the native widget when its frame observes them;
+    // no routed GoalUpdated has populated backend bookkeeping for either one.
+    select(&mut app, a.backend_id(), thread_a);
+    app.chat_widget
+        .handle_server_notification(active_goal(thread_a, "same active objective"), None);
+    crate::app::alab_session::observe(&app);
+    assert_eq!(
+        shared.goal(&thread_a.to_string()).as_deref(),
+        Some("same active objective")
+    );
+    select(&mut app, b.backend_id(), thread_b);
+    app.chat_widget
+        .handle_server_notification(active_goal(thread_b, "same active objective"), None);
+    crate::app::alab_session::observe(&app);
+    app.chat_widget.insert_str("B's goal and draft remain");
+    let before = app.chat_widget.composer_text_with_pending();
+
+    poll(
+        &mut app,
+        &b,
+        b.backend_id(),
+        a.backend_id(),
+        closed(thread_a),
+    )
+    .await;
+    assert_eq!(
+        shared.goal(&thread_a.to_string()).as_deref(),
+        Some("same active objective"),
+        "a mismatched source owns no closure"
+    );
     poll(
         &mut app,
         &a,
+        b.backend_id(),
         a.backend_id(),
-        a.backend_id(),
-        AppServerEvent::ServerNotification(Box::new(active_goal(thread, "A's active goal"))),
+        closed(thread_a),
     )
     .await;
-    select(&mut app, b.backend_id(), thread);
+    assert!(shared.goal(&thread_a.to_string()).is_none());
+    assert_eq!(
+        shared.goal(&thread_b.to_string()).as_deref(),
+        Some("same active objective"),
+        "B retains the same objective under its distinct registered thread"
+    );
+    assert_eq!(app.current_displayed_thread_id(), Some(thread_b));
+    assert_eq!(app.chat_widget.composer_text_with_pending(), before);
     poll(
         &mut app,
         &b,
         b.backend_id(),
         b.backend_id(),
-        AppServerEvent::ServerNotification(Box::new(active_goal(thread, "B's active goal"))),
+        closed(thread_b),
+    )
+    .await;
+    assert!(shared.goal(&thread_b.to_string()).is_none());
+    assert!(app.alab_backend_bookkeeping.goals.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn routed_goal_clear_preserves_the_other_backend_goal_before_its_close() {
+    let shared: &'static boxes::Shared = Box::leak(Box::new(boxes::Shared::new()));
+    let _scope = boxes::scoped(shared);
+    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    app.chat_widget
+        .set_feature_enabled(crate::Feature::Goals, /*enabled*/ true);
+    let a = backend();
+    let b = backend();
+    let thread_a = ThreadId::new();
+    let thread_b = ThreadId::new();
+    select(&mut app, a.backend_id(), thread_a);
+    poll(
+        &mut app,
+        &a,
+        a.backend_id(),
+        a.backend_id(),
+        AppServerEvent::ServerNotification(Box::new(active_goal(thread_a, "A's active goal"))),
+    )
+    .await;
+    select(&mut app, b.backend_id(), thread_b);
+    poll(
+        &mut app,
+        &b,
+        b.backend_id(),
+        b.backend_id(),
+        AppServerEvent::ServerNotification(Box::new(active_goal(thread_b, "B's active goal"))),
     )
     .await;
     assert_eq!(
-        shared.goal(&thread.to_string()).as_deref(),
+        shared.goal(&thread_b.to_string()).as_deref(),
         Some("B's active goal")
     );
     poll(
@@ -416,162 +563,166 @@ async fn routed_goal_clear_restores_the_other_backend_owner_before_its_close() {
         b.backend_id(),
         AppServerEvent::ServerNotification(Box::new(ServerNotification::ThreadGoalCleared(
             ThreadGoalClearedNotification {
-                thread_id: thread.to_string(),
+                thread_id: thread_b.to_string(),
             },
         ))),
     )
     .await;
     assert_eq!(
-        shared.goal(&thread.to_string()).as_deref(),
+        shared.goal(&thread_a.to_string()).as_deref(),
         Some("A's active goal")
     );
-    poll(&mut app, &a, b.backend_id(), a.backend_id(), closed(thread)).await;
-    assert!(shared.goal(&thread.to_string()).is_none());
+    assert!(shared.goal(&thread_b.to_string()).is_none());
+    poll(
+        &mut app,
+        &a,
+        b.backend_id(),
+        a.backend_id(),
+        closed(thread_a),
+    )
+    .await;
+    assert!(shared.goal(&thread_a.to_string()).is_none());
     assert!(app.alab_backend_bookkeeping.goals.borrow().is_empty());
 }
 
 #[tokio::test]
 async fn parked_goal_clear_and_completion_cannot_be_restored_by_a_later_displayed_clear() {
-    for collision in [false, true] {
-        for clear in [false, true] {
-            let shared: &'static boxes::Shared = Box::leak(Box::new(boxes::Shared::new()));
-            let _scope = boxes::scoped(shared);
-            let (mut app, _events, _ops) = make_test_app_with_channels().await;
-            app.chat_widget
-                .set_feature_enabled(crate::Feature::Goals, /*enabled*/ true);
-            let a = backend();
-            let b = backend();
-            let thread_a = ThreadId::new();
-            let thread_b = if collision { thread_a } else { ThreadId::new() };
-            select(&mut app, a.backend_id(), thread_a);
-            poll(
-                &mut app,
-                &a,
-                a.backend_id(),
-                a.backend_id(),
-                AppServerEvent::ServerNotification(Box::new(active_goal(thread_a, "A original"))),
-            )
-            .await;
-            select(&mut app, b.backend_id(), thread_b);
-            poll(
-                &mut app,
-                &b,
-                b.backend_id(),
-                b.backend_id(),
-                AppServerEvent::ServerNotification(Box::new(active_goal(thread_b, "B active"))),
-            )
-            .await;
-            app.chat_widget
-                .insert_str("B's draft survives parked lifecycle");
-            let before = app.chat_widget.composer_text_with_pending();
-            let ending = |thread: ThreadId| {
-                if clear {
-                    ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
-                        thread_id: thread.to_string(),
-                    })
-                } else {
-                    goal_status(thread, "completed objective", ThreadGoalStatus::Complete)
-                }
-            };
-            // The forged envelope must not retire A, including when B currently hides its
-            // shared key. Clearing B exposes the retained A contribution as a negative control.
-            poll(
-                &mut app,
-                &b,
-                b.backend_id(),
-                a.backend_id(),
-                AppServerEvent::ServerNotification(Box::new(ending(thread_a))),
-            )
-            .await;
-            poll(
-                &mut app,
-                &b,
-                b.backend_id(),
-                b.backend_id(),
-                AppServerEvent::ServerNotification(Box::new(
-                    ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
-                        thread_id: thread_b.to_string(),
-                    }),
-                )),
-            )
-            .await;
-            assert_eq!(
-                shared.goal(&thread_a.to_string()).as_deref(),
-                Some("A original")
-            );
-            poll(
-                &mut app,
-                &b,
-                b.backend_id(),
-                b.backend_id(),
-                AppServerEvent::ServerNotification(Box::new(active_goal(thread_b, "B active"))),
-            )
-            .await;
-
-            poll(
-                &mut app,
-                &a,
-                b.backend_id(),
-                a.backend_id(),
-                AppServerEvent::ServerNotification(Box::new(active_goal(
-                    thread_a,
-                    "A updated while parked",
-                ))),
-            )
-            .await;
-            assert_eq!(
-                shared.goal(&thread_b.to_string()).as_deref(),
-                Some("B active")
-            );
-            let unadmitted = ThreadId::new();
-            poll(
-                &mut app,
-                &a,
-                b.backend_id(),
-                a.backend_id(),
-                AppServerEvent::ServerNotification(Box::new(active_goal(
-                    unadmitted,
-                    "must not create a parked goal",
-                ))),
-            )
-            .await;
-            assert!(shared.goal(&unadmitted.to_string()).is_none());
-
-            poll(
-                &mut app,
-                &a,
-                b.backend_id(),
-                a.backend_id(),
-                AppServerEvent::ServerNotification(Box::new(ending(thread_a))),
-            )
-            .await;
-            assert_eq!(
-                shared.goal(&thread_b.to_string()).as_deref(),
-                Some("B active")
-            );
-            if !collision {
-                assert!(shared.goal(&thread_a.to_string()).is_none());
+    for clear in [false, true] {
+        let shared: &'static boxes::Shared = Box::leak(Box::new(boxes::Shared::new()));
+        let _scope = boxes::scoped(shared);
+        let (mut app, _events, _ops) = make_test_app_with_channels().await;
+        app.chat_widget
+            .set_feature_enabled(crate::Feature::Goals, /*enabled*/ true);
+        let a = backend();
+        let b = backend();
+        let thread_a = ThreadId::new();
+        let thread_b = ThreadId::new();
+        select(&mut app, a.backend_id(), thread_a);
+        poll(
+            &mut app,
+            &a,
+            a.backend_id(),
+            a.backend_id(),
+            AppServerEvent::ServerNotification(Box::new(active_goal(thread_a, "A original"))),
+        )
+        .await;
+        select(&mut app, b.backend_id(), thread_b);
+        poll(
+            &mut app,
+            &b,
+            b.backend_id(),
+            b.backend_id(),
+            AppServerEvent::ServerNotification(Box::new(active_goal(thread_b, "B active"))),
+        )
+        .await;
+        app.chat_widget
+            .insert_str("B's draft survives parked lifecycle");
+        let before = app.chat_widget.composer_text_with_pending();
+        let ending = |thread: ThreadId| {
+            if clear {
+                ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                    thread_id: thread.to_string(),
+                })
+            } else {
+                goal_status(thread, "completed objective", ThreadGoalStatus::Complete)
             }
-            assert_eq!(app.current_displayed_thread_id(), Some(thread_b));
-            assert_eq!(app.chat_widget.composer_text_with_pending(), before);
-            poll(
-                &mut app,
-                &b,
-                b.backend_id(),
-                b.backend_id(),
-                AppServerEvent::ServerNotification(Box::new(
-                    ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
-                        thread_id: thread_b.to_string(),
-                    }),
-                )),
-            )
-            .await;
-            assert!(
-                shared.goal(&thread_a.to_string()).is_none(),
-                "clearing B must not restore A's retired goal"
-            );
-            assert!(shared.goal(&thread_b.to_string()).is_none());
-            assert!(app.alab_backend_bookkeeping.goals.borrow().is_empty());
-        }
+        };
+        // A forged envelope must not retire A. Clearing B independently keeps A
+        // visible as a negative control.
+        poll(
+            &mut app,
+            &b,
+            b.backend_id(),
+            a.backend_id(),
+            AppServerEvent::ServerNotification(Box::new(ending(thread_a))),
+        )
+        .await;
+        poll(
+            &mut app,
+            &b,
+            b.backend_id(),
+            b.backend_id(),
+            AppServerEvent::ServerNotification(Box::new(ServerNotification::ThreadGoalCleared(
+                ThreadGoalClearedNotification {
+                    thread_id: thread_b.to_string(),
+                },
+            ))),
+        )
+        .await;
+        assert_eq!(
+            shared.goal(&thread_a.to_string()).as_deref(),
+            Some("A original")
+        );
+        poll(
+            &mut app,
+            &b,
+            b.backend_id(),
+            b.backend_id(),
+            AppServerEvent::ServerNotification(Box::new(active_goal(thread_b, "B active"))),
+        )
+        .await;
+
+        poll(
+            &mut app,
+            &a,
+            b.backend_id(),
+            a.backend_id(),
+            AppServerEvent::ServerNotification(Box::new(active_goal(
+                thread_a,
+                "A updated while parked",
+            ))),
+        )
+        .await;
+        assert_eq!(
+            shared.goal(&thread_b.to_string()).as_deref(),
+            Some("B active")
+        );
+        let unadmitted = ThreadId::new();
+        poll(
+            &mut app,
+            &a,
+            b.backend_id(),
+            a.backend_id(),
+            AppServerEvent::ServerNotification(Box::new(active_goal(
+                unadmitted,
+                "must not create a parked goal",
+            ))),
+        )
+        .await;
+        assert!(shared.goal(&unadmitted.to_string()).is_none());
+
+        poll(
+            &mut app,
+            &a,
+            b.backend_id(),
+            a.backend_id(),
+            AppServerEvent::ServerNotification(Box::new(ending(thread_a))),
+        )
+        .await;
+        assert_eq!(
+            shared.goal(&thread_b.to_string()).as_deref(),
+            Some("B active")
+        );
+        assert!(shared.goal(&thread_a.to_string()).is_none());
+        assert_eq!(app.current_displayed_thread_id(), Some(thread_b));
+        assert_eq!(app.chat_widget.composer_text_with_pending(), before);
+        poll(
+            &mut app,
+            &b,
+            b.backend_id(),
+            b.backend_id(),
+            AppServerEvent::ServerNotification(Box::new(ServerNotification::ThreadGoalCleared(
+                ThreadGoalClearedNotification {
+                    thread_id: thread_b.to_string(),
+                },
+            ))),
+        )
+        .await;
+        assert!(
+            shared.goal(&thread_a.to_string()).is_none(),
+            "clearing B must not restore A's retired goal"
+        );
+        assert!(shared.goal(&thread_b.to_string()).is_none());
+        assert!(app.alab_backend_bookkeeping.goals.borrow().is_empty());
     }
 }

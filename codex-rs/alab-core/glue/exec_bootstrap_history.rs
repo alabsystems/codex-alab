@@ -1,12 +1,22 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! Use the ordinary store-owned resume reader without reloading configuration.
+//! Fresh per-root policy and ordinary store-owned history for runtime restore.
 use super::ThreadRequestProcessor;
 use codex_protocol::ThreadId;
 use codex_rollout::InitialHistory;
 
 impl ThreadRequestProcessor {
+    pub(crate) async fn alab_upgrade_config(
+        &self,
+        request: codex_core::config::ConfigOverrides,
+    ) -> Result<codex_core::config::Config, String> {
+        self.config_manager
+            .load_for_cwd(None, request, None)
+            .await
+            .map_err(|_| "runtime root's fresh application policy is unavailable".to_owned())
+    }
+
     pub(crate) async fn alab_exec_history(
         &self,
         thread: ThreadId,

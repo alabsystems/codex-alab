@@ -63,51 +63,70 @@ impl ExecLaunchBarrier {
     /// Prepare after all captured members have been loaded, before recovering
     /// any original turn. Idle queues must be staged before the permits run.
     pub fn prepare(tree: &ExecTreeSnapshot, threads: &[Arc<CodexThread>]) -> Result<Self, String> {
-        tree.validate(tree.root(), tree.turn())?;
+        Self::prepare_forest(&[tree], threads)
+    }
+
+    /// One release boundary for every fresh runtime in the complete forest.
+    pub fn prepare_forest(
+        trees: &[&ExecTreeSnapshot],
+        threads: &[Arc<CodexThread>],
+    ) -> Result<Self, String> {
+        if trees.is_empty() {
+            return Err("forest launch has no roots".into());
+        }
         let mut loaded = HashMap::new();
         for thread in threads {
             if loaded.insert(thread.session.thread_id, thread).is_some() {
                 return Err("exec launch repeats a loaded thread".into());
             }
         }
-        if loaded.len() != tree.threads().len() {
-            return Err("exec launch does not contain the complete captured tree".into());
-        }
-        let root = loaded
-            .get(&tree.root())
-            .ok_or("exec launch root is missing")?;
         let mut members = HashMap::new();
         let mut idle = Vec::new();
-        for node in tree.threads() {
-            let thread = loaded
-                .get(&node.thread())
-                .ok_or("exec launch member is missing")?;
-            if !thread.is_running() || !root.shares_exec_tree(thread) {
-                return Err("exec launch members do not share a live runtime".into());
-            }
-            if let Some(recovery) = node.recovery() {
-                if exec_input_state::pending_origin(&thread.session)
-                    != Some((node.thread(), recovery.turn().to_owned()))
-                {
-                    return Err("exec launch member has no matching pending original input".into());
+        let mut seen = HashSet::new();
+        for tree in trees {
+            tree.validate(tree.root(), tree.turn())?;
+            let root = loaded
+                .get(&tree.root())
+                .ok_or("exec launch root is missing")?;
+            for node in tree.threads() {
+                if !seen.insert(node.thread()) {
+                    return Err("forest launch repeats a member".into());
                 }
-                members.insert(
-                    node.thread(),
-                    Participant {
-                        turn: recovery.turn().to_owned(),
-                        kind: if recovery.is_review() {
-                            TaskKind::Review
-                        } else {
-                            TaskKind::Regular
+                let thread = loaded
+                    .get(&node.thread())
+                    .ok_or("exec launch member is missing")?;
+                if !thread.is_running() || !root.shares_exec_tree(thread) {
+                    return Err("exec launch members do not share a live runtime".into());
+                }
+                if let Some(recovery) = node.recovery() {
+                    if exec_input_state::pending_origin(&thread.session)
+                        != Some((node.thread(), recovery.turn().to_owned()))
+                    {
+                        return Err(
+                            "exec launch member has no matching pending original input".into()
+                        );
+                    }
+                    members.insert(
+                        node.thread(),
+                        Participant {
+                            turn: recovery.turn().to_owned(),
+                            kind: if recovery.is_review() {
+                                TaskKind::Review
+                            } else {
+                                TaskKind::Regular
+                            },
+                            session: Arc::downgrade(&thread.session),
                         },
-                        session: Arc::downgrade(&thread.session),
-                    },
-                );
-            } else {
-                idle.push(Arc::clone(&thread.session));
+                    );
+                } else {
+                    idle.push(Arc::clone(&thread.session));
+                }
             }
         }
-        let barrier = Self::from_members(members)?;
+        if seen.len() != loaded.len() {
+            return Err("forest launch does not contain the complete loaded inventory".into());
+        }
+        let barrier = Self::from_members(members);
         for session in idle {
             session.services.thread_extension_data.insert(IdleLaunch {
                 barrier: barrier.clone(),
@@ -117,16 +136,18 @@ impl ExecLaunchBarrier {
         Ok(barrier)
     }
 
-    fn from_members(members: HashMap<ThreadId, Participant>) -> Result<Self, String> {
-        if members.is_empty() {
-            return Err("exec launch has no original turns".into());
-        }
-        let (status, _) = watch::channel(Status::Waiting);
-        Ok(Self(Arc::new(Inner {
+    fn from_members(members: HashMap<ThreadId, Participant>) -> Self {
+        let initial = if members.is_empty() {
+            Status::Ready
+        } else {
+            Status::Waiting
+        };
+        let (status, _) = watch::channel(initial);
+        Self(Arc::new(Inner {
             members,
             arrived: Mutex::new(HashSet::new()),
             status,
-        })))
+        }))
     }
 
     pub fn permit(&self, thread: ThreadId) -> Result<ExecLaunchPermit, String> {
@@ -285,6 +306,39 @@ impl ExecLaunchPermit {
     }
 }
 
+pub(super) async fn admit(
+    session: &Arc<Session>,
+    context: &Arc<TurnContext>,
+    cancelled: &CancellationToken,
+) -> Result<(), CodexErr> {
+    if let Some(permit) = context.extension_data.get::<ExecLaunchPermit>() {
+        permit
+            .arrive(session, context, cancelled)
+            .await
+            .map_err(CodexErr::Fatal)?;
+    } else if let Some(idle) = session.services.thread_extension_data.get::<IdleLaunch>() {
+        if !idle
+            .session
+            .upgrade()
+            .is_some_and(|expected| Arc::ptr_eq(&expected, session))
+        {
+            return Err(CodexErr::Fatal(
+                "idle launch belongs to another runtime".into(),
+            ));
+        }
+        tokio::select! {
+            biased;
+            _ = cancelled.cancelled() => {
+                idle.barrier.abort("idle launch task was cancelled".into());
+                return Err(CodexErr::Fatal("idle launch task was cancelled".into()));
+            }
+            ready = idle.barrier.wait(true) => ready.map_err(CodexErr::Fatal)?,
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 pub(super) trait ExecTaskLaunch {
     fn run_with_exec_launch(
         self,
@@ -295,6 +349,7 @@ pub(super) trait ExecTaskLaunch {
     ) -> impl std::future::Future<Output = super::SessionTaskResult> + Send;
 }
 
+#[cfg(test)]
 impl ExecTaskLaunch for Arc<dyn super::AnySessionTask> {
     async fn run_with_exec_launch(
         self,
@@ -303,30 +358,7 @@ impl ExecTaskLaunch for Arc<dyn super::AnySessionTask> {
         input: Vec<crate::session::input_queue::TurnInput>,
         cancelled: CancellationToken,
     ) -> super::SessionTaskResult {
-        if let Some(permit) = context.extension_data.get::<ExecLaunchPermit>() {
-            permit
-                .arrive(&session, &context, &cancelled)
-                .await
-                .map_err(CodexErr::Fatal)?;
-        } else if let Some(idle) = session.services.thread_extension_data.get::<IdleLaunch>() {
-            if !idle
-                .session
-                .upgrade()
-                .is_some_and(|expected| Arc::ptr_eq(&expected, &session))
-            {
-                return Err(CodexErr::Fatal(
-                    "idle launch belongs to another runtime".into(),
-                ));
-            }
-            tokio::select! {
-                biased;
-                _ = cancelled.cancelled() => {
-                    idle.barrier.abort("idle launch task was cancelled".into());
-                    return Err(CodexErr::Fatal("idle launch task was cancelled".into()));
-                }
-                ready = idle.barrier.wait(true) => ready.map_err(CodexErr::Fatal)?,
-            }
-        }
+        admit(&session, &context, &cancelled).await?;
         self.run(session, context, input, cancelled).await
     }
 }

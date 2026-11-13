@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "base": "7b2378ddf9e666dfd717c9492696164884f418b8",
+  "target": "5228d94a27b7f84cae4854acbb5ea3b3e90dfeaf",
+  "frontier": "ac54a05173d090b9fdfa181ea49b92f45aff2681",
+  "commits": [
+    {
+      "sha": "4dd5f1e70b544967b76ebacda08b9ad28a7ab5bb",
+      "subject": "Limit MCP product attribution to configured REPL-backed calls (#60697)",
+      "paths": [
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/core/src/mcp_tool_call_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "security",
+        "telemetry"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Strip caller-supplied product identity from MCP metadata. Only existing configured REPL/browser calls receive bounded configured attribution; unrelated servers receive none. No new transport or background activation.",
+      "evidence": [
+        "Read mcp_tool_call.rs and the seven-case spoofed/configured attribution regression in mcp_tool_call_tests.rs. Execution remains pending the exact-source gate.",
+        "Reassessed incoming main 7b2378ddf9 continuation controls: read all changes to native client, supervisor, claim/resume tests and contract. They preserve explicit holds and newer-input/draft fences, isolate diagnostic observations on a separate connection, and do not overlap these upstream edits. Keep both changes; combined-source native qualification remains pending."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "83e3d63ba1b928d9f73d52480473694f84aa5a18",
+      "subject": "Finalize aborted turns and ignore unrelated late aborts (#60700)",
+      "paths": [
+        "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_interrupt.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "exec-handoff",
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Finish the active aborted turn and ignore a late abort that names another explicit turn. Preserve generated-ID fallback and repeated-interrupt refusal, so saved history cannot corrupt the next live turn.",
+      "evidence": [
+        "Read ThreadHistoryBuilder abort/finish changes, late discarded-turn assertion, and real app-server repeated turn/interrupt regression. Runtime checks remain pending.",
+        "Reassessed incoming main 7b2378ddf9 continuation controls: read all changes to native client, supervisor, claim/resume tests and contract. They preserve explicit holds and newer-input/draft fences, isolate diagnostic observations on a separate connection, and do not overlap these upstream edits. Keep both changes; combined-source native qualification remains pending."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "fe8e540a80f17716bf2a3007f06e8a602192c704",
+      "subject": "Centralize permission config selection and legacy translation (#60702)",
+      "paths": [
+        "codex-rs/config/src/config_toml.rs",
+        "codex-rs/config/src/lib.rs",
+        "codex-rs/config/src/permission_config.rs",
+        "codex-rs/config/src/permission_config_tests.rs",
+        "codex-rs/core/src/config/config_loader_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/tui/src/app/tests/startup_defaults_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "native-session",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Use upstream shared permission selection and legacy translation without changing ALab packaged defaults or managed constraints. Preserve layered roots/network/temp exclusions and explicit session selector exception. Adopt upstream startup test boxing and use its equivalent non-inlined future constructor at ALab startup/event hooks; delete the duplicate owned helper. One startup-stack marker disappears because upstream now supplies that call.",
+      "evidence": [
+        "Read all permission_config.rs and permission_config_tests.rs, core integration changes, config-loader metadata assertions and startup-defaults conflict. Compared upstream box_future and ALab startup_poll::boxed_future bodies and task/cancellation ownership; exact-source tests still pending.",
+        "Reassessed incoming main 7b2378ddf9 continuation controls: read all changes to native client, supervisor, claim/resume tests and contract. They preserve explicit holds and newer-input/draft fences, isolate diagnostic observations on a separate connection, and do not overlap these upstream edits. Keep both changes; combined-source native qualification remains pending."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "5228d94a27b7f84cae4854acbb5ea3b3e90dfeaf",
+      "subject": "Canonicalize Windows sandbox homes and migrate saved junction paths (#60708)",
+      "paths": [
+        "codex-rs/windows-sandbox-rs/src/provisioning_client.rs",
+        "codex-rs/windows-sandbox-service/src/installation_record.rs",
+        "codex-rs/windows-sandbox-service/src/installation_record_tests.rs",
+        "codex-rs/windows-sandbox-service/src/package_lifecycle.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Canonicalize Windows provisioning homes and restore saved junction targets under the setup lock with pinned directories and recorded-account validation. Skip retiring runtimes and clear historical desktop-home deletion ownership. Retain upstream Windows behavior; this Mac cannot claim executing its Windows-only junction test.",
+      "evidence": [
+        "Read provisioning_client.rs, installation_record.rs, installation_record_tests.rs and package_lifecycle.rs; inspected lock lifetime, target pins, account validation and uninstall ownership clearing. Windows runtime execution is unavailable locally; native source gate remains pending.",
+        "Reassessed incoming main 7b2378ddf9 continuation controls: read all changes to native client, supervisor, claim/resume tests and contract. They preserve explicit holds and newer-input/draft fences, isolate diagnostic observations on a separate connection, and do not overlap these upstream edits. Keep both changes; combined-source native qualification remains pending."
+      ],
+      "revisit": ""
+    }
+  ]
+}

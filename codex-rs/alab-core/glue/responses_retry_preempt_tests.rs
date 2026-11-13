@@ -28,6 +28,9 @@ fn status(code: u16) -> CodexErr {
 #[test]
 fn refusals_and_capacity_keep_their_outcome_without_changing_inactive_behavior() {
     for error in [
+        CodexErr::new(CodexErrorDetails::InferenceHookDenied {
+            message: "workspace denied".into(),
+        }),
         CodexErr::new(CodexErrorDetails::CyberPolicy {
             message: "refused".into(),
         }),
@@ -72,6 +75,9 @@ fn policy_capacity_uses_the_capacity_lane_without_turning_refusals_into_retries(
     for error in [
         status(403),
         CodexErr::QuotaExceeded,
+        CodexErr::new(CodexErrorDetails::InferenceHookDenied {
+            message: "workspace denied".into(),
+        }),
         CodexErr::new(CodexErrorDetails::CyberPolicy {
             message: "policy_capacity_unavailable".into(),
         }),

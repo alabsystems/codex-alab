@@ -136,7 +136,7 @@ class PackageSourceTests(unittest.TestCase):
         observations = {"compiler": compiler_info.stdout, "commits": [first_commit, second_commit], "builds": {}}
 
         def build(source, target, label):
-            target.mkdir(mode=0o700, exist_ok=True)
+            # The native shim must admit a fresh target before creating it.
             started = time.monotonic()
             done = subprocess.run([cargo, "--unverified", "build", "--locked", "--offline",
                                    "--manifest-path", str(source / "codex-rs/Cargo.toml"),
@@ -262,6 +262,188 @@ class PackageSourceTests(unittest.TestCase):
                 if case in ("git-metadata", "git-lock"):
                     self.assertEqual((Path(original["entry"]) / ("notes" if case == "git-metadata" else "HEAD.lock")).read_text(), "owner Git data\n")
                 self.cache = prior_cache
+
+    def test_deleted_intent_to_add_preserves_the_generation_instead_of_reusing_it(self):
+        source = self.ready()
+        receipt = self.receipt(source)
+        original = SOURCE["read"](receipt)
+        planned = source / "planned"
+        planned.write_text("owner's planned addition\n")
+        self.git("add", "-N", "planned", repo=source)
+        planned.unlink()
+        self.assertIn("D planned", self.git("status", "--porcelain", repo=source))
+        index = Path(original["entry"]) / "index"
+        before = (receipt.read_bytes(), index.read_bytes(), SOURCE["metadata"](Path(original["entry"])))
+        session = self.session()
+        fresh, result = self.acquire(session, self.second)
+        try:
+            self.assertFalse(result["reused"])
+            self.assertNotEqual(fresh, source)
+            self.assertEqual(result["binding"]["key"], original["key"])
+            self.assertEqual((receipt.read_bytes(), index.read_bytes(),
+                              SOURCE["metadata"](Path(original["entry"]))), before)
+            self.assertTrue(source.is_dir())
+            self.assertFalse(planned.exists())
+            self.assertIn("planned", self.git("ls-files", "--stage", "planned", repo=source))
+            self.assertEqual((source / "changing").read_text(), "first\n")
+            self.assertEqual((fresh / "changing").read_text(), "second\n")
+        finally:
+            self.returned(session, fresh, self.second)
+            session.finish()
+
+    def test_disabled_filemode_cannot_hide_owner_work_from_source_reuse(self):
+        source = self.ready()
+        receipt = self.receipt(source)
+        original = SOURCE["read"](receipt)
+        changed = source / "src/lib.rs"
+        self.git("config", "core.filemode", "false", repo=source)
+        changed.chmod(0o755)
+        self.assertEqual(self.git("status", "--porcelain", repo=source), "")
+        self.assertIn("M src/lib.rs", self.git(
+            "-c", "core.filemode=true", "status", "--porcelain", repo=source))
+        before = (receipt.read_bytes(), SOURCE["metadata"](Path(original["entry"])))
+        session = self.session()
+        fresh, result = self.acquire(session, self.second)
+        try:
+            self.assertFalse(result["reused"])
+            self.assertNotEqual(fresh, source)
+            self.assertEqual(result["binding"]["key"], original["key"])
+            self.assertEqual((receipt.read_bytes(), SOURCE["metadata"](Path(original["entry"]))), before)
+            self.assertEqual(changed.stat().st_mode & 0o777, 0o755)
+            self.assertEqual((source / "changing").read_text(), "first\n")
+        finally:
+            self.returned(session, fresh, self.second)
+            session.finish()
+
+    def test_late_mode_change_refuses_fresh_removal_with_filemode_disabled(self):
+        session = self.session()
+        source = self.root / "fresh-mode"
+        source.mkdir(mode=0o700)
+        record = SOURCE["create_fresh"](self.repo, source, self.first)
+        self.git("config", "core.filemode", "false", repo=source)
+        with mock.patch.dict(os.environ, session.environment()):
+            SOURCE["release_fresh"](self.cache, record)
+        changed = source / "src/lib.rs"
+        calls = []
+        finish_globals = SOURCE["Session"].finish.__globals__
+        remove = finish_globals["remove_fresh"]
+
+        def late_mode_change(binding, selected):
+            self.assertEqual(selected, source)
+            changed.chmod(0o755)
+            calls.append(selected)
+            return remove(binding, selected)
+
+        with mock.patch.dict(finish_globals, remove_fresh=late_mode_change):
+            session.finish()
+        self.assertEqual(calls, [source])
+        self.assertTrue(source.is_dir())
+        self.assertTrue(Path(record["entry"]).is_dir())
+        self.assertEqual(changed.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(SOURCE["read"](session.path)["phase"], "closed")
+
+    def committed_symlink(self):
+        self.git("config", "core.symlinks", "true")
+        (self.repo / "source-link").symlink_to("changing")
+        return self.commit("source symlink")
+
+    def symlinks_disabled(self, kind):
+        if kind == "local":
+            self.git("config", "core.symlinks", "false")
+            return {}
+        return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.symlinks",
+                "GIT_CONFIG_VALUE_0": "false"}
+
+    def test_real_symlinks_remain_admitted_and_removable_when_symlinks_are_disabled(self):
+        revision = self.committed_symlink()
+        for kind in ("local", "inherited"):
+            with self.subTest(configuration=kind):
+                self.git("config", "core.symlinks", "true")
+                source = self.root / f"real-link-{kind}"
+                source.mkdir(mode=0o700)
+                record = SOURCE["create_fresh"](self.repo, source, revision)
+                self.assertTrue((source / "source-link").is_symlink())
+                with mock.patch.dict(os.environ, self.symlinks_disabled(kind)):
+                    self.assertEqual(SOURCE["validate_binding"](record), source)
+                    session = self.session()
+                    with mock.patch.dict(os.environ, session.environment()):
+                        SOURCE["release_fresh"](self.cache, record)
+                    session.finish()
+                self.assertFalse(source.exists())
+                self.assertFalse(Path(record["entry"]).exists())
+
+    def test_regular_symlink_stubs_refuse_validation_when_symlinks_are_disabled(self):
+        revision = self.committed_symlink()
+        for kind in ("local", "inherited"):
+            with self.subTest(configuration=kind):
+                self.git("config", "core.symlinks", "true")
+                source = self.root / f"replaced-link-{kind}"
+                source.mkdir(mode=0o700)
+                record = SOURCE["create_fresh"](self.repo, source, revision)
+                link = source / "source-link"
+                link.unlink()
+                link.write_bytes(b"changing")
+                entry = Path(record["entry"])
+                with mock.patch.dict(os.environ, self.symlinks_disabled(kind)):
+                    self.assertEqual(self.git("status", "--porcelain", repo=source), "",
+                                     "CONTROL: ordinary Git accepts a symlink stub under core.symlinks=false")
+                    before = link.read_bytes(), (entry / "index").read_bytes(), SOURCE["metadata"](entry)
+                    with self.assertRaisesRegex(ValueError, "work"):
+                        SOURCE["validate_binding"](record)
+                self.assertTrue(source.is_dir())
+                self.assertTrue(entry.is_dir())
+                self.assertFalse(link.is_symlink())
+                self.assertEqual((link.read_bytes(), (entry / "index").read_bytes(),
+                                  SOURCE["metadata"](entry)), before)
+                self.assertIn(f"worktree {source}\n", self.git("worktree", "list", "--porcelain") + "\n")
+
+    def test_late_symlink_stub_refuses_final_removal_when_symlinks_are_disabled(self):
+        revision = self.committed_symlink()
+        for kind in ("local", "inherited"):
+            with self.subTest(configuration=kind):
+                self.git("config", "core.symlinks", "true")
+                source = self.root / f"late-link-{kind}"
+                source.mkdir(mode=0o700)
+                record = SOURCE["create_fresh"](self.repo, source, revision)
+                entry = Path(record["entry"])
+                link = source / "source-link"
+                calls = []
+                finish_globals = SOURCE["Session"].finish.__globals__
+                remove = finish_globals["remove_fresh"]
+
+                def replace_before_remove(binding, selected):
+                    self.assertEqual(selected, source)
+                    link.unlink()
+                    link.write_bytes(b"changing")
+                    calls.append(selected)
+                    return remove(binding, selected)
+
+                with mock.patch.dict(os.environ, self.symlinks_disabled(kind)):
+                    session = self.session()
+                    with mock.patch.dict(os.environ, session.environment()):
+                        SOURCE["release_fresh"](self.cache, record)
+                    with mock.patch.dict(finish_globals, remove_fresh=replace_before_remove):
+                        session.finish()
+                self.assertEqual(calls, [source])
+                self.assertTrue(source.is_dir())
+                self.assertTrue(entry.is_dir())
+                self.assertFalse(link.is_symlink())
+                self.assertEqual(link.read_bytes(), b"changing")
+                self.assertEqual(SOURCE["read"](session.path)["phase"], "closed")
+                self.assertIn(f"worktree {source}\n", self.git("worktree", "list", "--porcelain") + "\n")
+
+    def test_fresh_checkout_with_symlinks_disabled_preserves_the_rejected_stub(self):
+        revision = self.committed_symlink()
+        self.git("config", "core.symlinks", "false")
+        source = self.root / "fresh-link-stub"
+        source.mkdir(mode=0o700)
+        with self.assertRaisesRegex(ValueError, "work"):
+            SOURCE["create_fresh"](self.repo, source, revision)
+        self.assertTrue(source.is_dir())
+        self.assertFalse((source / "source-link").is_symlink())
+        self.assertEqual((source / "source-link").read_bytes(), b"changing")
+        self.assertTrue(Path(self.git("rev-parse", "--absolute-git-dir", repo=source)).is_dir())
+        self.assertIn(f"worktree {source}\n", self.git("worktree", "list", "--porcelain") + "\n")
 
     def test_return_then_late_work_is_never_marked_ready(self):
         session = self.session()
@@ -491,7 +673,7 @@ signal.pause()
     def test_legacy_stamps_reclaimed_after_real_guardian_retirement_but_owner_work_kept(self):
         tools = self.repo / "alab"
         tools.mkdir()
-        for name in ("package_source.py", "retention.py"):
+        for name in ("package_source.py", "retention.py", "source_content.py"):
             shutil.copyfile(ROOT / "alab" / name, tools / name)
         manifest = self.repo / "codex-rs/Cargo.toml"
         manifest.parent.mkdir()
@@ -546,7 +728,7 @@ esac
     def test_actual_current_version_helper_keeps_source_reusable_and_legacy_is_fresh(self):
         tools = self.repo / "alab"
         tools.mkdir()
-        for name in ("package_source.py", "retention.py"):
+        for name in ("package_source.py", "retention.py", "source_content.py"):
             shutil.copyfile(ROOT / "alab" / name, tools / name)
         manifest = self.repo / "codex-rs/Cargo.toml"
         manifest.parent.mkdir()
@@ -588,7 +770,7 @@ printf '%s\n' "$wt"
     def test_real_package_helper_preserves_opt_out_and_failed_pool_fallbacks(self):
         tools = self.repo / "alab"
         tools.mkdir()
-        for name in ("package_source.py", "retention.py"):
+        for name in ("package_source.py", "retention.py", "source_content.py"):
             shutil.copyfile(ROOT / "alab" / name, tools / name)
         version = self.repo / "codex-rs/alab-core/src/version.rs"
         version.parent.mkdir(parents=True)
@@ -659,7 +841,7 @@ package_cleanup
     def admission_fixture(self):
         tools = self.repo / "alab"
         tools.mkdir()
-        for name in ("package_source.py", "retention.py"):
+        for name in ("package_source.py", "retention.py", "source_content.py"):
             shutil.copyfile(ROOT / "alab" / name, tools / name)
         manifest = self.repo / "codex-rs/Cargo.toml"
         manifest.parent.mkdir()
@@ -1013,28 +1195,23 @@ sys.stdout.buffer.write(b"token\\0")
                 self.git("config", "--unset", "core.trustctime")
                 self.git("config", "--unset", "core.checkStat")
 
-    def test_removal_suppresses_filter_callbacks_and_retains_converted_sources(self):
-        driver = "Mixed.Driver.Name"
+    def external_filter_fixture(self, kind, *, transform=False):
+        driver = "Mixed.Driver." + kind
         (self.repo / ".gitattributes").write_text(f"changing filter={driver}\n")
         revision = self.commit("filtered source")
-        # NUL framing must preserve quoted subsection whitespace, case and dots.
-        self.git("config", "filter.Odd.Name With\tSpace.clean", "cat")
-        for kind in ("clean", "process", "transform", "ambiguous"):
-            with self.subTest(kind=kind):
-                home = self.root / f"filter-{kind}"
-                home.mkdir()
-                script = home / "filter.py"
-                script.write_text('''import sys
+        home = self.root / f"filter-{kind}"
+        home.mkdir()
+        script = home / "filter.py"
+        script.write_text('''import sys
 from pathlib import Path
 root=Path(__file__).parent
 mode=sys.argv[1]
 def convert(data, operation):
-    if operation == "clean" and (root/"armed").exists():
-        counter=root/"count"
-        count=int(counter.read_text())+1 if counter.exists() else 1
-        counter.write_text(str(count))
-        if count > 1:
-            Path((root/"entry").read_text()).joinpath("notes").write_text("owner filter note\\n")
+    if (root/"armed").exists():
+        with (root/"calls").open("a") as output:
+            output.write(operation+"\\n")
+    if operation == "clean" and (root/"conceal").exists():
+        return b"second\\n"
     if (root/"transform").exists():
         data=data.upper() if operation == "smudge" else data.lower()
     return data
@@ -1071,19 +1248,49 @@ else:
         send([data] if data else [])
         send([])
 ''')
-                command = [sys.executable, "-I", "-B", str(script)]
-                self.git("config", f"filter.{driver}.clean", shlex.join([*command, "clean"]))
-                self.git("config", f"filter.{driver}.smudge", shlex.join([*command, "smudge"]))
-                self.git("config", f"filter.{driver}.required", "false")
-                if kind == "process":
-                    self.git("config", f"filter.{driver}.process", shlex.join([*command, "process"]))
-                if kind == "transform":
-                    (home / "transform").touch()
+        command = [sys.executable, "-I", "-B", str(script)]
+        self.git("config", f"filter.{driver}.clean", shlex.join([*command, "clean"]))
+        self.git("config", f"filter.{driver}.smudge", shlex.join([*command, "smudge"]))
+        self.git("config", f"filter.{driver}.required", "true")
+        if kind == "process":
+            self.git("config", f"filter.{driver}.process", shlex.join([*command, "process"]))
+        if transform:
+            (home / "transform").touch()
+        return revision, home, driver
+
+    def test_external_filters_cannot_conceal_dirty_source_or_run_during_validation(self):
+        for kind in ("clean", "process"):
+            with self.subTest(kind=kind):
+                revision, home, driver = self.external_filter_fixture(kind)
                 source = home / "source"
                 source.mkdir(mode=0o700)
                 record = SOURCE["create_fresh"](self.repo, source, revision)
                 entry = Path(record["entry"])
-                (home / "entry").write_text(str(entry))
+                changing = source / "changing"
+                changing.write_bytes(b"owner!\n")  # Same size as the committed second\n.
+                (home / "conceal").touch()
+                self.assertEqual(self.git("status", "--porcelain", repo=source), "",
+                                 "CONTROL: the configured filter conceals the physical edit")
+                before = changing.read_bytes(), (entry / "index").read_bytes(), SOURCE["metadata"](entry)
+                (home / "armed").touch()
+                with self.assertRaisesRegex(ValueError, "work"):
+                    SOURCE["validate_binding"](record)
+                self.assertFalse((home / "calls").exists(), "validation must not invoke external filters")
+                self.assertEqual((changing.read_bytes(), (entry / "index").read_bytes(),
+                                  SOURCE["metadata"](entry)), before)
+                self.assertTrue(source.is_dir())
+                self.git("config", "--remove-section", f"filter.{driver}")
+
+    def test_removal_suppresses_filter_callbacks_and_retains_ambiguous_sources(self):
+        # NUL framing must preserve quoted subsection whitespace, case and dots.
+        self.git("config", "filter.Odd.Name With\tSpace.clean", "cat")
+        for kind in ("clean", "process", "ambiguous"):
+            with self.subTest(kind=kind):
+                revision, home, driver = self.external_filter_fixture(kind)
+                source = home / "source"
+                source.mkdir(mode=0o700)
+                record = SOURCE["create_fresh"](self.repo, source, revision)
+                entry = Path(record["entry"])
                 session = self.session()
                 with mock.patch.dict(os.environ, session.environment()):
                     SOURCE["release_fresh"](self.cache, record)
@@ -1093,17 +1300,110 @@ else:
                 if kind == "ambiguous":
                     self.git("config", "filter.Name=Ambiguous.clean", "cat")
                 session.finish()
-                self.assertEqual((home / "count").read_text(), "1",
-                                 "only the checked validation may run the configured callback")
+                self.assertFalse((home / "calls").exists(),
+                                 "neither validation nor removal may invoke external filters")
                 self.assertFalse((entry / "notes").exists())
-                kept = kind in ("transform", "ambiguous")
+                kept = kind == "ambiguous"
                 self.assertEqual(source.is_dir(), kept)
                 self.assertEqual(entry.is_dir(), kept)
                 if kept:
-                    self.assertEqual((source / "changing").read_text(), "SECOND\n" if kind == "transform" else "second\n")
+                    self.assertEqual((source / "changing").read_text(), "second\n")
                 self.git("config", "--remove-section", f"filter.{driver}")
                 if kind == "ambiguous":
                     self.git("config", "--remove-section", "filter.Name=Ambiguous")
+
+    def test_converted_checkout_is_preserved_instead_of_admitted_as_physical_source(self):
+        revision, home, _driver = self.external_filter_fixture("clean", transform=True)
+        source = home / "source"
+        source.mkdir(mode=0o700)
+        with self.assertRaisesRegex(ValueError, "work"):
+            SOURCE["create_fresh"](self.repo, source, revision)
+        self.assertEqual((source / "changing").read_bytes(), b"SECOND\n")
+        entry = Path(self.git("rev-parse", "--absolute-git-dir", repo=source))
+        self.assertTrue(entry.is_dir())
+        self.assertIn(f"worktree {source}\n", self.git("worktree", "list", "--porcelain") + "\n")
+
+    def test_scalar_git_config_cannot_hide_filter_keys_but_config_count_still_applies(self):
+        empty = self.root / "empty-git-config"
+        empty.write_bytes(b"")
+        for kind in ("clean", "process"):
+            with self.subTest(kind=kind):
+                revision, home, driver = self.external_filter_fixture(kind)
+                source = home / "source"
+                source.mkdir(mode=0o700)
+                record = SOURCE["create_fresh"](self.repo, source, revision)
+                # Force Git's final removal status to rehash the physical file.
+                os.utime(source / "changing", ns=(1_600_000_000_000_000_000,) * 2)
+                (home / "armed").touch()
+                with mock.patch.dict(os.environ, GIT_CONFIG=str(empty), GIT_CONFIG_COUNT="1",
+                                     GIT_CONFIG_KEY_0="core.logAllRefUpdates", GIT_CONFIG_VALUE_0="false"):
+                    keys = SOURCE["git"](source, "config", "--name-only", "--null", "--list")
+                    configured = subprocess.run(
+                        ["git", "-C", str(source), "config", "--get", "core.logAllRefUpdates"],
+                        env=SOURCE["git_environment"](), capture_output=True, text=True, timeout=60)
+                    self.assertEqual(SOURCE["validate_binding"](record), source)
+                    SOURCE["remove_fresh"](record, source)
+                self.assertIn(f"filter.{driver}.clean".lower(), keys.lower())
+                self.assertEqual((configured.returncode, configured.stdout.strip()), (0, "false"))
+                self.assertFalse((home / "calls").exists(),
+                                 "scalar config redirection must not expose validation/removal callbacks")
+                self.assertFalse(source.exists())
+                self.assertFalse(Path(record["entry"]).exists())
+                self.git("config", "--remove-section", f"filter.{driver}")
+
+    def test_builtin_crlf_conversion_remains_admitted_without_an_external_driver(self):
+        (self.repo / ".gitattributes").write_text("changing text eol=crlf\n")
+        revision = self.commit("builtin line endings")
+        source = self.root / "builtin-crlf"
+        source.mkdir(mode=0o700)
+        record = SOURCE["create_fresh"](self.repo, source, revision)
+        self.assertEqual((source / "changing").read_bytes(), b"second\r\n")
+        self.assertEqual(SOURCE["validate_binding"](record), source)
+
+    def test_builtin_ident_preserves_valid_crlf_but_refuses_changed_source_bytes(self):
+        (self.repo / ".gitattributes").write_text("ident.sh ident text eol=crlf filter=ident-smudge\n")
+        script = self.repo / "ident.sh"
+        script.write_bytes(b"#!/bin/sh\nprintf '%s\\n' '$Id$'\n")
+        script.chmod(0o700)
+        revision = self.commit("ident source")
+        source = self.root / "ident-source"
+        source.mkdir(mode=0o700)
+        record = SOURCE["create_fresh"](self.repo, source, revision)
+        materialized = source / "ident.sh"
+        original = materialized.read_bytes()
+        callback = self.root / "ident-smudge-called"
+        converter = self.root / "ident-smudge.py"
+        converter.write_text("from pathlib import Path\nimport sys\n"
+                             f"Path({str(callback)!r}).touch()\n"
+                             "sys.stdout.buffer.write(sys.stdin.buffer.read())\n")
+        self.git("config", "filter.ident-smudge.smudge",
+                 shlex.join([sys.executable, "-I", "-B", str(converter)]))
+        self.assertIn(b"$Id: ", original)
+        self.assertIn(b"\r\n", original)
+        self.assertEqual(SOURCE["validate_binding"](record), source)
+        self.assertFalse(callback.exists(), "exact checkout comparison must suppress smudge-only drivers")
+        start, end = original.index(b"$Id: "), original.index(b"$", original.index(b"$Id: ") + 1)
+        replacement = b"$Id: '; echo changed; echo '"
+        replacement = replacement.ljust(end - start, b" ") + b"$"
+        owner = original[:start] + replacement + original[end + 1:]
+        materialized.write_bytes(owner)
+        self.assertEqual(self.git("status", "--porcelain", repo=source), "",
+                         "CONTROL: builtin ident conceals the changed source bytes")
+        with self.assertRaises(ValueError):
+            SOURCE["validate_binding"](record)
+        self.assertEqual(materialized.read_bytes(), owner)
+        self.assertFalse(callback.exists())
+        self.assertTrue(Path(record["entry"]).is_dir())
+
+    def test_empty_external_filter_name_refuses_validation_without_touching_source(self):
+        source = self.ready()
+        record = SOURCE["read"](self.receipt(source))
+        self.git("config", "filter..clean", "cat")
+        before = (source / "changing").read_bytes(), (Path(record["entry"]) / "index").read_bytes()
+        with self.assertRaisesRegex(ValueError, "filter"):
+            SOURCE["validate_binding"](record)
+        self.assertEqual(((source / "changing").read_bytes(),
+                          (Path(record["entry"]) / "index").read_bytes()), before)
 
     def test_custody_ignores_inherited_repository_redirection_but_keeps_config(self):
         source = self.ready()
@@ -1133,6 +1433,175 @@ else:
         self.assertTrue(source.is_dir())
         self.assertTrue(Path(record["entry"]).is_dir())
 
+    def gitlink_repository(self, label):
+        child = self.root / label
+        child.mkdir(mode=0o700)
+        self.git("init", "--quiet", repo=child)
+        self.git("config", "user.name", "Child fixture", repo=child)
+        self.git("config", "user.email", "child@invalid", repo=child)
+        (child / "input").write_bytes(b"committed child input\n")
+        (child / ".gitignore").write_text("ignored\n")
+        self.git("add", ".", repo=child)
+        self.git("commit", "--quiet", "-m", "child " + label, repo=child)
+        return child
+
+    def gitlink_fixture(self, label, *, nested=False):
+        child = self.gitlink_repository("child-" + label)
+        leaf = None
+        if nested:
+            leaf = self.gitlink_repository("leaf-" + label)
+            leaf_commit = self.git("rev-parse", "HEAD", repo=leaf)
+            (child / ".gitmodules").write_text('[submodule "nested"]\n\tpath = nested\n')
+            self.git("add", ".gitmodules", repo=child)
+            self.git("update-index", "--add", "--cacheinfo", f"160000,{leaf_commit},nested", repo=child)
+            self.git("commit", "--quiet", "-m", "nested gitlink", repo=child)
+        child_commit = self.git("rev-parse", "HEAD", repo=child)
+        (self.repo / ".gitmodules").write_text('[submodule "dependency"]\n\tpath = dependency\n')
+        self.git("add", ".gitmodules")
+        self.git("update-index", "--add", "--cacheinfo", f"160000,{child_commit},dependency")
+        self.git("commit", "--quiet", "-m", "parent gitlink")
+        commit = self.git("rev-parse", "HEAD")
+        source = self.root / ("source-" + label)
+        source.mkdir(mode=0o700)
+        record = SOURCE["create_fresh"](self.repo, source, commit)
+        return child, leaf, source, record
+
+    def initialize_gitlink(self, source, child, name="dependency"):
+        self.git("-c", "protocol.file.allow=always", "clone", "--quiet", str(child),
+                 str(source / name))
+        return source / name
+
+    def test_empty_gitlinks_remain_admissible_but_have_no_child_cleanup_custody(self):
+        _child, _leaf, source, record = self.gitlink_fixture("empty")
+        index = Path(record["entry"]) / "index"
+        before = index.read_bytes(), SOURCE["metadata"](Path(record["entry"]))
+        self.assertEqual(SOURCE["validate_binding"](record), source)
+        (source / "dependency").rmdir()
+        self.assertEqual(SOURCE["validate_binding"](record), source)
+        with self.assertRaisesRegex(ValueError, "gitlink"):
+            SOURCE["remove_fresh"](record, source)
+        self.assertTrue(source.is_dir())
+        self.assertEqual((index.read_bytes(), SOURCE["metadata"](Path(record["entry"]))), before)
+
+    def test_uninitialized_gitlink_owner_files_survive_guardian_cleanup(self):
+        _child, _leaf, source, record = self.gitlink_fixture("uninitialized-owner")
+        session = self.session()
+        with mock.patch.dict(os.environ, session.environment()):
+            SOURCE["release_fresh"](self.cache, record)
+        owner = source / "dependency" / "owner-file"
+        owner.write_bytes(b"owner work added after return\n")
+        self.assertEqual(self.git("status", "--porcelain", "--ignore-submodules=none", repo=source), "",
+                         "CONTROL: even explicit Git submodule status misses these bytes")
+        session.finish()
+        self.assertTrue(owner.is_file(), "guardian removal must retain uninitialized child contents")
+        self.assertEqual(owner.read_bytes(), b"owner work added after return\n")
+        with self.assertRaisesRegex(ValueError, "gitlink"):
+            SOURCE["validate_binding"](record)
+        self.assertTrue(Path(record["entry"]).is_dir())
+
+    def test_clean_initialized_gitlink_is_checked_without_changing_its_index(self):
+        child, _leaf, source, record = self.gitlink_fixture("initialized-clean")
+        initialized = self.initialize_gitlink(source, child)
+        index = initialized / ".git/index"
+        before = index.read_bytes(), index.stat().st_mtime_ns
+        self.assertEqual(SOURCE["validate_binding"](record), source)
+        self.assertEqual((index.read_bytes(), index.stat().st_mtime_ns), before)
+        with self.assertRaisesRegex(ValueError, "gitlink"):
+            SOURCE["remove_fresh"](record, source)
+        self.assertTrue((initialized / "input").is_file())
+
+    @mock.patch.dict(os.environ, GIT_AUTHOR_DATE="2000-01-01T00:00:00+0000",
+                     GIT_COMMITTER_DATE="2000-01-01T00:00:00+0000")
+    def test_gitlink_ignore_settings_cannot_hide_child_work(self):
+        for kind in ("tracked", "untracked", "ignored", "assume-unchanged", "staged", "wrong-head"):
+            with self.subTest(kind=kind):
+                child, _leaf, source, record = self.gitlink_fixture(kind)
+                initialized = self.initialize_gitlink(source, child)
+                self.git("config", "diff.ignoreSubmodules", "all")
+                self.git("config", "submodule.dependency.ignore", "all")
+                self.git("config", "status.showUntrackedFiles", "no")
+                if kind in ("untracked", "ignored"):
+                    (initialized / kind).write_bytes(b"owner child work\n")
+                else:
+                    (initialized / "input").write_bytes(b"owner child work\n")
+                    if kind == "assume-unchanged":
+                        self.git("update-index", "--assume-unchanged", "input", repo=initialized)
+                    elif kind in ("staged", "wrong-head"):
+                        self.git("add", "input", repo=initialized)
+                        if kind == "wrong-head":
+                            self.git("-c", "user.name=Child", "-c", "user.email=child@invalid",
+                                     "commit", "--quiet", "-m", "unadmitted child", repo=initialized)
+                self.assertEqual(self.git("status", "--porcelain", repo=source), "",
+                                 "CONTROL: parent ignores the changed child")
+                index = initialized / ".git/index"
+                before = index.read_bytes(), SOURCE["metadata"](Path(record["entry"]))
+                with self.assertRaisesRegex(ValueError, "source|gitlink|index"):
+                    SOURCE["validate_binding"](record)
+                self.assertEqual((index.read_bytes(), SOURCE["metadata"](Path(record["entry"]))), before)
+                self.assertTrue(initialized.is_dir())
+
+    def test_nested_gitlink_hidden_work_is_checked_recursively(self):
+        child, leaf, source, record = self.gitlink_fixture("nested", nested=True)
+        initialized = self.initialize_gitlink(source, child)
+        nested = self.initialize_gitlink(initialized, leaf, "nested")
+        self.assertEqual(SOURCE["validate_binding"](record), source)
+        self.git("update-index", "--assume-unchanged", "input", repo=nested)
+        (nested / "input").write_bytes(b"nested owner work\n")
+        self.assertEqual(self.git("status", "--porcelain", "--ignore-submodules=none", repo=source), "")
+        with self.assertRaisesRegex(ValueError, "source|gitlink|index"):
+            SOURCE["validate_binding"](record)
+        self.assertEqual((nested / "input").read_bytes(), b"nested owner work\n")
+
+    def test_ignored_staged_gitlink_is_not_admitted(self):
+        child, _leaf, source, record = self.gitlink_fixture("staged-gitlink")
+        (child / "input").write_bytes(b"another child commit\n")
+        self.git("add", "input", repo=child)
+        self.git("commit", "--quiet", "-m", "another child", repo=child)
+        moved = self.git("rev-parse", "HEAD", repo=child)
+        self.git("update-index", "--cacheinfo", f"160000,{moved},dependency", repo=source)
+        self.git("config", "diff.ignoreSubmodules", "all")
+        self.assertEqual(self.git("diff", "--cached", "--name-only", repo=source), "")
+        index = Path(record["entry"]) / "index"
+        before = index.read_bytes()
+        with self.assertRaisesRegex(ValueError, "staged"):
+            SOURCE["validate_binding"](record)
+        self.assertEqual(index.read_bytes(), before)
+
+    def test_child_filters_do_not_run_or_conceal_gitlink_content(self):
+        child, _leaf, source, record = self.gitlink_fixture("child-filter")
+        initialized = self.initialize_gitlink(source, child)
+        callback = self.root / "child-filter-called"
+        script = self.root / "child-filter.py"
+        script.write_text("from pathlib import Path\nimport sys\n"
+                          f"Path({str(callback)!r}).touch()\n"
+                          "sys.stdout.buffer.write(b'committed child input\\n')\n")
+        (initialized / ".git/info/attributes").write_text("input filter=child-conceal\n")
+        self.git("config", "filter.child-conceal.clean", shlex.join([sys.executable, "-I", "-B", str(script)]),
+                 repo=initialized)
+        (initialized / "input").write_bytes(b"modified! child input\n")
+        self.assertEqual(self.git("status", "--porcelain", repo=source), "")
+        self.assertTrue(callback.exists(), "CONTROL: ordinary parent status invoked the child's filter")
+        callback.unlink()
+        with self.assertRaisesRegex(ValueError, "gitlink"):
+            SOURCE["validate_binding"](record)
+        self.assertFalse(callback.exists())
+        self.assertEqual((initialized / "input").read_bytes(), b"modified! child input\n")
+
+    def test_stamp_observation_checks_children_even_with_allowed_parent_changes(self):
+        (self.repo / "codex-rs").mkdir()
+        for name in ("Cargo.toml", "Cargo.lock"):
+            (self.repo / "codex-rs" / name).write_text('version = "1"\n')
+        self.git("add", "codex-rs")
+        child, _leaf, source, _record = self.gitlink_fixture("stamp-child")
+        initialized = self.initialize_gitlink(source, child)
+        (source / "codex-rs/Cargo.toml").write_text('version = "2"\n')
+        SOURCE["only_stamps"](source)
+        self.git("update-index", "--assume-unchanged", "input", repo=initialized)
+        (initialized / "input").write_bytes(b"owner child during stamping\n")
+        with self.assertRaisesRegex(ValueError, "source|gitlink|index"):
+            SOURCE["only_stamps"](source)
+        self.assertEqual((initialized / "input").read_bytes(), b"owner child during stamping\n")
+
     def test_current_source_stamp_inputs_and_real_assembly_return_clean(self):
         actual = self.root / "actual-source"
         subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(ROOT), str(actual)],
@@ -1144,6 +1613,7 @@ else:
         # The target is the actual committed source; the new optimization is in
         # its controller only, exactly like packaging historical target commits.
         shutil.copyfile(ROOT / "alab/package_source.py", actual / "alab/package_source.py")
+        shutil.copyfile(ROOT / "alab/source_content.py", actual / "alab/source_content.py")
         original_repo = self.repo
         self.repo = actual
         session = self.session()

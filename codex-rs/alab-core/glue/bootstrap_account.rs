@@ -35,6 +35,7 @@ mod alab_bootstrap_account_unit_tests {
             alab_bootstrap_account(Err(WorkspaceRoutingError::DiscoveryUnauthorized.into()))?;
         assert!(account.account_state.account.is_none());
         assert!(account.account_state.requires_openai_auth);
+        assert!(account.user_id.is_none());
         assert!(account.workspace_routing.is_none());
         assert!(account.user_id.is_none());
         Ok(())

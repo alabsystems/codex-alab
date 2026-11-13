@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "kind": "upstream-fetch-observation",
+  "observed_at": "2026-11-10T12:03:09.785824+00:00",
+  "transport": "alab/github.py via Agh",
+  "remote": "upstream",
+  "refspec": "refs/heads/main:refs/remotes/upstream/main",
+  "before": "6dfaca4dad030f5ecaf4925f210f539353b15594",
+  "after": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "exit_code": 0,
+  "intake": "alab/upstream/b32ada5320-from-6dfaca4dad-intake.json",
+  "candidate_contains_fetched_target": false,
+  "qualification": "The native full gate receipt for bccbcddbb2 covers upstream 6dfaca4dad only; the three new commits have no integration or qualification claim."
+}

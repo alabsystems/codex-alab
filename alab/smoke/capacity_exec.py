@@ -20,6 +20,8 @@ import sys
 import threading
 import time
 
+import provider_fixture
+
 MODEL = "gpt-5"
 PROMPT = "Keep this headless capacity smoke task and its completed plan."
 CALL_ID = "capacity-smoke-plan"
@@ -146,6 +148,16 @@ def run(executable, args, root, env, label, *, interact=None):
                     except ProcessLookupError:
                         pass
                     child.wait()
+                    # An interaction that raised left the reaped child's pipes open.
+                    for pipe in (child.stdin, child.stdout):
+                        if pipe is not None:
+                            try:
+                                pipe.close()
+                            except OSError:
+                                # Input the stopped child never read cannot be flushed.
+                                # The pipe is closed all the same, and the error that
+                                # ended the interaction is the one to report.
+                                pass
             finally:
                 for signum, handler in handlers.items():
                     signal.signal(signum, handler)
@@ -253,7 +265,7 @@ def serve(mock):
                 record.update(headerStartedAt=header_started, headerAt=header_at)
             self.wfile.write(data)
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = provider_fixture.LoopbackHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread

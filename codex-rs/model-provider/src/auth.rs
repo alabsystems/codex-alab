@@ -108,7 +108,7 @@ impl ResolvedProviderAuth {
         &self,
         factory: HttpClientFactory,
     ) -> Result<HttpClientFactory, AuthError> {
-        let factory = codex_api::alab_auth_source::bind_factory(self.auth.as_ref(), factory)?; // ALAB(accounts): prepared transports retain the selected native credential policy.
+        let factory = codex_api::alab_auth_source::bind_factory(self.auth.as_ref(), factory)?; // ALAB(accounts): source-bound transport selection precedes both ordinary and runtime auth factories.
         match &self.runtime {
             Some(runtime) => runtime.bind_http_client_factory(factory),
             None => Ok(factory),

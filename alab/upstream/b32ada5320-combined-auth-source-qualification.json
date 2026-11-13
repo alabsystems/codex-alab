@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "kind": "regression-qualification-observations",
+  "observed_at": "2026-11-10T13:25:52.438262+00:00",
+  "upstream": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "package": "codex-model-provider",
+  "target": "lib",
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "observations": [
+    {
+      "phase": "red",
+      "source": "05d203e12f40adc729986fcc69b097d05366553e",
+      "exit_code": 1,
+      "log": "${HOME}/.ubd/codex-alignment-b32-combined-auth-red-native.log",
+      "log_sha256": "c6ca92f21ad835409247cbf8b9001a89a75a629610ec841635fa43e79a6ea5dc",
+      "passed": 0,
+      "failed": 2,
+      "ignored": 0
+    },
+    {
+      "phase": "green",
+      "source": "4588bc8dbfee9ae25133a3377ceee31d0114162f",
+      "exit_code": 0,
+      "log": "${HOME}/.ubd/codex-alignment-b32-combined-auth-green-native.log",
+      "log_sha256": "bee240308bd7c103c8e043d5aebb9f7cec3307795d95d38c70a8e4f276cec8f7",
+      "passed": 144,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "full_gate_qualified": false,
+  "limits": "Two actual HTTP regressions failed before the delegation hook and pass in the complete 144-test model-provider library run after it, with zero failures/ignored/reported skips. Covers unavailable primary permission refusal before materialization, foreign caller policy refusal, matching primary/gateway HTTP headers, and refusal to reuse a retired account after policy republishing. These are real application-policy/HTTP controls, not native image lifetime proof. The separate stale gateway-export policy after auth replacement remains unresolved; the earlier full gate on 270afedaa6 does not cover this changed source."
+}

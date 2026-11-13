@@ -82,7 +82,6 @@ fn barrier(threads: &[(&Arc<Session>, &Arc<TurnContext>)]) -> ExecLaunchBarrier 
             })
             .collect(),
     )
-    .unwrap()
 }
 
 async fn registered(gate: &ExecLaunchBarrier, expected: usize) {
@@ -253,4 +252,15 @@ async fn review_launch_rejects_a_registered_regular_task() {
             .is_err()
     );
     assert_eq!(ran.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn idle_only_launch_waits_for_explicit_release_without_a_turn_permit() {
+    let gate = ExecLaunchBarrier::from_members(HashMap::new());
+    gate.wait_ready().await.unwrap();
+    assert!(gate.permit(ThreadId::new()).is_err());
+    assert!(matches!(*gate.0.status.borrow(), Status::Ready));
+    gate.release().unwrap();
+    gate.release().unwrap();
+    assert!(matches!(*gate.0.status.borrow(), Status::Released));
 }

@@ -74,8 +74,9 @@ class DiskFloor:
 
 
 def observe_exit_with_disk(pid, disk_floor, interval=1.0):
-    """Poll without reaping; resource failure unwinds through the same group stop."""
-    if not hasattr(os, "waitid"):
+    """Observe without reaping; resource failure unwinds through the same group stop."""
+    # NOTE_EXIT wakes promptly even on Python versions that also expose waitid.
+    if hasattr(select, "kqueue") or not hasattr(os, "waitid"):
         return observe_exit_kqueue(pid, disk_floor.check, interval)
     while True:
         disk_floor.check()

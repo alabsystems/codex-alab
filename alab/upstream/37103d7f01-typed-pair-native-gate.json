@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "kind": "native-full-gate-observation",
+  "observed_at": "2026-11-10T16:12:57.677406+00:00",
+  "source": "cf4d9382875ff579d0a288da888bb9afc6f00d6f",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "command": "alab/check.sh",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "tree": "9e3ecca1051a2231f7a9ed4fce5f5904f77e5f43b0f9dd18da59204efe3040bb",
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "reviewed_structural_hook_loss": {
+    "enabled": true,
+    "topics": [
+      "core-test-fixtures",
+      "exec-tree",
+      "startup-test-fixture",
+      "typed-auth-pair-consolidation"
+    ],
+    "decision": "alab/upstream/c875667eb8-resolution.md"
+  },
+  "results": {
+    "selected_upstream_libraries": 38,
+    "candidate_failed_copies": 21,
+    "isolated_candidate_failed_copies": 17,
+    "pristine_failed_copies": 17,
+    "pristine_executed_copies": 17,
+    "alab_owned_ignored_tests": 4,
+    "alab_tippy_diagnostics": 0,
+    "upstream_tippy_diagnostics_set_aside": 40,
+    "isolated_candidate_passed_copies": 4,
+    "isolated_candidate_executed_copies": 21
+  },
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-gate-37103-cf4d938287-native.log",
+      "sha256": "750ed4455e0c92ed8a8c69e8b355ce016827759da3040ebe1cdccec4173f4b48"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-gate-37103-cf4d938287-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-cf4d938287/unit-main.json",
+      "sha256": "75c0f870a2ba509c14f4f6a8b05ccc0d174bbf2999dc6bccc5f148f7c72ce699"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-cf4d938287/unit-alone.json",
+      "sha256": "e2fc9188241f1a2f54cf4c81ff975c2da9a81f8b16f2d00bc30679c6d2c362f0"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-cf4d938287/unit-pristine.json",
+      "sha256": "0737d1790df5fa3488415a14d97a6ceedbcc540ff9e38e62b884164e991f3d86"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-cf4d938287/unit.log",
+      "sha256": "649f7fed3b536e1a6e9034f46472c45f024ea9baf43031e4769aa9f56e99333c"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-cf4d938287/alone.log",
+      "sha256": "8ee1962cb140c21392b637cbbf7e551991919261d47ada6ce0fb9f8a5ac72485"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-37103-cf4d938287/pristine.log",
+      "sha256": "d0b88632a57f1a769887de64228dd37611b436e838cdccc086e41aa2ab64ab69"
+    }
+  ],
+  "limits": "Actual full check.sh session53821 terminal exit0 and sidecar0. CLI built and ran; owned tests completed with four existing ignored cases; ALab Tippy clean,40 upstream diagnostics set aside.38 hooked libraries selected;21 failed copies reran individually,4 passed,17 failed and all17 reproduced on pristine upstream by exact package/target/test identity. These remain failures, not passing tests. Reviewed structural marker loss includes typed-auth-pair consolidation. Exact cf4d938287 includes37103 and typed auth/factory changes, but predates later MCP status owner fix4894c17bd2. Does not prove complete intake, semantic feature contracts, native credential images, platform enforcement, remote landing or installed adoption."
+}

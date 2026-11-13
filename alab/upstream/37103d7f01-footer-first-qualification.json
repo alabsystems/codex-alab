@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:51:01.909929+00:00",
+  "source": "4ab50590830b2805206ec4f7553a9f27d3bc5671",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "ui_tree::render::text::tests::styled_runs_have_the_same_breaks_as_contiguous_text",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::render::text::tests::chunks_of_a_clean_leaf_share_its_original_buffer",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-footer-native.sh",
+      "sha256": "35c17acfa17368a258edbc1eb3561ff62f3666f515b49cb76ea50e4e37a85e5e"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-footer-native.log",
+      "sha256": "8d65156c5b9d6b267470f8c72756919a43b09c355a09e453bc036e3f1e72cd7e"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-footer-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Two lower-level text tests passed with zero failures/ignored and 6346 other tests filtered out. The subsequent status_surface_tests:: selection matched zero tests (6348 filtered out) and was correctly rejected by the focused helper; overall controller exit 1. This is negative qualification evidence for that selection, not a passing footer run. Corrected module selection is a separate run. No full-gate or adoption claim."
+}

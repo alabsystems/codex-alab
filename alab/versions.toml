@@ -51,3 +51,21 @@ version = "0.4.0"
 baseline = "0.167.1"
 baseline_commit = "0a94398fa60c4fac0e7659e4213a0a36e613dd46"
 date = "2026-11-10"
+
+[[release]]
+version = "0.5.0"
+baseline = "0.167.1"
+baseline_commit = "0a94398fa60c4fac0e7659e4213a0a36e613dd46"
+date = "2026-11-11"
+
+[[release]]
+version = "0.6.0"
+baseline = "0.167.2"
+baseline_commit = "ce21072c90d32c40af7a55b60b2fb35c84a43a6a"
+date = "2026-11-12"
+
+[[release]]
+version = "0.7.0"
+baseline = "0.168.0"
+baseline_commit = "9480ec100c3edee9fc69172e8e80a4730444094d"
+date = "2026-11-13"

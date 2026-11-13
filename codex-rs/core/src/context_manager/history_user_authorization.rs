@@ -78,6 +78,7 @@ impl ContextManager {
 
     pub(crate) fn restore_retained_context(&mut self, checkpoint: Option<&RetainedContext>) {
         Arc::make_mut(&mut self.retained_context).restore(checkpoint, &self.items);
+        if !self.retain_inherited_user_messages { Arc::make_mut(&mut self.retained_context).alab_restrict_inherited_messages(); } // ALAB(exec-recovery): a checkpoint cannot restore authority excluded by fresh startup policy.
         let items = Arc::clone(&self.items);
         for envelope in items.iter().filter(|envelope| {
             envelope

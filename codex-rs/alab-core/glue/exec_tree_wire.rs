@@ -27,7 +27,7 @@ use settings::Settings;
 pub struct ExecTreeSnapshot {
     version: u32,
     root: ThreadId,
-    turn: String,
+    turn: Option<String>,
     threads: Vec<ExecThreadSnapshot>,
     inputs: ExecInputBatch,
 }
@@ -38,11 +38,13 @@ pub struct ExecThreadSnapshot {
     thread: ThreadId,
     parent: Option<ThreadId>,
     source: SessionSource,
+    root_capabilities_restricted: bool,
     configuration: ExecConfiguration,
     settings: Settings,
     tools: Vec<DynamicToolSpec>,
     capability_roots: Vec<codex_protocol::capabilities::SelectedCapabilityRoot>,
     ephemeral: Option<ExecEphemeralHistory>,
+    helper: Option<crate::agent::helper_daybreak::turn::alab_exec_helper::Snapshot>,
     recovery: Option<ExecRecoveryOptions>,
     review: Option<crate::ExecReviewSnapshot>,
     history: HistoryEvidence,
@@ -56,42 +58,145 @@ pub(super) fn preflight_settings(source: &CodexThreadSettingsOverrides) -> Resul
         .validate()
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExecTreeRecords {
+    version: u32,
+    root: ThreadId,
+    turn: Option<String>,
+    threads: Vec<ExecThreadSnapshot>,
+}
+impl ExecTreeRecords {
+    pub(crate) fn root(&self) -> ThreadId {
+        self.root
+    }
+    pub(crate) fn threads(&self) -> Vec<ThreadId> {
+        self.threads.iter().map(|node| node.thread).collect()
+    }
+    pub(crate) fn startup_request(
+        &self,
+    ) -> Result<(ThreadId, crate::config::ConfigOverrides), String> {
+        let root = self
+            .threads
+            .first()
+            .filter(|node| node.thread == self.root && node.parent.is_none())
+            .ok_or("runtime root configuration is absent")?;
+        Ok((
+            self.root,
+            root.configuration
+                .startup_request(root.ephemeral.is_some())
+                .map_err(|error| error.to_string())?,
+        ))
+    }
+    pub(crate) fn with_inputs(self, inputs: ExecInputBatch) -> Result<ExecTreeSnapshot, String> {
+        let tree = ExecTreeSnapshot {
+            version: self.version,
+            root: self.root,
+            turn: self.turn,
+            threads: self.threads,
+            inputs,
+        };
+        tree.validate(tree.root, None)?;
+        Ok(tree)
+    }
+}
+
 impl ExecTreeSnapshot {
-    pub fn capture(source: &ExecCapturedTree) -> Result<Self, String> {
-        let mut threads = Vec::new();
-        for node in source.threads() {
-            threads.push(ExecThreadSnapshot {
-                thread: node.thread(),
-                parent: node.parent(),
-                source: node.source().clone(),
-                configuration: node.configuration().clone(),
-                settings: Settings::capture(node.settings())?,
-                tools: node.dynamic_tools().to_vec(),
-                capability_roots: node.capability_roots().to_vec(),
-                ephemeral: node.ephemeral_history().cloned(),
-                recovery: node.recovery().cloned(),
-                review: node.review().cloned(),
-                history: HistoryEvidence::capture(node.history())?,
-            });
+    pub(crate) fn into_records(self) -> ExecTreeRecords {
+        ExecTreeRecords {
+            version: self.version,
+            root: self.root,
+            turn: self.turn,
+            threads: self.threads,
         }
+    }
+
+    pub(super) fn preflight_idle_nodes(nodes: &[super::ExecCapturedThread]) -> Result<(), String> {
+        let saved = Self::capture_threads(nodes)?;
+        let bytes = serde_json::to_vec(&saved).map_err(|e| e.to_string())?;
+        let nodes: Vec<ExecThreadSnapshot> =
+            serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        for node in nodes {
+            node.settings.validate()?;
+            if super::ephemeral::open_turn(&node.history()?.items).is_some() {
+                return Err("idle preflight history retains an unfinished turn".into());
+            }
+            if let Some(memory) = node.ephemeral {
+                memory.restore_for(node.thread, None)?;
+            }
+            if let Some(helper) = node.helper {
+                helper.validate(&node.source)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn capture(source: &ExecCapturedTree) -> Result<Self, String> {
+        let threads = Self::capture_threads(source.threads())?;
         let snapshot = Self {
-            version: 2,
+            version: 4,
             root: source.root(),
-            turn: source.turn().into(),
+            turn: Some(source.turn().into()),
             threads,
             inputs: source.inputs().clone(),
         };
         // Exercise the same codec used by the native capsule before reporting success.
         let encoded = serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?;
         let snapshot: Self = serde_json::from_slice(&encoded).map_err(|e| e.to_string())?;
-        snapshot.validate(source.root(), source.turn())?;
+        snapshot.validate(source.root(), Some(source.turn()))?;
         Ok(snapshot)
     }
+    fn capture_threads(
+        nodes: &[super::ExecCapturedThread],
+    ) -> Result<Vec<ExecThreadSnapshot>, String> {
+        let mut threads = Vec::new();
+        for node in nodes {
+            threads.push(ExecThreadSnapshot {
+                thread: node.thread(),
+                parent: node.parent(),
+                source: node.source().clone(),
+                root_capabilities_restricted: node.root_capabilities_restricted(),
+                configuration: node.configuration().clone(),
+                settings: Settings::capture(node.settings())?,
+                tools: node.dynamic_tools().to_vec(),
+                capability_roots: node.capability_roots().to_vec(),
+                ephemeral: node.ephemeral_history().cloned(),
+                helper: node.helper().cloned(),
+                recovery: node.recovery().cloned(),
+                review: node.review().cloned(),
+                history: HistoryEvidence::capture(node.history())?,
+            });
+        }
+        Ok(threads)
+    }
+
+    /// Capture an idle tree only from original committed, writer-closed members.
+    /// This serializes data; destination admission remains independent.
+    pub async fn capture_idle(
+        root: &crate::CodexThread,
+        inventory: &crate::CommittedUpgradeInventory,
+        invocation: &ExecConfiguration,
+    ) -> Result<Self, String> {
+        let (nodes, inputs) =
+            super::tree_capture::capture_idle(root, inventory, invocation).await?;
+        let snapshot = Self {
+            version: 4,
+            root: root.exec_thread_id(),
+            turn: None,
+            threads: Self::capture_threads(&nodes)?,
+            inputs,
+        };
+        let encoded = serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?;
+        let snapshot: Self = serde_json::from_slice(&encoded).map_err(|e| e.to_string())?;
+        snapshot.validate(root.exec_thread_id(), None)?;
+        Ok(snapshot)
+    }
+
     pub fn root(&self) -> ThreadId {
         self.root
     }
-    pub fn turn(&self) -> &str {
-        &self.turn
+    pub fn turn(&self) -> Option<&str> {
+        self.turn.as_deref()
     }
     pub fn threads(&self) -> &[ExecThreadSnapshot] {
         &self.threads
@@ -100,11 +205,11 @@ impl ExecTreeSnapshot {
         &self.inputs
     }
 
-    pub fn validate(&self, root: ThreadId, turn: &str) -> Result<(), String> {
-        if self.version != 2
+    pub fn validate(&self, root: ThreadId, turn: Option<&str>) -> Result<(), String> {
+        if self.version != 4
             || self.root != root
-            || self.turn != turn
-            || turn.is_empty()
+            || self.turn.as_deref() != turn
+            || turn.is_some_and(str::is_empty)
             || self.threads.is_empty()
         {
             return Err("tree snapshot does not match its original root and turn".into());
@@ -117,7 +222,7 @@ impl ExecTreeSnapshot {
                 if node.thread != root
                     || node.source.is_non_root_agent()
                     || node.parent.is_some()
-                    || node.recovery.as_ref().map(ExecRecoveryOptions::turn) != Some(turn)
+                    || node.recovery.as_ref().map(ExecRecoveryOptions::turn) != turn
                 {
                     return Err("tree snapshot has an invalid root frame".into());
                 }
@@ -135,6 +240,22 @@ impl ExecTreeSnapshot {
                 return Err("tree snapshot repeats a thread or changes its parent".into());
             }
             node.settings.validate()?;
+            if let Some(helper) = &node.helper {
+                helper.validate(&node.source)?;
+            }
+            if node
+                .recovery
+                .as_ref()
+                .is_some_and(|saved| saved.helper_choice().is_some())
+                && !matches!(
+                    &node.helper,
+                    Some(
+                        crate::agent::helper_daybreak::turn::alab_exec_helper::Snapshot::Helper { .. }
+                    )
+                )
+            {
+                return Err("implicit helper recovery lacks its native helper data".into());
+            }
             if node
                 .recovery
                 .as_ref()
@@ -199,11 +320,28 @@ impl ExecTreeSnapshot {
             }
         }
         self.inputs.validate_members(&active, &idle)?;
-        self.inputs.validate(root, turn)
+        match turn {
+            Some(turn) => self.inputs.validate(root, turn),
+            None => self.inputs.validate_idle(root),
+        }
     }
 }
 
 impl ExecThreadSnapshot {
+    /// Retain source restrictions before startup without relaxing fresh host policy.
+    pub fn restrict_root_capabilities(&self, init: &mut codex_extension_api::ExtensionDataInit) {
+        if self.root_capabilities_restricted {
+            init.insert(crate::RestrictRootCapabilities);
+        }
+    }
+
+    /// Stage data only after the caller has validated the receipt-bound tree.
+    pub fn stage_helper_restore(&self, init: &mut codex_extension_api::ExtensionDataInit) {
+        if let Some(helper) = &self.helper {
+            helper.stage(init);
+        }
+    }
+
     pub fn thread(&self) -> ThreadId {
         self.thread
     }

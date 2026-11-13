@@ -175,6 +175,34 @@ impl ExecConfiguration {
         })
     }
 
+    /// Data-only location and workspace requests for a fresh policy load.
+    /// Source permissions, providers and auth never enter these overrides.
+    pub(crate) fn startup_request(&self, ephemeral: bool) -> std::io::Result<ConfigOverrides> {
+        if self.version != 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported runtime root configuration",
+            ));
+        }
+        let cwd = self
+            .overrides
+            .cwd
+            .clone()
+            .filter(|cwd| cwd.is_absolute())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "runtime root has no absolute working directory",
+                )
+            })?;
+        Ok(ConfigOverrides {
+            cwd: Some(cwd),
+            workspace_roots: self.overrides.workspace_roots.clone(),
+            ephemeral: Some(ephemeral),
+            ..Default::default()
+        })
+    }
+
     pub async fn restore(&self, current: &Config) -> std::io::Result<Config> {
         if self.version != 2 || self.home != current.codex_home {
             return Err(std::io::Error::new(
@@ -190,17 +218,30 @@ impl ExecConfiguration {
         if let Some(child) = &self.child {
             child.apply_inputs(&mut cfg);
         }
+        // Executable bindings belong to the admitted destination release.
+        // Source paths may point into a retired package, including when the
+        // current platform deliberately has no corresponding helper.
+        let mut overrides: ConfigOverrides = self.overrides.clone().into();
+        overrides.codex_self_exe = current.codex_self_exe.clone();
+        overrides.codex_linux_sandbox_exe = current.codex_linux_sandbox_exe.clone();
+        overrides.main_execve_wrapper_exe = current.main_execve_wrapper_exe.clone();
         let mut restored = Config::load_config_with_layer_stack(
             LOCAL_FS.as_ref(),
             cfg,
-            self.overrides.clone().into(),
+            overrides,
             current.codex_home.clone(),
             layers,
         )
         .await?;
         if let Some(child) = &self.child {
-            child.restore_metadata(&mut restored, self.overrides.permission_profile.as_ref())?;
+            child.restore_metadata(
+                &mut restored,
+                self.overrides.permission_profile.as_ref(),
+                current,
+            )?;
         }
+        // Core's config constructor leaves the wrapper for its host to bind.
+        restored.main_execve_wrapper_exe = current.main_execve_wrapper_exe.clone();
         restored.application_network_policy = current.application_network_policy.clone();
         restored.application_auth_route_config = current.application_auth_route_config.clone();
         Ok(restored)
@@ -305,6 +346,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replacement_uses_only_destination_release_helpers() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let home = AbsolutePathBuf::from_absolute_path(directory.path())?;
+        let source = directory.path().join("release-0.5.0");
+        let target = directory.path().join("release-0.6.0");
+        let overrides = ConfigOverrides {
+            cwd: Some(directory.path().to_owned()),
+            codex_self_exe: Some(source.join("codex")),
+            codex_linux_sandbox_exe: Some(source.join("sandbox")),
+            main_execve_wrapper_exe: Some(source.join("wrapper")),
+            ..Default::default()
+        };
+        let mut original = fixture(&home, "original-model", overrides.clone(), false).await?;
+        original.main_execve_wrapper_exe = overrides.main_execve_wrapper_exe.clone();
+        let snapshot = ExecConfiguration::capture(&original, &overrides)?;
+        let snapshot: ExecConfiguration = serde_json::from_slice(&serde_json::to_vec(&snapshot)?)?;
+        for available in [true, false] {
+            let mut current = fixture(
+                &home,
+                "new-default",
+                ConfigOverrides {
+                    cwd: Some(directory.path().to_owned()),
+                    codex_self_exe: available.then(|| target.join("codex")),
+                    codex_linux_sandbox_exe: available.then(|| target.join("sandbox")),
+                    ..Default::default()
+                },
+                false,
+            )
+            .await?;
+            current.main_execve_wrapper_exe = available.then(|| target.join("wrapper"));
+            let restored = snapshot.restore(&current).await?;
+            assert_eq!(restored.codex_self_exe, current.codex_self_exe);
+            assert_eq!(
+                restored.codex_linux_sandbox_exe,
+                current.codex_linux_sandbox_exe
+            );
+            assert_eq!(
+                restored.main_execve_wrapper_exe,
+                current.main_execve_wrapper_exe
+            );
+            assert_eq!(
+                restored.model, original.model,
+                "preferences still belong to the original session"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn child_runtime_settings_round_trip_without_replaying_parent_overrides()
     -> std::io::Result<()> {
         use codex_features::Feature;
@@ -378,7 +468,7 @@ mod tests {
             .map_err(std::io::Error::other)?;
         let saved = invocation.capture_child(&child)?;
         let saved: ExecConfiguration = serde_json::from_slice(&serde_json::to_vec(&saved)?)?;
-        let current = fixture(
+        let mut current = fixture(
             &home,
             "new-default",
             ConfigOverrides {
@@ -388,6 +478,9 @@ mod tests {
             true,
         )
         .await?;
+        current.codex_self_exe = Some(directory.path().join("target-codex"));
+        current.codex_linux_sandbox_exe = Some(directory.path().join("target-sandbox"));
+        current.main_execve_wrapper_exe = Some(directory.path().join("target-wrapper"));
         let restored = saved.restore(&current).await?;
         assert_eq!(restored.model, child.model);
         assert_eq!(restored.model_provider_id, child.model_provider_id);
@@ -433,7 +526,12 @@ mod tests {
         );
         assert_eq!(
             restored.codex_linux_sandbox_exe,
-            original.codex_linux_sandbox_exe
+            current.codex_linux_sandbox_exe
+        );
+        assert_eq!(restored.codex_self_exe, current.codex_self_exe);
+        assert_eq!(
+            restored.main_execve_wrapper_exe,
+            current.main_execve_wrapper_exe
         );
         assert_eq!(
             restored.application_network_policy,
@@ -498,8 +596,8 @@ mod tests {
         let mut requirements = current.config_layer_stack.requirements().clone();
         requirements.feature_requirements = Some(codex_config::Sourced {
             value: codex_config::FeatureRequirementsToml {
-                entries: std::collections::BTreeMap::from([("shell_tool".into(), false)]),
                 runtime_auth_mode: None,
+                entries: std::collections::BTreeMap::from([("shell_tool".into(), false)]),
             },
             source: codex_config::RequirementSource::Unknown,
         });

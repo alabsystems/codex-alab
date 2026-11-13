@@ -146,7 +146,10 @@ async fn a_diff_overlay_hides_the_picker_preview_and_restores_it_on_return() -> 
     let size = Size::new(120, 40);
     app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Resize(size))
         .await?;
-    assert!(app.chat_widget.alab_pet_picker_preview_visible_for_test());
+    assert!(
+        tui.alab_preview_placed_for_test(),
+        "the actual preview renderer owns a placement"
+    );
 
     crate::test_support::boxed_future!(app.handle_event(
         &mut tui,
@@ -161,10 +164,17 @@ async fn a_diff_overlay_hides_the_picker_preview_and_restores_it_on_return() -> 
         !app.chat_widget.should_clear_pet_picker_preview_image(),
         "the diff must have cleared the previous preview placement"
     );
+    assert!(
+        !tui.alab_preview_placed_for_test(),
+        "the overlay removed the actual preview placement"
+    );
     app.close_transcript_overlay(&mut tui);
     app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Resize(size))
         .await?;
-    assert!(app.chat_widget.alab_pet_picker_preview_visible_for_test());
+    assert!(
+        tui.alab_preview_placed_for_test(),
+        "the actual preview renderer owns a placement"
+    );
     tui.draw_pet_picker_preview_image(None)?;
     tui.set_owned_screen(false)?;
     app_server.shutdown().await?;

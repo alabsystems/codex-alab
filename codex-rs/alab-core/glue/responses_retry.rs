@@ -37,7 +37,7 @@ fn fallback_notice_when_active(active: bool, event: EventMsg, err: &CodexErr) ->
         EventMsg::Warning(warning) => {
             tracing::warn!(
                 diagnostic = %warning.message,
-                "WebSocket retries exhausted; continuing over HTTPS"
+                "WebSocket request is continuing over HTTPS"
             );
             EventMsg::StreamError(StreamErrorEvent {
                 message: "Reconnecting over HTTPS".into(),
@@ -177,6 +177,21 @@ fn should_retry_when_active(active: bool, err: &CodexErr) -> bool {
         && capacity_reason(err).is_some()
 }
 
+/// Native sampling returns these failures before the common response handler.
+/// Other failures are observed once by that handler, including remote compaction.
+pub(crate) fn remember_terminal(err: &CodexErr, turn: &TurnContext) {
+    if matches!(
+        err.details(),
+        CodexErrorDetails::ContextWindowExceeded
+            | CodexErrorDetails::UsageLimitReached(_)
+            | CodexErrorDetails::SessionBudgetExceeded
+            | CodexErrorDetails::InferenceHookDenied { .. }
+            | CodexErrorDetails::Fatal(_)
+    ) {
+        remember(err, turn);
+    }
+}
+
 /// Every Responses request lane shares its turn's advice, including compaction before
 /// sampling starts. A later failure without advice replaces an earlier deadline.
 pub(crate) fn remember(err: &CodexErr, turn_context: &TurnContext) {
@@ -230,12 +245,12 @@ pub(crate) fn compact_retry_at(
 
 /// A deadline is ALab's (active): the host's sleep counts toward it
 /// ([`codex_alab_core::wake::sleep_until`]).
-pub(crate) async fn compact_wait(delay: std::time::Duration, retry_at: Option<OrdinaryRetryWait>) {
-    match retry_at {
+pub(crate) async fn compact_wait(retry_at: Instant, selected: Option<OrdinaryRetryWait>) {
+    match selected {
         Some(wait) => {
-            ordinary_wait_until(Instant::now() + delay, wait).await;
+            ordinary_wait_until(retry_at, wait).await;
         }
-        None => tokio::time::sleep(delay).await,
+        None => tokio::time::sleep_until(retry_at).await,
     }
 }
 
@@ -603,6 +618,18 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
     // retry path is reached; cancellation or restoration drops this lease.
     let _quota_observation =
         crate::session::alab_exec_recovery_options::quota_observation::publish(sess, turn);
+    // An earned reset comes first, then another account. A host that can move
+    // this conversation once the turn ends installs the handoff in the turn
+    // store; an exec host keeps its request across the wall instead.
+    let handoff = turn
+        .extension_data
+        .get::<codex_alab_core::quota::HeadlessExec>()
+        .is_none()
+        .then(|| {
+            turn.extension_data
+                .get::<codex_alab_core::quota::WallHandoff>()
+        })
+        .flatten();
     codex_alab_quota_recovery::recover_weekly(
         &sess.services.auth_manager,
         &turn.config.codex_home,
@@ -610,7 +637,10 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
         turn.config.http_client_factory(),
         &turn.sub_id,
         &state,
-        details.resets_at.as_ref().map(chrono::DateTime::timestamp),
+        codex_alab_quota_recovery::Wall {
+            reset_at: details.resets_at.as_ref().map(chrono::DateTime::timestamp),
+            handoff: handoff.as_deref(),
+        },
     )
     .await
 }
@@ -689,6 +719,11 @@ pub(crate) async fn bind_weekly(sess: &Session, turn: &TurnContext) {
             .extension_data
             .get::<codex_alab_quota_recovery::State>()
     {
+        // What the last response reported can end the reuse of this turn's
+        // clear usage reading early; it never excuses a read by itself.
+        let observed =
+            crate::session::alab_exec_recovery_options::quota_observation::response_limits(sess)
+                .await;
         codex_alab_quota_recovery::preflight(
             &sess.services.auth_manager,
             &turn.config.codex_home,
@@ -696,6 +731,7 @@ pub(crate) async fn bind_weekly(sess: &Session, turn: &TurnContext) {
             turn.config.http_client_factory(),
             &turn.sub_id,
             &state,
+            observed.as_ref(),
         )
         .await;
     }

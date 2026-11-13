@@ -14,6 +14,7 @@ use std::sync::Weak;
 use reqwest::Url;
 
 #[path = "../../alab-core/glue/http_native_source.rs"] mod alab_native; // ALAB(accounts): native source use follows request/body/WebSocket lifetime.
+pub use alab_native::IdleNetworkPermit; // ALAB(accounts): idle recovery observes frozen authority without owning activity.
 use tokio::sync::watch;
 
 /// Effective application destinations, after the requirements owner has applied precedence.

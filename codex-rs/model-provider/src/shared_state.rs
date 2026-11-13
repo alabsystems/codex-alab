@@ -39,6 +39,7 @@ struct GatewayExportEntry {
     owner: Weak<AuthManager>,
     provider: ModelProviderInfo,
     export: Weak<GatewayExport>,
+    alab_source: crate::gateway_auth::alab_source::CacheKey, // ALAB(accounts): a manager pointer alone is not a source identity.
 }
 
 pub(crate) fn process_shared_state() -> &'static ModelProviderSharedState {
@@ -114,6 +115,7 @@ impl ModelProviderSharedState {
         provider: &ModelProviderInfo,
         command: &CredentialExportConfig,
         owner: &Arc<AuthManager>,
+        alab_source: crate::gateway_auth::alab_source::CacheKey, // ALAB(accounts): callers supply an already selected source, never a later account.
     ) -> Arc<GatewayExport> {
         let owner_key = Arc::downgrade(owner);
         let mut entries = self
@@ -123,19 +125,20 @@ impl ModelProviderSharedState {
         entries.retain(|entry| entry.export.strong_count() != 0 && entry.owner.strong_count() != 0);
         if let Some(export) = entries
             .iter()
-            .find(|entry| entry.owner.ptr_eq(&owner_key) && &entry.provider == provider)
+            .find(|entry| entry.owner.ptr_eq(&owner_key) && &entry.provider == provider && entry.alab_source.matches(&alab_source)) // ALAB(accounts): share only a complete captured source key.
             .and_then(|entry| entry.export.upgrade())
         {
             return export;
         }
         let export = Arc::new(GatewayExport::new(
             command.clone(),
-            owner.application_network_policy(),
+            alab_source.policy(), // ALAB(accounts): preserve the selected account rather than recapturing it during construction.
         ));
         entries.push(GatewayExportEntry {
             owner: owner_key,
             provider: provider.clone(),
             export: Arc::downgrade(&export),
+            alab_source, // ALAB(accounts): cache lifetime and exact source identity travel together.
         });
         export
     }

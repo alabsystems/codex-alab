@@ -100,7 +100,7 @@ row such as `✦ Autopilot ∞ cruise`. It names the real mode: `∞ cruise`,
 banner's trail, wordmark and row wear aterm's white moonbow (white to steel on a dark
 background, pearl to graphite on a light one), as aterm's own card does; cruise and
 land keep the spectrum. When policy does not support the session, the plain banner
-shows without the row; outside aterm nothing changes. There is one codex-alab
+shows without the row; outside aterm only the Autopilot row is absent. There is one codex-alab
 product version and no separate harness version. The `[ALab on]` button selects
 Vanilla; Cruise, Land and Off select Autopilot policy while Enhanced stays on.
 aterm never draws controls over either interface.
@@ -167,6 +167,13 @@ default embedded server, manage sign-in from a shell with `codex login`,
 `codex login status` and `codex logout`; `/logout` also signs out from the TUI.
 The inspector has no sign-in or saved-account picker. A remote app-server manages
 its own credentials.
+
+Inside aterm, `/accounts` shows aterm's account pool read-only (label, masked
+email, enrolled or not, 5-hour and weekly usage) and `/accounts add [label]`
+starts or follows aterm's enrollment of a label aterm already has configured.
+Neither changes the account a running session uses. `/accounts use <label>` and
+`/accounts auto` are accepted by the parser, but moving a running session to
+another account is not a shipped capability (`alab/design/accounts-assignment.md`).
 
 To keep a separate work login while sharing `$CODEX_HOME`'s configuration,
 skills, rules and session history, point `CODEX_AUTH_PATH` at an absolute

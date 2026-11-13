@@ -21,7 +21,7 @@ impl SuspendedExec {
         self.tree.root()
     }
     pub fn turn(&self) -> &str {
-        self.tree.turn()
+        self.options.turn()
     }
     pub fn options(&self) -> &ExecRecoveryOptions {
         &self.options
@@ -44,9 +44,20 @@ use recovery::ExecRecoveryRequest;
 #[path = "exec_bootstrap_server.rs"]
 mod bootstrap;
 pub use bootstrap::BootstrappedExec;
+pub use bootstrap::BootstrappedForest;
 pub use bootstrap::ExecBootstrapRequest;
+pub use bootstrap::ForestBootstrapRequest;
+pub use bootstrap::FreshRootStartup;
 
 pub(crate) enum Request {
+    BootstrapForest {
+        request: ForestBootstrapRequest,
+        reply: oneshot::Sender<Result<BootstrappedForest, String>>,
+    },
+    ActivateForest {
+        primary: ThreadId,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     Bootstrap {
         request: ExecBootstrapRequest,
         reply: oneshot::Sender<Result<BootstrappedExec, String>>,
@@ -60,6 +71,10 @@ pub(crate) enum Request {
         turn: String,
         configuration: Box<ExecConfiguration>,
         reply: oneshot::Sender<Result<SuspendedExec, String>>,
+    },
+    ActivateIdleTree {
+        thread: ThreadId,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     ActivateTree {
         thread: ThreadId,
@@ -96,6 +111,12 @@ impl State {
 impl Request {
     pub(crate) fn reject(self, reason: &str) {
         match self {
+            Self::BootstrapForest { reply, .. } => {
+                let _ = reply.send(Err(reason.into()));
+            }
+            Self::ActivateForest { reply, .. } => {
+                let _ = reply.send(Err(reason.into()));
+            }
             Self::Bootstrap { reply, .. } => {
                 let _ = reply.send(Err(reason.into()));
             }
@@ -103,6 +124,9 @@ impl Request {
                 let _ = reply.send(Err(reason.into()));
             }
             Self::Suspend { reply, .. } => {
+                let _ = reply.send(Err(reason.into()));
+            }
+            Self::ActivateIdleTree { reply, .. } => {
                 let _ = reply.send(Err(reason.into()));
             }
             Self::ActivateTree { reply, .. } => {
@@ -119,6 +143,25 @@ pub(crate) async fn process(
 ) {
     // Queued operations are owned by the processor, even if a caller disconnects.
     match request {
+        Request::BootstrapForest { request, reply } => {
+            let result = if state.completed.is_some() {
+                Err("a suspended runtime cannot bootstrap a forest".into())
+            } else {
+                state
+                    .bootstrap
+                    .run_forest(processor, request, connection)
+                    .await
+            };
+            let _ = reply.send(result);
+        }
+        Request::ActivateForest { primary, reply } => {
+            let result = if state.completed.is_some() {
+                Err("a suspended runtime cannot activate a forest".into())
+            } else {
+                state.bootstrap.activate_forest(primary).await
+            };
+            let _ = reply.send(result);
+        }
         Request::Bootstrap { request, reply } => {
             let result = if state.completed.is_some() {
                 Err("a suspended runtime cannot bootstrap execution".into())
@@ -156,6 +199,14 @@ pub(crate) async fn process(
                     &configuration,
                 )
                 .await;
+            let _ = reply.send(result);
+        }
+        Request::ActivateIdleTree { thread, reply } => {
+            let result = if state.completed.is_some() {
+                Err("a suspended runtime cannot activate execution".into())
+            } else {
+                state.bootstrap.activate_idle_tree(thread).await
+            };
             let _ = reply.send(result);
         }
         Request::ActivateTree {

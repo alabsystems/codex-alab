@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "kind": "native-full-gate-observation",
+  "observed_at": "2026-11-10T15:13:40.136653+00:00",
+  "source": "407d84e6d27208bc809df93b8cf0ae7405438034",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "command": "alab/check.sh",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "failure": "ALab-owned clippy::redundant_clone at auth_epoch_snapshot.rs:426: fresh_factory.clone() consumed with no later factory use.",
+  "adaptation": "fea0202ba4 removes only the redundant clone; assertions and production behavior unchanged. Rerun required on changed source.",
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-gate-37103-407d84e6d2-native.log",
+      "sha256": "2e226dfca7d5c428291d18fd0097b3fc86f0cebf9a03ba25f55639538fb917b6"
+    }
+  ],
+  "limits": "Stopped at Tippy; this run supplies no positive full-gate result, CLI smoke or owned/library test qualification."
+}

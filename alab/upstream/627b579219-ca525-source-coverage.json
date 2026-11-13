@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "kind": "local-source-and-intake-observation",
+  "base": "b79d2d3c596638ddb7aa221416e8223b6c3a8b54",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "candidate": "ca525ab4d82ab82e58ca033af978581d7eefb068",
+  "origin_tracking_main": "d20a5d89c9203cf81f6dbd61e787506228b2e2ad",
+  "commits": 426,
+  "reviewed": 426,
+  "pending": 0,
+  "missing": [],
+  "errors": [],
+  "intake_complete": true,
+  "candidate_contains_target": true,
+  "origin_tracking_contains_target": false,
+  "qualification": "unproven",
+  "installed_adoption": "unproven",
+  "limits": "Local refs only; no fresh fetch or remote-server observation. Decision validity is not semantic review or execution evidence. Source ancestry does not prove qualification or installed adoption."
+}

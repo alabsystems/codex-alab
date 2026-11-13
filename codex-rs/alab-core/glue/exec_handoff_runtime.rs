@@ -653,7 +653,11 @@ mod unix {
             .ok_or_else(|| anyhow::anyhow!("capsule has no digest"))?;
         exec_grant::tree::Manifest::new(
             tree.root().to_string(),
-            tree.turn().to_owned(),
+            tree.turn()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("active exec native manifest cannot admit an idle root")
+                })?
+                .to_owned(),
             digest.to_owned(),
             tree.threads()
                 .iter()
@@ -799,7 +803,7 @@ mod unix {
             let memory: MemoryState = serde_json::from_value(state)?;
             memory
                 .tree
-                .validate(checkpoint.options.thread(), &grant.origin.turn)
+                .validate(checkpoint.options.thread(), Some(&grant.origin.turn))
                 .map_err(anyhow::Error::msg)?;
             anyhow::ensure!(
                 serde_json::to_value(

@@ -785,6 +785,8 @@ mod tests {
             .with_max_level(tracing::Level::INFO)
             .with_writer(MockWriter::new(buffer))
             .finish();
+        // An untraced parallel worker can register this callsite before the test does.
+        let _untraced = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
         let _subscriber_guard = tracing::subscriber::set_default(subscriber);
 
         let (session, mut turn_context) = crate::session::tests::make_session_and_context().await;
@@ -832,6 +834,7 @@ mod tests {
             Vec::new(),
             ToolMode::Direct,
             BTreeMap::new(),
+            /*exec_definitions*/ None,
             /*tool_namespaces_info*/ None,
             &[],
         ));
@@ -1020,6 +1023,7 @@ mod tests {
             Vec::new(),
             ToolMode::Direct,
             BTreeMap::new(),
+            /*exec_definitions*/ None,
             /*tool_namespaces_info*/ None,
             &[],
         ));

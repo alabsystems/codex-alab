@@ -102,6 +102,34 @@ pub struct Capabilities {
     pub auto: bool,
 }
 
+impl Account {
+    /// Whether the pool's record lets a session move to this row now. The
+    /// host's own target rule refuses a row whose login is absent or signed
+    /// out, one held for another machine, one standing at a wall and a low one.
+    fn can_take_a_session(&self) -> bool {
+        self.enrolled
+            && !self.held
+            && matches!(self.condition, Condition::Usable | Condition::Unseen)
+    }
+}
+
+impl Snapshot {
+    /// Whether the pool shows an account other than this session's own that a
+    /// session could move to now. Cached host records, not permission: the
+    /// host reads each candidate afresh before it selects one, so this can
+    /// only say that asking for a move is not known to be futile.
+    ///
+    /// Where the host names no row as this session's, any one able row may be
+    /// the session's own, so two are required.
+    pub fn another_account_can_run(&self) -> bool {
+        let able = self.accounts.iter().filter(|row| row.can_take_a_session());
+        match self.assignment.account_id.as_deref() {
+            Some(own) => able.filter(|row| row.id != own).count() >= 1,
+            None => able.count() >= 2,
+        }
+    }
+}
+
 pub(crate) fn valid_text(text: &str, max: usize) -> bool {
     !text.is_empty() && text.chars().count() <= max && !text.chars().any(char::is_control)
 }
@@ -312,6 +340,68 @@ mod tests {
         assert!(read(&changed).is_err());
         let oversized = format!("OK codex-accounts {}", " ".repeat(65536));
         assert!(parse(&oversized, "", "", "").is_err());
+    }
+
+    /// A two-row pool: `mine` and `other`, each a condition and whether its
+    /// login is enrolled here, with `own` the row the host names as the session's.
+    fn pool(own: Option<&str>, mine: (&str, bool), other: (&str, bool)) -> Snapshot {
+        let mut value = fixture();
+        let row = value["accounts"][0].clone();
+        let rows = [("mine", mine), ("other", other)].map(|(id, (condition, enrolled))| {
+            let mut row = row.clone();
+            row["id"] = json!(id);
+            row["condition"] = json!(condition);
+            row["enrolled"] = json!(enrolled);
+            row
+        });
+        value["accounts"] = json!(rows);
+        value["assignment"]["account_id"] = json!(own);
+        read(&value).unwrap()
+    }
+
+    #[test]
+    fn accounts_pool_shows_another_account_only_beyond_the_sessions_own() {
+        // One enrolled row: whichever account the session runs on, no other can take it.
+        let alone = read(&fixture()).unwrap();
+        assert_eq!(alone.accounts.len(), 1);
+        assert!(!alone.another_account_can_run());
+        let empty = {
+            let mut value = fixture();
+            value["accounts"] = json!([]);
+            read(&value).unwrap()
+        };
+        assert!(!empty.another_account_can_run());
+
+        // The host names no row as the session's: one able row may be its own.
+        assert!(pool(None, ("usable", true), ("unseen", true)).another_account_can_run());
+        for other in [
+            ("limited", true),
+            ("low", true),
+            ("signed-out", true),
+            ("not-enrolled", false),
+            ("usable", false),
+        ] {
+            assert!(
+                !pool(None, ("usable", true), other).another_account_can_run(),
+                "{other:?}"
+            );
+            assert!(
+                !pool(None, other, ("unseen", true)).another_account_can_run(),
+                "{other:?} first"
+            );
+        }
+        let mut held = pool(None, ("usable", true), ("usable", true));
+        held.accounts[1].held = true;
+        assert!(!held.another_account_can_run(), "held for another machine");
+
+        // The host names the session's row: one other able row is enough, and
+        // the session's own never counts.
+        assert!(pool(Some("mine"), ("limited", true), ("unseen", true)).another_account_can_run());
+        assert!(pool(Some("mine"), ("usable", true), ("usable", true)).another_account_can_run());
+        assert!(!pool(Some("mine"), ("usable", true), ("limited", true)).another_account_can_run());
+        assert!(
+            !pool(Some("other"), ("limited", true), ("usable", true)).another_account_can_run()
+        );
     }
 
     #[test]

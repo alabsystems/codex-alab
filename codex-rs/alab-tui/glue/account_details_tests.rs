@@ -70,7 +70,10 @@ fn weekly_history_and_reset_expiries_are_explained_without_claiming_unknown_usag
         }),
         ..Default::default()
     });
-    let paragraph = AccountDetailsHeader.paragraph();
+    let paragraph = AccountDetailsHeader {
+        clock_format: ClockFormat::TwentyFourHour,
+    }
+    .paragraph();
     let area = Rect::new(0, 0, 100, paragraph.desired_height(100));
     let mut buffer = Buffer::empty(area);
     Renderable::render(&paragraph, area, &mut buffer);
@@ -89,7 +92,10 @@ fn weekly_history_and_reset_expiries_are_explained_without_claiming_unknown_usag
     status.usage_stale = true;
     status.reset_credits.as_mut().unwrap().stale = true;
     interface::set_status(status);
-    let paragraph = AccountDetailsHeader.paragraph();
+    let paragraph = AccountDetailsHeader {
+        clock_format: ClockFormat::TwentyFourHour,
+    }
+    .paragraph();
     let area = Rect::new(0, 0, 100, paragraph.desired_height(100));
     let mut buffer = Buffer::empty(area);
     Renderable::render(&paragraph, area, &mut buffer);
@@ -167,7 +173,9 @@ async fn live_header_uses_full_native_identity_windows_resets_and_clock_preferen
     }
 
     let width = 34;
-    let header = AccountDetailsHeader;
+    let header = AccountDetailsHeader {
+        clock_format: ClockFormat::TwentyFourHour,
+    };
     let area = Rect::new(0, 0, width, header.desired_height(width));
     let mut buf = Buffer::empty(area);
     header.render(area, &mut buf);
@@ -393,7 +401,7 @@ async fn short_viewports_can_scroll_every_detail_with_remapped_native_navigation
     keymap.jump_bottom = vec![crate::key_hint::plain(KeyCode::F(9))];
     keymap.jump_top = vec![crate::key_hint::plain(KeyCode::F(10))];
     for height in [4, 8, 10, 12] {
-        let mut view = account_view(keymap.clone());
+        let mut view = account_view(keymap.clone(), ClockFormat::TwentyFourHour);
         let mut seen = visible_details(&draw(&view, 46, height));
         assert!(view.scroll_state().1 >= 1);
         view.handle_key_event(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
@@ -451,7 +459,7 @@ fn native_completion_and_disconnected_input_contracts_are_preserved() {
         (KeyCode::F(11), ViewCompletion::Accepted),
         (KeyCode::Char('q'), ViewCompletion::Cancelled),
     ] {
-        let mut view = account_view(keymap.clone());
+        let mut view = account_view(keymap.clone(), ClockFormat::TwentyFourHour);
         assert!(view.accepts_input_when_disconnected());
         assert!(view.prefer_esc_to_handle_key_event());
         view.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

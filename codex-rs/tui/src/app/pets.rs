@@ -15,15 +15,14 @@ impl App {
                 .chat_widget
                 .ambient_pet_draw(ambient_pet_area, rendered_area.bottom())
                 .filter(|pet| {
-                    self.conversation_frame
-                        .leader_hud
+                    tui.shortcut_hud_area
                         .is_none_or(|hud| !hud.intersects(pet.area()))
                 });
             if let Err(err) = tui.draw_ambient_pet_image(request) {
                 self.handle_ambient_pet_image_render_error(tui, err)?;
             }
         } else if codex_alab_tui::interface::active() {
-            tui.clear_ambient_pet_image()?; // ALAB(pet-perf): disabling a pet releases its placement and cached frames.
+            tui.clear_ambient_pet_image()?; // ALAB(pet-perf): disabling a pet releases its placement and cached frames in both draw paths.
         }
         if let Some(request) = self.chat_widget.pet_picker_preview_draw() {
             if let Err(err) = tui.draw_pet_picker_preview_image(Some(request)) {

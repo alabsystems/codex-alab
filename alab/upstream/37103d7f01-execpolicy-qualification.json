@@ -1,0 +1,155 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:34:07.760464+00:00",
+  "source": "eed47e682df7f55ee432a11dedd45da12adca69b",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "add_prefix_rule_rejects_empty_prefix",
+      "status": "ok"
+    },
+    {
+      "name": "add_prefix_rule_extends_policy",
+      "status": "ok"
+    },
+    {
+      "name": "append_allow_prefix_rule_dedupes_existing_rule",
+      "status": "ok"
+    },
+    {
+      "name": "heuristics_match_is_returned_when_no_policy_matches",
+      "status": "ok"
+    },
+    {
+      "name": "basic_match",
+      "status": "ok"
+    },
+    {
+      "name": "host_executable_last_definition_wins",
+      "status": "ok"
+    },
+    {
+      "name": "canonical_host_executable_resolution_uses_only_relevant_declarations",
+      "status": "ok"
+    },
+    {
+      "name": "host_executable_rejects_name_with_path_separator",
+      "status": "ok"
+    },
+    {
+      "name": "host_executable_rejects_path_with_wrong_basename",
+      "status": "ok"
+    },
+    {
+      "name": "host_executable_rejects_non_absolute_path",
+      "status": "ok"
+    },
+    {
+      "name": "canonical_matching_prefix_matches_each_token",
+      "status": "ok"
+    },
+    {
+      "name": "host_executable_resolution_does_not_override_exact_match",
+      "status": "ok"
+    },
+    {
+      "name": "host_executable_resolution_falls_back_without_mapping",
+      "status": "ok"
+    },
+    {
+      "name": "host_executable_resolution_ignores_path_not_in_allowlist",
+      "status": "ok"
+    },
+    {
+      "name": "inherited_absolute_amendment_respects_existing_exact_denials",
+      "status": "ok"
+    },
+    {
+      "name": "host_executable_resolution_respects_explicit_empty_allowlist",
+      "status": "ok"
+    },
+    {
+      "name": "host_executable_resolution_uses_basename_rule_when_allowed",
+      "status": "ok"
+    },
+    {
+      "name": "justification_can_be_used_with_allow_decision",
+      "status": "ok"
+    },
+    {
+      "name": "justification_is_attached_to_forbidden_matches",
+      "status": "ok"
+    },
+    {
+      "name": "justification_cannot_be_empty",
+      "status": "ok"
+    },
+    {
+      "name": "match_and_not_match_examples_are_enforced",
+      "status": "ok"
+    },
+    {
+      "name": "network_rule_rejects_wildcard_hosts",
+      "status": "ok"
+    },
+    {
+      "name": "network_rules_compile_into_domain_lists",
+      "status": "ok"
+    },
+    {
+      "name": "inherited_absolute_amendments_preserve_managed_basename_restrictions",
+      "status": "ok"
+    },
+    {
+      "name": "only_first_token_alias_expands_to_multiple_rules",
+      "status": "ok"
+    },
+    {
+      "name": "parses_host_executable_paths",
+      "status": "ok"
+    },
+    {
+      "name": "parses_multiple_policy_files",
+      "status": "ok"
+    },
+    {
+      "name": "prefix_rule_examples_honor_host_executable_resolution",
+      "status": "ok"
+    },
+    {
+      "name": "strictest_decision_wins_across_matches",
+      "status": "ok"
+    },
+    {
+      "name": "strictest_decision_across_multiple_commands",
+      "status": "ok"
+    },
+    {
+      "name": "tail_aliases_are_not_cartesian_expanded",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-execpolicy-native.sh",
+      "sha256": "b9fedc7140ac46406e28c46fedc3428042287b3706fd5a3f61cd4bdfa7e0dd9b"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-execpolicy-native.log",
+      "sha256": "b6d05af01d59f9645d91b60401604698ec4bc36c72cae3b7b5f726daf02058ca"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-execpolicy-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Whole execpolicy basic integration binary, 31 passed, zero failed/ignored/filtered; one helper-admitted selection. Covers opt-in canonical and exact-default token rules, host declarations and managed basename amendment preservation. Does not prove core shell enforcement integrations, every OS filesystem, full gate, complete intake, remote landing or adoption."
+}

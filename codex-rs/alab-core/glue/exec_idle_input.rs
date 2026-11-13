@@ -3,9 +3,12 @@
 
 //! Idle mail has no unfinished turn or turn-local accounting to restore.
 use super::*;
+use std::sync::Arc;
 
 struct FrozenIdle {
     thread: ThreadId,
+    upgrade: bool,
+    controller: Option<crate::agent::control::FrozenExecMailboxes>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -13,6 +16,8 @@ struct FrozenIdle {
 pub(super) struct IdleMetadata {
     pub(super) thread: ThreadId,
     pub(super) mailbox_options: Vec<SavedStart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) controller_routes: Option<Vec<ControllerRoute>>,
 }
 
 /// Retained idle mail, not permission to start a turn or activate delivery.
@@ -20,25 +25,52 @@ pub(super) struct IdleMetadata {
 pub struct PreparedExecIdleInput {
     thread: ThreadId,
     pub(super) mailbox: Vec<(crate::PendingAgentMessage, TurnStartOptions)>,
+    controller: Option<Vec<crate::agent::control::ExecMailboxMessage>>,
 }
 
 impl PreparedExecIdleInput {
+    pub(crate) fn owns_controller(&self) -> bool {
+        self.controller.is_some()
+    }
+
     pub fn thread(&self) -> ThreadId {
         self.thread
     }
     pub fn len(&self) -> usize {
-        self.mailbox.len()
+        self.mailbox.len() + self.controller.as_ref().map_or(0, Vec::len)
     }
     pub fn is_empty(&self) -> bool {
-        self.mailbox.is_empty()
+        self.len() == 0
     }
 }
 
 impl IdleMetadata {
-    pub(super) fn decode(self, input: Vec<TurnInput>) -> Result<PreparedExecIdleInput, String> {
-        if input.len() != self.mailbox_options.len() {
+    pub(super) fn decode(self, mut input: Vec<TurnInput>) -> Result<PreparedExecIdleInput, String> {
+        if input.len()
+            != self.mailbox_options.len() + self.controller_routes.as_ref().map_or(0, Vec::len)
+        {
             return Err("idle mailbox boundaries are invalid".into());
         }
+        let controller_input = input.split_off(self.mailbox_options.len());
+        let controller = self
+            .controller_routes
+            .map(|routes| {
+                controller_input
+                    .into_iter()
+                    .zip(routes)
+                    .map(|(item, route)| match item {
+                        TurnInput::InterAgentCommunication(communication) => {
+                            Ok(crate::agent::control::ExecMailboxMessage {
+                                thread: route.thread,
+                                receive_id: route.receive_id,
+                                communication,
+                            })
+                        }
+                        _ => Err("idle controller contains a non-mail item".to_owned()),
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?;
         let mailbox = input
             .into_iter()
             .zip(self.mailbox_options)
@@ -50,6 +82,7 @@ impl IdleMetadata {
         Ok(PreparedExecIdleInput {
             thread: self.thread,
             mailbox,
+            controller,
         })
     }
 }
@@ -74,12 +107,79 @@ impl crate::CodexThread {
         }
         seal_idle(&self.session, seal).await
     }
+
+    /// Non-destructive preflight under this manager's still-revocable inventory.
+    pub async fn validate_upgrade_idle_inputs(
+        &self,
+        inventory: &crate::UpgradeManagerBarrier,
+    ) -> Result<(), String> {
+        if !inventory.protects_member(self, false) {
+            return Err("idle input preflight requires its own prepared manager".into());
+        }
+        validate_idle_state(&self.session, !self.session_source.is_non_root_agent()).await?;
+        if !inventory.protects_member(self, false) {
+            return Err("idle input preflight was superseded".into());
+        }
+        Ok(())
+    }
+
+    /// Complete fallible writer preparation while manager commitment is revocable.
+    pub async fn prepare_upgrade_idle_inputs(
+        &self,
+        inventory: &crate::UpgradeManagerBarrier,
+    ) -> Result<(), String> {
+        self.validate_upgrade_idle_inputs(inventory).await?;
+        persist_idle_history(&self.session).await?;
+        self.validate_upgrade_idle_inputs(inventory).await
+    }
+
+    /// Seal source queues only after permanent native commitment. Callers must
+    /// then join all source producers before capture; this grants no restore right.
+    pub async fn seal_upgrade_idle_inputs(
+        &self,
+        inventory: &crate::CommittedUpgradeInventory,
+    ) -> Result<(), String> {
+        if !inventory.protects_member(self) {
+            return Err("idle input sealing requires its own committed manager".into());
+        }
+        if let Some(frozen) = self
+            .session
+            .services
+            .thread_extension_data
+            .get::<FrozenIdle>()
+        {
+            return if frozen.upgrade && frozen.thread == self.session.thread_id {
+                Ok(())
+            } else {
+                Err("idle input was sealed by another transfer".into())
+            };
+        }
+        let root = !self.session_source.is_non_root_agent();
+        validate_idle_state(&self.session, root).await?;
+        persist_idle_history(&self.session).await?;
+        let controller = if root {
+            Some(
+                self.session
+                    .services
+                    .local_agent_runtime
+                    .freeze_exec_mailboxes()
+                    .map_err(|error| error.to_string())?,
+            )
+        } else {
+            None
+        };
+        self.session
+            .services
+            .thread_extension_data
+            .insert(FrozenIdle {
+                thread: self.session.thread_id,
+                upgrade: true,
+                controller,
+            });
+        Ok(())
+    }
 }
 
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "idle task and mailbox portability must be checked atomically"
-)]
 async fn validate_idle(
     session: &Session,
     seal: &crate::ExecTreeSeal,
@@ -88,6 +188,14 @@ async fn validate_idle(
     if !seal.protects(&session.services.local_agent_runtime, committed) {
         return Err("idle input requires its own drained tree barrier".into());
     }
+    validate_idle_state(session, false).await
+}
+
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "idle task and mailbox portability must be checked atomically"
+)]
+async fn validate_idle_state(session: &Session, owns_controller: bool) -> Result<(), String> {
     let active = session.active_turn.lock().await;
     if active.is_some()
         || session
@@ -106,25 +214,84 @@ async fn validate_idle(
     {
         return Err("idle input handoff requires a lifecycle-observer restoration protocol".into());
     }
-    let input = session
-        .input_queue
-        .mailbox_pending_mails
-        .lock()
-        .await
+    let mut mailbox = session.input_queue.mailbox_pending_mails.lock().await;
+    // Retain accepted channel items in the same ordered queue before checking
+    // portability. This does not publish delivery or consume a message.
+    session.input_queue.read_mailbox(&mut mailbox);
+    let input = mailbox
         .iter()
         .map(|mail| TurnInput::InterAgentCommunication(mail.communication.clone()))
         .collect::<Vec<_>>();
-    ExecPendingInputs::capture(&input).map(|_| ())
+    let controller = if owns_controller {
+        session
+            .services
+            .local_agent_runtime
+            .exec_mailboxes()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|mail| TurnInput::InterAgentCommunication(mail.communication))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    ExecPendingInputs::capture_groups(&[&input, &controller]).map(|_| ())
+}
+
+// A durable but never-started member may still have only a lazy writer.
+// Close must not discard its accepted startup/settings records before capture.
+// Ephemeral sessions keep their existing journal; no missing store is retyped.
+async fn persist_idle_history(session: &Session) -> Result<(), String> {
+    let Some(writer) = session.live_thread() else {
+        return Ok(());
+    };
+    let result = async {
+        writer
+            .persist(codex_thread_store::PersistContext::Standard)
+            .await?;
+        writer.flush().await
+    }
+    .await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(codex_thread_store::ThreadStoreError::ThreadNotFound { thread_id })
+            if thread_id == session.thread_id =>
+        {
+            // A completed private delegate may already have closed its writer.
+            // Require its actual durable idle evidence, never synthetic memory.
+            let history = session
+                .services
+                .thread_store
+                .load_latest_turn_history(codex_thread_store::LoadThreadHistoryParams {
+                    thread_id,
+                    include_archived: false,
+                })
+                .await
+                .map_err(|e| format!("closed idle handoff history: {e}"))?;
+            if history.thread_id != thread_id
+                || crate::session::alab_exec_recovery_options::ephemeral::open_turn(&history.items)
+                    .is_some()
+            {
+                return Err(
+                    "closed idle handoff history changed its identity or terminal state".into(),
+                );
+            }
+            Ok(())
+        }
+        Err(error) => Err(format!("idle handoff history persistence: {error}")),
+    }
 }
 
 async fn seal_idle(session: &Session, seal: &crate::ExecTreeSeal) -> Result<(), String> {
     validate_idle(session, seal, true).await?;
+    persist_idle_history(session).await?;
     let active = session.active_turn.lock().await;
     if active.is_some() {
         return Err("idle input became active before sealing".into());
     }
     session.services.thread_extension_data.insert(FrozenIdle {
         thread: session.thread_id,
+        upgrade: false,
+        controller: None,
     });
     Ok(())
 }
@@ -142,33 +309,68 @@ pub(super) async fn capture(session: &Session) -> Result<(IdleMetadata, Vec<Turn
     // The root owns shared-controller custody. After tree shutdown this takes
     // no controller mail; it retains only this thread's already accepted queue.
     session.input_queue.read_mailbox(&mut mailbox);
-    Ok((
-        IdleMetadata {
-            thread: session.thread_id,
-            mailbox_options: mailbox
-                .iter()
-                .map(|mail| mail.start_options.clone().into())
-                .collect(),
-        },
-        mailbox
+    let controller = frozen
+        .controller
+        .as_ref()
+        .map(crate::agent::control::FrozenExecMailboxes::snapshot);
+    let metadata = IdleMetadata {
+        thread: session.thread_id,
+        mailbox_options: mailbox
             .iter()
-            .map(|mail| TurnInput::InterAgentCommunication(mail.communication.clone()))
+            .map(|mail| mail.start_options.clone().into())
             .collect(),
-    ))
+        controller_routes: controller.as_ref().map(|messages| {
+            messages
+                .iter()
+                .map(|mail| ControllerRoute {
+                    thread: mail.thread,
+                    receive_id: mail.receive_id.clone(),
+                })
+                .collect()
+        }),
+    };
+    let mut input = mailbox
+        .iter()
+        .map(|mail| TurnInput::InterAgentCommunication(mail.communication.clone()))
+        .collect::<Vec<_>>();
+    if let Some(controller) = controller {
+        input.extend(
+            controller
+                .into_iter()
+                .map(|mail| TurnInput::InterAgentCommunication(mail.communication)),
+        );
+    }
+    Ok((metadata, input))
 }
 
-struct IdleInstalled;
+struct IdleInstalled {
+    controller: bool,
+}
 
-pub(crate) fn activate(session: &Session) -> Result<(), String> {
-    if session
+pub(crate) async fn activate(session: &Arc<Session>) -> Result<(), String> {
+    let installed = session
         .services
         .thread_extension_data
         .get::<IdleInstalled>()
-        .is_none()
-    {
-        return Err("idle mailbox has not been installed".into());
+        .ok_or("idle mailbox has not been installed")?;
+    if installed.controller {
+        session
+            .services
+            .local_agent_runtime
+            .activate_exec_mailboxes()
+            .map_err(|error| error.to_string())?;
     }
     session.input_queue.notify_mailbox();
+    // A local queue notification alone does not drive the submission loop's
+    // pending-work scheduler. Match native mail submission after global release.
+    if session.input_queue.has_trigger_turn_mailbox_items().await
+        || session
+            .features
+            .enabled(codex_features::Feature::WakeOnAgentMessages)
+        || session.has_outstanding_durable_sleep()
+    {
+        session.maybe_start_turn_for_pending_work().await;
+    }
     Ok(())
 }
 
@@ -183,6 +385,17 @@ pub(crate) fn activate(session: &Session) -> Result<(), String> {
 pub(crate) async fn install(session: &Session, input: PreparedExecIdleInput) -> Result<(), String> {
     if input.thread != session.thread_id {
         return Err("idle input belongs to another child".into());
+    }
+    if input.controller.is_some()
+        && session
+            .state
+            .lock()
+            .await
+            .session_configuration
+            .session_source
+            .is_non_root_agent()
+    {
+        return Err("idle controller data requires its owning root".into());
     }
     let _start = session
         .services
@@ -204,6 +417,14 @@ pub(crate) async fn install(session: &Session, input: PreparedExecIdleInput) -> 
     {
         return Err("idle input requires a fresh idle child".into());
     }
+    let owns_controller = input.controller.is_some();
+    if let Some(controller) = input.controller {
+        session
+            .services
+            .local_agent_runtime
+            .restore_exec_mailboxes_quiet(controller)
+            .map_err(|error| error.to_string())?;
+    }
     let mut mailbox = session.input_queue.mailbox_pending_mails.lock().await;
     session.input_queue.read_mailbox(&mut mailbox);
     let mut restored = input
@@ -219,7 +440,12 @@ pub(crate) async fn install(session: &Session, input: PreparedExecIdleInput) -> 
         .collect::<std::collections::VecDeque<_>>();
     restored.append(&mut mailbox);
     *mailbox = restored;
-    session.services.thread_extension_data.insert(IdleInstalled);
+    session
+        .services
+        .thread_extension_data
+        .insert(IdleInstalled {
+            controller: owns_controller,
+        });
     drop(mailbox);
     drop(active);
     Ok(())
@@ -342,6 +568,7 @@ mod tests {
             .await;
         let prepared = PreparedExecIdleInput {
             thread: session.thread_id,
+            controller: None,
             mailbox: vec![(
                 original.clone(),
                 TurnStartOptions {
@@ -367,11 +594,44 @@ mod tests {
                 &session,
                 PreparedExecIdleInput {
                     thread: session.thread_id,
+                    controller: None,
                     mailbox: Vec::new()
                 }
             )
             .await
             .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn root_controller_install_is_idle_once_only_and_rejects_a_child_owner() {
+        let (session, _) = crate::session::tests::make_session_and_context().await;
+        let session = Arc::new(session);
+        let input = |thread| PreparedExecIdleInput {
+            thread,
+            mailbox: Vec::new(),
+            controller: Some(Vec::new()),
+        };
+        install(&session, input(session.thread_id)).await.unwrap();
+        assert!(session.active_turn.lock().await.is_none());
+        assert!(install(&session, input(session.thread_id)).await.is_err());
+        activate(&session).await.unwrap();
+        let (child, _) = crate::session::tests::make_session_and_context().await;
+        child
+            .state
+            .lock()
+            .await
+            .session_configuration
+            .session_source = codex_protocol::protocol::SessionSource::Internal(
+            codex_protocol::protocol::InternalSessionSource::MemoryConsolidation,
+        );
+        assert!(install(&child, input(child.thread_id)).await.is_err());
+        assert!(
+            child
+                .services
+                .thread_extension_data
+                .get::<IdleInstalled>()
+                .is_none()
         );
     }
 }

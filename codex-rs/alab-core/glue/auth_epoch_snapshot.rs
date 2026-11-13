@@ -5,6 +5,10 @@
 //! a mutable manager after selecting a document.
 use super::*;
 use codex_alab_core::manager_source_epoch::Snapshot as EpochSnapshot;
+type PairedAuthResult = std::io::Result<Option<(CodexAuth, HttpClientFactory)>>;
+type PairedAuthFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = PairedAuthResult> + Send + 'a>>;
+
 #[derive(Clone, Default)]
 pub struct Snapshot(Option<Arc<CapturedSnapshot>>);
 struct CapturedSnapshot {
@@ -161,11 +165,69 @@ impl CodexAuth {
             .network_policy()
             .clone()
             .with_account_binding(&credentials)
-            .ok_or_else(codex_alab_core::managed_auth::unavailable)?;
+            .ok_or_else(|| {
+                std::io::Error::other(codex_http_client::NetworkPolicyDenied::Revoked)
+            })?;
         Ok(factory.with_network_policy(policy))
     }
 }
 impl AuthManager {
+    /// Admission happens after policy loading; no pending network wait can hold
+    /// account retirement open. The returned value retains admission through output.
+    pub fn alab_prepare_credential_export(
+        self: &Arc<Self>,
+        expected: &CodexAuth,
+        token: String,
+    ) -> std::io::Result<crate::alab_credential_export::CredentialExport> {
+        let manager = self.alab_capture_current_manager()?;
+        manager.alab_host_expected(expected)?;
+        let activity = manager.alab_account_resource()?;
+        self.alab_validate_credential_export(expected, &token)?;
+        Ok(crate::alab_credential_export::CredentialExport::new(
+            Arc::clone(self),
+            expected.clone(),
+            token,
+            activity,
+        ))
+    }
+    /// A prepared bearer may leave the process only while its original source
+    /// and cached credential are still selected. A host receiver alone cannot
+    /// detect replacement by another manager with equal revision counters.
+    pub(crate) fn alab_validate_credential_export(
+        &self,
+        expected: &CodexAuth,
+        token: &str,
+    ) -> std::io::Result<()> {
+        self.alab_host_expected(expected)?;
+        alab_context_host::io!(self, alab_validate_credential_export(expected, token));
+        let unavailable = codex_alab_core::managed_auth::unavailable;
+        let current = self.auth_cached().ok_or_else(unavailable)?;
+        if !Self::auths_equal_for_refresh(Some(expected), Some(&current))
+            || expected.get_token()? != token
+            || current.get_token()? != token
+        {
+            return Err(unavailable());
+        }
+        Ok(())
+    }
+
+    /// Pair one immutable credential snapshot with its transport, preserving denials.
+    pub fn alab_auth_with_http_client_factory(&self) -> PairedAuthFuture<'_> {
+        Box::pin(async move {
+            alab_context_host::async_result!(self, alab_auth_with_http_client_factory());
+            if self.auth().await.is_none() || !self.alab_catalog_cache_available() {
+                return Ok(None);
+            }
+            let Some(snapshot) = self.alab_member_cache_snapshot() else {
+                return Ok(None);
+            };
+            let factory = snapshot
+                .auth
+                .alab_bind_http_client_factory(self.http_client_factory())?;
+            Ok(Some((snapshot.auth, factory)))
+        })
+    }
+
     /// Caller owns the actual cache write lock; no credential or host I/O occurs.
     pub(super) fn alab_bind_cached_epoch(&self, auth: &mut Option<CodexAuth>) {
         let member = self
@@ -253,6 +315,90 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+    #[test]
+    fn portable_owner_checkpoint_refuses_a_retired_actual_source() {
+        let manager = AuthManager::from_auth_for_testing(auth("original", None));
+        let owner = manager.auth_owner();
+        let checkpoint = owner.alab_identity_checkpoint().unwrap();
+        assert!(owner.alab_matches_identity_checkpoint(&checkpoint));
+        manager.set_cached_auth(Some(CodexAuth::from_api_key("different-mode")));
+        assert!(!owner.is_current());
+        assert!(owner.alab_identity_checkpoint().is_none());
+        assert!(!owner.alab_matches_identity_checkpoint(&checkpoint));
+    }
+
+    #[test]
+    fn credential_export_holds_retirement_until_output_is_dropped() {
+        use codex_alab_core::assignment::Intent;
+        use codex_alab_core::assignment::Selection;
+        use std::io::Write as _;
+        let manager = AuthManager::from_auth_for_testing(auth("one", None));
+        let selected = manager.auth_cached().unwrap();
+        let token = selected.get_token().unwrap();
+        let ready = manager
+            .alab_prepare_credential_export(&selected, token.clone())
+            .unwrap();
+        let mut output = Vec::new();
+        ready
+            .write_with(&mut output, |staged, token| write!(staged, "{token}"))
+            .unwrap();
+        assert_eq!(output, token.as_bytes());
+        let export = manager
+            .alab_prepare_credential_export(&selected, token)
+            .unwrap();
+        let domain = manager.alab_assignment_domain();
+        let operation = "e".repeat(32);
+        domain
+            .request(Intent {
+                operation: operation.clone(),
+                thread: "00000000-0000-0000-0000-000000000000".into(),
+                selection: Selection::Manual {
+                    account: "c".repeat(64),
+                    revision: "d".repeat(64),
+                },
+            })
+            .unwrap();
+        let retiring = domain.try_retire(&operation).unwrap();
+        let codex_alab_core::assignment::FreezeError::Pending(retiring) = retiring
+            .freeze()
+            .err()
+            .expect("export still owns source output")
+        else {
+            panic!("retirement must wait for the admitted output");
+        };
+        drop(export);
+        assert!(retiring.freeze().is_ok());
+    }
+    #[test]
+    fn credential_export_requires_the_original_source_and_unchanged_bearer() {
+        let manager = AuthManager::from_auth_for_testing(auth("one", None));
+        let selected = manager.auth_cached().unwrap();
+        let token = selected.get_token().unwrap();
+        assert!(
+            manager
+                .alab_validate_credential_export(&selected, &token)
+                .is_ok()
+        );
+        assert!(
+            manager
+                .alab_validate_credential_export(&selected, "other")
+                .is_err()
+        );
+        manager.set_cached_auth(Some(auth("two", None)));
+        assert!(
+            manager
+                .alab_validate_credential_export(&selected, &token)
+                .is_err()
+        );
+
+        let a = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("same-fixture"));
+        let b = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("same-fixture"));
+        let original = a.auth_cached().unwrap();
+        assert!(
+            b.alab_validate_credential_export(&original, "same-fixture")
+                .is_err()
+        );
     }
     #[test]
     fn native_constructor_presence_cannot_export_an_unresolved_legacy_snapshot() {
@@ -380,6 +526,74 @@ mod tests {
                 .is_ok()
         );
     }
+    #[tokio::test]
+    async fn fresh_cache_read_keeps_retired_transport_revoked() {
+        use codex_http_client::DestinationPolicy;
+        use codex_http_client::NetworkPolicyController;
+        use codex_http_client::NetworkPolicyDenied;
+        use codex_http_client::OutboundProxyPolicy;
+
+        let controller = NetworkPolicyController::default();
+        let policy = controller.policy();
+        assert!(controller.publish(policy.revision(), DestinationPolicy::Unrestricted));
+        let routes = AuthRouteConfig::from_http_client_factory(
+            HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
+                .with_network_policy(policy.clone()),
+        );
+        let home = tempfile::tempdir().unwrap();
+        let manager = AuthManager::from_cached_auth(
+            Some(CodexAuth::from_api_key("fixture")),
+            None,
+            AuthRuntimeConfig {
+                codex_home: home.path().to_path_buf(),
+                auth_route_config: routes,
+            },
+            /*owns_network_policy*/ false,
+        );
+        let (retained, old_factory) = manager.auth_with_http_client_factory().await.unwrap();
+        let epoch = retained.alab_credential_epoch().epoch().unwrap().clone();
+        let url = "https://example.invalid/".parse().unwrap();
+        assert!(old_factory.network_policy().acquire(&url).is_ok());
+
+        policy.invalidate();
+        assert!(controller.publish(policy.revision(), DestinationPolicy::Unrestricted));
+        assert!(matches!(
+            old_factory.network_policy().acquire(&url),
+            Err(NetworkPolicyDenied::Revoked)
+        ));
+        assert!(
+            retained
+                .alab_bind_http_client_factory(manager.http_client_factory())
+                .is_err()
+        );
+
+        // Only the coherent manager read can capture the current policy.
+        // The retained auth and its earlier factory remain revoked.
+        let (fresh, fresh_factory) = manager
+            .alab_auth_with_http_client_factory()
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(fresh.alab_credential_epoch().epoch().unwrap().same(&epoch));
+        assert!(fresh_factory.network_policy().acquire(&url).is_ok());
+        assert!(
+            retained
+                .alab_bind_http_client_factory(fresh_factory)
+                .is_err()
+        );
+
+        let foreign = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("fixture"));
+        assert!(
+            fresh
+                .alab_bind_http_client_factory(foreign.http_client_factory())
+                .is_err()
+        );
+        assert!(matches!(
+            old_factory.network_policy().acquire(&url),
+            Err(NetworkPolicyDenied::Revoked)
+        ));
+    }
+
     #[test]
     fn a_captured_credential_cannot_be_relabelled_by_another_managers_cache() {
         let values = [

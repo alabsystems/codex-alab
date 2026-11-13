@@ -1,0 +1,255 @@
+{
+  "schema": 1,
+  "kind": "focused-qualification-observations",
+  "observed_at": "2026-11-10T14:50:23.987944+00:00",
+  "upstream": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "source": "506701c9aead4342b530a5a70d362031e87edc84",
+  "outer_process_terminal": true,
+  "outer_exit_code": 0,
+  "log": "${HOME}/.ubd/codex-alignment-b32-typed-auth-pair-native.log",
+  "log_sha256": "a1a12f5fe958c0919036527b4fdb219af6759186dbfe23a432bd1e4e473b399f",
+  "controller": "${HOME}/.ubd/codex-alignment-b32-typed-auth-pair-native.sh",
+  "controller_sha256": "bdede67ec8a209aa28472e10397ccd542983ede5ceabadf8575155d41314b9db",
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "selections": [
+    {
+      "package": "codex-backend-client",
+      "target": "lib",
+      "filter": "client::runtime_auth_tests::",
+      "result": {
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 53
+      }
+    },
+    {
+      "package": "codex-login",
+      "target": "lib",
+      "filter": "alab_epoch_snapshot::tests::",
+      "result": {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 319
+      }
+    },
+    {
+      "package": "codex-login",
+      "target": "lib",
+      "filter": "alab_context_host::tests::",
+      "result": {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 321
+      }
+    },
+    {
+      "package": "codex-login",
+      "target": "lib",
+      "filter": "native_cache_capture_retains_cache_reader_and_rejects_missing_or_foreign_ready_members",
+      "result": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 323
+      }
+    },
+    {
+      "package": "codex-runtime-agent-instance",
+      "target": "lib",
+      "filter": "",
+      "result": {
+        "passed": 28,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 0
+      }
+    }
+  ],
+  "tests": [
+    {
+      "name": "client::runtime_auth_tests::custom_backend_keeps_its_credential_without_registering_a_runtime",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::client_registers_in_requested_organization_when_default_is_denied",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::authenticated_clients_without_redirects_return_the_redirect_response",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::unsupported_openai_backend_rejects_runtime_auth_before_registration",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::reusable_runtime_client_keeps_the_selected_accounts_transport_policy",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::account_runtime_auth_signs_each_request_and_strips_credentials_on_redirect",
+      "outcome": "ok"
+    },
+    {
+      "name": "client::runtime_auth_tests::reusable_runtime_client_refreshes_credentials_without_accepting_a_new_session",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::api_header_and_workload_payload_snapshots_capture_actual_manager_epoch",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::current_cache_read_requires_publication_after_policy_retirement",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::native_constructor_presence_cannot_export_an_unresolved_legacy_snapshot",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::a_captured_credential_cannot_be_relabelled_by_another_managers_cache",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::snapshot_keeps_its_epoch_through_refresh_but_cannot_adopt_a_new_source_factory",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_context_host::tests::host_selects_real_context_without_relabeling_captured_auth_or_owning_watch_authority",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_context_host::tests::pointer_wake_rebinds_actual_receiver_even_when_counters_are_equal",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_context_host::tests::typed_pair_follows_the_actual_host_context_and_refuses_a_closed_host",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_native_member::tests::native_cache_capture_retains_cache_reader_and_rejects_missing_or_foreign_ready_members",
+      "outcome": "ok"
+    },
+    {
+      "name": "bootstrap::tests::registration_serializes_the_supported_actor_authorizations",
+      "outcome": "ok"
+    },
+    {
+      "name": "bootstrap::tests::registration_decodes_composite_actor_contexts",
+      "outcome": "ok"
+    },
+    {
+      "name": "installation_id::tests::resolve_installation_id_reuses_existing_uuid",
+      "outcome": "ok"
+    },
+    {
+      "name": "installation_id::tests::resolve_installation_id_generates_and_persists_uuid",
+      "outcome": "ok"
+    },
+    {
+      "name": "installation_id::tests::resolve_installation_id_rewrites_invalid_file_contents",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::captured_request_auth_allows_refresh_but_rejects_source_replacement",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::concurrent_requests_share_registration_and_replacement_preserves_in_flight_auth",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::explicit_keys_reuse_their_owner_without_borrowing_a_command_source",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::failed_registration_does_not_poison_another_project_or_reuse_its_idempotency_key",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::explicit_key_stays_independent_when_matching_saved_login_changes",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::bootstrap_refresh_reuses_known_sources_but_replaces_sessionless_initialization",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::new_request_uses_refreshed_credentials_without_replacing_the_runtime",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::policy_recovery_preserves_pending_registration",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::legacy_login_requires_sign_in_for_runtime_auth",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::projects_share_one_runtime_and_organization_changes_replace_it",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::recovery_is_bounded_and_revocation_cannot_trigger_reregistration",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::registration_failure_reports_retryability",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::request_auth_replaces_stale_headers_and_signs_each_attempt",
+      "outcome": "ok"
+    },
+    {
+      "name": "registration::tests::new_initializations_use_new_keys_and_retry_ids",
+      "outcome": "ok"
+    },
+    {
+      "name": "registration::tests::registration_never_forwards_credentials_through_a_redirect",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::source_outage_preserves_registered_pending_and_denied_runtimes",
+      "outcome": "ok"
+    },
+    {
+      "name": "registration::tests::registration_preserves_policy_revocation",
+      "outcome": "ok"
+    },
+    {
+      "name": "registration::tests::registration_rejects_unsafe_endpoints",
+      "outcome": "ok"
+    },
+    {
+      "name": "registration::tests::registration_rejects_incomplete_or_oversized_responses",
+      "outcome": "ok"
+    },
+    {
+      "name": "registration::tests::registration_retries_keep_the_key_and_sign_fresh_assertions",
+      "outcome": "ok"
+    },
+    {
+      "name": "registration::tests::rejected_registration_preserves_only_status_and_known_error_codes",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::file_upload_runtime_auth_signs_control_requests_but_not_blob_uploads",
+      "outcome": "ok"
+    },
+    {
+      "name": "manager::tests::a_late_registration_cannot_publish_the_previous_actor",
+      "outcome": "ok"
+    }
+  ],
+  "limits": "44 tests passed, zero failures/ignored/reported skips, five completed native-controller selections with five owned-helper checks and actual outer exit 0. The retired-transport backend assertion now receives typed Policy(Revoked); fresh clients explicitly reload the real manager after policy publication, retaining destination-denial and request-count assertions. Snapshot tests preserve explicit publication and foreign-manager isolation; host tests cover actual-context selection/closed-host refusal; exact ready-member fixtures cover both optional and typed reads with missing/foreign members. All 28 runtime library tests pass, including same-source refresh/source replacement and signed file control versus uncredentialed blobs. Local HTTP/manager and protocol fixture controls do not prove native compiled-image lifecycle, all race schedules, platform parity or a full integration gate on this changed source."
+}

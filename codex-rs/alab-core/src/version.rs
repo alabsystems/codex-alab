@@ -41,6 +41,38 @@ struct RunningIdentity {
 
 static RUNNING_IDENTITY: OnceLock<RunningIdentity> = OnceLock::new();
 
+/// An ALab product is updated by atpkg regardless of its version spelling. This
+/// uses the final executable's immutable identity, never environment or a selected
+/// package's mutable metadata. Upstream/source executables keep their own policy.
+pub fn vendor_updates_allowed() -> bool {
+    vendor_updates_for(RUNNING_IDENTITY.get().copied())
+}
+
+fn vendor_updates_for(identity: Option<RunningIdentity>) -> bool {
+    identity.is_none_or(|identity| identity.product.is_none())
+}
+
+#[cfg(test)]
+mod update_ownership_tests {
+    use super::*;
+
+    #[test]
+    fn regular_and_development_product_versions_have_the_same_update_owner() {
+        assert!(vendor_updates_for(None));
+        let mut identity = RunningIdentity {
+            version: "0.168.0",
+            product: None,
+            upstream_release: None,
+            upstream_commit: None,
+        };
+        assert!(vendor_updates_for(Some(identity)));
+        for product in ["0.5.0", "0.4.0-dev.15849+codex.0.167.1.ge201a2003"] {
+            identity.product = Some(product);
+            assert!(!vendor_updates_for(Some(identity)));
+        }
+    }
+}
+
 /// Capture package identity in the final executable, leaving library inputs stable.
 ///
 /// The expansion returns the result of [`initialize_package`]. `CODEX_ALAB_BUILD_VERSION`

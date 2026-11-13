@@ -1350,3 +1350,131 @@ fn a_restored_point_leaves_the_replies_a_re_exec_seeded() {
     );
     assert_eq!(live.replies, Replies::default());
 }
+
+/// A USAGE WALL WHOSE ACCOUNT HANDOFF IS BEING ASKED FOR IS CARRIED WITH ITS RESET (review of
+/// the five-hour yield, 2026-11-12). The ask owns the point, so no decision is made at the
+/// wall and [`recovery::capture`] is never reached; the process after a restart then held the
+/// handoff's intent with no wall, and nothing to stop asking the host at.
+/// [`recovery::capture_asked_wall`] leaves the wall's recovery with no decision. Restored two
+/// hours later, the wall stands with the hour its reset is still away, and its decision is
+/// the wall's own: nothing carried holds it back or brings it forward.
+#[test]
+fn a_usage_wall_whose_handoff_is_asked_for_is_carried_with_its_reset() {
+    let now = Instant::now();
+    let timing = Timing::default();
+    let hour = Duration::from_secs(3600);
+    let met = now - Duration::from_secs(120);
+    let usage_wall = |reset_at| Wall::Usage {
+        reset_at,
+        reset_label: Some("07:30".into()),
+    };
+    let mut original = at_wall(usage_wall(Some(now + 3 * hour)), met, &timing);
+    original.point_turn_id = Some(FAILED.into());
+    let captured =
+        recovery::capture_asked_wall("the-primary-thread", FAILED, &original, now, EPOCH)
+            .expect("the asked wall's recovery intent");
+    assert_eq!(captured.thread, "the-primary-thread");
+    assert_eq!(captured.turn_id, FAILED);
+    assert_eq!(captured.point_at_ms, EPOCH - 120_000);
+    assert_eq!(
+        captured.not_before_ms, captured.point_at_ms,
+        "no decision was made, so no floor of one is carried"
+    );
+    assert!(captured.by_autopilot && !captured.by_person);
+    let RecoveryWall::Usage {
+        reset_at_ms: Some(reset_at_ms),
+        reset_label,
+        quota: None,
+    } = &captured.wall
+    else {
+        panic!("not a usage wall with its reset: {:?}", captured.wall);
+    };
+    let three_hours = EPOCH + 3 * 60 * MINUTE;
+    assert!(
+        (three_hours..=three_hours + 2).contains(reset_at_ms),
+        "{reset_at_ms}"
+    );
+    assert_eq!(reset_label.as_deref(), Some("07:30"));
+
+    // The next process, two hours later on the wall clock.
+    let later = now + Duration::from_secs(7);
+    let mut restored = state();
+    assert!(recovery::restore(
+        &mut restored,
+        &[complete(FAILED, Some(CodexErrorInfo::UsageLimitExceeded))],
+        &captured,
+        later,
+        EPOCH + 2 * 60 * MINUTE,
+        &timing,
+    ));
+    assert_eq!(restored.point_turn_id.as_deref(), Some(FAILED));
+    let Some(Wall::Usage {
+        reset_at: Some(reset),
+        ..
+    }) = restored
+        .point
+        .as_ref()
+        .and_then(|point| point.wall.as_ref())
+    else {
+        panic!("the restored point is not the usage wall with its reset");
+    };
+    assert_serialized_deadline(Some(later + hour), Some(*reset));
+    let decision = decide(&restored, &policy(), &timing, later, Duration::ZERO);
+    assert!(matches!(decision.act, Act::ResumeLimit { .. }));
+    assert_eq!(
+        decision.not_before,
+        Some(*reset + timing.reset_grace),
+        "the wall's own reset and grace, and nothing carried besides"
+    );
+
+    // A wall that names no reset is carried as one: it has no moment, and gains none.
+    let mut unnamed = at_wall(usage_wall(None), met, &timing);
+    unnamed.point_turn_id = Some(FAILED.into());
+    assert!(matches!(
+        recovery::capture_asked_wall("the-primary-thread", FAILED, &unnamed, now, EPOCH),
+        Some(Recovery {
+            wall: RecoveryWall::Usage {
+                reset_at_ms: None,
+                ..
+            },
+            ..
+        })
+    ));
+
+    // NEGATIVE CONTROLS: another turn's point, an aborted point, no point, another wall.
+    assert!(
+        recovery::capture_asked_wall("the-primary-thread", "another-turn", &original, now, EPOCH)
+            .is_none()
+    );
+    let mut unidentified = original.clone();
+    unidentified.point_turn_id = None;
+    assert!(
+        recovery::capture_asked_wall("the-primary-thread", FAILED, &unidentified, now, EPOCH)
+            .is_none()
+    );
+    let mut aborted = original;
+    aborted.point.as_mut().expect("the wall's point").aborted = true;
+    assert!(
+        recovery::capture_asked_wall("the-primary-thread", FAILED, &aborted, now, EPOCH).is_none()
+    );
+    assert!(
+        recovery::capture_asked_wall("the-primary-thread", FAILED, &state(), now, EPOCH).is_none()
+    );
+    for other in [
+        Wall::Login,
+        Wall::Entitlement,
+        Wall::Server {
+            what: "model at capacity".into(),
+            cut_off: false,
+            retry_at: Some(now + hour),
+        },
+    ] {
+        let mut state = at_wall(other.clone(), met, &timing);
+        state.point_turn_id = Some(FAILED.into());
+        assert!(
+            recovery::capture_asked_wall("the-primary-thread", FAILED, &state, now, EPOCH)
+                .is_none(),
+            "{other:?}"
+        );
+    }
+}

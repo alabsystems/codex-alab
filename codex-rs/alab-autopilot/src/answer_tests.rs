@@ -225,18 +225,13 @@ fn the_long_term_word_writes_its_text_and_lets_the_worker_decide() {
 }
 
 #[test]
-fn ask_off_secret_begun_and_kept_answers_are_left_to_a_person() {
+fn ask_secret_begun_and_kept_answers_are_left_to_a_person() {
     let open = question_box(vec![q("a", "Which?", &[("A", ""), ("B", "")])]);
     let ask = Policy {
         questions: Questions::Ask,
         ..policy()
     };
     assert!(left(&decide_box(&open, &ask)).contains("`ask`"));
-    let off = Policy {
-        answer_questions: false,
-        ..policy()
-    };
-    assert!(left(&decide_box(&open, &off)).contains("answer_questions"));
 
     let mut secret = q("a", "Your token?", &[]);
     secret.is_secret = true;
@@ -264,6 +259,66 @@ fn ask_off_secret_begun_and_kept_answers_are_left_to_a_person() {
         &[("Save (Recommended)", "Persist to settings for later")],
     )]);
     assert!(left(&decide_box(&kept_persist, &policy())).contains("kept for every later ask"));
+}
+
+/// The policy a `harness policy` reply carries, its keys after `more` as aterm writes them.
+fn from_reply(more: &str) -> Policy {
+    let line = format!(
+        "OK gen=1 effective=on why=enabled continue=true approve=all answer_text=Pick%20one. \
+         {more}"
+    );
+    match codex_alab_aterm::policy::PolicyAnswer::parse(&line) {
+        codex_alab_aterm::policy::PolicyAnswer::Supported(reply) => Policy::from_harness(&reply),
+        other => panic!("a supported reply: {other:?}"),
+    }
+}
+
+/// THE OVERLAY READS aterm'S RESOLVED WORD, NEVER THE SWITCH (aterm `approval_loop.rs`
+/// `QuestionPolicy::global` and `session_word`, `harness_policy_verb.rs` `questions`): aterm
+/// sends `answer_questions=` raw beside `questions=`, which it has already resolved, the
+/// session's own `meta questions` word over the switch and an off switch with no word as `ask`.
+/// So `answer_questions=false questions=short-term` is a session's word over an off switch, and
+/// aterm's own loop answers that dialog (under Land with Land's text); `answer_questions=false
+/// questions=ask` is the off switch, a person's. CONTROLS: the session's `ask` over an on switch
+/// is a person's, and the same word over an on switch answers as over an off one. MUTANT: the
+/// overlay leaving the box to a person on `answer_questions=false` (codex-alab before this test).
+#[test]
+fn the_overlay_reads_aterms_resolved_word_and_never_the_switch() {
+    let open = question_box(vec![q("a", "Which?", &[("A", ""), ("B", "")])]);
+    for (autopilot, rule) in [
+        (Mode::Cruise, RULE_ANSWER_SHORT_TERM),
+        (Mode::Land, RULE_ANSWER_LAND),
+    ] {
+        for switch in ["false", "true"] {
+            let word = Policy {
+                autopilot,
+                ..from_reply(&format!(
+                    "answer_questions={switch} question_priority=long-term questions=short-term"
+                ))
+            };
+            let d = decide_box(&open, &word);
+            assert!(
+                matches!(d, BoxDecision::Answer { rule: got, .. } if got == rule),
+                "{autopilot:?}, the session's short-term over answer_questions={switch}: {d:?}"
+            );
+        }
+        let off = Policy {
+            autopilot,
+            ..from_reply("answer_questions=false question_priority=long-term questions=ask")
+        };
+        assert!(
+            left(&decide_box(&open, &off)).contains("`ask`"),
+            "{autopilot:?}, the off switch"
+        );
+        let ask = Policy {
+            autopilot,
+            ..from_reply("answer_questions=true question_priority=long-term questions=ask")
+        };
+        assert!(
+            left(&decide_box(&open, &ask)).contains("`ask`"),
+            "{autopilot:?}, the session's ask"
+        );
+    }
 }
 
 /// The 2026-10-24 hold (`claude-2.1.310-question-reset-in-description.txt`): an unmarked question
@@ -496,8 +551,9 @@ fn land_writes_its_text_over_every_word_that_answers() {
 
 /// LAND KEEPS A PERSON'S BOX A PERSON'S (aterm `dialog_priority` puts Land only over a word that
 /// already answers, and `choose_text`'s `destructive_unmarked` row presses the recommended
-/// answer's refusal instead): under Land, `ask`, `answer_questions` off, a secret question, a
-/// person who began answering and a box with no question are each left to a person, and an
+/// answer's refusal instead): under Land, `ask`, a secret question, a person who began answering
+/// and a box with no question are each left to a person (an off `answer_questions` reaches the
+/// overlay as `ask`, `the_overlay_reads_aterms_resolved_word_and_never_the_switch`), and an
 /// unmarked question that asks a destructive act takes its one refusing option under Land's rule,
 /// or is left to a person, never given Land's text. CONTROLS: each box without its row is
 /// answered under Land, and a MARKED destructive question gets Land's text (the worker decides,
@@ -523,11 +579,6 @@ fn land_keeps_the_fail_closed_rows_a_persons() {
         ..land.clone()
     };
     assert!(left(&decide_box(&open, &ask)).contains("`ask`"));
-    let off = Policy {
-        answer_questions: false,
-        ..land.clone()
-    };
-    assert!(left(&decide_box(&open, &off)).contains("answer_questions"));
 
     let mut secret = q("a", "Your token?", &[]);
     secret.is_secret = true;

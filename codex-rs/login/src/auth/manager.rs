@@ -201,9 +201,9 @@ impl PartialEq for CodexAuth {
 #[derive(Clone)]
 pub struct ApiKeyAuth {
     pub(super) api_key: String,
-    pub(super) alab_epoch: crate::auth::AlabSourceSnapshot, // ALAB(accounts): native provenance remains attached to credential snapshots.
-    pub(super) alab_source: Option<codex_alab_core::native_source_lifetime::Lifetime>, // ALAB(accounts): direct API snapshots retain their native unrelated-source membership.
     pub(super) workload_identity: Option<ApiTokenMetadata>,
+    pub(super) alab_epoch: crate::auth::AlabSourceSnapshot, // ALAB(accounts): runtime snapshot provenance is captured with its credential.
+    pub(super) alab_source: Option<codex_alab_core::native_source_lifetime::Lifetime>, // ALAB(accounts): direct API snapshots retain their native unrelated-source membership.
 }
 
 impl Debug for ApiKeyAuth {
@@ -1346,7 +1346,9 @@ impl AuthConfig {
             .await
     }
 
-    async fn load_auth_with_modes(
+    /// Applies the mode filter to the selected source before hydrating its credentials.
+    /// A disallowed stored login or `CODEX_ACCESS_TOKEN` returns no credentials.
+    pub async fn load_auth_with_modes(
         &self,
         enable_codex_api_key_env: bool,
         allowed_auth_modes: Option<&[AuthMode]>,
@@ -2506,7 +2508,7 @@ impl AuthManager {
         };
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
 
-        alab_manager_catalog::attach(Arc::new(Self { // ALAB(accounts): factory policy remains in the actual manager census.
+        alab_manager_catalog::attach(Arc::new(Self { // ALAB(accounts): register the actual runtime-context factory in the process census.
             codex_home: runtime.codex_home,
             inner: RwLock::new(cached),
             auth_change_tx,
@@ -2770,12 +2772,7 @@ impl AuthManager {
     /// Refreshes auth, then captures credentials and their account-bound factory together.
     /// The auth read lock prevents an identity change between the two snapshots.
     pub async fn auth_with_http_client_factory(&self) -> Option<(CodexAuth, HttpClientFactory)> {
-        alab_context_host::async_option!(self, auth_with_http_client_factory()); // ALAB(accounts): select the real current epoch before default access.
-        self.auth().await?;
-        if !self.alab_catalog_cache_available() { return None; } // ALAB(accounts): deferred auth never exposes the inner cache through a paired factory.
-        let snapshot = self.alab_member_cache_snapshot()?; // ALAB(accounts): the pair uses the same atomic native membership capture as auth_cached.
-        let factory = snapshot.auth.alab_bind_http_client_factory(self.http_client_factory()).ok()?; // ALAB(accounts): bind the credential's captured epoch under the same cache read lock.
-        Some((snapshot.auth, factory))
+        Box::pin(self.alab_auth_with_http_client_factory()).await.ok().flatten() // ALAB(accounts): retain the optional API while the owned pair path preserves typed policy denials.
     }
 
     pub async fn agent_identity_auth(

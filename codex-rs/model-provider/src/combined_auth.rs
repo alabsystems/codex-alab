@@ -33,10 +33,11 @@ pub(crate) async fn compose_auth(
     let manager = manager
         .as_ref()
         .map_err(|error| CodexErr::InvalidRequest(error.clone()))?;
-    let token = manager.resolve_access_token().await?;
+    let (token, alab_recovery) = manager.alab_resolve_for_primary(&resolved.auth).await?; // ALAB(accounts): select gateway credentials only for this primary source.
     let (name, value) = gateway_header(config.delivery(), &token)?;
     resolved.auth = Arc::new(CombinedAuth {
         primary: resolved.auth,
+        alab_recovery, // ALAB(accounts): late 401 callbacks retain their own rejected export.
         name,
         value,
     });
@@ -52,6 +53,7 @@ fn gateway_header(
             "gateway access token is empty".into(),
         ));
     }
+    alab_cookie::validate(delivery, token)?; // ALAB(gateway-cookie): token bytes cannot introduce another cookie.
     let (name, value) = match delivery {
         GatewayOAuthDelivery::Header { name, scheme } => (
             HeaderName::from_bytes(name.as_bytes())
@@ -68,6 +70,7 @@ fn gateway_header(
 
 struct CombinedAuth {
     primary: SharedAuthProvider,
+    alab_recovery: Option<crate::gateway_auth::alab_source::Recovery>, // ALAB(accounts): opaque request-local cache generation.
     name: HeaderName,
     value: HeaderValue,
 }
@@ -86,6 +89,13 @@ impl CombinedAuth {
 }
 
 impl AuthProvider for CombinedAuth {
+    fn alab_gateway_recovery(&self) -> Option<codex_api::AuthRefreshFuture<'_>> { self.alab_recovery.as_ref().map(super::gateway_auth::alab_source::Recovery::retry) } // ALAB(accounts): never look up a newer manager export when handling an old rejection.
+    fn alab_source_policy(
+        &self,
+    ) -> std::result::Result<Option<codex_http_client::NetworkPolicy>, AuthError> {
+        self.primary.alab_source_policy() // ALAB(accounts): gateway headers must retain the primary source's transport admission.
+    }
+
     fn auth_header_telemetry(&self) -> std::result::Result<AuthHeaderTelemetry, AuthError> {
         self.primary.auth_header_telemetry()
     }
@@ -111,3 +121,10 @@ impl AuthProvider for CombinedAuth {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../../alab-core/glue/combined_auth_source_tests.rs"]
+mod alab_source_tests; // ALAB(accounts): composition must retain primary permission refusal before materialization and HTTP.
+
+#[path = "../../alab-core/glue/gateway_cookie.rs"]
+mod alab_cookie; // ALAB(gateway-cookie): validate cookie framing without restricting header tokens.

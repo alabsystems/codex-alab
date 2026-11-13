@@ -171,3 +171,27 @@ mod optional_override {
         Ok(values.pop())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handoff_preserves_requested_reviewer_separately_from_effective_policy() {
+        let original = CodexThreadSettingsOverrides {
+            approvals_reviewer: Some(ApprovalsReviewer::User),
+            requested_approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+            ..Default::default()
+        };
+        let encoded = serde_json::to_value(Settings::capture(&original).unwrap()).unwrap();
+        let restored: Settings = serde_json::from_value(encoded).unwrap();
+        let restored = restored
+            .restore(&CodexThreadSettingsOverrides::default())
+            .unwrap();
+        assert_eq!(restored.approvals_reviewer, Some(ApprovalsReviewer::User));
+        assert_eq!(
+            restored.requested_approvals_reviewer,
+            Some(ApprovalsReviewer::AutoReview)
+        );
+    }
+}

@@ -45,6 +45,8 @@ import fcntl
 import threading
 import time
 
+import provider_fixture
+
 # Words only the land instruction and its nudge carry (alab-autopilot `words::LAND`,
 # `words::LAND_NUDGE`).
 LAND_WORDS = ("Autopilot is Land", "Still landing")
@@ -202,7 +204,7 @@ def serve(mock):
             self.end_headers()
             self.wfile.write(out)
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = provider_fixture.LoopbackHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
@@ -451,9 +453,10 @@ def main():
              lambda: os.path.realpath(exe_of(pid) or "/nonexistent") == os.path.realpath(b), timeout=120)
         print("4. same pid", pid, "now runs", exe_of(pid))
         assert "upgrade@v1" in fake.state()["acts"], fake.state()["acts"]
-        wait("the new image rewrote its record (execGeneration 1)", lambda: os.path.exists(record_path)
+        wait("the new image displays the resumed conversation (execGeneration 1)", lambda: os.path.exists(record_path)
              and json.load(open(record_path)).get("execGeneration") == 1
-             and json.load(open(record_path)).get("status") != "upgrading")
+             and json.load(open(record_path)).get("status") != "upgrading"
+             and json.load(open(record_path)).get("displayedThreadId") == before_session)
         record = json.load(open(record_path))
         assert record["sessionId"] == before_session, "the conversation changed during live update"
         assert record["displayedThreadId"] == before_session, "the resumed conversation is not displayed"

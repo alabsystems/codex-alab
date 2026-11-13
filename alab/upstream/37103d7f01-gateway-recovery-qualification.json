@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:28:28.216353+00:00",
+  "source": "aaf58c92bc76b4c4b6d2fdb20a57f03625b13712",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "suite::gateway_auth::command_gateway_reexports_after_401::reports_invalid_export",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gateway_auth::command_gateway_reexports_after_401::uses_new_export",
+      "status": "ok"
+    },
+    {
+      "name": "suite::external_auth::command_gateway_retry_then_recovers_refreshable_primary_auth",
+      "status": "ok"
+    },
+    {
+      "name": "suite::client_websockets::command_gateway_stops_after_a_second_unauthorized_websocket_upgrade",
+      "status": "ok"
+    }
+  ],
+  "summaries": [
+    "ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3226 filtered out; finished in 0.21s",
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3227 filtered out; finished in 0.17s",
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3227 filtered out; finished in 0.06s"
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-b32-gateway-recovery-native.sh",
+      "sha256": "c19084d8f8135212daba5eaf5d84145e1f99c61337492d9657c9172f2b5f0047"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-gateway-recovery-native.log",
+      "sha256": "7f519d233d1d7929601a87cd2a4f9fa9c6825fd32b51857203a23c0a649a9be2"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-gateway-recovery-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Three helper-admitted nonempty selections, four passed, zero failed/ignored. Local HTTP/WebSocket fixtures qualify selected RequestRecovery/re-export sequencing on this exact source, without live gateway credentials or a compiled native credential-image lifecycle. Does not prove all auth policies, complete intake, full gate, platform parity, remote landing or adoption."
+}

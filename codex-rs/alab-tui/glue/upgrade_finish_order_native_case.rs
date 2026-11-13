@@ -5,7 +5,12 @@
 
 use super::CaseOutcome;
 use super::Fixture;
+use crate::app_command::AppCommand;
+use crate::app_command::CloudSubmissionIntent;
 use crate::app_server_session::AppServerSessionEvent;
+use crate::app_server_session::TurnPermissionsOverride;
+use crate::app_server_session::user_message_submission::TurnStartSettings;
+use crate::app_server_session::user_message_submission::UserMessageAdmission;
 use crate::backend_id::BackendId;
 use codex_alab_aterm::Endpoint;
 use codex_alab_core::session::Launch;
@@ -48,7 +53,10 @@ fn deliver(
         AppServerEvent::ServerRequest(_) => {
             color_eyre::eyre::bail!("the text-only fixture asked for an unexpected server request");
         }
-        AppServerEvent::Lagged { .. } | AppServerEvent::Disconnected { .. } => {
+        AppServerEvent::Lagged { .. }
+        | AppServerEvent::Disconnected { .. }
+        | AppServerEvent::ThreadStreamReconnected(_)
+        | AppServerEvent::ThreadStreamDisconnected(_) => {
             color_eyre::eyre::bail!("the fixture's native event stream lost continuity");
         }
     }
@@ -144,7 +152,9 @@ pub(super) async fn run(fixture: &Fixture) -> color_eyre::Result<CaseOutcome> {
         fixture.codex_home
     );
     let old = fixture.root.join("old-image");
-    let target = fixture.root.join("selected-image");
+    let target_directory = fixture.root.join("7/bin");
+    std::fs::create_dir_all(&target_directory)?;
+    let target = target_directory.join("codex");
     for path in [&old, &target] {
         std::fs::write(path, b"captured image identity; never executed")?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
@@ -169,9 +179,22 @@ pub(super) async fn run(fixture: &Fixture) -> color_eyre::Result<CaseOutcome> {
         Endpoint::from_env(),
         Some(Endpoint::explicit(&fixture.sock, &fixture.sid))
     );
+    // This sanitized child supplies inert image files, not a signed package.
+    // Retain the real producer, manager inventory and conditional TUI commit.
+    let preparation = codex_alab_tui::upgrade::test_support::scoped_preparation(shared)
+        .map_err(color_eyre::eyre::Error::msg)?;
     let mut native = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
     let native_owner = native.backend_id();
     let started = native.start_thread(&app.config).await?;
+    // Complete the independent launch handshake before starting model work.
+    assert!(
+        codex_alab_tui::test_tasks::wait_for_launch_probe(shared).await?,
+        "the private launch probe completed within its observation budget"
+    );
+    assert!(
+        shared.launch_witness().is_some(),
+        "the private launch probe succeeded"
+    );
     let thread = started.session.thread_id;
     let rollout = started
         .session
@@ -191,31 +214,44 @@ pub(super) async fn run(fixture: &Fixture) -> color_eyre::Result<CaseOutcome> {
         shared.has_waker(),
         "the normal TUI frame requester is installed"
     );
-    let turn = native
-        .turn_start(
+    let intent = CloudSubmissionIntent::UseKnownTurn;
+    let input = AppCommand::user_turn(
+        "user",
+        intent,
+        "bootstrap-input".into(),
+        vec![UserInput::Text {
+            text: INPUT.into(),
+            text_elements: Vec::new(),
+        }],
+        fixture.project.clone(),
+        codex_app_server_protocol::AskForApproval::Never,
+        None,
+        "gpt-5.6-sol".into(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let (admission, _) = native
+        .submit_user_message(
             thread,
-            "user",
-            "bootstrap-input".into(),
-            vec![UserInput::Text {
-                text: INPUT.into(),
-                text_elements: Vec::new(),
-            }],
-            fixture.project.clone(),
-            None,
-            None,
-            crate::app_server_session::TurnPermissionsOverride::Preserve,
-            &[],
-            "gpt-5.6-sol".into(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            &input,
+            intent,
+            &mut None,
+            |_| Ok(None),
+            || TurnStartSettings {
+                approval_policy: None,
+                approvals_reviewer: None,
+                permissions: TurnPermissionsOverride::Preserve,
+                workspace_roots: &[],
+            },
         )
-        .await?
-        .turn
-        .id;
+        .await
+        .map_err(|failure| color_eyre::eyre::eyre!("native bootstrap admission: {failure:?}"))?;
+    let UserMessageAdmission::StartResponse(turn) = admission else {
+        color_eyre::eyre::bail!("the native bootstrap did not start a turn");
+    };
     loop {
         let event = native
             .next_event()
@@ -236,13 +272,6 @@ pub(super) async fn run(fixture: &Fixture) -> color_eyre::Result<CaseOutcome> {
             break;
         }
     }
-    while !shared.launch_probed() {
-        tokio::task::yield_now().await;
-    }
-    assert!(
-        shared.launch_witness().is_some(),
-        "the private launch probe succeeded"
-    );
     assert!(
         shared.view().primary_thread.is_none(),
         "no claim RPC while advancing time"
@@ -391,10 +420,17 @@ pub(super) async fn run(fixture: &Fixture) -> color_eyre::Result<CaseOutcome> {
     drop(next);
     native.shutdown().await?;
     model.shutdown().await;
+    let upgrade_status = codex_alab_tui::upgrade::update_report("isolated native fixture");
+    assert!(
+        preparation.preparations() > 0,
+        "the package-preparation fixture was exercised: {upgrade_status}"
+    );
+    drop(preparation);
     Ok(CaseOutcome {
         case: fixture.case.clone(),
         completed: true,
         accepted_upgrade: accepted,
         continuation_posts_before_upgrade: requests.len().saturating_sub(1),
+        upgrade_status,
     })
 }

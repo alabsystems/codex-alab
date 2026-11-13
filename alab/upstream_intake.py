@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tomllib
 
 
 DECISIONS = {'adopt', 'adapt', 'keep-opt-in', 'superseded', 'defer-activation'}
@@ -16,13 +15,20 @@ CLASSES = {'fix', 'security', 'model', 'feature', 'refactor', 'protocol',
            'defaults', 'background', 'telemetry', 'removed-path', 'packaging', 'other'}
 
 
-def git(repo, *args):
+def git_environment(*, index_file=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
     env.update(GIT_NO_LAZY_FETCH='1', GIT_NO_REPLACE_OBJECTS='1',
-               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
+               GIT_OPTIONAL_LOCKS='0')
+    if index_file is not None:
+        env['GIT_INDEX_FILE'] = str(index_file)
+    return env
+
+
+def git(repo, *args, index_file=None):
     return subprocess.check_output(
         ['git', '-c', 'core.fsmonitor=false', '-C', str(repo), *args],
-        env=env, stderr=subprocess.PIPE).decode('utf-8', errors='surrogateescape').rstrip('\n')
+        env=git_environment(index_file=index_file), stderr=subprocess.PIPE).decode('utf-8', errors='surrogateescape').rstrip('\n')
 
 
 def snapshot(repo, base, target):
@@ -49,7 +55,8 @@ def snapshot(repo, base, target):
 def validate(record, expected, feature_ids=None):
     errors = []
     for field in ('schema', 'base', 'target', 'frontier'):
-        if record.get(field) != expected[field]:
+        if (record.get(field) != expected[field]
+                or field == 'schema' and type(record.get(field)) is not int):
             errors.append('stale or invalid ' + field)
     entries = record.get('commits')
     if not isinstance(entries, list):
@@ -86,6 +93,8 @@ def validate(record, expected, feature_ids=None):
 
 
 def main():
+    import tomllib
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['snapshot', 'validate'])
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
@@ -107,6 +116,8 @@ def main():
                 raise ValueError('record must be an object')
             with (args.repo / 'alab/features.toml').open('rb') as source:
                 inventory = tomllib.load(source)
+            if type(inventory.get('schema')) is not int or inventory.get('schema') != 1:
+                raise ValueError('unsupported feature inventory schema')
             feature_ids = {feature['id'] for feature in inventory['features']}
             errors = validate(record, expected, feature_ids)
             if errors:

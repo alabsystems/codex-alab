@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "kind": "canonical-protocol-regeneration",
+  "rust_source": "3a8e586229780e5102aa3e7f75258a4787638360",
+  "integrated_upstream": "568c592f9cbe4388aafe9759bf6f3ed1bb0fd5e3",
+  "logs": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-568c-schema-native.log",
+      "sha256": "c90d310f2b3b213c6a54ed3799bcb559012b0463b090571b257a12574d4e4f2e"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-568c-sdk-generation.log",
+      "sha256": "8649b78ea137bc6ca6de7587dea3362cfcae374b4df5f10d902be279becc8b37"
+    }
+  ],
+  "results": [
+    "The native Trust 15698 fixture writer passed in stable and experimental modes.",
+    "The generated JSON and TypeScript trees match the merged fixtures. Both precomputed archives changed.",
+    "The frozen Python SDK generator completed with no tracked changes."
+  ],
+  "limits": "The generator source precedes request-literal deduplication and documentation. Full native qualification remains pending."
+}

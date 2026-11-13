@@ -500,12 +500,30 @@ def checked(args, appending):
             raise Refused(f"{args.version} is not the newest recorded version at {commit[:9]} "
                           f"({last['version']} is): a release is above every version recorded "
                           "before it")
+        frozen = False
         if mine["baseline"] != args.baseline:
+            # Tags can appear after a source was frozen: a patch of the recorded line, or
+            # the next minor's stable. A newly visible stable does not change a recorded
+            # baseline when its branch point was already integrated in EVERY historical
+            # carrier of that row: the claim already held that upstream code, and only its
+            # name arrived later. A later source merge that brought the branch point in, an
+            # older or unknown stable, or a moved tag still needs a new product version.
+            # Recorded tag identities are checked below.
+            upstream = Upstream(repo)
+            before, observed = baseline_key(mine["baseline"]), baseline_key(args.baseline)
+            point = upstream.branch_point(args.baseline)
+            carriers = [at for at, _, past in walk
+                        if any(row["version"] == args.version for row in past or [])]
+            frozen = (before < observed
+                      and upstream.tag_commit(args.baseline) == args.baseline_commit
+                      and point is not None and bool(carriers)
+                      and all(ancestor(repo, point, at) for at in carriers))
+        if mine["baseline"] != args.baseline and not frozen:
             raise Refused(f"{args.version} is recorded on the upstream baseline "
                           f"{mine['baseline']}, but {commit[:9]} is built on {args.baseline}: that "
                           "mapping never changes. `pub bump codex-alab` and append the new "
                           "version's row instead")
-        if mine["baseline_commit"] != args.baseline_commit:
+        if not frozen and mine["baseline_commit"] != args.baseline_commit:
             raise Refused(f"{args.version}'s row names rust-v{mine['baseline']} at "
                           f"{mine['baseline_commit'][:12]}, but that tag names "
                           f"{args.baseline_commit[:12]} here")
@@ -547,8 +565,9 @@ def main(argv=None):
             for row in parse(data.decode("utf-8"), args.file):
                 print(" ".join(f"{field}={row[field]}" for field in FIELDS))
         elif args.command == "check":
-            checked(args, appending=False)
-            print(f"{args.version}+codex.{args.baseline}")
+            rows = checked(args, appending=False)
+            mine = next(row for row in rows if row["version"] == args.version)
+            print(f"{args.version}+codex.{mine['baseline']}")
         elif args.command == "row":
             check_date(args.date)
             rows = checked(args, appending=True)

@@ -1,0 +1,296 @@
+{
+  "schema": 1,
+  "base": "a2b7c4a655a124c3e798b7744c5f83397eb2ada3",
+  "target": "568c592f9cbe4388aafe9759bf6f3ed1bb0fd5e3",
+  "frontier": "a2b7c4a655a124c3e798b7744c5f83397eb2ada3",
+  "commits": [
+    {
+      "sha": "a92eae0891724eb960ccfc82904551d152786cc3",
+      "subject": "Restore PowerShell's working directory in the MXC sandbox (#60647)",
+      "paths": [
+        "codex-rs/core/assets/tools/mxc_pwsh_cwd.ps1",
+        "codex-rs/core/src/tools/runtimes/unified_exec.rs",
+        "codex-rs/core/tests/suite/unified_exec_mxc_powershell_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Restore the working directory only when PowerShell starts without one. Preserve existing startup location and MXC read restrictions.",
+      "evidence": [
+        "Reviewed the upstream commit description and changed paths. Integration and qualification are pending."
+      ],
+      "revisit": "Review the MXC command preparation and run the unreadable-ancestor regression on Windows."
+    },
+    {
+      "sha": "82e6bacb9c6950d3b56cb153847fa80bdd698053",
+      "subject": "Enable model and reasoning effort selection for Cloud conversations (#60651)",
+      "paths": [
+        "codex-rs/app-server-client/src/cloud.rs",
+        "codex-rs/app-server-client/src/cloud_backend/mod.rs",
+        "codex-rs/app-server-client/src/cloud_backend/requests.rs",
+        "codex-rs/app-server-client/src/cloud_backend/submission_tests.rs",
+        "codex-rs/app-server-client/src/cloud_tests.rs",
+        "codex-rs/cloud-client/examples/attach.rs",
+        "codex-rs/cloud-client/src/client_tests.rs",
+        "codex-rs/cloud-client/src/lib.rs",
+        "codex-rs/cloud-client/src/turns.rs",
+        "codex-rs/cloud-client/src/turns_tests.rs",
+        "codex-rs/cloud-client/src/turns_wire.rs",
+        "codex-rs/cloud-client/src/types.rs",
+        "codex-rs/tui/src/app/cloud_switch_wait.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/model_defaults.rs",
+        "codex-rs/tui/src/app/tests/model_defaults_tests.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app/user_turn_submission.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/app_server_session/models.rs",
+        "codex-rs/tui/src/app_server_session/models_tests.rs",
+        "codex-rs/tui/src/app_server_session/reasoning_defaults_tests.rs",
+        "codex-rs/tui/src/app_server_session/user_message_submission.rs",
+        "codex-rs/tui/src/app_server_session/workspace_roots_tests.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/model_popup_state.rs",
+        "codex-rs/tui/src/chatwidget/model_popups.rs",
+        "codex-rs/tui/src/chatwidget/session_flow.rs",
+        "codex-rs/tui/src/chatwidget/settings.rs",
+        "codex-rs/tui/src/chatwidget/tests/model_picker_tests.rs"
+      ],
+      "classes": [
+        "model",
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "model-discovery",
+        "account-isolation",
+        "native-ui"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Use the official Cloud catalog and stage selections for the next admitted Cloud turn. Keep Cloud activation opt-in and retain the ALab credential factory and account ownership checks. Cloud selections must not become local startup defaults.",
+      "evidence": [
+        "Reviewed the upstream commit description and changed paths. Integration and qualification are pending.",
+        "Reviewed the Cloud model update branch in model_defaults.rs. It stages against the active Cloud thread and rejects unsupported model, effort or speed choices.",
+        "Resolved the account-change overlap in chatwidget/settings.rs by retaining ALab allowance invalidation and the official picker dismissal."
+      ],
+      "revisit": "Compare cloud.rs and Cloud request wiring to the ALab account transport. Verify catalog queue independence, legacy server behavior, next-turn acceptance, and stale results after account switch."
+    },
+    {
+      "sha": "c9bbed2dae6aa1d3a0057001dec64d08e7882a9f",
+      "subject": "Support environment updates in app-server settings APIs (#60655)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadSettingsUpdatedNotification.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/src/protocol/common.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/turn.rs",
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/src/request_processors/thread_summary.rs",
+        "codex-rs/app-server/src/request_processors/turn_processor.rs",
+        "codex-rs/app-server/src/thread_state.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_settings_update.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_settings_update.rs",
+        "codex-rs/tui/src/app/app_server_event_targets.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs"
+      ],
+      "classes": [
+        "protocol",
+        "feature"
+      ],
+      "features": [
+        "native-session",
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Preserve ordered environment settings and the distinction between subsequent steps and future turns. Require native acceptance before reporting success and reconcile environment selections with fresh destination authority on handoff.",
+      "evidence": [
+        "Reviewed the upstream commit description and changed paths. Integration and qualification are pending."
+      ],
+      "revisit": "Verify omitted and empty fields, rejection, turn versus thread timing, and regenerate protocol fixtures."
+    },
+    {
+      "sha": "45d1f24d79cc27b115de959c4c10cca0decf5cc8",
+      "subject": "Support gateway device-code sign-in in headless TUI sessions (#60662)",
+      "paths": [
+        "codex-rs/tui/Cargo.toml",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/daemon_startup.rs",
+        "codex-rs/tui/src/device_login.rs",
+        "codex-rs/tui/src/device_login_tests.rs",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/onboarding/auth.rs",
+        "codex-rs/tui/src/onboarding/auth/headless_chatgpt_login.rs",
+        "codex-rs/tui/src/onboarding/gateway_login.rs",
+        "codex-rs/tui/src/onboarding/gateway_tests.rs",
+        "codex-rs/tui/src/onboarding/mod.rs",
+        "codex-rs/tui/src/onboarding/onboarding_screen.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__device_login__tests__device_prompt_shows_where_to_enter_the_code_and_how_to_cancel.snap"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "model-discovery"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt the official headless device flow and provider-aware login ordering. Keep ALab managed account custody and ensure that completion for an old account cannot authorize discovery for the active one.",
+      "evidence": [
+        "Reviewed the upstream commit description and changed paths. Integration and qualification are pending."
+      ],
+      "revisit": "Review login notification ownership and test resumed threads, cancellation, transport loss, and legacy servers."
+    },
+    {
+      "sha": "f7aad26f1d4e098bbd86ce8415a622fda55b0208",
+      "subject": "Defer exec-server sandbox preparation to the execution host (#60663)",
+      "paths": [
+        "codex-rs/cli/src/debug_sandbox.rs",
+        "codex-rs/core/src/exec.rs",
+        "codex-rs/core/src/shell_snapshot_sandbox.rs",
+        "codex-rs/core/src/tools/runtimes/unified_exec.rs",
+        "codex-rs/core/src/tools/sandboxing.rs",
+        "codex-rs/core/src/tools/sandboxing_tests.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/core/tests/windows_sandbox.rs",
+        "codex-rs/exec-server/src/environment.rs",
+        "codex-rs/exec-server/src/fs_sandbox.rs",
+        "codex-rs/exec-server/src/process_sandbox.rs",
+        "codex-rs/exec-server/src/sandbox_selection.rs",
+        "codex-rs/exec-server/tests/exec_process.rs",
+        "codex-rs/sandboxing/src/launch.rs",
+        "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/sandboxing/src/manager_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Keep sandbox preparation on the execution host so it can interpret its own paths and resolve native authority. Preserve refusal when the required sandbox is unavailable and keep ALab policy checks on restored work.",
+      "evidence": [
+        "Reviewed the upstream commit description and changed paths. Integration and qualification are pending."
+      ],
+      "revisit": "Verify request preservation, required sandbox refusal, and allowed and denied reads in the native remote execution tests."
+    },
+    {
+      "sha": "733a1cca06f0428840ff185fe68ed10e818f06c4",
+      "subject": "Add a content helper for forwarding MCP blocks in Code Mode (#60665)",
+      "paths": [
+        "codex-rs/code-mode-protocol/src/response.rs",
+        "codex-rs/code-mode-runtime/BUILD.bazel",
+        "codex-rs/code-mode-runtime/src/runtime/callbacks.rs",
+        "codex-rs/code-mode-runtime/src/runtime/callbacks_tests.rs",
+        "codex-rs/code-mode-runtime/src/runtime/content.js",
+        "codex-rs/code-mode-runtime/src/runtime/globals.rs",
+        "codex-rs/code-mode-runtime/src/runtime/value.rs",
+        "codex-rs/code-mode-runtime/src/service_audio_tests.rs",
+        "codex-rs/code-mode-runtime/src/service_tests.rs",
+        "codex-rs/core/src/tools/code_mode/response_adapter.rs",
+        "codex-rs/core/tests/suite/code_mode.rs",
+        "codex-rs/core/tests/suite/scenarios.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_forwards_mixed_mcp_content.snap",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/protocol/src/models/mcp_content.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Use the shared upstream conversion for ordered mixed MCP content. Preserve the existing tool authorization and output suppression.",
+      "evidence": [
+        "Reviewed the upstream commit description and changed paths. Integration and qualification are pending."
+      ],
+      "revisit": "Run content conversion, iterator cleanup, and mixed-result integration tests."
+    },
+    {
+      "sha": "39f422522ee6bf209411086ee1fc33616d660b2e",
+      "subject": "Skip submodule worktree scans when checking repository changes (#60669)",
+      "paths": [
+        "codex-rs/git-utils/src/status.rs",
+        "codex-rs/git-utils/src/status_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Skip dirty submodule worktree scans while continuing to report changed gitlinks.",
+      "evidence": [
+        "Reviewed the upstream commit description and changed paths. Integration and qualification are pending."
+      ],
+      "revisit": "Run the upstream repository status regression and check the expected gitlink behavior."
+    },
+    {
+      "sha": "fad8b3d5bcb32dcefb2660a9d46e4d16233697c7",
+      "subject": "Initialize Guardian evidence cursors from thread history state (#60670)",
+      "paths": [
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/ext/extension-api/src/contributors/thread_lifecycle.rs",
+        "codex-rs/ext/extension-api/src/lib.rs",
+        "codex-rs/ext/guardian-v3/src/evidence.rs",
+        "codex-rs/ext/guardian-v3/tests/evidence.rs",
+        "codex-rs/ext/mcp/src/stream_manager_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff",
+        "product-policy"
+      ],
+      "decision": "adapt",
+      "reason": "Use the native thread-ready cursor initialization. New and cleared histories begin at zero, while resumed or supplied histories begin at the durable tail. Retain ALab managed review policy and verify restored history avoids replay.",
+      "evidence": [
+        "Reviewed the upstream commit description and changed paths. Integration and qualification are pending."
+      ],
+      "revisit": "Run first-record and resumed-history cursor tests plus the retained Guardian handoff scenarios."
+    },
+    {
+      "sha": "568c592f9cbe4388aafe9759bf6f3ed1bb0fd5e3",
+      "subject": "Add sign-only mode and tighten macOS signing verification (#60671)",
+      "paths": [
+        ".github/scripts/macos-signing/provisioned_macos_cli_package.py",
+        ".github/scripts/macos-signing/sign_macos_cli_package.py",
+        ".github/scripts/macos-signing/test_sign_macos_cli_package.py"
+      ],
+      "classes": [
+        "packaging",
+        "security",
+        "removed-path"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Keep the official signing changes in upstream history. The existing .github removal covers upstream release automation. ALab continues to sign and verify packages through its own admitted package path.",
+      "evidence": [
+        "Reviewed the upstream commit description and changed paths. Integration and qualification are pending.",
+        "All changed signing paths fall under the existing .github entry in alab/removed-paths."
+      ],
+      "revisit": "Run ALab package signing and layout smoke on the final integrated source."
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:44:10.020318+00:00",
+  "source": "91dde2b5373359dd3fdbf393d8afb91cfbb1d8a6",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "captures_originals_without_generated_context_or_later_appends",
+      "status": "ok"
+    },
+    {
+      "name": "searches_unsubscribed_guardian_posts_only_through_the_review_cutoff",
+      "status": "ok"
+    },
+    {
+      "name": "planning::plans_unique_originals_in_source_order_from_a_fixed_view",
+      "status": "ok"
+    },
+    {
+      "name": "planning::plans_across_storage_pages_in_reverse_insertion_order",
+      "status": "ok"
+    },
+    {
+      "name": "selection::subscription_tools_only_change_the_caller_and_return_captured_post_ids",
+      "status": "ok"
+    },
+    {
+      "name": "delivery::delivers_ordered_originals_once_after_admission_and_keeps_older_channel_evidence",
+      "status": "ok"
+    },
+    {
+      "name": "selection::preparation_commits_only_valid_selections_from_the_captured_catalog",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-v3-native.sh",
+      "sha256": "d064ac258bc4c29d124de7ff6c4090c9f8cab3c339af7395ece48de757affbb9"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-v3-native.log",
+      "sha256": "1ab9f47ecb644ec69850f474fa2c9c3fbfa8ebae63d750e8be02cbaca9e39ed4"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-v3-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Whole evidence and retrieval binaries: seven passed, zero failed/ignored/filtered, two helper-admitted selections. Local real-board fixtures cover original capture, fixed-cutoff search, self-only subscriptions, planning and ordered admitted delivery. Does not qualify housekeeper runtime, all host ownership/lifecycle, crash recovery, native credential images, full gate, complete intake or adoption."
+}

@@ -1105,3 +1105,1051 @@ Git removal completes successfully; its slow unlink phase is sampled and retaine
 The artifact/provenance files live outside Git and are verified in place. Do not
 claim the moved target as a newly admitted compiler cache. Native checks are all
 settled; no other session's files or jobs are removed.
+
+## Complete the stopped late-steer upstream intake
+
+The Land audit identifies an inactive sync of upstream ba0d0e1f74 with three
+staged upstream paths and one conflict. Preserve upstream's mutable task result
+and keep ALab's existing run_with_exec_launch hook. Native sync commits that merge
+and merges concurrent remote main. Upstream now returns RegularTaskOutput so a
+late steer retains MCP startup requirements. Adapt the three synthetic ALab tasks
+through a test-only constructor in the existing task-launch extension module;
+keep their original completion messages and all recovery assertions. No upstream
+visibility change, discarded completion or legacy string conversion shim.
+
+The first lock resolver's global shim cannot read the pinned install-tree record
+inside its profile. Native installation confirms15698is present beside current,
+which stays unchanged. Run the resolver through authenticated native selection
+and its existing ALAB_CARGO setting. Remove that override for the subsequent gate,
+which correctly refuses compiler-selection overrides. Do not relax its sandbox,
+compiler admission, source checks or mandatory sync gate. Continue the maintained
+sync on the committed merge and this separate ALab adaptation.
+
+The native gate catches the third synthetic completion in exec_review_restore_tests
+returning a String where RegularTaskOutput is required. Adapt it through the same
+constructor, preserving its completed-before-attachment payload and assertions.
+
+The first complete gate on dd09d82c1d passes all 1,844 ALab tests and reports no
+ALab lint findings, but fails closed before upstream attribution: 929 TUI cases
+fail, predominantly snapshot reads naming the earlier qualification worktree.
+The reused cross-worktree target has preserved compiled source paths; this run
+is not qualification and its failures must not be waived or its attribution
+limit raised. Retain its log and native scratch. Choose a new, sync-owned target
+below codex-rs/target/land-ba0-20261110 and let native admission register it,
+without copying artifacts or editing cache identity records. Preserve the old
+targets under the owner's existing retention hold. Merge remote main's concurrent
+banner commits before repeating the unchanged mandatory sync gate.
+
+The native controller intentionally excludes global Git configuration, so retain
+the already-used author/committer identity explicitly for the concurrent merge.
+The resolver profile refuses the helper from the main checkout; use the same
+maintained helper in this admitted sync checkout instead. Authenticated15698
+selection resolves the merge and commits f7becc71f0. The following gate correctly
+refuses the resolver-only ALAB_CARGO setting; clear it before the full fresh-target
+gate. No refused operation is treated as a pass or bypassed.
+
+## Close the qualified sync against newer main
+
+The native fresh-target gate on 7d0c0f4330 completes qualification: zero ALab
+lint findings, 1,844 ALab tests pass (four existing ignores), and 6,203 upstream
+TUI tests pass (five existing ignores) with no snapshot-read permission warnings.
+One shared-run notification failure passes alone. All seventeen persistent
+upstream failures reproduce alone on pristine ba0d0e1f74; none gates the layer.
+The guarded push then refuses because main has advanced while the gate ran.
+This is a publication refusal after qualification, not a failed or skipped gate.
+
+Fresh Agh fetch confirms main at 27f8f15e06 contains newer upstream 053e5b1ca9
+and an equivalent native completion constructor in exec_task_test_output.rs.
+Its three recovery fixtures already use that constructor with unchanged original
+messages and default MCP requirements. Retire the older constructor in this
+branch: merge its entire six-commit history into current main while retaining
+main's source tree exactly and adding only this review record. This also keeps
+main's newer upstream merge on the first-parent history and preserves its portable
+evidence paths. Verify that the only tree difference from that main is this
+Markdown record, that both parents are reachable, and that whitespace checks pass.
+There is no new compiler-input change to qualify in this closure merge.
+
+Retain the complete gate log and old/fresh native targets under the existing
+owner preservation hold. After the guarded closure push, retire the now-superseded
+sync state through its maintained abort operation only after confirming every
+local sync commit is reachable from remote main. No source or build evidence is
+discarded. Original reset behavior is already delivered; start no new work.
+
+## Yield a creditless weekly wall to account rotation (2026-11-11)
+
+The retained sampler above starved account rotation in the TUI. Recovery order
+is an earned reset first and then another account (`alab/design/accounts.md`),
+but the second step acts only on an ended turn: the Autopilot's `follow_renewal`
+needs the native turn Complete with a usage wall as its point, and aterm's
+`codex-rotation prepare` refuses anything but an ended seven-day wall. With a
+real exhausted account the usage read names the account, so recovery found the
+wall eligible, found no credit, and polled every 30 seconds until the natural
+reset. The turn never ended, silently, and rotation was never asked. The
+rotation smoke kept passing only because its usage reply named no account, which
+made recovery stop at once; it was last qualified on 2026-11-03/04, before the
+loop existed.
+
+Decision: when the weekly allowance is spent, nothing is in redemption custody
+and no earned credit can be redeemed, recovery asks whether a host would move
+the conversation to another account if the turn ended now. If so, the original
+request ends on its original usage error and rotation follows; otherwise the
+30-second poll continues unchanged. The question is a capability in the turn's
+store, `codex_alab_core::quota::WallHandoff`, as `HeadlessExec` and
+`InFlightRetryObserver` are: the Autopilot installs it at `on_turn_start`, and
+quota recovery reads it without knowing the session record or aterm. Asking for
+rotation from inside the wait was rejected: both the Autopilot and the host
+require an ended wall, so it would need host and record changes. No upstream
+file or hook changes.
+
+- `Recovery::NoCredit` is returned only at the point where `available()` finds
+  nothing, which is reached only with no consumed credit awaiting propagation
+  and no pending operation. A credit in custody is never abandoned.
+- Only the 10080-minute window at 100% with its reset ahead yields. The host
+  answers `not-needed` for anything else, and ending a five-hour turn would
+  give up in-turn late-credit polling for nothing. (Superseded 2026-11-12 for
+  a host that says it leaves five-hour walls; see "Yield a creditless
+  five-hour wall the host would leave" below.)
+- A credit list that was read and offers nothing shows there is no credit, and
+  yields at once. One that could not be read, or whose credit the backend
+  refused in the same attempt, shows nothing either way: the request is kept
+  for one more poll and yields only when the next attempt is inconclusive too.
+  As first written a single failed read counted as no credit, on the ground
+  that an outage must not hold a spent week away from another account; review
+  (2026-11-12) found that this let rotation precede an earned reset that
+  exists, for example on one 503 from the list. Two consecutive inconclusive
+  attempts keep the outage bound (one 30-second poll) without that.
+- The answer is advisory, bounded to five seconds and to the known reset, and
+  asked again on each poll, so a policy turned on or an account added during
+  the wait is picked up. It is true only for the acting primary thread of a
+  first-party ChatGPT login whose freshly read host policy allows weekly
+  rotation (`codex_rotation=1`, `accounts=early|wall`, `relaunch`,
+  `resume_limits`), with no upgrade under way, and whose host shows another
+  account to move to (below). That policy read is one function shared with
+  `follow_renewal`, which checks everything again after the turn ends. No
+  credit is spent and no account is selected by the answer. A wrong yes is not
+  cheap: the turn has ended, the host answers `waiting`, and nothing lists
+  credits again until the session next samples.
+- The handoff holds weak references, so a turn's store keeps neither the
+  Autopilot nor its thread alive.
+- Exec is unchanged: a turn with `HeadlessExec` never consults the handoff.
+  Compaction walls inherit the yield through the same glue function.
+- `recover_weekly` takes the wall's named reset and its handoff as one
+  `codex_alab_quota_recovery::Wall` value; no hook line in an upstream file
+  changes, because the glue function's own signature is the same.
+
+Policy is not evidence of somewhere to go (review, 2026-11-12). As first
+written the answer came from host policy alone, and this section called the
+loss "that one case" of an exhausted pool. That understated it: every host-side
+refusal ended the turn, including the configuration on the Mac this was written
+on (`codex_rotation=1 accounts=early`, one enrolled Codex account). There the
+first empty credit read ended the turn, `codex-rotation prepare` had no target
+and answered `waiting`, the Autopilot re-asked every five seconds, and a credit
+granted during the wall was never redeemed, where the sampler on `main` would
+have redeemed it within 30 seconds.
+
+Decision: the answer also requires the host's own account pool to show another
+account. The Autopilot reads aterm's `codex-accounts snapshot` (read-only, no
+claim, selection or credential; already used by `/accounts`) on the claim's
+connection, and `Snapshot::another_account_can_run` counts the rows a session
+could move to by the host's cached record: login enrolled here, not held for
+another machine, condition `usable` or `unseen`. The host's own target rule
+refuses a `low`, `limited`, `signed-out` or held row, so those are not
+counted. aterm names no row as the session's own (`assignment.account_id` is
+always null today), so one able row may be the walled account itself and two
+are required; where a host does name it, that row is excluded and one other
+is enough. A host that does not serve the verb, answers for another process,
+or does not answer inside the five-second bound shows no pool, and the request
+keeps polling. Re-arming the credit poll from the Autopilot after `prepare`
+answers `waiting` or `not-needed` was the alternative; it needs earned-reset
+recovery outside a turn (a new entry into redemption custody and a recovered
+turn that must not yield again), which is more than a review correction
+should add without the native smokes.
+
+What the pool evidence does not cover, each still ending the turn with no
+credit poll until the session next samples:
+
+- Refusals the snapshot cannot show: another row's pin, a keyring-held login,
+  a mode mismatch, this session's login being no row of the pool
+  (`source-unmanaged`, to which the host answers `not-needed`), and a candidate
+  the record calls able but whose fresh read refuses it.
+- The record being behind: an account that walled on another Mac or outside
+  aterm still reads `usable` or `unseen` here.
+
+And one case where it now errs the other way: when the host's record already
+shows this session's own row `limited` or `low` and exactly one other row is
+able, two able rows are not on record, the answer is no, and the request polls
+as on `main` until the record changes. Closing it needs the host to name
+the session's row in the snapshot. As read from aterm's source on 2026-11-12,
+not measured, its record of a Codex row comes from its own rotation reads (the
+usage tap is Claude Code's), so a session's own row is on record this way only
+after an earlier rotation request at a wall there.
+
+Two things remain unfixed from the original change: with no rotation host the
+interactive wait still shows no notice, and the live backend's usage reply is
+assumed, not observed, to name the account and user the token claims carry
+(earned-reset redemption cannot work without that either).
+
+Deviations from the reviewed design, each narrowing it: the handoff also
+requires the thread to be registered and not in the vanilla experience, the two
+gates `evaluate` applies before `follow_renewal`; and the question is bounded by
+the time left to the known reset, so it cannot hold the request past it.
+
+Unit coverage (`alab-quota-recovery/src/handoff_tests.rs`): a creditless weekly
+wall yields to a ready handoff and, as the negative control, keeps polling
+without one; an available credit is redeemed with the handoff never asked; a
+five-hour wall keeps polling (superseded 2026-11-12, as above); an unready
+handoff leaves the request to redeem a
+late credit; a credit list that fails twice in a row yields and one that fails
+once does not; a credit behind one failed list read is redeemed with the
+handoff never asked; a credit refused in the attempt that tried it does not
+yield in that attempt; a consumed credit awaiting propagation is never
+abandoned, with the credit list empty after consumption so that custody alone
+decides. `alab-core` bounds a silent probe, and
+`alab-autopilot/src/renewal_follow_handoff_tests.rs` starts a real turn against
+the fake aterm and reads its store's handoff across each policy key, a standby,
+an upgrade request, a non-primary root, a dropped thread and no claim. Removing
+the policy read from the answer fails that test at `codex_rotation=0`. Since
+2026-11-12 the fake aterm serves `codex-accounts snapshot` from a settable pool
+and the same test reads the handoff over no pool, an empty pool, one account,
+a second account that is `limited`, `low`, `signed-out` or `not-enrolled`, a
+snapshot bound to another process, and a named own row with and without
+another able account; each refusal follows a ready answer with only the pool
+changed. Removing the pool read from the answer fails it at the first of
+those. `alab-aterm` pins the counting rule itself
+(`accounts_pool_shows_another_account_only_beyond_the_sessions_own`).
+
+Run on 2026-11-11 with the Trust toolchain in the unverified lane:
+`targo --unverified test -p codex-alab-quota-recovery` (36 pass),
+`-p codex-alab-core quota` (9 pass), `-p codex-alab-autopilot --lib
+renewal_follow` (6 pass, the two new tests included) and `-p codex-core --lib
+weekly_reset_retries_original_local_and_remote_compaction` (1 pass). `targo
+tippy --all-targets` on `codex-alab-core`, `codex-alab-quota-recovery` and
+`codex-alab-autopilot` reports nothing in the changed files. The native smokes
+were not run: both need a package built from this source, and
+`alab/smoke/renewal_follow.py` also needs the `native_host` fixture, of which no
+build exists on this machine. The rotation fixture is corrected separately so
+that it exercises this order; until it is run against such a package, the
+restart handoff itself is unqualified, and so is the unchanged exec poll in
+`weekly_reset.py` (`no-credit`, `late-credit`).
+
+## Ask for an account handoff only until the wall's own reset (2026-11-12)
+
+After a turn ends at a usage wall the Autopilot's `follow_renewal` asks the
+host to move the conversation (`codex-rotation prepare`) and owns the point
+while it does. `not-needed` releases the point to the wall's ordinary resume.
+Every other answer (`waiting`, an `ERR`, a malformed or missing reply) was
+asked again every five seconds with no end. The design for this change read
+aterm's source (it was not read again or measured here) and found that aterm
+answers `waiting` without reading the account in several standing cases: no
+destination, another row pinned, a keyring-held login, Codex accounts mode off.
+A session in one of them stayed ended past the reset
+of the very wall it stood at, when the account it is on could run again and a
+`not-needed` would have resumed it. That was tolerable for a weekly wall only
+because the yield above requires another account in the host's pool; it is not
+acceptable for a five-hour wall, which the next section starts yielding.
+
+Decision: a handoff that no receipt binds is asked for only until the wall's
+own reset plus the reset grace (`Timing::reset_grace`, 60 s).
+`rotation_ask_lapsed` in `alab-autopilot/src/renewal_follow.rs` is the whole
+rule, and it is judged immediately before the broker call. When it holds the
+host is not asked and the pass takes the path of a `not-needed` answer
+unchanged: `quota_rotation_declined` is set for the accepted turn, the goal
+witness is retired, the intent is discarded and `follow_renewal` returns false.
+`evaluate` then decides the usage wall as it always has: the resume is typed at
+reset plus grace plus this session's jitter when `resume_limits` and
+`limit_wait` are on, and attention is raised otherwise. The lapse is judged on
+`follow_renewal`'s five-second pass, so it can be up to five seconds late.
+
+- A bound receipt is never abandoned. The host may have committed it. An
+  unbound one is safe to drop: `commit` is sent only after binding, and by the
+  same reading of aterm's source the host charges its pool only at `commit`.
+- Host sleep is counted first. The Autopilot's clock is tokio's `Instant`,
+  which stops while the host sleeps, and `evaluate` moved the wall's reset back
+  by the time slept only after `follow_renewal` had let the point go. A Mac
+  that slept four hours of a five-hour wall would have kept asking for four
+  more waking hours. The block that counts sleep is now
+  `Autopilot::count_host_sleep`, called by `evaluate` where the block stood and
+  by `follow_renewal` before the lapse is judged. A second call on the same
+  reading moves nothing (`ThreadState::slept_to` counts only growth since its
+  mark), and a finished turn seeds that mark from the reading taken when the
+  wall was classified, so the first count in `follow_renewal` already covers
+  the time since the wall.
+
+What this does not bound, each as before:
+
+- A wall whose 429 names no reset: there is no moment to lapse at.
+- An intent carried across a process restart. A usage wall is not restored
+  from the rollout, so the new process holds the intent with no reset on
+  record. (Corrected after review: an unbound intent now carries its wall
+  across a restart. What is left is under "The wall of an asked handoff is
+  carried across a restart" below.)
+- A weekly wall in any useful sense: the lapse comes at the reset the 429
+  named, which for a spent week is normally the weekly reset, when a
+  `not-needed` would have resumed the session anyway. (Corrected after review:
+  the 429 may name another reset. See "The lapse comes at the 429's reset"
+  below.)
+- The earlier `return true` paths of `follow_renewal` (goal reconciliation,
+  unreadable history, a refused admission readiness, a failed write-through)
+  and a goal-witness retirement that keeps failing. They sit before or after
+  the lapse and still retry without a time limit.
+
+The fake aterm gains `FakeAterm::reply_always` (and `reply_always_clear`): the
+same raw reply to one exact command every time, after any `reply_once` for it.
+`reply_once` answers once, and the fake answers an unscripted `codex-rotation`
+with `ERR unknown verb`, so a host whose `waiting` stands could not be modelled.
+
+Coverage. `alab-autopilot/src/renewal_follow.rs`:
+`a_rotation_ask_lapses_only_past_the_walls_own_reset_with_no_receipt` (the
+table: the reset and its grace reached, one tick earlier, a bound receipt, a
+wall with no reset, three other walls, no wall) and
+`a_reset_the_host_slept_through_lapses_the_ask_at_the_wake` (two hours of sleep
+counted at a wall one hour from its reset lapses the ask; 55 minutes does not
+until the grace passes). `alab-autopilot/tests/autopilot/rotation_decline.rs`
+runs a real core thread on a scratch ChatGPT login against the fake aterm and a
+loopback model: `not-needed` gives one ask and one `usage-resume@v1` at the
+reset; a standing `waiting` gives the lapse, one resume and no ask once the
+reset has passed; the same `waiting` at a wall an hour
+from its reset is asked three times with nothing typed (the negative control);
+a host that knows no `codex-rotation` verb lapses the same way; and a host that
+sleeps two hours while such a wall is being asked about resumes at the wake,
+with the wall's reset still an hour ahead by the wall clock. These tests
+script the host's time asleep through `Autopilot::read_host_sleep_as`, a seam
+compiled only into test and debug builds, as the login watch's counters are.
+(How each reset is brought was changed after review; see "Review repairs"
+below. As first written, three of them named a reset four or five seconds
+ahead of the harness's start.)
+`alab-aterm/src/rotation.rs` pins the fake's standing reply.
+
+Mutations, each restored after its run: the receipt guard removed from
+`rotation_ask_lapsed`, and `>=` weakened to `>`, each fail both unit tests;
+the sleep count removed from `follow_renewal` fails the slept-through test;
+the lapse ignored at the broker call fails the standing-`waiting` test.
+
+Run on 2026-11-12 with the Trust toolchain in the unverified lane, from
+`codex-rs/`: `targo --unverified test -p
+codex-alab-autopilot --lib` (899 pass, 3 ignored), `-p codex-alab-autopilot
+--test autopilot` (99 pass, the five new tests included), `-p codex-alab-aterm`
+(162 pass, 2 ignored), and `targo tippy --all-targets` on `codex-alab-aterm`
+and `codex-alab-autopilot` (nothing in ALab's files). Not run: any native
+smoke, `alab/check.sh`.
+
+## Yield a creditless five-hour wall the host would leave (2026-11-12)
+
+The weekly yield above kept every five-hour wall polling, on the ground that
+the host answers `not-needed` for anything but a spent week. aterm's rotation
+is changing. On its rotation branch, as the design for this change read it
+(aterm's source was not read again here), it also moves a session whose
+five-hour window is spent on a usable week when that window's reset is more
+than its `RESET_SOON_S` (900 s) away. A session at such a wall would otherwise
+sit out up to five hours beside an account that can run. This section
+supersedes two statements in the weekly section: the bullet "Only the
+10080-minute window at 100% with its reset ahead yields", and "a five-hour
+wall keeps polling" in its unit coverage.
+
+Three ways to let the host have such a wall were considered.
+
+- Ask aterm from inside the wait, before ending the turn. Rejected, as it was
+  for the weekly wall: `codex-rotation prepare` needs the session record's
+  owed marker and a rollout that proves an ended usage wall.
+- End every creditless five-hour turn and rely on the bound in the previous
+  section. Rejected: it ends turns that the host answers `not-needed` for,
+  which gives up the same-request retry and the poll for a late credit for
+  nothing. By the design's reading, aterm's main branch and the installed
+  0.198.0 are such hosts.
+- Chosen: a local mirror of the host's rule, switched on by a word the host
+  prints, with the ask bounded by the wall's own reset (the previous section).
+
+The word. While `codex_rotation` is on, aterm will print
+`codex_rotation_five_hour=<seconds>` in its `harness policy` reply; the value
+is the bound it applies (900 today), so codex-alab follows a change to it.
+`codex_rotation=1` alone cannot serve: it is a build qualification, printed
+by hosts that leave no five-hour wall. A host that prints no such word leaves
+the five-hour yield off, so this change is inert until aterm ships the word.
+It has not: `aterm ctl @self harness policy` on the installed aterm 0.198.0
+(this Mac, 2026-11-12) prints `codex_rotation=1` and no
+`codex_rotation_five_hour`. No aterm that prints the word was run against this
+change.
+
+The rule is `leaves_wall` in `alab-aterm/src/account_recovery.rs`, asked from
+`quota_handoff_ready` with the wall quota recovery found
+(`codex_alab_core::quota::SpentWall`: the window and the moment it resets, in
+seconds since the epoch, as the usage read names it; corrected after review,
+see "Review repairs" below). It requires the rotation policy as before, and
+then:
+
+- a spent week: nothing more;
+- a spent five-hour window: `limit_wait` on, the word present as a canonical
+  count of seconds, and the wall's reset further away than that bound plus 60
+  seconds when the host's policy has been read and the question is answered.
+  A missing, blank or unreadable word is no.
+
+The 60 seconds are the skew between the answer and the host's own read after
+the turn ends; a wall that clears the host's bound by less than the delay
+between them is answered `not-needed` after the turn has ended. By the
+design's reading of aterm's rule the mirror is otherwise narrower than it
+(exact window lengths, `ordinary_usage_allowed` false, the codex bucket only),
+so a yes implies the host's rule unless more than the skew passes. 60 s is a
+judgment; the delay was not measured.
+
+`limit_wait` is required because of what a declined turn does. With it off,
+the Autopilot raises attention at a usage wall at once, where the request it
+ended would have waited the wall out in the turn: a five-hour yield that the
+host then declines would alert a person up to five hours early and lose the
+chance of a late credit. With it on, a declined or lapsed five-hour turn is
+always resumed by the Autopilot at the reset.
+
+Two guards sit in quota recovery itself (`offerable` in
+`alab-quota-recovery/src/unix.rs`), because what follows an ended turn runs on
+the reset the 429 named, not on the usage read's: the Autopilot's usage wall,
+its bound on asking the host, and its resume.
+
+- A five-hour wall whose 429 names no reset is not offered. Nothing would bound
+  the ask, and the host's standing `waiting` cases would leave the session
+  ended.
+- A five-hour wall whose 429 names a reset more than 60 seconds from the usage
+  read's five-hour reset, in either direction, is not offered. A later one
+  would hold the ended session and the bound to that later moment. An earlier
+  one would resume the session into the same wall, typing a resume each time
+  the 429's reset came round.
+
+A spent week keeps the weekly yield's behaviour whatever the 429 named,
+including an unbounded ask when it names no reset.
+
+Which wall is named (`spent_wall`, replacing `weekly_exhausted`): the week is
+judged first, as the host judges it, and a spent five-hour window is named only
+where no weekly window is in the way: every weekly window the read carries
+shows a finite figure under 100%, which a read that carries no weekly window
+satisfies too. A weekly window that is spent with no reset ahead, or whose
+figure is not a finite number, names no wall: the five-hour reset would not
+end it. The other guards are unchanged (identity match, no explicit denial,
+`ordinary_usage_allowed` false, the codex bucket, exact window length, a finite
+figure of at least 100, a reset ahead).
+
+The pool gate of the weekly yield applies unchanged: the host's
+`codex-accounts` snapshot must show another account the session could move to.
+The host's word is checked first, so a host that would not leave the wall is
+not asked for its pool.
+
+Costs, each accepted:
+
+- `Recovery::NoCredit` is now returned at a creditless five-hour wall too, so
+  each 30-second poll there asks the handoff probe, for up to five hours. As
+  first landed every such poll made one `harness policy` request, including
+  against a host without the word. Since the second review (below, "A host
+  that prints no five-hour bound is not asked about one") a host whose last
+  policy reply printed no bound is refused from that remembered reply, with no
+  request; a host that prints the bound is still read on every poll.
+- Where the host does print the word and its pool shows another account, a
+  refusal the snapshot cannot show (another row pinned, a keyring-held login, a
+  candidate whose fresh read refuses it) ends the turn, and the session then
+  neither polls for a late credit nor notices one redeemed by another session
+  on the same account, until the wall's own reset plus grace. That is the
+  weekly yield's residual cost, now paid at five-hour walls and bounded by the
+  previous section.
+- Compaction walls inherit the yield through the same glue function.
+
+Exec is unchanged here: a turn with `HeadlessExec` never consults the handoff
+and keeps its request, asking aterm through its own protocol. The design for
+this change found, reading aterm's source, that aterm's exec control keeps a
+`not-needed` for the whole root turn, so a five-hour wall near its reset would
+disable handoff at every later wall of that run; that needs a fix in aterm, not
+here.
+
+Not determined: which reset the live backend's 429 names when a five-hour
+window is spent, and whether it equals the usage read's five-hour `reset_at`
+within 60 seconds. If it does not, the agreement guard keeps every five-hour
+wall polling and this yield never happens on a real account. The 429 also
+carries `limit_window_minutes`, which this change does not use.
+
+Departures from the reviewed design. The 429 agreement is two-sided (the design
+refused only a later 429 reset); the reason is the second guard above. A spent
+five-hour window is not named beside a week that is spent without a reset
+ahead or unreadable (the design judged the week, then the five-hour window,
+with no such case). `leaves_wall` is consulted before the pool read. The glue
+test in `alab-core/glue/weekly_compaction_tests.rs` also had to change, since
+the review commits that followed the design added a `WallHandoff` there. The
+design's smoke case (`alab/smoke/renewal_follow.py`) is another change.
+
+Coverage. `alab-quota-recovery/src/handoff_tests.rs`: a creditless five-hour
+wall asks the host once about that window, with the moment it resets, when the
+429's reset is the window's own or within 50 seconds either side, and ends the
+request on a yes; a host that declines leaves it polling; a 429 with no reset,
+a later reset (two minutes and 23 hours) and an earlier one (half an hour) are
+never offered, with a spent week and no named reset still offered as the
+positive control; both windows spent names the week; `spent_wall` and
+`offerable` each have a table. `alab-aterm/src/account_recovery.rs`:
+`a_five_hour_wall_is_left_only_under_the_hosts_advertised_bound` (no word, the
+bound at 960 and 961 seconds, another bound, `limit_wait` unset or off,
+unreadable words, each rotation key, a standby).
+`alab-autopilot/src/renewal_follow_handoff_tests.rs`:
+`a_five_hour_wall_hands_off_only_under_the_hosts_advertised_bound` reads a
+started turn's handoff against the fake aterm across the same conditions and
+the pool, each refusal beside a spent week the same host would leave.
+`alab-core` tells the probe its wall. The glue test counts the host's answer
+only when it is asked about a spent week.
+
+Mutations, each restored after its run (sha256 compared): every five-hour wall
+offered, the agreement made one-sided, and `offerable` dropped from the wait,
+each fail the 429 tests named above; the usable-week rule dropped fails its
+table; the week or the five-hour window never named fails the tests that need
+it; in `leaves_wall`, `limit_wait` dropped, `>` weakened to `>=`, the skew
+dropped, the rotation policy replaced by `effective` alone and the word parsed
+loosely each fail its table; `leaves_wall` dropped from `quota_handoff_ready`
+fails the Autopilot test; a probe told a week whatever the wall fails
+`wall_handoff_probe_is_told_the_wall`.
+
+Run on 2026-11-12 with the Trust toolchain in the unverified lane, from
+`codex-rs/`: `targo --unverified test -p codex-alab-quota-recovery` (48 pass),
+`-p codex-alab-core quota` (10 pass), `-p codex-alab-aterm` (163 pass, 2
+ignored), `-p codex-alab-autopilot --lib` (900 pass, 3 ignored), `-p
+codex-alab-autopilot --test autopilot` (99 pass), `-p codex-core --lib alab_`
+with the gate's `RUST_MIN_STACK=8388608` (175 pass, 1 ignored), and `targo
+tippy --all-targets` on the four `alab-*` crates touched (nothing in ALab's
+files). Without that stack size the `codex-core` run aborts on a stack
+overflow in a tree-capture test this change does not touch
+(`ephemeral_restore_keeps_fresh_restrictions_on_inherited_authorization`); it
+was not judged against the baseline commit. Not run: any native smoke,
+`alab/check.sh`, anything against an aterm that prints the word, anything
+against the live backend.
+
+## Review repairs to the two sections above (2026-11-12)
+
+A review of the two changes above found no blocker and six defects. Each
+repair is its own commit; this section records what changed and why, and each
+entry ends with what was run for it.
+
+### The wall's reset is a moment, not a time left
+
+`SpentWall` carried `resets_in`, the time to the window's reset measured when
+the walled request read its usage, before the credit-list request of the same
+attempt. That figure was then judged later, by `offerable` (against the time
+left to the 429's reset, read from the clock again) and by `leaves_wall`
+(against the host's bound), after the credit list (an attempt may run 45
+seconds), the handoff probe's own policy read (up to 5 seconds), and before the
+turn's end and the host's asynchronous read. A wall 965 seconds from its reset
+at the usage read, with a credit list that answered after 40 seconds, cleared
+900 + 60 seconds on paper and ended the turn; the host, reading with under 900
+seconds left, would answer `not-needed`, and the session would sit about 15
+minutes without its in-turn poll for a late credit. The 60 seconds of skew were
+described as the gap to the host's read but were mostly spent before the host
+was asked.
+
+Decision: `SpentWall` carries `resets_at`, the moment the usage read names
+(seconds since the epoch), and `SpentWall::resets_in(now)` measures the time
+left when it is asked for. `leaves_wall` takes the moment it is asked;
+`quota_handoff_ready` passes the clock read after the host's policy reply. The
+60 seconds now cover only the turn's end and the host's own read. `offerable`
+compares two moments (the 429's reset and the window's), reads no clock, and
+its minute is exact; its test no longer allows two seconds of slack per side.
+The relative figure is gone, not kept beside the new one.
+
+Not changed: 60 seconds remains a judgment, and the delay between the answer
+and the host's read is still not measured.
+
+Coverage. `alab-core/src/quota.rs`:
+`a_spent_walls_time_to_reset_is_measured_when_asked`.
+`alab-aterm/src/account_recovery.rs`:
+`a_five_hour_walls_bound_is_judged_when_the_host_is_asked` (a wall 965 seconds
+from its reset is left when asked at once and four seconds later, and not five,
+40 or more seconds later; a spent week whenever), and the existing table now
+names the moment it is asked. `alab-quota-recovery/src/handoff_tests.rs`: the
+host is told exactly the usage read's reset for a week, for a five-hour window
+(whatever the 429 named within the minute) and for the week beside a spent
+five-hour window; `offerable`'s table is exact at 60 and 61 seconds either
+side. `alab-autopilot/src/renewal_follow_handoff_tests.rs` builds its walls
+from the clock; the exact second of the bound is left to `leaves_wall`'s table,
+since the handoff now reads the real clock.
+
+Mutation, restored after its run (sha256 compared): the moment passed by
+`quota_handoff_ready` replaced by zero fails
+`a_five_hour_wall_hands_off_only_under_the_hosts_advertised_bound` ("ten
+minutes from its reset hands off").
+
+Run with the Trust toolchain in the unverified lane, from `codex-rs/`, on this
+commit's tree: `targo --unverified test -p codex-alab-quota-recovery` (48
+pass), `-p codex-alab-core quota` (11 pass), `-p codex-alab-aterm` (164 pass,
+2 ignored), `-p codex-alab-autopilot --lib renewal_follow` (9 pass).
+
+### The five-hour yield through a real account's usage reply
+
+The only five-hour usage reply sent through the real backend client carried no
+weekly window, a shape no real account was seen to report; a five-hour window
+spent beside a usable week was tested only on hand-built snapshots. A change to
+how the reply's secondary window decodes, or to the usable-week rule, could
+have broken the five-hour yield for every real account with every test
+passing. The latest reset among several spent windows of one length was not
+tested either: `.max()` turned into `.min()` passed.
+
+The wire fixture `creditless_five_hours` now answers with a spent five-hour
+window beside a week 40% used, so every five-hour wire test goes through that
+reply; the reply with no weekly window is one wire case of its own
+(`a_five_hour_wall_on_a_reply_with_no_weekly_window_is_named_too`).
+`the_latest_reset_among_spent_windows_of_one_length_is_the_walls` covers two
+spent windows of one length in either slot, one of them already reset, and one
+of them not spent, for both lengths. The wording in `unix.rs` and above is
+aligned with the rule: a read with no weekly window names the five-hour wall;
+only a weekly window that is spent without a reset ahead, or whose figure is
+not finite, names none. No behaviour changed.
+
+Mutations, each restored after its run (sha256 compared): `.max()` to `.min()`
+fails the new table; a week counted usable only when the read carries no
+weekly window fails three tests, two of them through the wire
+(`a_creditless_five_hour_wall_asks_the_host_about_that_window`,
+`a_five_hour_wall_the_host_declines_keeps_polling`).
+
+Run on this commit's tree: `targo --unverified test -p
+codex-alab-quota-recovery` (50 pass).
+
+### The lapse tests name their resets when the 429 is answered
+
+Three of the five tests in `rotation_decline.rs` named a reset four or five
+seconds after a timestamp taken before the harness (a core thread, the fake
+aterm, the claim's proof) was started and the turn submitted. On a loaded Mac
+the reset could pass before the first `follow_renewal` pass; the ask then
+lapses at once, no `codex-rotation prepare` is sent, and the test fails at "the
+handoff is asked for". They failed in that case, never falsely passed, and
+were not seen to fail.
+
+The 429's reset is now named by the responder as it answers the walled request
+(the harness accepts an empty reply sequence, for a test that mounts its own
+responder). Four tests name it an hour ahead and bring it with the scripted
+host sleep; one stays awake (`a_handoff_the_host_cannot_answer_resumes_at_the_reset`,
+a reset eight seconds after the 429), so the unscripted clock is still
+exercised. That one still needs its first ask within eight seconds of the 429.
+
+The assertion "nothing asks it after the lapse" in the standing-`waiting` test
+was vacuous: by then the resumed turn had succeeded and no wall stood. It is
+replaced by an exact count. The first ask is held at the fake's gate, so its
+pass has already judged the bound; the host then sleeps through the reset; the
+gate opens. The test requires exactly one `prepare` in all: the pass that
+finds the reset passed gives the handoff up before it asks, and nothing asks
+after it.
+
+Mutation, restored after its run (sha256 compared): a `prepare` sent in the
+pass that finds the ask lapsed fails that count (two asks).
+
+Run on this commit's tree: `targo --unverified test -p codex-alab-autopilot
+--test autopilot rotation_decline` (5 pass, 10.6 s).
+
+### The receipt guard and the reset grace, where `follow_renewal` passes them
+
+`rotation_ask_lapsed`'s own table pinned both the receipt guard and the grace,
+but nothing pinned what `follow_renewal` passes for them: every lapse test in
+`rotation_decline.rs` ran an unbound intent with no grace. The reviewer's two
+mutations at the call site (`false` for `renewal.receipt.is_some()`,
+`Duration::ZERO` for `self.timing.reset_grace`) passed all 99 integration and
+900 lib tests. The first is the one that matters: a bound receipt given up at
+the reset types a usage resume on the account the session is leaving, after
+the host was sent `commit`.
+
+Two tests in `rotation_decline.rs`:
+
+- `a_bound_handoff_is_never_given_up_at_the_reset`. The host answers `ready`
+  with a receipt for the asked origin; the receipt is bound and one `commit`
+  is sent (the fake knows no `commit` and answers `ERR`, so the handoff stays
+  bound and unfinished). The host then answers `waiting` with that receipt to
+  every `status`, and sleeps two hours past a reset an hour ahead. After the
+  pass that counted the sleep, two more `status` requests are seen; there is
+  no lapse line, no `usage-resume@v1`, no second model request, the intent
+  keeps its receipt and `prepare` was sent once.
+- `a_handoff_is_asked_for_through_the_reset_grace`. Under ten minutes of grace
+  the host sleeps to five minutes past the reset: two more asks are seen after
+  the pass that counted the sleep, with nothing typed and no lapse. Ten
+  minutes more of sleep and the ask lapses and the resume is typed.
+
+Mutations, each restored after its run (sha256 compared), each failing exactly
+the one new test: `false` passed for the receipt ("a bound receipt was given
+up at the wall's reset"); `Duration::ZERO` passed for the grace ("the ask was
+given up inside the reset's grace").
+
+Run on this commit's tree: `targo --unverified test -p codex-alab-autopilot
+--test autopilot rotation_decline` (7 pass, 18.8 s).
+
+### The wall of an asked handoff is carried across a restart
+
+The lapse read the wall only from the Autopilot's memory. The intent is
+durable (`OwedAct.renewal`), but a usage wall is not rebuilt from the rollout:
+the recorded error names no reset. And while the handoff is asked for,
+`follow_renewal` owns the point, so `evaluate` never decides the wall and
+never leaves its recovery record. The process after a restart therefore held
+the intent with no wall. (As first written this named an adopted update's
+re-exec beside a crash and aterm's relaunch. A session does not re-exec while
+it asks: see "The restart a session at an ask can take" below.) A host whose
+`waiting` stood was asked every five seconds without end, and a `not-needed`
+that came after the restart released the intent to no point at all: nothing
+was typed until a person typed. Latent while no aterm prints
+`codex_rotation_five_hour`, and true of a weekly wall too.
+
+Decision: an unbound intent carries its wall in the record, as the recovery
+record every other provider wait already uses. No field was added to the
+intent and no record schema changed.
+
+- `recovery::capture_asked_wall` builds the usage wall's `Recovery` for the
+  asked turn with no decision: the reset as epoch milliseconds, and a
+  `not_before` equal to the point's own moment, which holds nothing back.
+- `Autopilot::carry_asked_wall` publishes it in `follow_renewal`'s durable
+  step, between `publish_renewal` and the write-through, so the intent and its
+  wall reach the record together before the host is asked. Host sleep is
+  counted first, because the reset is converted from a clock that stops while
+  the host sleeps. A wall that should be carried and cannot be published
+  retries like a failed write-through.
+- A bound intent carries none. When a receipt binds, the asked turn's usage
+  wall is taken off the record in the same step that writes the bound intent,
+  before `commit`: the host may then restart the session on the other account,
+  and that process must not stand at the wall of the account it left. No
+  other turn's recovery is touched (see the correction below), and once the
+  intent has reserved its recovered turn (`AccountHandoff::turn`) the turn it
+  names is that one, whose own wall is not the ask's to remove (second review,
+  below). If the host retires the receipt while this process still holds the
+  wall, the wall goes back on record.
+- The next process restores the wall as it restores any provider wait
+  (`recovery::restore`, checked against the rollout's last failed turn). The
+  lapse and the released intent's resume then read it from memory as before.
+
+What this leaves, each by reading the code and not run:
+
+- An intent bound before a restart on the same account and retired by the
+  host after it. The new process has no wall, so the unbound intent is asked
+  for without limit, as before.
+- A start that takes the intent but restores no recovery. The resume restores
+  a carried recovery at a relaunch aterm is proven to have typed (and at a
+  re-exec, which a session at an ask does not take). After a crash-like exit,
+  a start aterm did not type keeps the intent and restores no wall. Run since,
+  both ways, in `crash_wait_tests.rs` (second review, below).
+- `/resume` away from the thread and back drops the carried wall but keeps the
+  unbound intent (by reading: `on_thread_stop` and the re-registration in
+  `on_thread_start` clear the thread's recovery; `set_owed_act` refuses to
+  erase the renewal), so the ask is again unbounded until a turn starts.
+- A wall whose 429 names no reset is still asked about without limit.
+- At a relaunch aterm typed, a record that carries a recovery is restored from
+  it (`Relaunch::Recovery`) before an owed act or a carry-on is considered.
+  That is existing order; a session killed while it asked for a handoff now
+  takes that branch, where its record carried no recovery before.
+- As first landed, the recovery stayed on record after the intent was
+  released to a wall that is then left to a person (`resume_limits` or
+  `limit_wait` off), until the next turn started or ended. Repaired in the
+  second review (below): that decision now takes the asked wall off.
+- While the recovery is on record the TUI reads usage every 15 seconds,
+  focused or not (`RECOVERY_USAGE_POLL` in `alab-tui/src/motion.rs`), as it
+  does at any usage wall being waited out. This entry first said the poll
+  "keeps upstream's pace in an unfocused tab", which understated it: upstream's
+  resting pace is one read a minute and an unfocused tab's is one in five
+  minutes. Each read is an HTTPS request on a new connection, so an ask that
+  stands for an hour costs about 240 of them where an unfocused tab at rest
+  makes 12.
+
+Coverage. `recovery_tests.rs`:
+`a_usage_wall_whose_handoff_is_asked_for_is_carried_with_its_reset` (capture
+and restore round trip two hours later, a wall with no reset, and four
+negative controls). `rotation_decline.rs`, where a second Autopilot,
+supervisor and fake aterm resume the first one's rollout on the same scratch
+login, given the record the first held, seeded as a same-pid image is (a
+stand-in: the path a session at an ask takes is the crash relaunch covered in
+the second review, below):
+`a_handoff_carried_across_a_restart_is_given_up_at_the_walls_reset` (the new
+process asks again, three times with nothing typed while the reset is an hour
+ahead, then lapses and resumes when its host sleeps through the reset) and
+`a_handoff_declined_after_a_restart_resumes_at_the_walls_reset` (`not-needed`
+after the restart: nothing typed with the reset an hour ahead, the resume at
+the reset, no lapse). `a_bound_handoff_is_never_given_up_at_the_reset` now
+also requires the wall on record while the intent is unbound and none once it
+is bound. The restart tests hold the new process's launch probe at the fake
+until the thread manager is bound. This entry said the resume scan waits for
+that probe at most twelve seconds and the order rests on that bound. The bound
+then in force was shorter: the held `status` read timed out at the aterm
+client's five-second `CALL_TIMEOUT`, which ended the probe. The second review
+(below) gives the restarted supervisor a longer deadline, so the twelve
+seconds are now the bound.
+
+Mutations, each restored after its run (sha256 compared): the publication
+removed fails three tests, the declined-after-restart one at "never happened:
+the usage resume's yield is left", which is the reviewed defect itself; the
+clear at binding removed fails the bound test ("a bound intent carries no
+wall").
+
+Run on this commit's tree: `targo --unverified test -p codex-alab-autopilot
+--test autopilot` (103 pass); `--test autopilot rotation_decline` again after
+the last comment edit (9 pass, 19.3 s); `-p codex-alab-autopilot --lib` (900
+pass, 1 fail, 3 ignored). The one failure is
+`resume_needs_custody_tests::a_current_resume_surfaces_its_restored_needs`, a
+network wall's resume that reaches none of the changed code, at its own
+60-second hang detector while other builds ran on this Mac; alone it passed
+three times of three (0.6 to 0.7 s each).
+
+### The lapse comes at the 429's reset
+
+The lapse was justified by "from then the account the session is on can run
+again". That holds for a five-hour wall, where the yield requires the 429's
+reset to agree with the spent window's to within a minute. It does not hold
+for a spent week whose 429 named an earlier reset, a five-hour window's: a
+spent week is offered to the host whatever the 429 named, the point's wall
+carries the 429's reset, and the ask lapses there. The resume is then typed
+into a week that is still spent.
+
+Decision: stated, not changed. The cost is one model request per lapse: it
+meets the wall again, and that turn's end asks for a handoff again (by
+reading; not run). A `not-needed` at the same wall resumes at the same
+moment, so the lapse adds no new behaviour, only the same early resume for a
+host that answers `waiting`. Carrying the yielded window's own reset to the
+Autopilot's point would close it; that means passing it from the quota
+recovery's yield through the turn's end to the wall's classification, which
+is a larger change than the defect. `rotation_ask_lapsed`'s doc and
+`alab/design/accounts.md` now say which reset is meant. How often a spent
+week's 429 names another reset was not measured.
+
+Correction to the above, found reading the landed diff. As first committed
+(`af72b0435c`), binding cleared whatever recovery the thread had on record,
+and did so again on every later pass while the intent stayed bound. A bound
+intent stands until its recovered turn is acknowledged; a wall that turn meets
+leaves a recovery of its own, which the next pass would have removed and the
+decision after it written again, with a record on disk in between that lacked
+it. `carry_asked_wall` now removes only a usage wall's recovery for the turn
+the intent names. `a_bound_handoff_is_never_given_up_at_the_reset` plants
+another turn's recovery once the receipt is bound and requires it still on
+record two passes later; against the first version it fails ("another turn's
+recovery is not the bound intent's to remove"). Run on that commit's tree:
+`--test autopilot rotation_decline` (9 pass, 19.3 s).
+
+### What was run on the repaired branch
+
+On the tree of `f33bb69d3c`, with the Trust toolchain in the unverified lane,
+from `codex-rs/`: `targo --unverified test -p codex-alab-quota-recovery` (50
+pass), `-p codex-alab-core` (272 pass), `-p codex-alab-aterm` (164 pass, 2
+ignored), `-p codex-alab-autopilot --test autopilot` (103 pass), `-p
+codex-alab-autopilot --lib` (901 pass, 3 ignored; the hang-detector failure
+recorded above did not recur), and `-p codex-core --lib` for the two glue
+tests that use `SpentWall`, with `RUST_MIN_STACK=8388608` (2 pass). `targo
+tippy --all-targets` on `codex-alab-core`, `codex-alab-quota-recovery` and
+`codex-alab-aterm` found nothing in ALab's files. On `codex-alab-autopilot` it
+found one error, a redundant clone in the new test in `recovery_tests.rs`;
+the commit that removes it was followed by the same tippy run (nothing in
+ALab's files) and `--lib recovery::tests` (23 pass). The warnings tippy
+prints for upstream's files are not ALab's and were left.
+
+Not run: `alab/check.sh`, any native smoke, any `targo trust` lane, a crash
+relaunch of a session that was asking for a handoff, anything against an
+aterm that prints `codex_rotation_five_hour`, anything against the live
+backend.
+
+## Second review repairs to the asked handoff (2026-11-12)
+
+A second review of the branch found eight items. Each was confirmed against
+the code before it was changed; none was rejected. Each repair is its own
+commit. The mutations named were each restored after their run (sha256
+compared), and each named test fails without what it pins.
+
+### A bound receipt keeps its point while the host cannot be read
+
+`follow_renewal` returned "not mine" whenever the host's policy could not be
+read, whatever the intent held. For a bound receipt that hands the point to
+`evaluate`, which decides the usage wall and types `usage-resume@v1` on the
+account the session is leaving, after `commit` may have been sent. A read that
+fails outright closes the connection, and `evaluate` is then passive anyway;
+the case that typed was an `ERR` answer to `harness policy` with the claim
+still standing.
+
+Decision: `recovery_host` returns one of three answers (`RecoveryHost`: the
+host permits, the host was read and refuses, no reply was read), and a bound
+receipt whose host was not read keeps the point and looks again at the recheck
+pace. An `ERR` answer counts as not read. An unbound intent is still let go
+there, since its lapse is judged after the read, and a refusal that was read
+releases as before.
+
+Corrected after the repair's verification (2026-11-12):
+
+- The keep has no bound. A host that answers `ERR` to every policy read with
+  its claim standing holds the point without limit: no `status` is asked and
+  the wall's resume is not typed after the reset, where before the repair it
+  was typed at the reset. Run by the verifier with a temporary edit of the
+  test: six failed reads over 30 s, no ask, no resume. That is how a bound
+  receipt answered `waiting` is already held. The journal now says once that
+  the point is kept, and once when the host reads again. A read that times
+  out is another case: it closes the connection and the reconnect owns the
+  next read.
+- The keep is for a usage-limit handoff only. As first repaired it applied to
+  a login handoff too, ahead of two releases a readable pass makes for it (a
+  superseded turn, and a sign-in in the same file), which it would have held
+  for the login recheck's minute or longer. The harm the keep prevents is a
+  usage resume on the account being left, which a login handoff does not type.
+  By reading; no test was written for the login case.
+
+The defect is older than the lapse and holds on `main` for a weekly wall.
+
+Coverage: `rotation_decline.rs`,
+`a_bound_handoff_keeps_its_point_while_the_host_cannot_be_read` (with the
+receipt bound and the reset passed in the host's sleep, the fake answers one
+policy read with `ERR harness policy unavailable`; nothing is typed, the wall
+does not go back on record, the receipt stays, and the next pass that reads
+the host asks about the receipt again). Mutation: the keep arm returning false
+fails it ("a usage resume was typed on the account the session is leaving").
+
+### A wall the recovered turn meets stays on the record
+
+Binding removed the usage recovery of "the turn the intent names" on every
+pass while the intent stayed bound. Once the recovered turn is admitted the
+intent names that turn (`AccountHandoff::turn`, written to the record before
+admission), and a usage wall it meets on the new account leaves a recovery of
+its own, which the next pass removed.
+
+Decision: the bound branch removes the asked wall only while the intent has
+reserved no recovered turn.
+
+Coverage: `a_wall_the_recovered_turn_meets_is_not_the_bound_intents_to_remove`.
+The test writes the reservation to the record itself; the admission of a
+recovered turn is not run in it. Mutation: the `turn.is_none()` condition
+removed fails it ("the recovered turn's own wall was taken off the record").
+
+### Where the asked wall leaves and rejoins the record
+
+Nothing pinned that the asked wall leaves the record in the write that binds
+the receipt, before `commit` is sent; and the third call of
+`carry_asked_wall`, where a retired receipt puts the wall back, had no test.
+
+No code changed. The harness records every record write through the flush
+hook, with what it carried.
+`the_asked_wall_leaves_the_record_before_commit_is_sent` holds `commit` at the
+fake's gate and requires that a write carrying the bound receipt and no wall
+was made before it. `a_retired_receipt_puts_the_wall_back_on_record` requires
+the wall in the write that unbinds the intent. The third call is kept: without
+it an unbound intent stands with no wall on record until the next pass, five
+seconds later.
+
+Mutations: the call at binding deleted, moved after the write-through, and
+moved after `commit` each fail the first test; the call at the retired receipt
+deleted fails the second ("the write that unbound the intent carried no
+wall").
+
+### A released handoff's wall leaves the record when a person has the point
+
+After the intent is released (`not-needed`, or the lapse), the point is
+decided as any usage wall. A wait replaces the asked wall with its own
+recovery. Attention (`resume_limits` or `limit_wait` off) left none, so the
+asked wall stayed: the TUI read usage every 15 seconds for a reset nothing
+waited for, and a restart stood at the wall again.
+
+Decision: the ask marks the turn whose wall it put on record
+(`ThreadRt::asked_wall`, in memory). A decision of attention at that turn's
+point, with no intent standing on the thread, takes the wall off and journals
+it. Only a marked wall is removed: a wall recorded by a decision made after
+the intent's release, whose wait is switched off later, stays as it did. The
+mark is of the turn, not of who published the recovery: a decision's own
+recovery left by one pass that let the point go while the intent stood is
+marked by the next pass and removed with the rest (harmless: nothing waits
+for that reset). The record's writer carries the change at its next write; no
+write-through is forced.
+
+While the intent stands the wall stays, whatever a pass decides: a pass that
+cannot read the host lets an unbound point go without releasing its intent,
+and with the wait switched off it decides attention. Test added after the
+repair's verification, where disabling that guard failed nothing:
+`an_asked_wall_stays_on_record_while_its_intent_stands_and_the_host_is_unread`
+(with the guard disabled it fails at "the wall of an intent that still stands
+was taken off the record").
+
+Coverage: `a_declined_handoff_left_to_a_person_leaves_no_wall_on_record`,
+`a_handoff_declined_after_a_restart_and_left_to_a_person_leaves_no_wall_on_record`,
+and the control
+`a_wall_its_own_decision_left_stays_on_record_when_the_wait_is_switched_off`.
+Mutations: the removal deleted fails the first two; the marker check deleted
+fails the control.
+
+### A host that prints no five-hour bound is not asked about one
+
+At a creditless five-hour wall the in-turn question is asked every 30 seconds,
+and each asking read the host's policy, a request, including against every
+aterm installed today, which prints no `codex_rotation_five_hour`.
+
+Decision: `quota_handoff_ready` refuses a five-hour wall from the last policy
+reply the claim's connection remembers, when that reply prints no bound
+(`account_recovery::five_hour_bound`, which `leaves_wall` now uses too). With
+no reply remembered the host is read; a host that prints the bound is read
+every time, since its current word decides; a spent week is read as before.
+The remembered reply is replaced when the supervisor reads the policy again,
+which it does on the host's `harness-policy` event (by reading). A host that
+starts printing the word without that event is not noticed by this path until
+something else reads its policy.
+
+Coverage: `renewal_follow_handoff_tests.rs`,
+`a_five_hour_wall_is_refused_without_a_request_to_a_host_that_prints_no_word`
+(across the polls the fake sees no `harness policy` and no `codex-accounts`
+request; a spent week on the same host is still read, and so is a five-hour
+wall once the host prints the word). Mutation: the refusal disabled fails it
+("poll 0: the refused five-hour wall sent the host a request").
+
+### Tests that did not prove their names
+
+- `a_declined_rotation_resumes_at_the_usage_reset` looked for a typed resume
+  once, when the intent was released, before the released wall was decided.
+  It now waits for the journal's line for that decision (`wait <n>s for
+  usage-resume@v1`), requires `n` within five minutes under the hour, and then
+  that nothing was typed.
+- `a_handoff_declined_after_a_restart_resumes_at_the_walls_reset` slept 500 ms
+  after the release. It waits on the same line of the restarted process.
+- Mutation for both: a usage wall that resumes 1.5 seconds after its point,
+  whatever its reset. The tests as they stood passed it (two runs and one);
+  both now fail ("waits for its own reset, an hour ahead: Some(1)"). A wall
+  that resumes at once failed the old tests too, three runs of three: the old
+  look was weak, not blind.
+- The restart helper's order. The launch probe is held at the fake until the
+  thread manager is bound. The order cannot be made strict: the manager exists
+  only once the resume returns, and upstream's test builder has no hook before
+  it. The held read used to time out at the client's five seconds; the
+  restarted supervisor's calls now get 30 seconds, so the scan's own
+  twelve-second `LAUNCH_PROBE_WAIT` is the bound. Slower than that fails at
+  "the resume read the rollout" and never passes. With a binding delayed six
+  seconds a restart test passes under the new deadline and fails under the
+  old.
+
+### The restart a session at an ask can take
+
+The restart tests in `rotation_decline.rs` seed the next process's record
+directly, the shape of a same-pid re-exec. A session does not re-exec while it
+asks: the ask's recheck is a timer that owes no act, `upgrade_facts` counts
+that as a pending wait, and a pending wait holds the live upgrade (by reading;
+not run). The restart it can take is a crash or a kill and aterm's relaunch.
+
+`crash_wait_tests.rs`,
+`a_relaunch_of_a_session_killed_while_asking_for_a_handoff_stands_at_its_wall`,
+runs that through the record's real writer and the real resume scan: a record
+holding an unbound weekly-quota intent beside its usage wall is written and
+read back, the next process's writer sweeps it and seeds both, and the scan
+runs over the failed turn's history. Under aterm's lease the thread stands at
+the usage wall with its reset an hour from the ask, the intent is on record,
+and the record the new process writes carries both. The control is a start a
+person typed: the process keeps the seeded intent, restores no wall, and its
+own record carries neither. No code changed for it, and no separate `alab-tui`
+test was added, since this one goes through `Writer::write_now`,
+`record::read` and `Writer::prepare`. Mutation: a relaunch that never restores
+a predecessor's recovery fails it ("the relaunch stands at the usage wall with
+its reset: None").
+
+The host's side is a launch witness the test builds (aterm's lease named in
+the first `status` read). No real aterm relaunched anything.
+
+### The unread credit lists are counted, not readings of one wall
+
+`wait_for_reset` offers a creditless wall to the host after two credit-list
+reads in a row that could not be read. The count is of unread lists, whatever
+wall each answer named: a five-hour reading followed by a weekly one counts as
+two, and the wall offered is the second's. The comment in
+`alab-quota-recovery/src/unix.rs` now says so. No behaviour changed.
+
+### What was run after the second review
+
+With the Trust toolchain in the unverified lane, from `codex-rs/`. On the tree
+of `d019c0667d`: `targo --unverified test -p codex-alab-quota-recovery` (50
+pass), `-p codex-alab-core` (272 pass), `-p codex-alab-aterm` (168 pass, 2
+ignored), and `-p codex-core --lib alab_` with `RUST_MIN_STACK=8388608` (175
+pass, 1 ignored). `targo tippy --all-targets` on `codex-alab-aterm` and
+`codex-alab-quota-recovery` found nothing in ALab's files; on
+`codex-alab-autopilot` it found one warning, the size of the new
+`RecoveryHost` enum, which `5237f45bc2` boxes. On that commit's tree: the same
+tippy run (nothing in ALab's files), `-p codex-alab-autopilot --lib` (907
+pass, 4 ignored) and `-p codex-alab-autopilot --test autopilot` (110 pass).
+`targo --unverified build -p codex-cli --bin codex` built on that tree (7 min
+30 s); the binary was not run.
+
+Not run: `alab/check.sh`, any native smoke, any `targo trust` lane, a relaunch
+by a real aterm, a live upgrade attempted while a handoff is asked for,
+`codex-alab-tui`'s tests (the crate is untouched), anything against an aterm
+that prints `codex_rotation_five_hour`, anything against the live backend.

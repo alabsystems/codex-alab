@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T17:17:28.090018+00:00",
+  "source": "ecd1195d68016f5550a45f7ae8eed8c51b324c6e",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "suite::v2::gateway_oauth::device_login_sends_the_code_and_can_refresh_without_another_sign_in",
+      "status": "ok"
+    },
+    {
+      "name": "context_manager::history::rejected_audio::tests::attributes_audio_error_only_to_one_visible_file_audio",
+      "status": "ok"
+    },
+    {
+      "name": "context_manager::history::rejected_audio::tests::unknown_file_error_counts_the_submitted_projection_not_raw_history",
+      "status": "ok"
+    },
+    {
+      "name": "context_manager::history::rejected_audio::tests::tool_output_audio_makes_an_invalid_audio_error_ambiguous",
+      "status": "ok"
+    },
+    {
+      "name": "context_manager::history::rejected_audio::tests::projection_removes_only_rejected_audio_and_keeps_metadata_aligned",
+      "status": "ok"
+    },
+    {
+      "name": "context_manager::history::rejected_audio::tests::previously_accepted_file_only_disambiguates_clip_specific_errors",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::instant_interrupt_preserves_delayed_http_audio_rejection",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::ambiguous_multi_audio_rejection_preserves_all_audio_on_follow_up_and_resume",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::expired_audio_during_required_compaction_after_a_text_only_checkpoint",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::paginated_resume_filters_audio_rejected_before_and_after_compaction",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::persistently_invalid_recording_is_removed_on_follow_up_and_resume::accepted_recording_in_a_previous_turn",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::persistently_invalid_recording_is_removed_on_follow_up_and_resume::accepted_recording_before_cold_resume",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::provider_rejection_preserves_a_different_queued_audio_file",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::persistently_invalid_recording_is_removed_on_follow_up_and_resume::first_recording_after_opaque_text_only_compaction",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::rejected_uploaded_audio_does_not_poison_follow_up_or_resume::invalid_audio",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::interrupt_during_audio_lookup_preserves_steered_batch_on_follow_up_and_resume",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::rejected_uploaded_audio_does_not_poison_follow_up_or_resume::unknown_file",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::rejected_uploaded_audio_does_not_poison_follow_up_or_resume::streamed_invalid_audio",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::rejection_is_attributed_against_projection_after_unavailable_image",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::unknown_file_after_two_recordings_were_accepted::store_confirms_b_expired",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::unsupported_uploaded_audio_fails_before_inference_without_poisoning_follow_up",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::unsupported_steered_audio_is_rejected_before_continuation_and_resume",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::unknown_file_after_two_recordings_were_accepted::transient_storage_error_preserves_b",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::uploaded_audio_survives_compaction_and_cold_resume::available",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::uploaded_audio_survives_compaction_and_cold_resume::expired_before_compaction",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::uploaded_audio_survives_compaction_and_cold_resume::expired_during_compaction",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::uploaded_audio_survives_follow_up_and_resume",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::uploaded_audio_survives_compaction_and_cold_resume::measured_duration",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-device-audio-r3-native.sh",
+      "sha256": "6f9b5649ccda6a677584c9636139590d53dadf0cc106f3855948cf3d4e302c31"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-device-audio-r3-native.log",
+      "sha256": "de949da760b8722fcdf31e11d60d58f1984eea022f83e4020f2d923180f94f3c"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-device-audio-r3-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Controller9411 terminal0 on exact formatted cookie source. Correct app-server device integration passed correlated prompt/completion and reuse/refresh without another grant. Five audio-attribution units and complete22 uploaded-audio scenarios passed: follow-up/cold/paginated resume, available/expired compaction, ambiguous/mixed-source rejection, authoritative missing versus transient backend error, queued/delayed/steered/interrupt ownership and unsupported model behavior. Prior15 gateway passes/empty-selection failures retained separately. Does not qualify native external credential images, every provider/platform, full gate or installed adoption."
+}

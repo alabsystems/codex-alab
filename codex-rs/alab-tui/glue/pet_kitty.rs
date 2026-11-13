@@ -64,6 +64,13 @@ pub(super) struct Stored {
 }
 
 impl PetImageRenderState {
+    #[cfg(test)]
+    pub(crate) fn alab_image_placed_for_test(&self) -> bool {
+        self.last_kitty_id.is_some()
+            || self.last_sixel_clear_area.is_some()
+            || self.alab.placed.is_some()
+    }
+
     /// The next clear is the pet's end, not a popup over it: free what aterm stored.
     pub(crate) fn alab_release(&mut self) {
         self.alab.release = true;

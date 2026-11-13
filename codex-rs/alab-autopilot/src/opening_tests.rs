@@ -884,3 +884,221 @@ async fn a_resume_under_vanilla_reads_its_books_once_codex_alab_looks_again() {
         assert_eq!(state.needs.standing, raised, "{case}: {state:?}");
     }
 }
+
+#[tokio::test]
+async fn a_prepared_plan_continues_only_its_targets_accepted_prompt() {
+    let (autopilot, _, source) = fixture();
+    source.with_state(decide::ThreadState::seed_worked);
+    let (prepared_store, prepared) = thread(&autopilot);
+    let (other_store, other) = thread(&autopilot);
+    let shared = autopilot.sup.shared();
+    shared.continue_prepared_work(
+        source.key(),
+        prepared.key(),
+        "Read the approved plan and implement it.",
+    );
+    assert!(
+        shared.take_continuation().is_none(),
+        "no later root may inherit this mark"
+    );
+    assert!(
+        !prepared.state().past_opening,
+        "preparation alone starts no work"
+    );
+    let other_turn = ExtensionData::new("other-turn");
+    start(&autopilot, &other_store, &other_turn).await;
+    autopilot
+        .on_item_completed(&other_store, &other_turn, &message("Another question"))
+        .await;
+    assert!(
+        !other.state().past_opening,
+        "unrelated input keeps its own opening"
+    );
+    let prepared_turn = ExtensionData::new("prepared-turn");
+    start(&autopilot, &prepared_store, &prepared_turn).await;
+    assert!(
+        !prepared.state().past_opening,
+        "turn start is not acceptance of the plan prompt"
+    );
+    autopilot
+        .on_item_completed(
+            &prepared_store,
+            &prepared_turn,
+            &message("Read the approved plan and implement it."),
+        )
+        .await;
+    assert!(prepared.state().past_opening);
+    assert!(
+        shared
+            .take_prepared_continuation(prepared.key(), "Read the approved plan and implement it.")
+            .is_none()
+    );
+    let (_, after) = thread(&autopilot);
+    assert!(!after.state().past_opening);
+}
+
+#[tokio::test]
+async fn editing_a_prepared_targets_first_input_cancels_its_continuation() {
+    let (autopilot, _, source) = fixture();
+    let (store, target) = thread(&autopilot);
+    let shared = autopilot.sup.shared();
+    shared.continue_prepared_work(source.key(), target.key(), "Implement the plan.");
+    let turn = ExtensionData::new("changed-prompt");
+    start(&autopilot, &store, &turn).await;
+    autopilot
+        .on_item_completed(&store, &turn, &message("A different task"))
+        .await;
+    assert!(!target.state().past_opening);
+    assert!(
+        shared
+            .take_prepared_continuation(target.key(), "Implement the plan.")
+            .is_none()
+    );
+    assert!(shared.take_continuation().is_none());
+}
+
+#[tokio::test]
+async fn concurrent_prepared_roots_keep_independent_accepted_prompts() {
+    let (autopilot, _, source) = fixture();
+    let (a_store, a) = thread(&autopilot);
+    let (b_store, b) = thread(&autopilot);
+    let shared = autopilot.sup.shared();
+    shared.continue_prepared_work(source.key(), a.key(), "Plan A");
+    shared.continue_prepared_work(source.key(), b.key(), "Plan B");
+    for (store, target, text) in [(&b_store, &b, "Plan B"), (&a_store, &a, "Plan A")] {
+        let turn = ExtensionData::new(format!("prepared-{}", target.key()));
+        start(&autopilot, store, &turn).await;
+        autopilot
+            .on_item_completed(store, &turn, &message(text))
+            .await;
+        assert!(target.state().past_opening);
+    }
+    assert!(shared.take_continuation().is_none());
+}
+
+#[tokio::test]
+async fn stopping_a_prepared_root_discards_only_its_own_prompt() {
+    let (autopilot, _, source) = fixture();
+    let (store, target) = thread(&autopilot);
+    let (_, other) = thread(&autopilot);
+    let shared = autopilot.sup.shared();
+    shared.continue_prepared_work(source.key(), target.key(), "Plan A");
+    shared.continue_prepared_work(source.key(), other.key(), "Plan B");
+    autopilot
+        .on_thread_stop(ThreadStopInput {
+            session_store: &ExtensionData::new("prepared-session"),
+            thread_store: &store,
+        })
+        .await;
+    assert!(
+        shared
+            .take_prepared_continuation(target.key(), "Plan A")
+            .is_none()
+    );
+    assert!(
+        shared
+            .take_prepared_continuation(other.key(), "Plan B")
+            .is_some()
+    );
+}
+
+#[test]
+fn a_real_prepared_root_continues_only_after_its_approved_input_is_recorded() {
+    core_test_support::test_codex::run_test_with_large_stack(
+        "prepared root continuation",
+        || async {
+            codex_alab_core::activate();
+            let shared: &'static Shared = Box::leak(Box::new(Shared::new()));
+            let sup = Supervisor::new(crate::SupervisorOptions {
+                shared,
+                endpoint: Arc::new(|| None),
+                client: ClientOptions::default(),
+            });
+            let autopilot = Autopilot::new(sup, None, None, Timing::default(), |_| true);
+            let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+            autopilot.register(&mut extensions);
+            let server = core_test_support::responses::start_mock_server().await;
+            let test = core_test_support::test_codex::test_codex()
+                .with_extensions(Arc::new(extensions.build()))
+                .build(&server)
+                .await?;
+            autopilot.bind_thread_manager(Arc::downgrade(&test.thread_manager));
+            let (release, gate) = tokio::sync::oneshot::channel();
+            let (gated, _) = core_test_support::streaming_sse::start_streaming_sse_server(vec![
+                vec![core_test_support::streaming_sse::StreamingSseChunk {
+                    gate: Some(gate),
+                    body: core_test_support::responses::sse_completed("prepared-plan-response"),
+                }],
+            ])
+            .await;
+            let mut options = codex_core::StartThreadOptions::new(test.config.clone());
+            options.config.model_provider.base_url = Some(format!("{}/v1", gated.uri()));
+            options.config.model_provider.supports_websockets = false;
+            let prepared = test.thread_manager.start_thread(options).await?;
+            let rt = autopilot
+                .thread_rt(&prepared.thread_id.to_string())
+                .unwrap();
+            assert!(
+                !rt.state().past_opening,
+                "server preparation starts no work"
+            );
+            let prompt = "Read the approved plan attachment and implement it.";
+            shared.continue_prepared_work(
+                &test.codex.exec_thread_id().to_string(),
+                &prepared.thread_id.to_string(),
+                prompt,
+            );
+            let unrelated = test
+                .thread_manager
+                .start_thread(codex_core::StartThreadOptions::new(test.config.clone()))
+                .await?;
+            assert!(
+                !autopilot
+                    .thread_rt(&unrelated.thread_id.to_string())
+                    .unwrap()
+                    .state()
+                    .past_opening
+            );
+            assert!(!rt.state().past_opening);
+            assert!(shared.take_continuation().is_none());
+            assert!(gated.requests().await.is_empty());
+            prepared
+                .thread
+                .start_or_steer_turn(codex_protocol::turn_input::TurnInputRequest::user_input(
+                    vec![UserInput::Text {
+                        text: prompt.into(),
+                        text_elements: Vec::new(),
+                    }],
+                ))
+                .await?;
+            tokio::time::timeout(Duration::from_secs(10), gated.wait_for_request_count(1)).await?;
+            assert!(
+                rt.state().past_opening,
+                "actual input completion precedes the model request"
+            );
+            assert!(
+                shared
+                    .take_prepared_continuation(&prepared.thread_id.to_string(), prompt)
+                    .is_none()
+            );
+            release.send(()).unwrap();
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                core_test_support::wait_for_event(&prepared.thread, |event| {
+                    matches!(event, codex_protocol::protocol::EventMsg::TurnComplete(_))
+                }),
+            )
+            .await?;
+            assert_eq!(
+                gated.requests().await.len(),
+                1,
+                "no claim means no extra autonomous request"
+            );
+            prepared.thread.shutdown_and_wait().await?;
+            unrelated.thread.shutdown_and_wait().await?;
+            gated.shutdown().await;
+            Ok(())
+        },
+    )
+    .expect("native prepared-root test");
+}

@@ -261,3 +261,5 @@ mod tests;
 #[cfg(all(test, windows))]
 #[path = "alternate_screen_windows_tests.rs"]
 mod windows_tests;
+
+#[cfg(unix)] #[path = "../../../alab-tui/glue/upgrade_screen.rs"] mod alab_upgrade_screen; // ALAB(upgrade): capture and adopt the actual screen protocol owner.

@@ -6,6 +6,7 @@
 
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::error::ProviderRejection;
 use codex_protocol::error::ResponseIncompleteError;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -302,4 +303,45 @@ fn exhausted_response_processing_failures_use_the_retry_ladder() {
             None
         );
     }
+}
+
+#[test]
+fn inference_hook_denials_never_enter_retry_or_independent_work_continuation() {
+    for auto_compact in [false, true] {
+        let details = CodexErrorDetails::InferenceHookDenied {
+            message: "server_is_overloaded; workspace hook refused".into(),
+        };
+        let Some(Wall::Fatal { why }) =
+            classify(&CodexErrorInfo::InferenceHookDenied, &details, auto_compact)
+        else {
+            panic!("inference-hook denial must remain terminal");
+        };
+        assert!(why.contains("workspace inference hook"));
+    }
+}
+
+#[test]
+fn streamed_access_program_denial_never_enters_network_recovery() {
+    let error = CodexErr::new(CodexErrorDetails::AccessProgramNotEnabled(
+        ProviderRejection::Stream("This access program is disabled.".to_string()),
+    ));
+    let event = error.to_error_event(None);
+    let info = event.codex_error_info.expect("terminal error identity");
+    assert_eq!(
+        info,
+        CodexErrorInfo::HttpConnectionFailed {
+            http_status_code: None,
+        }
+    );
+    for auto_compact in [false, true] {
+        let Some(Wall::Fatal { why }) = classify(&info, error.details(), auto_compact) else {
+            panic!("an explicit program refusal must never schedule a network retry");
+        };
+        assert!(why.contains("access program"), "{why}");
+    }
+    // An ordinary status-less connection failure still needs network recovery.
+    assert!(matches!(
+        classify(&info, &CodexErrorDetails::Stream("connection lost".into()), true),
+        Some(Wall::Network { .. })
+    ));
 }

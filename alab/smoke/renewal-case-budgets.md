@@ -11,6 +11,7 @@ These are test observation bounds; production policy, grace and the immutable
 | Grace beyond budget | 720s | 750s |
 | Failed forward/live rollback, Go-prefix crash | 450s | 480s |
 | Post-Signal continuation and diagnostic | 390s | 420s |
+| Five-hour wall that resets soon | 270s | 300s |
 
 Normal cases allow two 60-second initial policy/admission/reseal checks, two
 60-second cold-successor observation checks and 30 seconds of dispatch headroom:
@@ -37,3 +38,9 @@ poll: 180 + 180 + 60 + 180 = 600s causal phases. Preserve120s bounded startup
 and completion-observation headroom, yielding720s inside a750s guardian.
 Fresh actual qualification is still required. Rollback, crash and post-Signal
 bounds remain independent, avoiding accidental extension through shared flags.
+
+The five-hour wall that resets soon hands nothing over. Its fixture lifts the
+wall 20 seconds after the refusal and the walled turn retries at its next usage
+poll, so the case needs one policy check, that wait and one completion check,
+well inside the normal 270-second bound. It has not been qualified by a run
+with a package from the rotation branch, and is not in `renewal_matrix.CASES`.

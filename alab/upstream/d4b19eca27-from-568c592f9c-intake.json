@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "base": "568c592f9cbe4388aafe9759bf6f3ed1bb0fd5e3",
+  "target": "d4b19eca27895e704f9929a70ad80abdd9588728",
+  "frontier": "568c592f9cbe4388aafe9759bf6f3ed1bb0fd5e3",
+  "commits": [
+    {
+      "sha": "d4b19eca27895e704f9929a70ad80abdd9588728",
+      "subject": "Preserve agent message deliveries in rollout traces (#60673)",
+      "paths": [
+        "codex-rs/rollout-trace/src/protocol_event.rs",
+        "codex-rs/rollout-trace/src/raw_event.rs",
+        "codex-rs/rollout-trace/src/reducer/acceptance_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation/normalize.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/inference_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/mod.rs",
+        "codex-rs/rollout-trace/src/reducer/tool/agents_tests.rs",
+        "codex-rs/rollout-trace/src/thread.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-session",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve accepted agent deliveries and interaction edges in the trace even when a child never makes another model request. A later inference or checkpoint reuses the item identity and may update the model-visible body.",
+      "evidence": [
+        "Reviewed the trace reducer's receipt identity check, thread-scoped item reuse, and later body update.",
+        "The prior candidate's rollout-trace source matched upstream. No ALab source hooks are in the modified paths."
+      ],
+      "revisit": "Run the upstream spawn-edge regression covering first delivery, a later request, and repeated receipts."
+    }
+  ]
+}

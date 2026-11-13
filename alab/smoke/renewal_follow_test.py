@@ -10,8 +10,9 @@ from renewal_follow import validate_presignal_stop
 class ParallelLoginOracle(unittest.TestCase):
     def test_a_wrong_account_or_task_cannot_count_toward_concurrency(self):
         from parallel_logins import Accounts, prompt
+        from renewal_follow import access_token
         accounts = Accounts(2)
-        headers = {"Authorization": "Bearer fixture-access-0",
+        headers = {"Authorization": "Bearer " + access_token("0", "parallel-account-0"),
                    "ChatGPT-Account-Id": "parallel-account-0"}
         body = {"input": [{"role": "user", "content": [
             {"type": "input_text", "text": prompt(1)}]}]}
@@ -24,13 +25,14 @@ class ParallelLoginOracle(unittest.TestCase):
     def test_first_request_is_held_until_every_distinct_account_arrives(self):
         import threading
         from parallel_logins import Accounts, prompt
+        from renewal_follow import access_token
         accounts = Accounts(2)
         finished = [threading.Event(), threading.Event()]
         errors = []
 
         def request(index):
             try:
-                accounts.respond({"Authorization": f"Bearer fixture-access-{index}",
+                accounts.respond({"Authorization": "Bearer " + access_token(str(index)),
                     "ChatGPT-Account-Id": f"parallel-account-{index}"},
                     {"input": [{"role": "user", "content": [
                         {"type": "input_text", "text": prompt(index)}]}]})
@@ -85,14 +87,18 @@ class QuotaFixture(unittest.TestCase):
         import urllib.error
         import urllib.request
         from pathlib import Path
-        from renewal_follow import Model, serve
+        from renewal_follow import Model, access_token, serve
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            server, worker = serve(Model(root, weekly_quota=True))
+            model = Model(root, weekly_quota=True)
+            # The source's usage says spent only once the provider has refused it.
+            turn = {"input": [], "tools": [{"type": "function", "name": "update_plan"}]}
+            self.assertEqual([model.reply(turn, "old")[0] for _ in range(2)], [200, 429])
+            server, worker = serve(model)
             try:
                 request = urllib.request.Request(
                     f"https://127.0.0.1:{server.server_port}/api/codex/usage",
-                    headers={"Authorization": "Bearer fixture-access-old"})
+                    headers={"Authorization": "Bearer " + access_token("old", "source-account")})
                 with self.assertRaises(urllib.error.URLError):
                     urllib.request.urlopen(request, timeout=2)
                 context = ssl.create_default_context(cafile=str(root / "fixture-ca.pem"))
@@ -137,6 +143,15 @@ class QuotaFixture(unittest.TestCase):
             self.assertFalse(source["rate_limit"]["allowed"])
             self.assertEqual(target["rate_limit"]["secondary_window"]["used_percent"], 0)
             self.assertTrue(target["rate_limit"]["allowed"])
+            # Both replies are ones the client decodes: each window says when it
+            # resets both ways, and the credit summary is present.
+            import provider_fixture
+            for usage in (source, target):
+                provider_fixture.check("usage", usage)
+                week = usage["rate_limit"]["secondary_window"]
+                self.assertEqual(week["limit_window_seconds"], 604800)
+                self.assertEqual(week["reset_after_seconds"], 86400)
+                self.assertEqual(usage["rate_limit_reset_credits"], {"available_count": 0})
             exhausted = Model(root, weekly_quota=True, all_exhausted=True)
             self.assertEqual(exhausted.usage(False, True)["rate_limit"]["secondary_window"]["used_percent"], 100)
             self.assertFalse(exhausted.usage(False, True)["rate_limit"]["allowed"])
@@ -162,6 +177,293 @@ class QuotaFixture(unittest.TestCase):
                 self.assertEqual(claim["sub"], f"{label}-user")
                 claims.append(claim["https://api.openai.com/auth"]["chatgpt_account_id"])
             self.assertEqual(claims, ["source", "target"])
+
+
+class FiveHourWallSoon(unittest.TestCase):
+    """The fixture of `five-hour-wall-soon` and the oracle of its run."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def model(self):
+        from renewal_follow import Model
+        model = Model(self.root, weekly_quota=True, wall="five-hour-soon")
+        self.clock = [1000.0]
+        model.monotonic = lambda: self.clock[0]
+        return model
+
+    @staticmethod
+    def turn():
+        return {"input": [], "tools": [{"type": "function", "name": "update_plan"}]}
+
+    def test_the_wall_is_on_the_five_hour_window_and_lifts_twenty_seconds_on(self):
+        import json
+        import time
+        import provider_fixture
+        from renewal_follow import WALL_LIFT_SECONDS, WALL_RESET_SECONDS
+        model = self.model()
+        before = provider_fixture.check("usage", model.usage(True, False))
+        self.assertTrue(before["rate_limit"]["allowed"])
+        self.assertEqual(model.reply(self.turn(), "old")[0], 200)
+        started = int(time.time())
+        status, data, _, retry_after, record = model.reply(self.turn(), "old")
+        self.assertEqual((status, retry_after), (429, None))
+        error = json.loads(data)["error"]
+        self.assertEqual((error["type"], error["plan_type"]), ("usage_limit_reached", "pro"))
+        self.assertIn(error["resets_at"] - started, (WALL_RESET_SECONDS, WALL_RESET_SECONDS + 1))
+        headers = record["responseHeaders"]
+        self.assertEqual((headers["x-codex-primary-used-percent"], headers["x-codex-primary-window-minutes"],
+                          headers["x-codex-secondary-used-percent"], headers["x-codex-active-limit"]),
+                         ("100", "300", "10", "codex"))
+        self.assertEqual(int(headers["x-codex-primary-reset-at"]), error["resets_at"])
+
+        def walled():
+            body = provider_fixture.check("usage", model.usage(True, False))
+            limit = body["rate_limit"]
+            return (limit["allowed"], limit["primary_window"]["used_percent"],
+                    limit["primary_window"]["limit_window_seconds"],
+                    limit["secondary_window"]["used_percent"]), limit["primary_window"]
+
+        for at in (1000.0, 1000.0 + WALL_LIFT_SECONDS - 0.01):
+            self.clock[0] = at
+            verdict, window = walled()
+            self.assertEqual(verdict, (False, 100, 18000, 10))
+            # The reset stays where the refusal put it, within fifteen minutes.
+            self.assertEqual(window["reset_at"], error["resets_at"])
+            self.assertLessEqual(window["reset_after_seconds"], WALL_RESET_SECONDS)
+            self.assertLess(WALL_RESET_SECONDS, 15 * 60)
+        # A request sent again before the lift is refused again, on the same reset.
+        status, data, _, _, record = model.reply(self.turn(), "old")
+        self.assertEqual((status, json.loads(data)["error"]["resets_at"]), (429, error["resets_at"]))
+        self.assertEqual(record["responseHeaders"]["x-codex-primary-used-percent"], "100")
+        self.clock[0] = 1000.0 + WALL_LIFT_SECONDS
+        verdict, _ = walled()
+        self.assertEqual(verdict, (True, 0, 18000, 10))
+        status, _, _, _, record = model.reply(self.turn(), "old")
+        self.assertEqual(status, 200)
+        self.assertEqual(record["responseHeaders"]["x-codex-primary-used-percent"], "0")
+        self.assertNotIn("x-codex-active-limit", record["responseHeaders"])
+        # The week was never the wall, and the weekly cases' marker played no part.
+        self.assertFalse(model.source_walled)
+        self.assertFalse((self.root / "renewed").exists())
+
+    def test_the_walls_reset_does_not_move_when_a_second_passes_inside_one_reading(self):
+        import itertools
+        import json
+        import time
+        from unittest import mock
+        from renewal_follow import WALL_RESET_SECONDS
+        model = self.model()
+        model.reply(self.turn(), "old")
+        with mock.patch.object(time, "time", return_value=5000.25):
+            resets_at = json.loads(model.reply(self.turn(), "old")[1])["error"]["resets_at"]
+        self.assertEqual(resets_at, 5000 + WALL_RESET_SECONDS)
+        # Every look at the clock is a second later than the one before.
+        ticks = itertools.count(5007)
+        with mock.patch.object(time, "time", side_effect=lambda: float(next(ticks))):
+            window = model.usage_body("old")["rate_limit"]["primary_window"]
+            headers = model.limit_headers("old", wall=True)
+        self.assertEqual(window["reset_at"], resets_at)
+        self.assertEqual(window["reset_at"] - window["reset_after_seconds"], 5007)
+        self.assertEqual(int(headers["x-codex-primary-reset-at"]), resets_at)
+
+    def test_the_other_account_is_usable_throughout_and_answers_at_once(self):
+        import time
+        import provider_fixture
+        from renewal_follow import QUOTA_ACCOUNTS
+        model = self.model()
+
+        def destination():
+            started = time.monotonic()
+            body = provider_fixture.check("usage", model.usage(False, True))
+            # The weekly cases hold this reading for up to 60 s; this case opens nothing.
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertEqual((body["account_id"], body["user_id"]), QUOTA_ACCOUNTS["new"][1:])
+            return (body["rate_limit"]["allowed"], body["rate_limit"]["primary_window"]["used_percent"],
+                    body["rate_limit"]["secondary_window"]["used_percent"])
+
+        self.assertEqual(destination(), (True, 0, 0))
+        self.assertEqual([model.reply(self.turn(), "old")[0] for _ in range(2)], [200, 429])
+        # While the source is walled, and nothing ever having created `renewed`.
+        self.assertFalse(model.usage(True, False)["rate_limit"]["allowed"])
+        self.assertEqual(destination(), (True, 0, 0))
+        self.assertFalse((self.root / "renewed").exists())
+        self.assertEqual(model.usage_reads, ["target", "source", "target"])
+
+    def test_the_case_is_declared_but_not_yet_in_the_matrix(self):
+        import renewal_follow
+        import renewal_matrix
+        from renewal_follow import Model
+        self.assertEqual(renewal_follow.CASE_BUDGETS["five-hour-wall-soon"], (270, 300))
+        self.assertNotIn("five-hour-wall-soon", renewal_matrix.CASES)
+        with self.assertRaisesRegex(RuntimeError, "unknown fixture wall"):
+            Model(self.root, weekly_quota=True, wall="five-hour-far")
+        with self.assertRaisesRegex(RuntimeError, "unknown fixture wall"):
+            Model(self.root, wall="five-hour-soon")
+        # A pool with nowhere to go would make "no handoff" say nothing.
+        for options in ({"all_exhausted": True}, {"chain": True}):
+            with self.assertRaisesRegex(RuntimeError, "one usable destination"):
+                Model(self.root, weekly_quota=True, wall="five-hour-soon", **options)
+
+    def test_served_usage_reads_record_the_verdict_the_reader_was_given(self):
+        import json
+        import urllib.request
+        from renewal_follow import access_token, serve
+        model = self.model()
+        server, worker = serve(model, secure=False)
+        try:
+            request = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/api/codex/usage",
+                headers={"authorization": "Bearer " + access_token("old", "source-account")})
+            for _ in range(2):
+                model.reply(self.turn(), "old")
+                with urllib.request.urlopen(request, timeout=10) as reply:
+                    json.load(reply)
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=2)
+        self.assertEqual([event["allowed"] for event in model.http_events], [True, False])
+
+    @staticmethod
+    def events(retry_at=31, extra=()):
+        def event(method, path, at, account="source", **more):
+            return {"method": method, "path": path, "account": account, "client": "codex",
+                    "monotonicUs": at * 1_000_000, **more}
+        usage, responses = "/api/codex/usage", "/v1/responses"
+        return sorted([
+            event("GET", usage, 1, allowed=True),
+            event("POST", responses, 2, kind="foreground", status=200),
+            event("POST", responses, 3, kind="thread-title", status=200),
+            event("POST", responses, 10, kind="foreground", status=429),
+            event("GET", usage, 11, allowed=False),
+            event("GET", usage, 30, allowed=True),
+            event("POST", responses, retry_at, kind="foreground", status=200),
+            *[event(*row[:3], **row[3]) for row in extra]], key=lambda entry: entry["monotonicUs"])
+
+    def test_the_oracle_accepts_one_wall_waited_out_on_its_own_account(self):
+        from renewal_follow import validate_wall_waited_out
+        self.assertEqual(validate_wall_waited_out(self.events()), {
+            "wallUs": 10_000_000, "retryUs": 31_000_000, "waitedSeconds": 21.0,
+            "walledUsageReads": 1, "usageReads": 2})
+
+    def test_the_oracle_rejects_a_handoff_an_early_retry_or_an_unread_wall(self):
+        from renewal_follow import validate_wall_waited_out
+        usage, responses = "/api/codex/usage", "/v1/responses"
+        cases = {
+            "retried before its wall lifted": self.events(retry_at=29),
+            "refused 2 times": self.events(extra=[("POST", responses, 15, {"kind": "foreground", "status": 429})]),
+            "refused 0 times": [dict(event, status=200) if event.get("status") == 429 else event
+                                for event in self.events()],
+            "other than the walled one": self.events(extra=[
+                ("POST", responses, 40, {"kind": "foreground", "status": 200, "account": "target"})]),
+            "not the second request, retried once": self.events(extra=[
+                ("POST", responses, 50, {"kind": "foreground", "status": 200})]),
+            "never read its own wall": [event for event in self.events() if event.get("allowed") is not False],
+        }
+        # A title request from another login is a model request too.
+        cases["other than the walled one "] = self.events(extra=[
+            ("POST", responses, 40, {"kind": "thread-title", "status": 200, "account": "target"})])
+        # The host's reading of the wall is not the walled turn's.
+        hosted = self.events()
+        next(event for event in hosted if event.get("allowed") is False)["client"] = "host"
+        cases["never read its own wall "] = hosted
+        for message, events in cases.items():
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(RuntimeError, message.strip()):
+                    validate_wall_waited_out(events)
+
+
+class FiveHourWallHeld(unittest.TestCase):
+    """What ends a `five-hour-wall-soon` run, what fails it at once, and its verdict."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.pool = self.root / "host-state" / "accounts-codex"
+
+    @staticmethod
+    def rest(**changes):
+        return dict({"sessionId": "thread", "pid": 7, "status": "idle", "draftEmpty": True}, **changes)
+
+    def test_the_case_ends_only_with_the_retry_answered_and_a_session_at_rest(self):
+        from renewal_follow import wall_case_finished
+        events = FiveHourWallSoon.events()
+        self.assertTrue(wall_case_finished(events, [self.rest()]))
+        unfinished = {
+            "no session record": (events, []),
+            "a session still working": (events, [self.rest(status="working")]),
+            "a session with an unsent draft": (events, [self.rest(draftEmpty=False)]),
+            "a session that owes a recovery": (events, [self.rest(
+                owed={"thread": "thread", "rotation": {"receipt": None}})]),
+            "the retry not sent yet": (events[:-1], [self.rest()]),
+            "the retry refused": ([dict(event, status=429) if event is events[-1] else event
+                                   for event in events], [self.rest()]),
+            "only another login answered": ([dict(event, account="target")
+                if event is events[-1] else event for event in events], [self.rest()]),
+        }
+        for name, (seen, observed) in unfinished.items():
+            with self.subTest(name=name):
+                self.assertFalse(wall_case_finished(seen, observed))
+
+    def test_everything_a_handoff_leaves_is_named_and_fails_the_run(self):
+        import json
+        from renewal_follow import require_wall_held, wall_handoff_evidence
+        events = FiveHourWallSoon.events()
+        self.assertEqual(wall_handoff_evidence(self.root, events), [])
+        require_wall_held(self.root, events)
+        # A pool that has only been read is not a handoff.
+        self.pool.mkdir(parents=True)
+        (self.pool / "state.json").write_text(json.dumps({"accounts": {}, "rotations": []}))
+        (self.pool / "renewal-follow").mkdir()
+        (self.root / "native-actions.jsonl").write_text("")
+        self.assertEqual(wall_handoff_evidence(self.root, events), [])
+
+        def evidence(name):
+            if name == "charged":
+                (self.pool / "state.json").write_text(json.dumps({"rotations": [{"at": 1}]}))
+            if name == "receipt":
+                (self.pool / "renewal-follow" / ("ab" * 16 + ".json")).write_text("{}")
+            if name == "action":
+                (self.root / "native-actions.jsonl").write_text(
+                    json.dumps({"action": "signal", "replyOk": True}) + "\n"
+                    + json.dumps({"action": "resume", "replyOk": False}) + "\n")
+            return wall_handoff_evidence(self.root, events)
+
+        self.assertEqual(evidence("charged"), ["1 rotation(s) charged"])
+        self.assertEqual(evidence("receipt"), ["1 rotation(s) charged", "1 handoff receipt file(s)"])
+        self.assertEqual(evidence("action"), ["1 rotation(s) charged", "1 handoff receipt file(s)",
+                                              "native action(s): resume, signal"])
+        moved = FiveHourWallSoon.events(extra=[
+            ("POST", "/v1/responses", 40, {"kind": "thread-title", "status": 200, "account": "target"})])
+        self.assertEqual(wall_handoff_evidence(self.root, moved)[-1], "model request(s) from target")
+        with self.assertRaisesRegex(RuntimeError, "resets soon was handed over, charged or replayed: "
+                                    "1 rotation\\(s\\) charged; 1 handoff receipt"):
+            require_wall_held(self.root, events)
+
+    def test_the_verdict_needs_the_wait_no_handoff_and_exactly_three_requests(self):
+        import json
+        from renewal_follow import wall_verdict
+        events = FiveHourWallSoon.events()
+        trace = self.root / "renewal-control-trace.jsonl"
+        waited = {"wallUs": 10_000_000, "retryUs": 31_000_000, "waitedSeconds": 21.0,
+                  "walledUsageReads": 1, "usageReads": 2}
+        # No control trace: how often the host was asked is unknown, and said so.
+        self.assertEqual(wall_verdict(self.root, events, [1, 2, 3], trace), dict(waited, preparesTraced=None))
+        trace.write_text(json.dumps({"kind": "rotation", "verb": "prepare", "monotonicUs": 12}) + "\n"
+                         + json.dumps({"kind": "session-status"}) + "\n")
+        self.assertEqual(wall_verdict(self.root, events, [1, 2, 3], trace), dict(waited, preparesTraced=1))
+        for count in (2, 4):
+            with self.subTest(count=count):
+                with self.assertRaisesRegex(RuntimeError, f"{count} foreground model requests, not 3"):
+                    wall_verdict(self.root, events, list(range(count)), trace)
+        with self.assertRaisesRegex(RuntimeError, "retried before its wall lifted"):
+            wall_verdict(self.root, FiveHourWallSoon.events(retry_at=29), [1, 2, 3], trace)
+        (self.root / "native-actions.jsonl").write_text(json.dumps({"action": "signal"}) + "\n")
+        with self.assertRaisesRegex(RuntimeError, "handed over, charged or replayed: native action"):
+            wall_verdict(self.root, events, [1, 2, 3], trace)
 
 
 class PreSignalStop(unittest.TestCase):

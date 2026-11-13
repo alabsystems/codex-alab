@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:48:29.469468+00:00",
+  "source": "c58e35eb6779aa4283dd0901666ecc9c6f9a3309",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "tests": [
+    {
+      "name": "async_scorer::extension::tests::contributor_renders_policy_inside_a_configured_prompt",
+      "status": "ok"
+    },
+    {
+      "name": "suite::v2::guardian_v2::synchronous_cua_call_consumes_the_initial_call_allowance",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-captured-policy-native.sh",
+      "sha256": "ec8445d7bc31ce572523f248d56c28a4b0ddab922b7d99ffe42f6a3c930f63ed"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-captured-policy-native.log",
+      "sha256": "6b7732dd5fbe0beca2199c5673a1e90c86e065efc5ec9dad134dcd6dad818f46"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-guardian-captured-policy-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Captured-policy classifier fixture and real app-server synchronous-CUA allowance integration passed. Config guardian_tests filename filter selected zero tests and was rejected, preserving overall exit1. Actual module guardian::tests verified in source and rerun separately. Full gate/adoption separate."
+}

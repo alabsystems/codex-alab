@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "client-version-readiness-observation",
+  "observed_at": "2026-11-10T18:04:50.533130+00:00",
+  "source": "6187e587cc8d55bcfb610bef0d8d7eb8f4c43513",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "command": [
+    "/bin/bash",
+    "alab/package.sh",
+    "--client-version-only",
+    "--commit",
+    "6187e587cc8d55bcfb610bef0d8d7eb8f4c43513"
+  ],
+  "exit_code": 0,
+  "client_version": "0.168.0-dev.16256+g6187e587c",
+  "client_floor": "0.168.0",
+  "upstream_stable_baseline": "0.167.1",
+  "package_version": "0.2.0-dev.16256+codex.0.167.1.g6187e587c",
+  "release_ledger_baseline": "0.167.0",
+  "limits": "Package version-only command fetched official upstream main/release tags through the admitted Agh path and completed successfully. Candidate client version meets the next-minor floor for its newest integrated stable branch point. Does not prove account/model entitlement, catalog refresh, inference success or installed adoption. The command reports the release ledger requires a bump before an official release; this observation does not authorize or claim such a release. A development package remains distinct."
+}

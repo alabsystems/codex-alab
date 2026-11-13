@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "kind": "native-candidate-package-observation",
+  "observed_at": "2026-11-10T18:58:25.417311+00:00",
+  "source": "e13e1310bac9804b3c671d0e3ace2824a89e6720",
+  "package": "${HOME}/.local/share/aterm/dev-builds/artifacts/codex/0.2.0-dev.16264+codex.0.167.1.ge13e1310b",
+  "version": "0.2.0-dev.16264+codex.0.167.1.ge13e1310b",
+  "client_version": "0.168.0-dev.16264+ge13e1310b",
+  "command": [
+    "alab/package.sh",
+    "--commit",
+    "e13e1310bac9804b3c671d0e3ace2824a89e6720",
+    "--any-commit",
+    "--no-promote"
+  ],
+  "exit_code": 0,
+  "compiler": {
+    "rustc": "rustc 1.99.0-dev (20565c325 2026-10-19) (trustc 0.11.0+g20565c325)",
+    "rustc_vV": "rustc 1.99.0-dev (20565c325 2026-10-19) (trustc 0.11.0+g20565c325)\nbinary: trustc\ncommit-hash: 20565c3255adf151f9eb920e89cdf83c38f84abe\ncommit-date: 2026-10-19\nhost: aarch64-apple-darwin\nrelease: 1.99.0-dev\ntrust: 0.11.0+g20565c325\nLLVM version: 22.1.2\n",
+    "sysroot": "${HOME}/Library/Application Support/aterm/pkg/store/trust/15698.noindex",
+    "binaries_sha256": "fd3bda4228b62f44447fe87f69af9889a50b94ee0e75e23a17ed0daf8e86fcf0",
+    "id": "010b4e686f3b1ea7",
+    "admitted": true,
+    "admitted_why": "native project selection matched its held execution root"
+  },
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-package-e13e1310ba-native.log",
+      "sha256": "b1d295e8a4229a6411394c7693ec9ecd047091d52f9e98a5135c2c2addb8c80e"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-package-e13e1310ba-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "${HOME}/.local/share/aterm/dev-builds/artifacts/codex/0.2.0-dev.16264+codex.0.167.1.ge13e1310b/alab-build.json",
+      "sha256": "73b31b43de6152dd244d9d77b693cfdc0908210058a5544f46c24bc707cbd0e2"
+    },
+    {
+      "path": "${HOME}/.local/share/aterm/dev-builds/artifacts/codex/0.2.0-dev.16264+codex.0.167.1.ge13e1310b/codex-package.json",
+      "sha256": "00ae09ad49b3d4ded04ae3f52a8aef2633609eb86bd14a1423b9f4f041681867"
+    }
+  ],
+  "limits": "Controller62535 terminal0 and sidecar0. Candidate package built and passed package.sh staging/layout/version/defaults/signature/system-library smokes. It is intentionally not promoted. Source qualification gate84988 is still live; source has not been published as main by this integration. Does not prove selected/running adoption, live model entitlement/inference or aterm rollout measurement for this client version. Predates new test-only Cloud contract crate."
+}

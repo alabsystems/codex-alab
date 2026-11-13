@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T17:37:47.999712+00:00",
+  "source": "ecd1195d68016f5550a45f7ae8eed8c51b324c6e",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "app::tests::pagination_completion_tests::older_page_updates_the_parked_parent_without_moving_focus",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-parked-history-native.sh",
+      "sha256": "4662f7554b16ef6cf0270c16e887e15170c0ba9f79e6145d290f40e9037881bd"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-parked-history-native.log",
+      "sha256": "b4957ccb107209fbb53359ea71985caf823e90ff560dfee48e2f4bb9c1060dc7"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-parked-history-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Controller70071 terminal0 exact formatted cookie source. Parked-parent older-history integration passed: passive wheel requests an older page, reply updates the retained parent and marks history complete while the child keeps composer focus. Does not qualify every pagination failure, final composed main, newly fetched upstream changes or adoption."
+}

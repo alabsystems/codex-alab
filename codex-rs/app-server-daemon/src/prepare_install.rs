@@ -226,7 +226,7 @@ async fn prepare_from_package(
         "daemon running state changed while awaiting confirmation; retry the command"
     );
     let backend = current_backend;
-    let stable = stable_version(&version).is_some();
+    let stable = stable_version(&version).is_some() && codex_alab_core::version::vendor_updates_allowed(); // ALAB(update): atpkg owns ALab packages independently of release numbering.
     let releases = root.join("releases");
     std::fs::create_dir_all(&releases)?;
     let stage = tempfile::Builder::new()

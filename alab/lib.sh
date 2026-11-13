@@ -14,6 +14,30 @@ alab_die() {
   exit 1
 }
 
+# Shared TOML-capable interpreter selection for review admission and packaging.
+# Resolve before native project selection so its profile can admit this exact tool.
+alab_python_311() {
+  local python="${ALAB_PYTHON:-}" prefix="${1:-$(dirname "${ATPKG_BIN:-${HOME}/Library/Application Support/aterm/pkg/bin}")}" p
+  if [[ -z "${python}" ]]; then
+    for p in /opt/homebrew/bin/python3.14 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 \
+      /opt/homebrew/bin/python3.11 \
+      "${prefix}/abrew/bin/python3.14" "${prefix}/abrew/bin/python3.13" \
+      "${prefix}/abrew/bin/python3.12" "${prefix}/abrew/bin/python3.11" \
+      "${HOME}/.local/share/uv/python"/cpython-3.*/bin/python3.[0-9]* python3; do
+      [[ "${p}" != *-config ]] || continue
+      if command -v "${p}" >/dev/null && "${p}" -I -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+        python="${p}"
+        break
+      fi
+    done
+  fi
+  [[ -n "${python}" ]] && "${python}" -I -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null || {
+    alab_say "no Python >= 3.11 for TOML review/packaging: set ALAB_PYTHON"
+    return 1
+  }
+  command -v "${python}"
+}
+
 # alab_spec_lines: the pathspecs in an alab/*-paths file on stdin, one per line (comments,
 # blank lines and surrounding blanks dropped).
 alab_spec_lines() {
@@ -69,16 +93,9 @@ alab_pristine_config() {
 
 # A pristine tree may contain ignored build outputs, but no changed or untracked source.
 alab_pristine_clean() {
-  local untracked common actual_common top
   [[ -d "$1" && ! -L "$1" && -f "$1/.git" && ! -L "$1/.git" ]] || return 1
-  common="$(git -C "$3" rev-parse --path-format=absolute --git-common-dir)" || return 1
-  actual_common="$(GIT_OPTIONAL_LOCKS=0 git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
-  top="$(GIT_OPTIONAL_LOCKS=0 git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1
-  [[ "${actual_common}" == "${common}" && "${top}" == "$(alab_real "$1")" \
-    && "$(GIT_OPTIONAL_LOCKS=0 git -C "$1" rev-parse -q --verify HEAD 2>/dev/null)" == "$2" ]] \
-    && GIT_OPTIONAL_LOCKS=0 git -C "$1" diff --quiet HEAD -- 2>/dev/null \
-    && untracked="$(GIT_OPTIONAL_LOCKS=0 git -C "$1" ls-files --others --exclude-standard 2>/dev/null)" \
-    && [[ -z "${untracked}" ]]
+  "${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${alab_library_root}/alab/pristine_state.py" \
+    "$1" "$2" "$3" "${TMPDIR:-/tmp}"
 }
 
 # alab_pristine_trees <checkout>: legacy path plus registered clean revision trees for
@@ -111,8 +128,12 @@ alab_pristine_at() {
     return 0
   fi
   if [[ ! -e "${dir}" && ! -L "${dir}" ]]; then
-    git -C "$1" worktree add --quiet --detach "${dir}" "${want}"
-    return $?
+    git -C "$1" worktree add --quiet --detach "${dir}" "${want}" || return $?
+    if alab_pristine_clean "${dir}" "${want}" "$1"; then
+      return 0
+    fi
+    alab_say "kept pristine tree ${dir}: checkout did not produce clean source at ${want}"
+    return 1
   fi
   alab_say "kept pristine tree ${dir}: occupied revision path is not clean at ${want}"
   return 1
@@ -469,6 +490,50 @@ alab_account_home() {
   alab_real "${home}"
 }
 
+# Measure the selected interpreter before containment: its bin/ on PATH does not cover a
+# portable runtime's sibling lib/. These exact runtime roots are data, not profile syntax.
+alab_python_runtime_roots() {
+  local account_home="$1" roots entry d count=0
+  roots="$("${ALAB_PYTHON:-/usr/bin/python3}" -I -B -c '
+import os, sys
+roots = []
+for value in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
+    if not isinstance(value, str) or not os.path.isabs(value):
+        raise SystemExit("Python runtime prefix is not absolute")
+    root = os.path.realpath(value)
+    if (not os.path.isdir(root) or len(root.encode("utf-8")) > 4096
+            or any(not c.isprintable() for c in value + root)):
+        raise SystemExit("Python runtime prefix is invalid or too large")
+    if root not in roots:
+        roots.append(root)
+print("\n".join(roots))
+  ')" || {
+    alab_say "alab_contained: cannot measure the selected Python runtime roots"
+    return 1
+  }
+  [[ -n "${roots}" && ${#roots} -le 16384 ]] || {
+    alab_say "alab_contained: refusing invalid Python runtime roots"
+    return 1
+  }
+  while IFS= read -r entry; do
+    count=$((count + 1))
+    case "${entry}" in /*) ;; *)
+      alab_say "alab_contained: refusing a non-absolute Python runtime root"
+      return 1 ;; esac
+    case "${entry}" in *[[:cntrl:]]*)
+      alab_say "alab_contained: refusing control characters in a Python runtime root"
+      return 1 ;; esac
+    [[ ${count} -le 4 && -d "${entry}" ]] || return 1
+    d="$(alab_real "${entry}")" || return 1
+    if [[ "${d}" != "${entry}" ]] || alab_home_or_above "${d}" \
+      || alab_home_or_above "${d}" "${account_home}"; then
+      alab_say "alab_contained: refusing the Python runtime root ${entry}, which is aliased or reads a home or above it"
+      return 1
+    fi
+    printf '%s\n' "${d}"
+  done <<<"${roots}"
+}
+
 # alab_contain_profile <scratch> <cargo-home> [--pristine <dir>] [--read <dir>]... <writable-dir>...: the
 # sandbox profile alab_contained runs a command under. The last rule that matches an
 # operation decides it.
@@ -501,6 +566,11 @@ alab_contain_profile() {
   # Outside pre-registration published the owners. Use the existing read-only fence so even
   # a broadly admitted output ancestor cannot make the cleanup index writable.
   reads+=("${home}/Library/Caches/aterm/.ubd/registered-builds.noindex")
+  local python_roots
+  python_roots="$(alab_python_runtime_roots "${account_home}")" || return 1
+  while IFS= read -r d; do
+    reads+=("${d}")
+  done <<<"${python_roots}"
   # Outside a git checkout (a neutral directory, so no repo's .cargo/config.toml applies)
   # there is no clone to read, and nothing in the working directory is readable but what is
   # named (the directory itself is, for getcwd). A working directory, or a checkout, at
@@ -825,13 +895,15 @@ alab_contained() {
   }
   # cargo fetches git dependencies with git itself: libgit2's TLS cannot check a certificate
   # without the keychain service the sandbox denies, and git's can.
-  local env_args=("HOME=${HOME}" "PATH=${command_path}" "TMPDIR=${scratch}" "CARGO_HOME=${cargo_home}"
+  local env_args=("HOME=${HOME}" "PATH=${command_path}" "TMPDIR=${scratch}" "ALAB_TEST_SCRATCH=${scratch}" "CARGO_HOME=${cargo_home}"
     "TARGO_HOME=${cargo_home}" "CARGO_NET_GIT_FETCH_WITH_CLI=true")
   # Preserve the caller's allocated compile/test concurrency across the scrub.
   for v in USER LOGNAME SHELL TERM LANG LC_ALL LC_CTYPE NO_COLOR RUSTUP_HOME CARGO_BUILD_JOBS RUST_TEST_THREADS \
     CARGO_TARGET_DIR CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG CARGO_NET_OFFLINE CODEX_HOME RUST_MIN_STACK RUST_BACKTRACE ATPKG_BIN \
     ATPKG_PROJECT_FRONT ATPKG_PROJECT_TARGO ATPKG_PROJECT_TRUSTC ATPKG_PROJECT_TRUSTDOC ATPKG_PROJECT_PAYLOAD ATPKG_PROJECT_EXECUTION \
     $(compgen -e | grep '^ALAB_' || true); do
+    # Keep the allocated fixture root stable when the gate nests its TMPDIR.
+    [[ "${v}" != ALAB_TEST_SCRATCH ]] || continue
     [[ -z "${!v+set}" ]] || env_args+=("${v}=${!v}")
   done
   env -i "${env_args[@]}" /usr/bin/sandbox-exec -p "${profile}" "$@" || rc=$?

@@ -271,12 +271,11 @@ async fn buffered_failure_keeps_upstream_reading(error: Value, later_completion:
 }
 
 #[tokio::test(start_paused = true)]
-async fn known_failures_keep_upstream_reading_when_inactive() {
+async fn known_failure_delivery_matches_upstream_when_inactive() {
     assert!(!codex_alab_core::active());
     for code in [
         "insufficient_quota",
         "usage_not_included",
-        "context_length_exceeded",
         "rate_limit_exceeded",
         "model_not_found",
         "cyber_policy",
@@ -291,6 +290,11 @@ async fn known_failures_keep_upstream_reading_when_inactive() {
             )
             .await;
         }
+    }
+    // Upstream owns immediate context-window failure delivery, including in
+    // vanilla mode. A later completion must not hide it or restore buffering.
+    for later_completion in [false, true] {
+        failed_provider_before_eof("context_length_exceeded", later_completion).await;
     }
 }
 

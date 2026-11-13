@@ -125,6 +125,9 @@ use codex_alab_core::session::note_branch;
 use crate::mounts::Table;
 use crate::mounts::resolve_local;
 
+#[path = "repo_cargo_copy.rs"]
+mod cargo_copy;
+
 /// How long the whole probe may take ([`probe`]): every call shares it. A probe it cuts is
 /// [`RepoRead::Unread`] and holds a landing, so it is a HANG DETECTOR, NEVER A BUDGET (aterm
 /// `710345cbf9`): a healthy probe of a large repository on a loaded Mac took 8 to 12 s, and a
@@ -1896,6 +1899,7 @@ async fn session_reads(dirs: &[PathBuf], used: &Used, reads: &Reads, locate_only
         }
         named.push((at, branch.name.as_str()));
     }
+    let mut cargo_copies = cargo_copy::Memo::default();
     let mut first: Option<RepoWork> = None;
     let mut states: Vec<Option<u64>> = Vec::new();
     for (i, root) in roots.iter().enumerate() {
@@ -1905,7 +1909,7 @@ async fn session_reads(dirs: &[PathBuf], used: &Used, reads: &Reads, locate_only
             .map(|(_, name)| (*name).to_string())
             .collect();
         reads.incomplete.store(false, Ordering::SeqCst);
-        let found = probe_repo(root, used.since, &names, reads).await;
+        let found = probe_repo(root, used.since, &names, reads, &mut cargo_copies).await;
         let this_cut = reads.incomplete.load(Ordering::SeqCst);
         cut |= this_cut;
         if let Some(work) = found {
@@ -2057,8 +2061,14 @@ async fn probe_repo(
     since: Option<u64>,
     names: &[String],
     reads: &Reads,
+    cargo_copies: &mut cargo_copy::Memo,
 ) -> Option<RepoWork> {
     let (top, root) = (at.top.as_str(), at.root.as_path());
+    // One complete factory-copy observation covers its registered graph during this probe.
+    // Explicit whole-repository ownership always requires the ordinary landing checks.
+    if !at.whole && cargo_copies.derived(root, names, reads).await {
+        return None;
+    }
     // The repository's own `core.excludesFile` wins over the person's, as in their own `git
     // status`: theirs is handed over only where it sets none.
     let excludes = if own_excludes(root, reads).await {
@@ -3458,6 +3468,9 @@ fn failed(
     if mode.offline && !mode.strict && code.is_some() {
         return None;
     }
+    // Provenance reads disable object replacement without changing Git's quiet
+    // absence answers. Keep strict exit/status checks after this fixed prefix.
+    let args = args.strip_prefix(&["--no-replace-objects"]).unwrap_or(args);
     // These are successful absence checks, not interrupted repository reads.
     let absent = code == Some(1)
         && (!mode.strict || stderr.is_empty())

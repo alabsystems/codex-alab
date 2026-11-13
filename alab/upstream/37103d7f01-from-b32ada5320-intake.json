@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "base": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "target": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "frontier": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "commits": [
+    {
+      "sha": "37103d7f01e82162472c6fba7b4088d5a1303321",
+      "subject": "Keep the TUI responsive while opening saved side chats (#60599)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/app_server_events.rs",
+        "codex-rs/tui/src/app/backend_selection.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/sidebar.rs",
+        "codex-rs/tui/src/app/sidebar_loading.rs",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/test_support.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/saved_chat_loading_tests.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__saved_chat_loading__waiting_and_retry_rows.snap",
+        "codex-rs/tui/src/app/thread_attachment.rs",
+        "codex-rs/tui/src/app/thread_event_buffer.rs",
+        "codex-rs/tui/src/app/thread_event_buffer_tests.rs",
+        "codex-rs/tui/src/app/thread_events.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/app/thread_settings.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/app_server_session/history.rs",
+        "codex-rs/tui/src/app_server_session/rollout_history.rs",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/chatwidget/interaction.rs",
+        "codex-rs/tui/src/sidebar_chooser.rs"
+      ],
+      "classes": [
+        "fix",
+        "background",
+        "refactor"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Retain bounded background saved-chat preparation on its captured app-server connection, with request UUID plus backend/thread/channel identity and current chooser intent checked before installation. Abandoned or superseded attempts release unclaimed subscriptions on their original request handle and serialize reopening; only the latest waiting target starts after a slot frees. Anchored paginated history avoids replaying events received after subscription, attachment-prefix buffering retains late deltas/approvals, and newer settings/read receipts/turn/close observations win over snapshots. Reconnect/backend change, archive and focus changes cancel intent; permission-root and Windows setup selection gates remain. Held-key guards transfer with replaced widgets. Upstream extracted attachment modules provide a cleaner extension boundary; no ALab production adapter or new default is required by source review.",
+      "evidence": [
+        "codex-rs/tui/src/app/sidebar_loading.rs",
+        "codex-rs/tui/src/app/thread_attachment.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/app/thread_events.rs",
+        "codex-rs/tui/src/app/thread_event_buffer.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/app_server_session/history.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/tests/saved_chat_loading_tests.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/thread_event_buffer_tests.rs"
+      ],
+      "revisit": "Qualify nonblocking composer/navigation/notifications during open, bounded waiting/retry/supersession, original-connection release after fork/reconnect, stale runtime close and approval replay, newer read receipts/settings, anchored empty cursors and delta coalescing at eviction boundaries. Verify actual aterm rendering/input and native source lifetime separately; a conflict-free merge is not execution evidence."
+    }
+  ]
+}

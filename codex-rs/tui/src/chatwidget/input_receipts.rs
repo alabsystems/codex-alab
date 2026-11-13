@@ -119,7 +119,18 @@ impl ChatWidget {
 
     pub(crate) fn restore_rejected_user_message(&mut self, client_id: &str, message: String) {
         if let Some((draft, history, _)) = self.take_submitted_message(client_id) {
-            self.restore_user_message_to_composer(user_message_for_restore(draft, &history));
+            // ALAB(recovery): a rejected harness turn must not become a draft the harness waits on.
+            let shared = codex_alab_tui::boxes::tick_shared();
+            let autonomous = self.alab_autonomous_root_active()
+                && (client_id.starts_with("alab-autopilot-")
+                    || shared.as_ref().is_some_and(|shared| shared.is_own_turn(&draft.text)));
+            if autonomous {
+                if let Some(shared) = shared {
+                    shared.take_own_turn(&draft.text);
+                }
+            } else {
+                self.restore_user_message_to_composer(user_message_for_restore(draft, &history));
+            }
         }
         self.add_error_message(message);
         self.refresh_pending_input_preview();

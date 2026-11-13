@@ -22,6 +22,8 @@ import sys
 import threading
 import time
 
+import provider_fixture
+
 MODEL = "gpt-5"
 PROMPT = "Keep this weekly reset smoke task and its completed plan."
 CALL_ID = "weekly-reset-plan"
@@ -433,7 +435,7 @@ def serve(mock):
         do_GET = handle_request
         do_POST = handle_request
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = provider_fixture.LoopbackHTTPServer(("127.0.0.1", 0), Handler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     return server, worker

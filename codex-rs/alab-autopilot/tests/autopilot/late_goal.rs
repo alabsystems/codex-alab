@@ -107,6 +107,28 @@ impl LateGoal {
 }
 
 impl ThreadLifecycleContributor<Config> for LateGoal {
+    fn on_thread_start<'a>(
+        &'a self,
+        input: ThreadStartInput<'a, Config>,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            for contributor in self.threads() {
+                contributor
+                    .on_thread_start(ThreadStartInput {
+                        config: input.config,
+                        session_source: input.session_source,
+                        persistent_thread_state_available: input.persistent_thread_state_available,
+                        environments: input.environments,
+                        mcp_resource_client: input.mcp_resource_client.clone(),
+                        extension_metrics: input.extension_metrics.clone(),
+                        session_store: input.session_store,
+                        thread_store: input.thread_store,
+                    })
+                    .await;
+            }
+        })
+    }
+
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             for contributor in self.threads() {

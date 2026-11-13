@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "kind": "focused-native-qualification",
+  "source": "542c93f206357309657bc6073ed108c1aa3a00bf",
+  "upstream": "87b7bdbf2efb9cb6fb15d821ef535061012c0138",
+  "exit": 0,
+  "log": "${HOME}/.ubd/codex-alignment-87b7-composer-focused.log",
+  "log_sha256": "a4b4bf704d811799de562601783751af84de41f0cd796693ca87f6e97ee8abb8",
+  "controller": "${HOME}/.ubd/codex-alignment-192e-composer-focused.sh",
+  "controller_sha256": "268ca17f5c24b917c265d275c3238e941bb53009ac64c49f8f112d45cc123cac",
+  "lane": "Protected native explicit-unverified Trust 15698, locked offline build, 8 MiB Rust test stack",
+  "selections": [
+    {"filter": "status_surface::tests::", "passed": 26, "failed": 0, "ignored": 0},
+    {"filter": "alab_border::tests::", "passed": 3, "failed": 0, "ignored": 0},
+    {"filter": "tall_draft_height_saturates_at_the_terminal_limit", "passed": 1, "failed": 0, "ignored": 0}
+  ],
+  "observation": "The earlier 192e2ef3 candidate lost a row when activating a goal. With the ALab cap adapter, the existing test confirms a separate goal row, a stable draft cursor and an account click target confined to the account row.",
+  "scope": "Focused composer runtime checks. Full gate, package and adoption have separate evidence."
+}

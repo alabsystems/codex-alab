@@ -6,6 +6,7 @@
 mod child_restore;
 use super::LocalAgentRuntime;
 use crate::CodexThread;
+pub use child_restore::ExecIdleRestore;
 pub use child_restore::ExecPreparedChildRestore;
 pub use child_restore::ExecRestoredChild;
 pub use child_restore::ExecRestoredMember;
@@ -151,8 +152,34 @@ impl LocalAgentRuntime {
         Arc::clone(&self.exec_start_gate.quota_events)
     }
 
-    pub(crate) fn admit_exec_tree_start(&self) -> Result<OwnedRwLockReadGuard<()>> {
-        self.exec_start_gate.admit()
+    pub(crate) fn admit_upgrade_input(
+        &self,
+    ) -> Result<codex_alab_core::upgrade_barrier::Admission> {
+        self.alab_upgrade
+            .admit()
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))
+    }
+
+    pub(crate) fn admit_exec_tree_start(&self) -> Result<ExecStartAdmission> {
+        let manager = self
+            .alab_upgrade
+            .admit()
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+        let tree = self.exec_start_gate.admit()?;
+        Ok(ExecStartAdmission {
+            _tree: tree,
+            _manager: manager,
+        })
+    }
+
+    /// Mutation ownership follows native shutdown membership into detached
+    /// registration or cancellation cleanup. Passive completion watchers keep
+    /// ordinary membership without indefinitely preventing an idle transfer.
+    pub(crate) fn admit_exec_producer(&self) -> Result<super::AgentTreeMembership> {
+        let admission = self.admit_exec_tree_start()?;
+        let mut membership = self.admit_start()?;
+        membership.alab_exec_start = Some(Arc::new(admission));
+        Ok(membership)
     }
 
     pub(crate) async fn seal_exec_tree_starts(&self) -> Result<ExecTreeSeal> {
@@ -188,9 +215,286 @@ impl CodexThread {
     }
 }
 
+/// Retain both short tree admission and manager-wide admission through startup.
+pub(crate) struct ExecStartAdmission {
+    _tree: OwnedRwLockReadGuard<()>,
+    // Release the physical tree reader before advertising manager quiescence.
+    _manager: codex_alab_core::upgrade_barrier::Admission,
+}
+
+pub(crate) fn manager_upgrade(
+    manager: &std::sync::Weak<crate::thread_manager::ThreadManagerState>,
+) -> Arc<codex_alab_core::upgrade_barrier::State> {
+    manager.upgrade().map_or_else(
+        || Arc::new(codex_alab_core::upgrade_barrier::State::default()),
+        |manager| Arc::clone(&manager.alab_upgrade),
+    )
+}
+
+/// Manager-wide start/input barrier and exact loaded-thread inventory. This
+/// does not assert that its members are idle, persisted or restorable. The
+/// caller must prove those facts before combining commit with native teardown.
+pub struct UpgradeManagerBarrier {
+    transfer: codex_alab_core::upgrade_barrier::Transfer,
+    threads:
+        OwnedRwLockReadGuard<std::collections::HashMap<codex_protocol::ThreadId, Arc<CodexThread>>>,
+}
+
+impl UpgradeManagerBarrier {
+    pub fn threads(&self) -> Vec<Arc<CodexThread>> {
+        let mut threads = self.threads.values().cloned().collect::<Vec<_>>();
+        threads.sort_by_key(|thread| thread.session.thread_id.to_string());
+        threads
+    }
+
+    pub(crate) async fn invalidated(&self) {
+        self.transfer.invalidated().await;
+    }
+
+    pub fn valid(&self) -> bool {
+        self.transfer.valid()
+    }
+
+    pub(crate) fn protects_member(&self, thread: &CodexThread, committed: bool) -> bool {
+        let runtime = &thread.session.services.local_agent_runtime;
+        self.transfer.belongs_to(&runtime.alab_upgrade)
+            && self
+                .threads
+                .get(&thread.session.thread_id)
+                .is_some_and(|kept| std::ptr::eq(kept.as_ref(), thread))
+            && if committed {
+                runtime.alab_upgrade.committed()
+            } else {
+                self.transfer.valid()
+            }
+    }
+
+    /// Retain the exact members after commitment while releasing the registry
+    /// lock so their native shutdown and eviction can finish.
+    pub fn into_committed(self) -> Result<CommittedUpgradeInventory> {
+        if !self
+            .threads
+            .values()
+            .any(|thread| self.protects_member(thread, true))
+        {
+            return Err(CodexErr::InvalidRequest(
+                "upgrade inventory was not committed".into(),
+            ));
+        }
+        let threads = self.threads();
+        let transfer = self.transfer;
+        drop(self.threads);
+        Ok(CommittedUpgradeInventory { transfer, threads })
+    }
+
+    /// Linearize the final host decision with every root's native startup and
+    /// accepted input. A new admission revokes this attempt and proceeds; it is
+    /// never discarded merely because the update is being prepared.
+    pub fn commit_if(&mut self, decide: impl FnOnce() -> bool) -> bool {
+        self.transfer.commit_if(decide)
+    }
+}
+
+/// Data custody for the source's exact committed members, not execution authority.
+/// Registry retirement may now proceed; these handles keep the original queues alive.
+pub struct CommittedUpgradeInventory {
+    transfer: codex_alab_core::upgrade_barrier::Transfer,
+    threads: Vec<Arc<CodexThread>>,
+}
+
+impl CommittedUpgradeInventory {
+    pub fn threads(&self) -> &[Arc<CodexThread>] {
+        &self.threads
+    }
+
+    pub(crate) fn protects_member(&self, thread: &CodexThread) -> bool {
+        let runtime = &thread.session.services.local_agent_runtime;
+        self.transfer.belongs_to(&runtime.alab_upgrade)
+            && runtime.alab_upgrade.committed()
+            && self
+                .threads
+                .iter()
+                .any(|kept| std::ptr::eq(kept.as_ref(), thread))
+    }
+}
+
+impl CodexThread {
+    /// Capture every loaded root and private member under one manager admission.
+    /// Keep the registry read guard through the final decision so eviction and
+    /// replacement cannot silently change the captured inventory.
+    pub async fn prepare_upgrade_manager(&self) -> Result<UpgradeManagerBarrier> {
+        let runtime = &self.session.services.local_agent_runtime;
+        let manager = runtime.manager.upgrade().ok_or_else(|| {
+            CodexErr::InvalidRequest("upgrade thread manager is unavailable".into())
+        })?;
+        if !Arc::ptr_eq(&manager.alab_upgrade, &runtime.alab_upgrade) {
+            return Err(CodexErr::InvalidRequest(
+                "upgrade manager identity changed".into(),
+            ));
+        }
+        let transfer = manager
+            .alab_upgrade
+            .prepare()
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+        let threads = tokio::select! {
+            biased;
+            () = transfer.invalidated() => return Err(CodexErr::InvalidRequest(
+                "upgrade inventory was superseded".into(),
+            )),
+            threads = Arc::clone(&manager.threads).read_owned() => threads,
+        };
+        if !transfer.valid()
+            || !threads
+                .values()
+                .any(|thread| std::ptr::eq(thread.as_ref(), self))
+        {
+            return Err(CodexErr::InvalidRequest(
+                "upgrade inventory was superseded".into(),
+            ));
+        }
+        Ok(UpgradeManagerBarrier { transfer, threads })
+    }
+}
+
+impl crate::session::session::Session {
+    /// A post-turn probe can run after the idle observer queued a handoff.
+    /// Inspect without extracting input; only actual pending work needs admission.
+    pub(crate) async fn admit_exec_pending_work(&self) -> Option<ExecStartAdmission> {
+        if !self.input_queue.has_pending_mailbox_items().await {
+            return None;
+        }
+        self.services
+            .local_agent_runtime
+            .admit_exec_tree_start()
+            .ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn upgrade_preparation_yields_to_a_blocked_native_reload() {
+        let home = tempfile::tempdir().unwrap();
+        let config = crate::config::ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(home.path().to_owned())
+            .build()
+            .await
+            .unwrap();
+        let manager = crate::ThreadManager::with_models_provider_and_home_for_tests(
+            codex_login::CodexAuth::from_api_key("fixture"),
+            config.model_provider.clone(),
+            home.path().to_owned(),
+            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        );
+        let root = manager
+            .start_thread(crate::StartThreadOptions::new(config.clone()))
+            .await
+            .unwrap()
+            .thread;
+        let runtime = &root.session.services.local_agent_runtime;
+        let control = runtime.control(root.session.session_id());
+        let native_manager = runtime.manager.upgrade().unwrap();
+        let held = Arc::clone(&native_manager.threads).write_owned().await;
+        let mut transfer = runtime.alab_upgrade.prepare().unwrap();
+        let mut reload = Box::pin(control.ensure_v2_agent_loaded(
+            config,
+            codex_protocol::ThreadId::new(),
+            Some(Arc::clone(&root)),
+        ));
+        assert!(poll!(reload.as_mut()).is_pending());
+        assert!(!transfer.commit_if(|| panic!("native reload owns priority")));
+        drop(transfer);
+        assert!(runtime.alab_upgrade.prepare().is_err());
+        drop(reload);
+        assert!(root.is_running());
+        drop(held);
+        drop(root.prepare_upgrade_manager().await.unwrap());
+        root.shutdown_exec_tree().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn upgrade_producer_ownership_survives_cancellation_and_teardown_clones() {
+        let runtime = super::super::LocalAgentControl::default().runtime;
+        let watcher = runtime.admit_start().unwrap();
+        let mut prepared = runtime.alab_upgrade.prepare().unwrap();
+        let producer = runtime.admit_exec_producer().unwrap();
+        assert!(!prepared.commit_if(|| panic!("new native work must revoke transfer")));
+        drop(prepared);
+        let cleanup = producer
+            .clone()
+            .into_teardown_guard("upgrade_fixture", None);
+        let nested = cleanup.clone_for_teardown("upgrade_fixture_nested", None);
+        drop(producer);
+        assert!(matches!(
+            runtime.alab_upgrade.prepare(),
+            Err(codex_alab_core::upgrade_barrier::Refusal::PendingAdmission)
+        ));
+        cleanup.complete();
+        assert!(runtime.alab_upgrade.prepare().is_err());
+        let mut sealing = Box::pin(runtime.exec_start_gate.seal());
+        assert!(poll!(sealing.as_mut()).is_pending());
+        nested.complete();
+        let seal = sealing.await.unwrap();
+        drop(seal);
+        // The passive watcher still owns real shutdown membership, but neither
+        // a completed mutation nor its completed cleanup can strand admission.
+        drop(runtime.admit_exec_producer().unwrap());
+        let mut ready = runtime.alab_upgrade.prepare().unwrap();
+        assert!(ready.commit());
+        assert!(runtime.admit_exec_producer().is_err());
+        drop(watcher);
+    }
+
+    #[tokio::test]
+    async fn upgrade_forest_revocation_cancels_a_blocked_registry_read() {
+        let home = tempfile::tempdir().unwrap();
+        let config = crate::config::ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(home.path().to_owned())
+            .build()
+            .await
+            .unwrap();
+        let manager = crate::ThreadManager::with_models_provider_and_home_for_tests(
+            codex_login::CodexAuth::from_api_key("fixture"),
+            config.model_provider.clone(),
+            home.path().to_owned(),
+            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        );
+        let root = manager
+            .start_thread(crate::StartThreadOptions::new(config.clone()))
+            .await
+            .unwrap()
+            .thread;
+        let runtime = &root.session.services.local_agent_runtime;
+        let native_manager = runtime.manager.upgrade().unwrap();
+        let held = Arc::clone(&native_manager.threads).write_owned().await;
+        let invocation =
+            crate::config::ExecConfiguration::capture(&config, &Default::default()).unwrap();
+        let mut preparing = Box::pin(root.prepare_upgrade_forest(&invocation));
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(std::future::Future::poll(
+                preparing.as_mut(),
+                cx
+            ),))
+            .await
+            .is_pending()
+        );
+        let input = runtime.alab_upgrade.admit().unwrap();
+        assert!(input.interrupted_transfer());
+        drop(input);
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), preparing)
+            .await
+            .unwrap()
+            .err()
+            .expect("revoked inventory must return while write lock stays held");
+        assert!(error.contains("superseded"));
+        assert!(root.is_running());
+        drop(held);
+        drop(root.prepare_upgrade_forest(&invocation).await.unwrap());
+        root.shutdown_exec_tree().await.unwrap();
+    }
+
     use futures::poll;
 
     #[tokio::test]
@@ -240,5 +544,58 @@ mod tests {
         seal.commit();
         assert!(child.admit_exec_tree_start().is_err());
         assert!(other_tree.admit_exec_tree_start().is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_empty_post_turn_probe_does_not_revoke_a_prepared_upgrade() {
+        let (session, _) = crate::session::tests::make_session_and_context().await;
+        let session = Arc::new(session);
+        let mut transfer = session
+            .services
+            .local_agent_runtime
+            .alab_upgrade
+            .prepare()
+            .unwrap();
+        session.maybe_start_turn_for_pending_work().await;
+        assert!(transfer.valid());
+        assert!(transfer.commit());
+        assert!(session.active_turn.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_mail_revokes_preparation_without_extracting_the_accepted_message() {
+        let (session, _) = crate::session::tests::make_session_and_context().await;
+        let runtime = &session.services.local_agent_runtime;
+        let mut transfer = runtime.alab_upgrade.prepare().unwrap();
+        session
+            .input_queue
+            .enqueue_mailbox_communication(
+                crate::PendingAgentMessage::from(
+                    codex_protocol::protocol::InterAgentCommunication::new(
+                        codex_protocol::AgentPath::root(),
+                        codex_protocol::AgentPath::root(),
+                        Vec::new(),
+                        "accepted native pending work".into(),
+                        true,
+                    ),
+                ),
+                Default::default(),
+            )
+            .await;
+        let admission = session
+            .admit_exec_pending_work()
+            .await
+            .expect("pending work retains priority");
+        assert!(!transfer.commit_if(|| panic!("pending work revoked preparation")));
+        assert!(session.input_queue.has_pending_mailbox_items().await);
+        drop(admission);
+        drop(transfer);
+        let mut committed = runtime.alab_upgrade.prepare().unwrap();
+        assert!(committed.commit());
+        assert!(session.admit_exec_pending_work().await.is_none());
+        assert!(
+            session.input_queue.has_pending_mailbox_items().await,
+            "a committed source cannot extract the queued message"
+        );
     }
 }

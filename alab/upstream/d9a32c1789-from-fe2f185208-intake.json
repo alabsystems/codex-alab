@@ -1,0 +1,214 @@
+{
+  "schema": 1,
+  "base": "056cc935d8ac7c2fb30b9dbf17281636ee191091",
+  "target": "d9a32c178951695f365faa36a39d542e06a96e4f",
+  "frontier": "fe2f18520864ddbee86cdd4b103a9fefffe9c6a2",
+  "commits": [
+    {
+      "sha": "36ed546b77e91a61d52d482ab82e687a15fa30be",
+      "subject": "Apply session app overrides during MCP config refresh (#60730)",
+      "paths": [
+        "codex-rs/config/src/state.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/config/runtime_refresh.rs",
+        "codex-rs/core/src/config/runtime_refresh_tests.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/tests/suite/mcp_turn_metadata.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Apply explicit session apps overrides during MCP refresh, preserving omitted sections and restoring inheritance for empty maps. Validate both overrides and inherited effective app settings before publication, so tightening link approval takes effect on the next turn. Keep native stale-owner publication checks and ALab captured session/config state.",
+      "evidence": [
+        "Reviewed all six changed files, including ConfigLayerStack generic session-section replacement, the MCP refresh resolver, its five-case app/plugin matrix, rejected invalid inherited app configuration, and the actual next-turn link approval integration case."
+      ],
+      "revisit": "Run the new refresh and link-approval regressions without skips, plus product-policy and handoff contracts on the exact integrated source before qualification."
+    },
+    {
+      "sha": "ce6f7d9503dea36c90af9d264b20aa60448b0530",
+      "subject": "Allow model-facing ID sequences to resume from allocated IDs (#60732)",
+      "paths": [
+        "codex-rs/utils/model-facing-id/src/lib.rs",
+        "codex-rs/utils/model-facing-id/tests/generator.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Carry allocation ordinals with model-facing IDs and allow reconstruction of the next sequence position from the original seed/salt and last allocated ordinal. Display formatting and generator snapshot VERSION/state remain unchanged. Review consumers of the now-required serialized ordinal with the native-helper preference changes; do not infer compatibility from unchanged displayed IDs.",
+      "evidence": [
+        "Reviewed both changed utility files and the serialized-ID recovery test across ordinal 999/1000, along with the unchanged generator snapshot/restore path. No direct ModelFacingId use was found in ALab-owned Rust paths at the current base."
+      ],
+      "revisit": "Run the generator recovery/serialization cases and retained handoff allocator/state contracts after integrating the full batch; inspect new native-helper persistence consumers before clearing review."
+    },
+    {
+      "sha": "9018f3a3b021082ef186ddd6503c0b4fd7a26260",
+      "subject": "Preserve file-backed audio in tool outputs (#60735)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/ClientRequest.json",
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ItemCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ItemStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/RawResponseItemCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ReviewStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadForkResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadItemsListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadMetadataUpdateResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadReadResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadResumeParams.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadResumeResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRevertResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadTurnsListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadUnarchiveResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartParams.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/FunctionCallOutputContentItem.ts",
+        "codex-rs/app-server/tests/suite/v2/dynamic_tools.rs",
+        "codex-rs/code-mode-runtime/src/output/output_render.rs",
+        "codex-rs/code-mode-runtime/src/runtime/value.rs",
+        "codex-rs/core/src/context_manager/history.rs",
+        "codex-rs/core/src/context_manager/history_tests.rs",
+        "codex-rs/core/src/session/inject.rs",
+        "codex-rs/core/src/tools/code_mode/mod.rs",
+        "codex-rs/core/src/tools/code_mode/output_tests.rs",
+        "codex-rs/core/src/tools/code_mode/response_adapter.rs",
+        "codex-rs/core/src/tools/context.rs",
+        "codex-rs/core/tests/suite/scenarios_preparation.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/transcript_tests.rs",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/protocol/src/models/mcp_content.rs",
+        "codex-rs/tools/src/tool_output.rs",
+        "codex-rs/utils/audio/src/audio_preparation_tests.rs",
+        "codex-rs/utils/audio/src/lib.rs",
+        "codex-rs/utils/output-truncation/src/lib.rs",
+        "codex-rs/utils/output-truncation/src/truncate_tests.rs",
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/src/openai_codex/generated/v2_all.py",
+        "sdk/python/tests/test_artifact_workflow_and_binaries.py"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve remote file_id audio references as typed audio in tool results instead of flattening them to text. Keep inline audio wire compatibility, conservative file-audio truncation costs and duration-aware history estimates. Raw history injection rejects uploaded audio across messages and both tool-output forms; Code Mode continues to require inline MCP audio.",
+      "evidence": [
+        "Reviewed production protocol, history accounting, preparation, truncation, Code Mode adapters and runtime, tool-output rendering, expanded raw-injection scenarios, wire round-trip regression, SDK generator name preservation and generated Python shape. Generated schema and export fixtures must be regenerated and compared on the merged source."
+      ],
+      "revisit": "Before qualification, regenerate stable/experimental protocol exports and Python SDK artifacts with native tooling; run wire/audio budget/preparation cases, all three no-partial-history injection scenarios with networking enabled, and retained handoff contracts. Review file-audio metadata custody across live exec rather than treating remote IDs as local paths."
+    },
+    {
+      "sha": "9752e0e0bdb28aa2d21169078a6c4ae3ea9615d2",
+      "subject": "Add a Git credential helper for existing Codex logins (#60746)",
+      "paths": [
+        "codex-rs/cli/src/git_credential.rs",
+        "codex-rs/cli/src/lib.rs",
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/cli/tests/login.rs"
+      ],
+      "classes": [
+        "feature",
+        "security",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "product-policy"
+      ],
+      "decision": "adapt",
+      "reason": "Carry the hidden explicit-use Git credential protocol command without configuring Git automatically. Upstream restricts export to matching HTTPS Codex Git origins, file-backed unexpired ChatGPT credentials and effective managed workspace policy, ignores project auth configuration, does not refresh/store/erase credentials, and quits rather than prompting on unavailable authentication. ALab must retain its captured-source and retirement guarantees at this new credential export boundary. Add one final ALab hook to revalidate the prepared bearer against its original credential epoch, current cache and native source after the policy wait. Watch counters alone cannot detect replacement by another manager with equal counters. The command remains explicit-use only. The prepared output value holds an existing source resource lease through synchronous stdout delivery, stages the existing wire response, and revalidates before releasing any bytes; assignment cannot freeze between validation and output. Admission begins after policy loading.",
+      "evidence": [
+        "Read all four changed files, including the full credential helper, CLI dispatch and strict-config handling, first-record/capability tests and PAT-without-network-lookup regression. Checked that no Git configuration installation is added.",
+        "Inspected actual ALab host dispatch and credential provenance guards. Existing host replacement tests establish that a captured watch can remain unchanged while the selected real manager changes; the final export guard uses existing expected-source and extraction checks rather than relaxing managed-source admission. New owned regressions require unchanged bearer/source, refuse equal-token cross-manager export and closed/replaced hosts, and cover actual native EOF/policy withdrawal; execution pending.",
+        "Owned regression now checks source retirement remains pending until the prepared output is dropped, plus formatter refusal without any bearer bytes after a same-counter host replacement. Execution of the output-lease refinement is pending.",
+        "Inspected the selected Trust 15698 standard library: std::io::Write::write_fmt panics if Display manufactures fmt::Error instead of propagating a writer failure. Replaced the unpublished formatting adapter with an explicit staged write operation returning io::Result. Owned regressions cover normal std::io rendering, pre-render refusal and source replacement after rendering with no partial response released; final execution pending."
+      ],
+      "revisit": "Before qualifying this range, exercise ALab managed-source ownership/retirement and policy-wait races, destination/path/protocol refusals, unavailable/expired credentials and no token output on refusal. Existing AuthManager ownership rules must not be weakened to make the helper work."
+    },
+    {
+      "sha": "c320b5c69e74755a6efd4075ff01d4524ad6a4bf",
+      "subject": "Label seed arguments in the model-facing ID recovery test (#60748)",
+      "paths": [
+        "codex-rs/utils/model-facing-id/tests/generator.rs"
+      ],
+      "classes": [
+        "other"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Parameter-name comments label the existing seed literals in the recovery test. No executable behavior, serialization or scenario changes.",
+      "evidence": [
+        "Read the complete two-call comment-only diff against ce6f7d9503."
+      ],
+      "revisit": "The surrounding ID recovery regression remains part of the batch validation."
+    },
+    {
+      "sha": "d9a32c178951695f365faa36a39d542e06a96e4f",
+      "subject": "Capture saved Daybreak preferences for native helpers (#60749)",
+      "paths": [
+        "codex-rs/app-server/src/request_processors/config_processor.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/experimental_feature_list.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_read.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/helper_daybreak.rs",
+        "codex-rs/core/src/agent/helper_daybreak/turn.rs",
+        "codex-rs/core/src/agent/mod.rs",
+        "codex-rs/core/src/config/runtime_refresh.rs",
+        "codex-rs/core/src/session/config_refresh.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/turn_context.rs",
+        "codex-rs/core/src/session/turn_input.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/thread_manager/helper_daybreak_tests.rs",
+        "codex-rs/core/src/thread_manager_tests.rs",
+        "codex-rs/features/src/lib.rs",
+        "codex-rs/thread-store/src/error.rs",
+        "codex-rs/thread-store/src/error_tests.rs",
+        "codex-rs/thread-store/src/lib.rs",
+        "codex-rs/thread-store/src/local/pending_thread_metadata_tests.rs",
+        "codex-rs/thread-store/src/store.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Carry upstream saved Daybreak preference propagation for fresh native helpers with the upstream under-development feature disabled by default. Capture the observing account before asynchronous reads, retain sending-turn intent for nested spawns and queued work, preserve explicit Off over staged preferences, and refuse eligible child startup when a required preference read fails. Cold resumes and durable forks remain unenrolled.",
+      "evidence": [
+        "Reviewed all changed production and test paths, including native spawning and turn admission, stored/staged preference resolution, exact missing-thread classification, experimental enablement, refresh scopes and five actual helper lifecycle scenarios. SavedIntent and Enrollment are in-memory extension data, not serialized handoff state; carrying the flag does not establish live-exec compatibility.",
+        "Reviewed ALab exec_child_restore and exec_ephemeral_history preparation: persistent and in-memory replacements both use InitialHistory::Resumed. They therefore preserve upstream\u2019s deliberately unenrolled cold-resume boundary, rather than relabelling a serialized SavedIntent/AuthOwner as fresh authority. ExecRecoveryOptions carries explicit program choices separately as data under current provider/policy validation. This is code-path review, not a new runtime-test claim."
+      ],
+      "revisit": "Run the five helper lifecycle cases and storage/refresh regressions. Audit and exercise account-owner retirement during reads and nested spawn, policy changes, cold resume/fork and ALab live-exec handoff before qualifying this range. Retain upstream default-off activation and never recreate captured authority as destination authority."
+    }
+  ]
+}

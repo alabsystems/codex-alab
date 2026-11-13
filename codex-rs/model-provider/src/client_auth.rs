@@ -76,7 +76,7 @@ impl ClientAuth {
             ClientAuthSource::Provider(_) => None,
             ClientAuthSource::Runtime { mode, .. } => Some(*mode),
         };
-        crate::auth::observe_auth_selection(mode, "client_request", async {
+        ResolvedProviderAuth::alab_bound_resolution(crate::auth::observe_auth_selection(mode, "client_request", async { // ALAB(accounts): bound source-aware request auth at the provider boundary.
             match &self.source {
                 ClientAuthSource::Provider(provider) => {
                     Ok(ResolvedProviderAuth::new(Arc::clone(provider)))
@@ -92,7 +92,7 @@ impl ClientAuth {
                     Ok(ResolvedProviderAuth::for_runtime(selected, *mode))
                 }
             }
-        })
+        })) // ALAB(accounts): retain the original auth selection future behind type erasure.
         .await
     }
 

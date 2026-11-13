@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "kind": "native-mutation-qualification",
+  "observed_at": "2026-11-10T16:27:06.493940+00:00",
+  "source": "c58e35eb6779aa4283dd0901666ecc9c6f9a3309",
+  "source_modifier": "uncommitted one-line patch restoring Some(&self.auth_manager) in status collection; patch hash below; restored after authoritative terminal result",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "expected_exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "result": "mutation-killed",
+  "test": "request_processors::mcp_processor::alab_mcp_status_owner_tests::status_uses_selected_mcp_owner_when_harness_storage_is_unavailable",
+  "failure": "Unknown != BearerToken at final real status assertion; prerequisite owner assertions passed",
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-mutation.sh",
+      "sha256": "4a5d7dbdf063396a2c07611e37b7fe2b12ceeca1745c011c17fa422883df3294"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-mutation.log",
+      "sha256": "352d9a25eb7011af7c4250e81abb29a59204e0879d3e7ba89eb47b4f7b3ef517"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-mutation.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-mutation.patch",
+      "sha256": "95d7c2ce96d43da5c4356e60c3ca315bb68dc1c02b50bb96827d85115409667f"
+    }
+  ],
+  "limits": "Positive baseline same committed source passed global and thread status; old harness argument mutation fails global status. Fixture uses independent managers initialized from synthetic test credentials and a closed loopback MCP endpoint. This proves selection against unrelated storage failure, not all native-source epoch/account-switch or resumed-thread contracts. Production hook restored and worktree clean. Full gate and adoption separate."
+}

@@ -1,13 +1,14 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! Exhausted native retries can change transport without creating a standing warning.
+//! Native retries can change transport without creating a standing warning.
 
 use super::super::ResponsesStreamRequest;
 use super::super::ResponsesStreamRetryState;
 use super::super::handle_response_stream_error;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
+use codex_http_client::RetryAfter;
 use codex_login::CodexAuth;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -19,6 +20,7 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
 const CHILD_ROOT: &str = "ALAB_TRANSPORT_STATUS_CHILD_ROOT";
+const CHILD_CASE: &str = "ALAB_TRANSPORT_STATUS_CHILD_CASE";
 const COMPLETE: &str = "ALAB_TRANSPORT_STATUS_CHILD_OK";
 
 fn child_name() -> std::io::Result<String> {
@@ -31,6 +33,15 @@ fn child_name() -> std::io::Result<String> {
 #[tokio::test]
 async fn an_exhausted_websocket_retry_reports_http_recovery_without_a_warning()
 -> std::io::Result<()> {
+    run_transport_fallback_case("exhausted").await
+}
+
+#[tokio::test]
+async fn immediate_size_fallback_preserves_provider_deadline() -> std::io::Result<()> {
+    run_transport_fallback_case("size").await
+}
+
+async fn run_transport_fallback_case(case: &str) -> std::io::Result<()> {
     assert!(!codex_alab_core::active(), "only the exact child activates");
     let private = tempfile::Builder::new()
         .prefix("alab-transport-")
@@ -58,6 +69,7 @@ async fn an_exhausted_websocket_retry_reports_http_recovery_without_a_warning()
         ])
         .env_clear()
         .env(CHILD_ROOT, &private)
+        .env(CHILD_CASE, case)
         .env("HOME", private.join("home"))
         .env("USERPROFILE", private.join("home"))
         .env("CODEX_HOME", private.join("codex"))
@@ -151,13 +163,85 @@ async fn isolated_transport_fallback_child() -> std::io::Result<()> {
         std::env::var_os("CODEX_HOME").map(PathBuf::from),
         Some(private.join("codex"))
     );
-    tokio::time::timeout(Duration::from_secs(60), native_fallback_exercise())
+    let case = std::env::var(CHILD_CASE)
+        .map_err(|_| std::io::Error::other("missing private transport case"))?;
+    let exercise = async {
+        match case.as_str() {
+            "exhausted" => native_fallback_exercise().await,
+            "size" => immediate_size_fallback_exercise().await,
+            _ => panic!("unknown private transport case"),
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(60), exercise)
         .await
         .map_err(|_| std::io::Error::other("native fallback exercise hang detector"))?;
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "\n{COMPLETE}")?;
     stdout.flush()?;
     Ok(())
+}
+
+async fn immediate_size_fallback_exercise() {
+    codex_alab_core::activate();
+    let (session, turn, events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("private-transport-fixture-not-a-key"),
+        Vec::new(),
+        |config| config.model_provider.supports_websockets = true,
+    )
+    .await;
+    while events.try_recv().is_ok() {}
+    let step = StepContext::for_test(turn);
+    let mut client = session.services.model_client.new_session();
+    let mut state = ResponsesStreamRetryState {
+        retries: 1,
+        ..Default::default()
+    };
+    assert!(session.services.model_client.responses_websocket_enabled());
+    tokio::time::pause();
+    let before = tokio::time::Instant::now();
+    let error = CodexErr::new(codex_protocol::error::CodexErrorDetails::WebsocketMessageTooLarge)
+        .with_retry_after(RetryAfter::from_delay(Duration::from_secs(10)).unwrap());
+    {
+        let retry = handle_response_stream_error(
+            &mut state,
+            /*max_retries*/ 5,
+            error,
+            &mut client,
+            &session,
+            &step,
+            ResponsesStreamRequest::Sampling,
+        );
+        tokio::pin!(retry);
+        assert!(futures::poll!(&mut retry).is_pending());
+        assert!(
+            !session.services.model_client.responses_websocket_enabled(),
+            "size rejection selects HTTP before exhausting ordinary retries"
+        );
+        assert!(events.try_recv().is_err(), "the provider wait precedes status");
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert!(futures::poll!(&mut retry).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(retry.await.is_ok());
+    }
+    assert!(tokio::time::Instant::now() >= before + Duration::from_secs(10));
+    assert_eq!(state.retries, 0);
+    let notices = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(notices.len(), 1, "one actual fallback notice: {notices:?}");
+    assert_eq!(notices[0].id, step.turn.sub_id);
+    assert!(
+        matches!(
+            &notices[0].msg,
+            EventMsg::StreamError(error)
+                if error.message == "Reconnecting over HTTPS"
+                    && error.codex_error_info == Some(CodexErrorInfo::ResponseStreamDisconnected {
+                        http_status_code: None,
+                    })
+                    && error.additional_details.as_deref().is_some_and(|details|
+                        details.contains("message size limit"))
+        ),
+        "the active retry channel retains the size diagnostic: {:?}",
+        notices[0]
+    );
 }
 
 async fn native_fallback_exercise() {

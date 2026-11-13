@@ -1820,6 +1820,7 @@ async fn response_stream_records_last_model_feedback_ids() {
             response_id: "resp-123".to_string(),
             token_usage: None,
             usage_metadata: None,
+            reasoning_removals: None,
             end_turn: Some(true),
         }),
     ]);
@@ -1868,7 +1869,7 @@ async fn bedrock_unauthorized_error_uses_provider_mapping() {
         &mut auth_recovery,
         &mut provider_auth_recovery_attempted,
         &test_session_telemetry(),
-        &provider,
+        codex_model_provider::alab_gateway_recovery::RequestRecovery::new(&provider, &codex_model_provider::unauthenticated_auth_provider()), // ALAB(accounts): non-gateway recovery control has no gateway request context.
         /*event_sender*/ None,
         /*turn_id*/ None,
     )
@@ -1965,7 +1966,7 @@ async fn provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_fail
             &mut auth_recovery,
             &mut provider_auth_recovery_attempted,
             &telemetry,
-            &provider,
+            codex_model_provider::alab_gateway_recovery::RequestRecovery::new(&provider, &codex_model_provider::unauthenticated_auth_provider()), // ALAB(accounts): non-gateway recovery control has no gateway request context.
             Some(&event_sender),
             Some("turn-1"),
         )
@@ -1984,7 +1985,7 @@ async fn provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_fail
                 &mut auth_recovery,
                 &mut provider_auth_recovery_attempted,
                 &telemetry,
-                &provider,
+                codex_model_provider::alab_gateway_recovery::RequestRecovery::new(&provider, &codex_model_provider::unauthenticated_auth_provider()), // ALAB(accounts): non-gateway recovery control has no gateway request context.
                 Some(&event_sender),
                 Some("turn-1"),
             )
@@ -2864,6 +2865,7 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
             response_id: "response".into(),
             token_usage: None,
             usage_metadata: None,
+            reasoning_removals: None,
             end_turn: None,
         }))
         .await?;

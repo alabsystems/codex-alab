@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:54:18.607950+00:00",
+  "source": "95f482eaf31f0636a9cb6b8cd4ce9243498108b5",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "terminal_hyperlinks::tests::buffer_hyperlinks_follow_wrapped_halfwidth_dakuten",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::buffer_hyperlinks_follow_word_wrapping",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::buffer_hyperlinks_follow_wrapped_wide_glyphs",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::decorates_a_contiguous_web_link_with_one_osc8_pair",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::discovers_punctuated_web_url_columns",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::buffer_hyperlinks_preserve_visible_cell_width_for_ratatui_diff",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::matching_hyperlinks_preserve_visible_cell_width_for_ratatui_diff",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::only_web_destinations_receive_osc8",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::preserves_balanced_parentheses_in_bare_web_urls",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::trusted_file_destination_receives_osc8_without_enabling_plain_file_links",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::buffer_hyperlinks_follow_scrolled_wrapped_rows",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::forced_width_hyperlinks_render_wide_and_halfwidth_cells_snapshot",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::wrapping_maps_repeated_link_labels_by_source_position",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::wrapping_maps_multiple_links_across_indented_unicode_lines",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::hyperlink_columns_follow_a_long_prefix_without_wrapping",
+      "status": "ok"
+    },
+    {
+      "name": "terminal_hyperlinks::tests::trusted_workspace_files_require_confined_regular_inert_sources",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-hyperlinks-native.sh",
+      "sha256": "a0e3c537448710652ccf4dce3967b07e3a806c53f5f3105119341d57bcfc46c9"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-hyperlinks-native.log",
+      "sha256": "994dcf3dd241298f2821c3566a65cb254495d54eefa8ef72317ff67ddbd76a16"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-hyperlinks-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Nonempty terminal_hyperlinks::tests parent-module selection passed with zero failures or ignored tests; other TUI tests filtered out as recorded. Covers hyperlink cell widths, wrapping, scrolling, Unicode and clipping fixtures. Separate regression_tests module and real terminal interaction are outside this selection. Does not qualify full gate, complete intake, native credential images or adoption.",
+  "suites": [
+    {
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 6332
+    }
+  ]
+}

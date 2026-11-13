@@ -72,6 +72,8 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+[[ "${check}" -eq 1 || "${push}" -eq 0 ]] \
+  || alab_die "--no-check requires --no-push: every published sync must pass alab/check.sh"
 [[ "${stepwise}" -eq 0 || "${push}" -eq 1 ]] \
   || alab_die "--stepwise lands its clean prefix before merging further, so it cannot run with --no-push"
 alab_upstream_ready
@@ -172,10 +174,37 @@ take_lock() {
   trap 'kill "${lock_holder}" 2>/dev/null || true' EXIT
 }
 
+# Set sync_holder without changing the registered worktrees. NUL records retain
+# unusual path names; the trailing slash protects newlines from $(...) trimming.
+sync_branch_holder() {
+  local encoded
+  sync_holder=""
+  encoded="$(git worktree list --porcelain -z | (
+    entry_path="" selected_path="" matches=0
+    while IFS= read -r -d '' record; do
+      if [[ "${record}" == 'worktree '* ]]; then
+        entry_path="${record#worktree }"
+      elif [[ "${record}" == 'branch refs/heads/alab-sync' ]]; then
+        [[ -n "${entry_path}" ]] || exit 1
+        selected_path="${entry_path}"
+        matches=$((matches + 1))
+      elif [[ -z "${record}" ]]; then
+        entry_path=""
+      fi
+    done
+    if [[ "${matches}" -gt 1 ]]; then
+      echo "alab: multiple worktrees hold the reserved alab-sync branch" >&2
+      exit 1
+    fi
+    [[ "${matches}" -eq 0 ]] || printf '%s/' "${selected_path}"
+  ))" || return $?
+  sync_holder="${encoded%/}"
+}
+
 ensure_worktree() {
   local holder
-  holder="$(git worktree list --porcelain \
-    | awk '/^worktree /{ p = substr($0, 10) } $0 == "branch refs/heads/alab-sync" { print p }')"
+  sync_branch_holder
+  holder="${sync_holder}"
   # A sync worktree deleted by hand is still registered: drop that registration alone (git
   # worktree prune would drop a person's worktree on a disk that is not mounted now, too),
   # unless alab-sync holds commits main lacks: a new sync would reset the branch and leave them
@@ -423,12 +452,13 @@ change is its own commit. Then alab/sync.sh --continue"
 }
 
 run_check() {
-  local rc=0
+  local rc=0 check_python
   [[ "${check}" -eq 1 ]] || return 0
   alab_say "checking $(in_wt log -1 --format='%h %s') with alab/check.sh"
-  # The executable gate owns native project selection, the shared target
-  # inventory and containment for both source and pristine.
-  (cd "${wt}" && ./alab/check.sh) || rc=$?
+  # The recorder invokes the unchanged executable gate, which owns native
+  # selection, targets and containment; its observation grants no execution lane.
+  check_python="$(alab_python_311)" || alab_die "qualification recording needs Python 3.11+"
+  (cd "${wt}" && "${check_python}" -I -B ./alab/qualification.py) || rc=$?
   # Killed by a signal (memory pressure, a person's Ctrl-C), not failed: no fault is known yet,
   # so no stop is recorded and the next run checks again. check.sh passes a killed cargo's
   # status up too.
@@ -719,7 +749,17 @@ origin/main..upstream/main 2>/dev/null || echo '?') upstream commits not yet in 
         ;;
       *) echo "sync activity=unknown"; exit "${activity_rc}" ;;
     esac
-    if [[ ! -e "${wt}/.git" ]]; then
+    if ! sync_branch_holder; then
+      echo "sync worktree  unknown (could not read reserved branch holder)"
+      exit 1
+    fi
+    if [[ -n "${sync_holder}" && ! -e "${sync_holder}/.git" ]]; then
+      printf 'sync worktree  registered branch checkout unavailable (%q)\n' "${sync_holder}"
+      printf '  configured worktree: %q\n' "${wt}"
+    elif [[ -n "${sync_holder}" && ! "${sync_holder}" -ef "${wt}" ]]; then
+      printf 'sync worktree  branch held elsewhere (%q)\n' "${sync_holder}"
+      printf '  configured worktree: %q\n' "${wt}"
+    elif [[ ! -e "${wt}/.git" ]]; then
       echo "sync worktree  none yet (${wt})"
     elif merging || unlanded; then
       if merging; then

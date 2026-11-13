@@ -21,9 +21,14 @@ def cleanup_allowed(repo):
     or an inability to establish its absence, preserves rather than deleting data.
     """
     try:
+        # The explicit clone owns this decision, not a caller's Git redirect.
+        environment = {key: value for key, value in os.environ.items()
+                       if not key.startswith("GIT_")}
+        environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                           GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0")
         result = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True, timeout=20,
+            capture_output=True, timeout=20, env=environment,
         )
         if result.returncode or not result.stdout.endswith(b"\n"):
             raise ValueError("cannot locate the clone's common directory")

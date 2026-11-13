@@ -134,6 +134,7 @@ libc = { workspace = true }
 codex-windows-sandbox = { workspace = true }
 
 [dev-dependencies]
+codex-alab-core = { path = "../alab-core", features = ["test-support"] } # ALAB(test): inspect actual compressed first-party request bodies.
 codex-message-board = { workspace = true }
 zip = { workspace = true }
 codex-uds = { workspace = true }

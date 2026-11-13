@@ -4,8 +4,9 @@
 //! The native inbox in the TUI (CONTRACT §5 "inbox"): a typed `Inbox: task @<off>` is
 //! resolved by codex-alab itself.
 //!
-//! A manager's `aterm drive task` posts the task and types that one line when the worker is
-//! idle; the line stays the trigger (nothing is typed or woken by mail itself). A sandboxed
+//! A manager's `aterm drive task` posted the task and typed that one line when the worker was
+//! idle, until aterm retired it (b62f087cd7, 5c2262a231); a person or another driver may still
+//! type one, and the line stays the trigger (nothing is typed or woken by mail itself). A sandboxed
 //! codex cannot read its inbox, so with a proven aterm claim (acting or on standby) the TUI
 //! reads the mail ([`read`]), and the turn carries the sender's words fenced as data
 //! ([`turn_text`]), the transcript still showing only the typed line. Mail aterm does not

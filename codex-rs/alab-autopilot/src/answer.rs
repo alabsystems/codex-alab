@@ -33,14 +33,20 @@
 //!   question with no options gets it too where it names a destructive act, as Land answers a
 //!   prose question that names one: Cruise's [`words::REVERSIBLE_ANSWER`] ends `and keep
 //!   going`, which is no landing, and Land's text itself rules out a force push and deleted
-//!   work. An unmarked question that names a destructive act still takes its one refusal, else
-//!   a person, under Land's rule (aterm's `destructive_unmarked`, answered by
-//!   `recommended_instead`). `ask` and `answer_questions` off stay a person's under Land: Land
-//!   answers only where a word already does.
-//! - Left to a person (attention): `ask`, `answer_questions` off, a secret question, a person
-//!   who began answering, a `(Recommended)` answer kept for every later ask, or an unmarked
-//!   question whose every option names a destructive act, keeps its answer, or approves what
-//!   it does not say beside an act.
+//!   work. An unmarked option question that names a destructive act still takes an option
+//!   under Land's rule, as under every word (aterm's `destructive_unmarked`, answered by
+//!   `recommended_instead`): where its own header or question names the act, its one refusal,
+//!   else a person; where only an option's words name one, [`unmarked_pick`]'s option. `ask`
+//!   stays a person's under Land: Land answers only where a word already does.
+//! - The `questions` word is aterm's resolution, and the only one read: aterm sends the
+//!   session's own `meta questions` word over its `answer_questions` switch, and the switch off
+//!   with no such word as `ask` (aterm `harness_policy_verb.rs` `questions`, `approval_loop.rs`
+//!   `session_word`). The raw `answer_questions=` beside it is not read here, so a session's
+//!   word over an off switch is answered, as aterm's own loop answers that dialog.
+//! - Left to a person (attention): `ask` (the session's word, or the off switch's), a secret
+//!   question, a person who began answering, a `(Recommended)` answer kept for every later ask,
+//!   or an unmarked question whose every option names a destructive act, keeps its answer, or
+//!   approves what it does not say beside an act.
 //! - What aterm's text path keeps a person's beside these has no counterpart on the overlay.
 //!   The TUI glue applies a posted answer whole, in one step and its notes with it, so no key of
 //!   codex-alab's is ever half sent: a switch of the Autopilot after an answer is posted cannot
@@ -170,9 +176,6 @@ fn question(
     begun: Option<&str>,
     policy: &Policy,
 ) -> BoxDecision {
-    if !policy.answer_questions {
-        return BoxDecision::Leave("answer_questions is off".to_string());
-    }
     let Some(priority) = Priority::of(policy) else {
         return BoxDecision::Leave("this session's questions word is `ask`".to_string());
     };

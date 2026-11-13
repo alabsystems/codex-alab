@@ -37,6 +37,9 @@ mod turns_routing_tests;
 #[cfg(all(test, unix))]
 #[path = "upgrade_finish_order_tests.rs"]
 mod upgrade_finish_order_tests;
+#[cfg(all(test, unix))]
+#[path = "upgrade_readiness_order_tests.rs"]
+mod upgrade_readiness_order_tests;
 #[cfg(test)]
 #[path = "upgrade_handoff_native_tests.rs"]
 mod upgrade_handoff_native_tests;
@@ -158,20 +161,64 @@ pub(super) fn overlay(open: bool) {
 pub(super) fn accept_upgrade(app: &App, request: codex_alab_tui::upgrade::UpgradeRequest) -> bool {
     overlay(app.overlay.is_some());
     observe(app);
+    request.decide(upgrade_ready(app))
+}
+
+fn upgrade_ready(app: &App) -> bool {
     let chat = &app.chat_widget;
-    request.decide(
-        !chat.is_user_turn_pending_or_running()
-            && matches!(
-                chat.alab_program_state(),
-                codex_alab_tui::session::ProgramState::Idle
-                    | codex_alab_tui::session::ProgramState::Done
-                    | codex_alab_tui::session::ProgramState::Error
-            )
-            && chat.composer_is_empty()
-            && !chat.alab_queued_input()
-            && chat.no_modal_or_popup_active()
-            && !chat.has_active_view()
-            && chat.external_editor_state() == ExternalEditorState::Closed
-            && app.overlay.is_none(),
-    )
+    !chat.is_user_turn_pending_or_running()
+        && matches!(
+            chat.alab_program_state(),
+            codex_alab_tui::session::ProgramState::Idle
+                | codex_alab_tui::session::ProgramState::Done
+                | codex_alab_tui::session::ProgramState::Error
+        )
+        && chat.composer_is_empty()
+        && !chat.alab_queued_input()
+        && chat.no_modal_or_popup_active()
+        && !chat.has_active_view()
+        && chat.external_editor_state() == ExternalEditorState::Closed
+        && app.overlay.is_none()
+}
+
+/// Run while the TUI/runtime and event pump are alive, before ShutdownFirst.
+/// A capture-aware request cannot commit with only the old ready boolean.
+pub(super) async fn accept_upgrade_and_capture(
+    app: &App,
+    tui: &crate::tui::Tui,
+    request: codex_alab_tui::upgrade::UpgradeRequest,
+) -> std::io::Result<bool> {
+    if !request.requires_context() {
+        return Ok(accept_upgrade(app, request));
+    }
+    overlay(app.overlay.is_some());
+    observe(app);
+    if !upgrade_ready(app) {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        let input = match tui.alab_prepare_upgrade_capture() {
+            Ok(input) => input,
+            Err(error) => {
+                codex_alab_tui::upgrade::update_pending(format!("Update pending: {error}"));
+                return Ok(false);
+            }
+        };
+        match request.decide_with_context(true, input) {
+            codex_alab_core::session::UpgradeDispatch::Capturing(completion) => {
+                completion.wait().await.map_err(std::io::Error::other)?;
+                Ok(true)
+            }
+            codex_alab_core::session::UpgradeDispatch::Refused => Ok(false),
+            codex_alab_core::session::UpgradeDispatch::Ready => Err(std::io::Error::other(
+                "capture request returned plain leave",
+            )),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tui;
+        Ok(false)
+    }
 }

@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:59:26.822173+00:00",
+  "source": "46e86e11742bbc538b5fb469d6140a41d7292762",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "suite::scenarios::injected_agent_mail::injected_agent_message_interrupting_sampling_survives_mid_turn_compaction::instant_interrupt_enabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::injected_agent_mail::injected_agent_message_interrupting_sampling_survives_mid_turn_compaction::instant_interrupt_disabled",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-mail-preemption-native.sh",
+      "sha256": "ccce9bcdc283bb2d73ebe88a0f70b5a7c4cfd0e160064d7125d27f58a03baede"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-mail-preemption-native.log",
+      "sha256": "52cdb98b80a34d8be56ea42eb6e73f6c8855f13117e732bf4c63f8e3ca232798"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-mail-preemption-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Two individually selected native integration tests passed, zero failed/ignored, one per process. Pending injected mail survives interrupted sampling and mid-turn compaction with instant interrupt enabled and disabled. Separate processes avoid the shared parameterized Insta snapshot failure, preserved in the first receipt. Other integration tests filtered out. Does not qualify all delivery/recovery, native credential images, full gate, complete intake or adoption."
+}

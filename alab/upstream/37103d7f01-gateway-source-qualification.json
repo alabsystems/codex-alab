@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:30:19.076223+00:00",
+  "source": "b71d9ec5e9368bfd8ef354331ac4f3681fc459b9",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "gateway_auth::alab_source::tests::cancelled_gateway_selection_keeps_owner_until_the_actual_command_finishes",
+      "status": "ok"
+    },
+    {
+      "name": "gateway_auth::alab_source::tests::gateway_catalog_and_inference_share_only_the_same_selected_export",
+      "status": "ok"
+    },
+    {
+      "name": "gateway_auth::alab_source::tests::gateway_cache_tracks_sources_and_late_rejections_without_cross_owner_reuse",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-b32-gateway-source-controls-v2-native.sh",
+      "sha256": "6bd90d484676e1f7b77e9d10af3afa35143c65064883781b5a3a5b479b9cdf3e"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-gateway-source-controls-native.log",
+      "sha256": "1c1ba0dc938f88ce0161ecc93eac191593644319959513f93392ea4f01385ffa"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-gateway-source-controls-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "One nonempty helper-admitted selection, three passed, zero failed/ignored. Local selected-export/source fixtures do not establish live gateway credentials, compiled native credential-image lifecycle, all host/account transitions, full gate, platform parity, complete intake or adoption."
+}

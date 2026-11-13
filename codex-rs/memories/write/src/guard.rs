@@ -13,7 +13,7 @@ pub(crate) async fn rate_limits_ok(auth_context: &ProviderAuthContext, config: &
 }
 
 async fn rate_limits_check(auth_context: &ProviderAuthContext, config: &Config) -> Option<bool> {
-    let Ok(_assignment_resource) = auth_context.credentials.alab_account_resource() else { return Some(false); }; // ALAB(accounts): admit source-owned background work before resolving runtime credentials.
+    let Ok(_assignment_resource) = auth_context.credentials.alab_account_resource() else { return Some(false); }; // ALAB(accounts): skip unadmitted background work before reading source credentials.
     let (auth, captured_factory) = auth_context
         .credentials
         .auth_with_http_client_factory()

@@ -18,11 +18,12 @@ pub async fn connect(config: &Config) -> Result<AppServerClient> {
     let factory = config.http_client_factory();
     let policy = factory.network_policy().clone().for_current_account();
     let factory = factory.with_network_policy(policy);
-    let auth = config
-        .auth_config()
+    let storage = config.auth_config();
+    let auth = storage
         .load_auth(/*enable_codex_api_key_env*/ false)
         .await?
         .ok_or_else(|| eyre!("Sign in with ChatGPT and reopen Codex to use Cloud."))?;
+    let factory = auth.alab_bind_http_client_factory(factory)?; // ALAB(accounts): retain the loaded credential's source policy on the Cloud transport.
     if !auth.is_chatgpt_auth() || auth.is_fedramp_account() {
         bail!("This account is not supported by the cloud conversation preview.");
     }
@@ -35,11 +36,19 @@ pub async fn connect(config: &Config) -> Result<AppServerClient> {
     {
         bail!("Your ChatGPT credential expired. Reopen Codex to reconnect.");
     }
-    factory.network_policy().acquire(&ORIGIN.parse()?)?;
+    let origin = ORIGIN.parse()?;
+    let permit = factory.network_policy().alab_idle_permit(&origin)?; // ALAB(accounts): retain the frozen credential source without idle activity.
     let credentials = cloud::Credentials::new(&token, &account_id)?;
     let client = cloud::Client::new(&factory, ORIGIN, credentials)?;
     Ok(start_worker(
         client,
+        super::idle::Login {
+            storage,
+            mode: auth.api_auth_mode(),
+            token,
+            account: account_id,
+            permit,
+        },
         protocol::GetAccountResponse {
             user_id: auth.get_chatgpt_user_id(),
             account: Some(protocol::Account::Chatgpt {

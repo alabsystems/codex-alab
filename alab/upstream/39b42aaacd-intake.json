@@ -1,0 +1,385 @@
+{
+  "schema": 1,
+  "base": "c4b13b947e45d4a537431dabdb4bb705ab3d3ebe",
+  "target": "39b42aaacdbb55b86528b4294443696985c348ee",
+  "frontier": "064b2d9bca2b5ba2f9f399ffefd06a75d97852f0",
+  "commits": [
+    {
+      "sha": "1c9b058d2694b736798d1b1ce2d3fd60a0fb15ac",
+      "subject": "Unify Guardian context preparation across reviewers (#60498)",
+      "paths": [
+        "codex-rs/core/src/guardian/input_budget_tests.rs",
+        "codex-rs/ext/guardian-reviewer/src/prompt.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/request.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/transcript.rs",
+        "codex-rs/guardian-context/src/composition.rs",
+        "codex-rs/guardian-context/src/composition_tests.rs",
+        "codex-rs/guardian-context/src/enforcement_tests.rs",
+        "codex-rs/guardian-context/src/entry.rs",
+        "codex-rs/guardian-context/src/images_tests.rs",
+        "codex-rs/guardian-context/src/lib.rs",
+        "codex-rs/guardian-context/src/preparation/mod.rs",
+        "codex-rs/guardian-context/src/preparation/source_tests.rs",
+        "codex-rs/guardian-context/src/preparation/transcript.rs",
+        "codex-rs/guardian-context/src/preparation/transcript_tests.rs",
+        "codex-rs/guardian-context/src/registry_tests.rs",
+        "codex-rs/guardian-context/src/retained_instructions_tests.rs",
+        "codex-rs/guardian-context/src/reviews_tests.rs",
+        "codex-rs/guardian-context/src/transcript.rs",
+        "codex-rs/guardian-context/src/transcript_tests.rs",
+        "codex-rs/guardian-context/tests/cache_prefix.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff",
+        "provider-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Retain original captured Guardian evidence and prepare fixed/elastic reviewer requests through the shared entry point. Preserve cursor numbering and captured review policy across ALab handoff; qualification must check both reviewer profiles.",
+      "evidence": [
+        "Source inspection: git show 1c9b058d2694b736798d1b1ce2d3fd60a0fb15ac",
+        "alab/upstream/39b42aaacd-resolution.md"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "0e6f153732cc12bb8d82672c05b4d4840268af33",
+      "subject": "Derive sandbox telemetry labels directly from permission profiles (#60500)",
+      "paths": [
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/otel/src/events/session_telemetry.rs",
+        "codex-rs/otel/tests/suite/otel_export_routing_policy.rs",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/protocol/src/permissions.rs",
+        "codex-rs/protocol/src/permissions_tests.rs"
+      ],
+      "classes": [
+        "refactor",
+        "telemetry"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Use upstream profile-derived diagnostic labels and equivalent legacy-write fallback helpers. Labels do not authorize execution; this decision enables no telemetry exporter.",
+      "evidence": [
+        "alab/upstream/39b42aaacd-resolution.md",
+        "Source inspection: git show 0e6f153732cc12bb8d82672c05b4d4840268af33"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "aa39ded1534b55280bbea0ae1bd021c9d155d01b",
+      "subject": "Trace MCP refresh causes and plugin metadata changes (#60505)",
+      "paths": [
+        "codex-rs/app-server/src/effective_plugin_change.rs",
+        "codex-rs/app-server/src/request_processors/account_processor.rs",
+        "codex-rs/app-server/src/request_processors/account_processor/workspace_switching.rs",
+        "codex-rs/app-server/src/request_processors/marketplace_processor.rs",
+        "codex-rs/app-server/src/request_processors/mcp_processor.rs",
+        "codex-rs/app-server/src/request_processors/plugins.rs",
+        "codex-rs/core-plugins/src/lib.rs",
+        "codex-rs/core-plugins/src/manager.rs",
+        "codex-rs/core-plugins/src/manager_tests.rs",
+        "codex-rs/core-plugins/src/remote_metadata.rs",
+        "codex-rs/core-plugins/src/remote_metadata_tests.rs",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/core/src/session/config_refresh.rs",
+        "codex-rs/core/src/session/environment.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/core/src/session/mcp_prewarm.rs",
+        "codex-rs/core/src/session/mcp_refresh.rs",
+        "codex-rs/core/src/session/mcp_refresh_tests.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/plugin_selection.rs",
+        "codex-rs/core/src/session/step_activation_tests.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/src/session/turn_input_tests.rs",
+        "codex-rs/core/src/session/turn_start_mcp_tests.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/tasks/regular.rs",
+        "codex-rs/core/src/thread_manager.rs"
+      ],
+      "classes": [
+        "refactor",
+        "telemetry"
+      ],
+      "features": [
+        "account-isolation",
+        "product-policy"
+      ],
+      "decision": "adapt",
+      "reason": "Retain reason-bearing invalidation, cancellation restoration and metadata-change diagnostics. The ALab destination adapter supplies RuntimeAuthChanged after actual generation checks. Diagnostic diffs expose field names rather than plugin field values; existing plugin activation and exporter policy remain separate.",
+      "evidence": [
+        "Source inspection: git show aa39ded1534b55280bbea0ae1bd021c9d155d01b",
+        "alab/upstream/39b42aaacd-resolution.md"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "3cd64c8d7c688a7ed800742bd0effb81013f1ffb",
+      "subject": "Preserve MCP trace context when tracing is disabled (#60506)",
+      "paths": [
+        "codex-rs/app-server/src/request_processors/mcp_processor.rs",
+        "codex-rs/app-server/tests/common/test_app_server.rs",
+        "codex-rs/app-server/tests/suite/v2/mcp_resource/caller_metadata.rs",
+        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/codex-mcp/src/connection_manager/resources.rs",
+        "codex-rs/codex-mcp/src/rmcp_client.rs",
+        "codex-rs/exec-server/src/client/rpc_http_client.rs",
+        "codex-rs/exec-server/src/rpc.rs",
+        "codex-rs/otel/src/lib.rs",
+        "codex-rs/otel/src/trace_context.rs",
+        "codex-rs/rmcp-client/src/http_client_adapter.rs",
+        "codex-rs/rmcp-client/src/lib.rs",
+        "codex-rs/rmcp-client/src/trace_context.rs"
+      ],
+      "classes": [
+        "refactor",
+        "telemetry"
+      ],
+      "features": [
+        "account-isolation",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Carry validated request-local W3C fallback through MCP background transport while preserving active-span precedence and authentication scope. This adds correlation on existing requests, not exporter activation or credential authority.",
+      "evidence": [
+        "Source inspection: git show 3cd64c8d7c688a7ed800742bd0effb81013f1ffb",
+        "alab/upstream/39b42aaacd-resolution.md"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "1099fe069438099b8c1d6244f797ffd8515b6de0",
+      "subject": "Use hermetic LLVM for Windows MSVC Bazel builds (#60507)",
+      "paths": [
+        ".bazelrc",
+        ".github/workflows/rust-release-windows.yml",
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        "bazel/rules/runtime_package.bzl",
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml",
+        "codex-rs/app-server-test-client/BUILD.bazel",
+        "codex-rs/app-server-test-client/Cargo.toml",
+        "codex-rs/app-server-test-client/src/lib.rs",
+        "codex-rs/config-schema/src/main.rs",
+        "codex-rs/hooks/src/bin/write_hooks_schema_fixtures.rs",
+        "codex-rs/utils/cargo-bin/BUILD.bazel",
+        "codex-rs/utils/cargo-bin/README.md",
+        "codex-rs/utils/cargo-bin/src/lib.rs",
+        "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs",
+        "defs.bzl",
+        "patches/BUILD.bazel",
+        "patches/llvm_mingw_import_warnings.patch",
+        "patches/llvm_rusty_v8_custom_libcxx.patch",
+        "patches/llvm_windows_arm64_powl.patch",
+        "patches/llvm_windows_mingw_compat.patch",
+        "patches/opusic-sys_presume_neon.patch",
+        "patches/protobuf_windows_arm64_seh.patch",
+        "patches/ring_windows_msvc_include_dirs.patch",
+        "patches/rules_cc_windows_native_llvm.patch",
+        "patches/rules_rs_bindgen_v0_0_4.patch",
+        "patches/rules_rs_build_script_deps_annotation.patch",
+        "patches/rules_rs_rust_debug_modes.patch",
+        "patches/rules_rs_windows_msvc_linker.patch",
+        "patches/rules_rs_workspace_package_version.patch",
+        "patches/rules_rs_zlib_snapshot_urls.patch",
+        "patches/rules_rust_build_script_tools_transition.patch",
+        "patches/rules_rust_declared_msvc_linker.patch",
+        "patches/rules_rust_release_build_script_profile.patch",
+        "patches/rules_rust_windows_execroot_separators.patch",
+        "patches/rules_rust_windows_msvc_direct_link_args.patch",
+        "patches/rules_rust_windows_process_wrapper_skip_temp_outputs.patch",
+        "third_party/openssl/BUILD.bazel",
+        "third_party/openssl/openssl_sys.BUILD.bazel",
+        "third_party/sqlite/BUILD.bazel",
+        "third_party/sqlite/libsqlite3_sys.BUILD.bazel",
+        "third_party/sqlite/sqlite_build_info.bzl",
+        "third_party/v8/BUILD.bazel",
+        "third_party/v8/README.md",
+        "third_party/v8/abseil_lifetime_capture.patch",
+        "third_party/v8/abseil_repository.bzl",
+        "third_party/v8/artifact_profile.bzl",
+        "third_party/v8/binary.bzl",
+        "third_party/v8/engine.BUILD.bazel",
+        "third_party/v8/libcxx_rules.bzl",
+        "third_party/v8/native_windows_stdio_probe.cc",
+        "third_party/v8/v8_defs.patch",
+        "third_party/v8/v8_windows_snapshot_wine.patch",
+        "third_party/v8/windows_snapshot.bzl",
+        "third_party/voice/BUILD.bazel",
+        "third_party/voice/build_native.py",
+        "third_party/voice/cargo-ci/produce/action.yml",
+        "third_party/voice/opus-toolchain.cmake",
+        "third_party/voice/sources.json"
+      ],
+      "classes": [
+        "packaging",
+        "removed-path",
+        "refactor"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Reapply existing Bazel/CI removal policy while retaining Cargo resource-discovery and schema-output improvements. Carry upstream cfg lint declarations and native-source inputs without claiming Windows/Bazel qualification from the Mac lane.",
+      "evidence": [
+        "Source inspection: git show 1099fe069438099b8c1d6244f797ffd8515b6de0",
+        "alab/upstream/39b42aaacd-resolution.md"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "0811df39768427445b9730c039d6c04020670e04",
+      "subject": "Treat inference hook denials as terminal errors (#60511)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ErrorNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ReviewStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadForkResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadMetadataUpdateResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadReadResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadResumeResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRevertResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadTurnsListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadUnarchiveResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/CodexErrorInfo.ts",
+        "codex-rs/app-server-protocol/src/protocol/v2/shared.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/tests.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_read.rs",
+        "codex-rs/cli/src/doctor.rs",
+        "codex-rs/codex-api/src/api_bridge.rs",
+        "codex-rs/codex-api/src/api_bridge_tests.rs",
+        "codex-rs/codex-api/src/error.rs",
+        "codex-rs/codex-api/src/sse/responses.rs",
+        "codex-rs/codex-api/src/sse/responses_error_tests.rs",
+        "codex-rs/core/src/compact_model_fallback.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/tests/suite/compact.rs",
+        "codex-rs/core/tests/suite/retry_after.rs",
+        "codex-rs/ext/guardian-reviewer/src/retry.rs",
+        "codex-rs/ext/guardian-reviewer/src/retry_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/metrics.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/sampler/execution.rs",
+        "codex-rs/protocol/src/codex_error_info.rs",
+        "codex-rs/protocol/src/error.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/response-debug-context/src/lib.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "fix",
+        "protocol",
+        "security"
+      ],
+      "features": [
+        "provider-recovery",
+        "native-session"
+      ],
+      "decision": "adapt",
+      "reason": "Carry the typed inference-hook denial through streaming, compaction and automatic continuation as terminal. Do not retry, change models or reinterpret a capacity-looking denial message.",
+      "evidence": [
+        "alab/upstream/39b42aaacd-resolution.md",
+        "Source inspection: git show 0811df39768427445b9730c039d6c04020670e04"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "551fc719d67b69997a5997d6a3f187a72ca2ab74",
+      "subject": "Record an MCP refresh reason for session permission grants (#60513)",
+      "paths": [
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/thread_manager.rs"
+      ],
+      "classes": [
+        "refactor",
+        "telemetry"
+      ],
+      "features": [
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Record SessionPermissionsGranted at actual permission-grant invalidation. The diagnostic reason does not itself grant authority or replace ALab destination admission.",
+      "evidence": [
+        "alab/upstream/39b42aaacd-resolution.md",
+        "Source inspection: git show 551fc719d67b69997a5997d6a3f187a72ca2ab74"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "d2efdf19861bf52782ff04e5fff83f5ef9f7ebf5",
+      "subject": "Route sandbox CLI launches through the shared sandbox manager (#60517)",
+      "paths": [
+        "codex-rs/cli/src/debug_sandbox.rs",
+        "codex-rs/cli/tests/sandbox_network_proxy.rs",
+        "codex-rs/core/src/exec.rs",
+        "codex-rs/core/src/shell_snapshot_sandbox.rs",
+        "codex-rs/core/src/tools/sandboxing.rs",
+        "codex-rs/exec-server/src/process_sandbox.rs",
+        "codex-rs/sandboxing/src/landlock.rs",
+        "codex-rs/sandboxing/src/launch.rs",
+        "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/sandboxing/src/manager_tests.rs",
+        "codex-rs/sandboxing/src/seatbelt.rs"
+      ],
+      "classes": [
+        "refactor",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Use the shared sandbox manager for CLI launches, carrying prepared network context and explicit Unix socket grants. Preserve inherited-terminal input-injection denial, native executable paths and Linux dispatch argv; direct Windows token launch remains refused.",
+      "evidence": [
+        "Source inspection: git show d2efdf19861bf52782ff04e5fff83f5ef9f7ebf5",
+        "alab/upstream/39b42aaacd-resolution.md"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "39b42aaacdbb55b86528b4294443696985c348ee",
+      "subject": "Handle unfinished tool calls in restored history (#60519)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/thread_fork.rs",
+        "codex-rs/core/src/context_manager/history.rs",
+        "codex-rs/core/src/context_manager/normalize.rs",
+        "codex-rs/core/src/session/mod.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Preserve the restored sequence cutoff in exact exec context transfer; do not reclassify newly recorded calls as inherited. Validate cutoff bounds and retain upstream aborted-output behavior.",
+      "evidence": [
+        "alab/upstream/39b42aaacd-resolution.md",
+        "Source inspection: git show 39b42aaacdbb55b86528b4294443696985c348ee"
+      ],
+      "revisit": ""
+    }
+  ],
+  "superseded_by": "alab/upstream/c875667eb8-from-b79d2d3c59-intake.json",
+  "supersession_reason": "Historical partial assessment reconciled into the complete immutable 409-commit review from b79d2d3c59; retain this observation, but use the replacement for admission of the unlanded range."
+}

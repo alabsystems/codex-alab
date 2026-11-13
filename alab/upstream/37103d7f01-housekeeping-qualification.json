@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:47:23.396199+00:00",
+  "source": "74733f6d9e211d4db93cdf30374d07fe4cd58d19",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "routes_captured_originals_and_updates_descriptions::successful_writes",
+      "status": "ok"
+    },
+    {
+      "name": "routes_captured_originals_and_updates_descriptions::write_failure",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-housekeeping-native.sh",
+      "sha256": "3f7981087b3768cd25038a23be486e3aea1c8b168a67558f70fc1e01fefa7aac"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-housekeeping-native.log",
+      "sha256": "61b2d10f553b5670872cdb2cfe82284780c128696f6f3c9fabef05ed6d837549"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-housekeeping-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Two individually selected tests passed, zero failed or ignored; each selection filtered out the other test. Real isolated reviewer runtime and SQLite board fixtures cover successful original routing/description updates and write failure. Separate processes avoid shared snapshot interference. Does not qualify crash repair, concurrent writers, durable restart, native credential images, full gate, complete intake or adoption."
+}

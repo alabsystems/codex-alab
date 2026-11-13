@@ -12,7 +12,7 @@ use std::sync::PoisonError;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use std::time::Instant;
+use codex_alab_core::goal_clock::Instant; // ALAB(goal-clock): preserve the exact native baseline through an admitted exec.
 use tokio::sync::Semaphore;
 use tokio::sync::SemaphorePermit;
 
@@ -689,3 +689,6 @@ fn should_clear_active_goal(
         | ThreadGoalStatus::Complete => true,
     }
 }
+
+#[path = "../../../alab-autopilot/glue/goal_accounting_clock.rs"]
+mod alab_clock; // ALAB(goal-clock): capture and adopt idle data without exporting accounting internals.

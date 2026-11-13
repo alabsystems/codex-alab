@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "native-full-gate-failed-observation",
+  "source": "e13e1310bac9804b3c671d0e3ace2824a89e6720",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "exit_code": 1,
+  "observed_at": "2026-11-10T19:41:31.189667+00:00",
+  "results": {
+    "alab_tippy_diagnostics": 0,
+    "upstream_tippy_diagnostics_set_aside": 40,
+    "candidate_failed_copies": 20,
+    "isolated_candidate_failed_copies": 17,
+    "isolated_candidate_passed_copies": 3,
+    "pristine_attribution": "incomplete: pristine TUI test compilation failed with E0061; no complete attribution state produced"
+  },
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-gate-627b-e13e1310ba-native.log",
+      "sha256": "9d6546bba3b1ce717f715f9d4cf2553c43722a053c1833dd62fc60bfccfe7813"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-gate-627b-e13e1310ba-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-627b-e13e1310ba/unit-main.json",
+      "sha256": "131c56b7d264187bd745e2f40579ef47e5cfcea087c1292361ae9de34c11350c"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-full-sid0.noindex/codex-rs/target-native-15698.noindex/alab-unit-results-627b-e13e1310ba/unit-alone.json",
+      "sha256": "bf5fa6388d1647791861adeb33d4988b651b5ac7394d52904d002e8b132753e5"
+    }
+  ],
+  "limits": "Controller84988 terminal1 and sidecar1. CLI and ALab-owned test phases completed; this is not a full gate pass. Pristine upstream627 has a Daybreak feedback-consent test missing can_save and still expecting the old dialog title. Fresh official upstream2c2d99f0e3 fixes both and matches the ALab adaptation already carried. Do not patch pristine, omit its target graph, label17 failures shared, or waive attribution; integrate/review the official fix and qualify the new composition."
+}

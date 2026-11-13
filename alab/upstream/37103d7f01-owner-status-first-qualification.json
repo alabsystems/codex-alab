@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:18:05.057411+00:00",
+  "source": "1f09cec607659bf39baa48a6f08a8a08cdd33aea",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "suite::scenarios::host_turn_admission::suspending_root_during_roster_read_preserves_the_recoverable_prompt",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-native.sh",
+      "sha256": "a86eab3fc1aa044d5c3f7355a201b5c6829e3459b92b9741461009dec3711870"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-native.log",
+      "sha256": "cb2bb45f3f60a342c7febe1f0c703a8242fc01f125aaf58d1dd6628e8eb4c1b4"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Real host roster suspension/recoverable-input integration fixture passed with corrected suite::scenarios module filter. App-server test targets did not compile: new owned fixture attempted ? on JSONRPCErrorError which does not implement StdError (E0277). Overall exit1; no MCP owner regression or app-server routing pass claimed. Explicit fixture error mapping was committed separately and is being rebuilt. Full gate and adoption remain separate."
+}

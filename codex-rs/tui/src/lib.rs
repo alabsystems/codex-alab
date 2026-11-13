@@ -135,7 +135,9 @@ mod config_update;
 mod copy_input_guard;
 pub(crate) mod custom_terminal;
 mod daybreak;
+mod device_login;
 mod experimental_features;
+mod image_decode;
 mod markdown_copy;
 mod permission_discovery;
 mod pets;
@@ -143,6 +145,7 @@ mod security_setup;
 mod worktree_browser;
 pub use custom_terminal::Terminal;
 mod assistant_directives;
+mod attachment_files;
 mod auto_review_denials;
 mod cwd_prompt;
 mod debug_config;
@@ -841,6 +844,7 @@ async fn lookup_session_target_with_app_server(
                 return Ok(None);
             }
         };
+        app_server_session::alab_upgrade_receiver::before_lookup(app_server, action, thread_id).await?; // ALAB(exec-recovery): private roots must exist before ordinary thread lookup.
         return match app_server
             .thread_read(thread_id, /*include_turns*/ false)
             .await
@@ -939,6 +943,7 @@ fn latest_session_lookup_params(
     lookup_mode: LatestSessionLookupMode,
 ) -> ThreadListParams {
     ThreadListParams {
+        include_attached_threads: false,
         current_account_only: true,
         excluded_thread_ids: None,
         attached_to_thread_id: None,
@@ -2220,6 +2225,35 @@ async fn run_ratatui_app(
         && (config.model_provider.is_amazon_bedrock()
             || !matches!(app_server_target, AppServerTarget::Embedded));
     let guidance_request_handle = app_server.request_handle();
+    let gateway_sign_in = async {
+        if !uses_remote_workspace
+            && let Some(prompt) = startup_draft
+                .run_until(
+                    &mut tui,
+                    device_login::start_if_needed(
+                        &mut app_server,
+                        &session_selection,
+                        &config,
+                        device_login::prefer_device_login(),
+                    ),
+                )
+                .await??
+        {
+            startup_draft.flush_pending_events(&mut tui).await?;
+            onboarding::onboarding_screen::run_gateway_device_login(
+                &mut tui,
+                &mut app_server,
+                prompt,
+            )
+            .await?;
+        }
+        Ok::<_, color_eyre::Report>(())
+    }
+    .await;
+    if let Err(err) = gateway_sign_in {
+        shutdown_startup_session(Some(app_server), &mut terminal_restore_guard).await;
+        return Err(err);
+    }
     let startup_prefetch_started_at = Instant::now();
     // Fetch the catalog alongside hooks/list. Fresh starts choose the model after config/read.
     app_server.prefetch_model_list();
@@ -2634,6 +2668,7 @@ mod daemon_recovery;
 mod daemon_startup;
 mod daemon_telemetry;
 
+#[cfg(test)] #[path = "../../alab-tui/glue/upgrade_fixture_trace.rs"] mod alab_upgrade_fixture_trace; // ALAB(test): share diagnostics for exact isolated fixture children.
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 pub(crate) mod tests;
@@ -2642,3 +2677,5 @@ pub(crate) mod tests;
 pub(crate) use tests::test_backend;
 #[cfg(test)]
 pub(crate) use tests::test_support;
+
+#[cfg(unix)] pub use tui::restore_after_failed_upgrade; // ALAB(upgrade): expose the same cleanup boundary to the CLI recovery owner.

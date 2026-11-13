@@ -642,6 +642,39 @@ fn interrupt_cancels_compaction_capacity_wait_with_long_server_advice() {
 }
 
 #[test]
+fn invalid_compaction_stops_without_retry_even_with_server_advice() {
+    big_stack(|| async {
+        for v2 in [false, true] {
+            for advice in [false, true] {
+                let denied = ResponseTemplate::new(400).set_body_json(json!({"error": {
+                    "code": "invalid_request_error", "message": "Invalid compaction input."
+                }}));
+                let denied = if advice {
+                    denied.insert_header("Retry-After", "1")
+                } else {
+                    denied
+                };
+                let h = Harness::new(
+                    v2,
+                    3,
+                    vec![reply("initial", "The task has context to compact."), denied],
+                )
+                .await;
+                h.test.submit_text_turn("Keep this task's context.").await.unwrap();
+                h.test.codex.submit(Op::Compact).await.unwrap();
+                assert!(h.fake.wait_for(|fake| attention_is(fake, "stopped:")).await);
+                let runtime = h.autopilot.thread_rt(&h.thread).unwrap();
+                assert!(matches!(runtime.state().point.and_then(|end| end.wall), Some(Wall::Fatal { .. })));
+                assert!(!runtime.timer_pending());
+                h.shutdown().await;
+                assert_eq!(h.requests.lock().unwrap().len(), 2);
+                assert!(h.fake.acts().is_empty(), "invalid input must not trigger autonomous recovery");
+            }
+        }
+    });
+}
+
+#[test]
 fn compaction_overload_label_does_not_retry_a_permanent_refusal() {
     big_stack(|| async {
         for v2 in [false, true] {

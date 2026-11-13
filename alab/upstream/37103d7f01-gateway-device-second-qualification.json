@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T17:13:18.653575+00:00",
+  "source": "ecd1195d68016f5550a45f7ae8eed8c51b324c6e",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "combined_auth::alab_cookie::tests::gateway_cookie_preserves_opaque_commas_and_sensitive_delivery",
+      "status": "ok"
+    },
+    {
+      "name": "combined_auth::alab_cookie::tests::gateway_cookie_rejects_injected_pairs_without_echoing_credentials",
+      "status": "ok"
+    },
+    {
+      "name": "gateway_oauth::tests::credential_export_rejects_oauth_settings",
+      "status": "ok"
+    },
+    {
+      "name": "gateway_oauth::tests::gateway_bearer_requires_the_model_catalog_to_share_its_origin",
+      "status": "ok"
+    },
+    {
+      "name": "gateway_oauth::tests::omitted_delivery_rejects_an_existing_provider_bearer",
+      "status": "ok"
+    },
+    {
+      "name": "gateway_oauth::tests::a_remote_device_authorization_url_requires_https",
+      "status": "ok"
+    },
+    {
+      "name": "gateway_oauth::tests::parses_header_and_cookie_delivery",
+      "status": "ok"
+    },
+    {
+      "name": "gateway_oauth::tests::rejects_unsafe_endpoints_and_delivery_collisions",
+      "status": "ok"
+    },
+    {
+      "name": "suite::gateway_auth::command_gateway_authenticates_without_an_oauth_grant_and_caches_the_token",
+      "status": "ok"
+    },
+    {
+      "name": "oauth_session::tests::device_tests::device_login_rejects_an_insecure_verification_link_before_showing_the_code",
+      "status": "ok"
+    },
+    {
+      "name": "oauth_session::tests::device_tests::device_login_can_be_canceled_while_waiting_for_approval",
+      "status": "ok"
+    },
+    {
+      "name": "oauth_session::tests::device_tests::device_login_reports_network_policy_denial_for_either_endpoint",
+      "status": "ok"
+    },
+    {
+      "name": "oauth_session::tests::device_tests::denied_or_expired_codes_explain_why_sign_in_stopped",
+      "status": "ok"
+    },
+    {
+      "name": "oauth_session::tests::device_tests::device_login_presents_prompt_and_persists_grant",
+      "status": "ok"
+    },
+    {
+      "name": "oauth_session::tests::storage_tests::canceling_while_saving_an_approved_device_login_keeps_it_for_the_next_request",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-gateway-device-r2-native.sh",
+      "sha256": "01a065af385132086a770e3b7a96a74a0702d78e4b7941bd301941b8d2533730"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-gateway-device-r2-native.log",
+      "sha256": "e38ec5d764f7e99620f960dbabd6fb9b3d16083cf7677d18cd2e8d2d674a3a34"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-gateway-device-r2-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Controller37084 terminal1. Fifteen actual passes: cookie boundary2, gateway config6, real command exporter comma/cache integration1, device OAuth HTTP/lifecycle5 and storage cancellation1. App-server filename filter gateway_oauth_tests:: selected zero and was rejected. Partial/negative observation, not a complete passing gateway qualification. Actual module suite::v2::gateway_oauth verified at v2/mod.rs77/78; corrected integration queued separately with uploaded-audio tests. Full gate/adoption separate."
+}

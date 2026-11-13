@@ -6,6 +6,7 @@
 import importlib.util
 import itertools
 import json
+import os
 from pathlib import Path
 import subprocess
 import unittest
@@ -82,6 +83,33 @@ class LocalUpdateTests(unittest.TestCase):
 
     def mutations(self):
         return [args for args in self.calls if args[-1] != "--help"]
+
+    def test_fetch_and_selection_use_the_requested_repository(self):
+        foreign = self.home / "foreign repo"
+        foreign_origin = self.home / "foreign origin.git"
+        self.git("clone", "-q", str(self.repo), str(foreign))
+        self.git("-C", str(foreign), "-c", "user.name=Foreign fixture", "-c",
+                 "user.email=foreign@invalid", "-c", "commit.gpgsign=false",
+                 "commit", "-q", "--allow-empty", "-m", "foreign source")
+        foreign_source = self.git("-C", str(foreign), "rev-parse", "HEAD")
+        self.git("init", "--bare", "-q", "-b", "main", str(foreign_origin))
+        self.git("-C", str(foreign), "remote", "set-url", "origin", str(foreign_origin))
+        self.git("-C", str(foreign), "push", "-q", "origin", "HEAD:main")
+        with mock.patch.dict(os.environ, GIT_DIR=str(foreign / ".git"),
+                             GIT_WORK_TREE=str(foreign)):
+            changed, _ = self.update()
+        self.assertTrue(changed)
+        self.assertEqual(self.selected(), self.new)
+        self.assertEqual(self.builds, [], "the requested origin already has its artifact")
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), self.source)
+        self.assertEqual(self.git("-C", str(foreign), "rev-parse", "HEAD"), foreign_source)
+
+    def test_controller_metadata_uses_the_requested_clones_common_directory(self):
+        foreign = self.home / "foreign metadata"
+        self.git("init", "-q", str(foreign))
+        with mock.patch.dict(os.environ, GIT_DIR=str(foreign / ".git"),
+                             GIT_COMMON_DIR=str(foreign / ".git")):
+            self.assertEqual(UPDATE.common_dir(self.repo), self.repo / ".git")
 
     def test_an_exact_published_source_is_reused_without_a_build(self):
         changed, _ = self.update()

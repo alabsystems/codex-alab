@@ -835,7 +835,8 @@ async fn default_daemon_auto_connect_skips_missing_socket() -> color_eyre::Resul
 
 #[tokio::test]
 async fn default_daemon_auto_connect_probes_socket_only() -> color_eyre::Result<()> {
-    let codex_home = TempDir::new()?;
+    // ALAB(test-paths): keep the control socket within native Unix path limits.
+    let codex_home = codex_alab_tui::test_paths::short_tempdir()?;
     let socket_path = codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
     #[cfg(windows)]
     {

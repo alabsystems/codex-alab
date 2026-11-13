@@ -15,9 +15,8 @@ impl RouterOwner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
-    fn replace_closed(&self, old: &ElicitationRequestRouter) {
+    fn replace_closed(&self) {
         let next = ElicitationRequestRouter::default();
-        next.set_auto_deny(old.auto_deny());
         // Full-access form input is a permission; a destination must establish it afresh.
         *self
             .0
@@ -56,11 +55,10 @@ impl super::McpRuntime {
             matches!(self.alab_enterprise_state(), EnterpriseState::Absent),
             "enterprise account policy requires separate qualification"
         );
-        let router = self.elicitation_router.snapshot();
         // Runtime shutdown retains its own cleanup tasks across caller cancellation.
         self.shutdown().await;
         anyhow::ensure!(retirement.protects(domain), "account retirement changed");
-        self.elicitation_router.replace_closed(&router);
+        self.elicitation_router.replace_closed();
         self.reconnect_on_next_refresh();
         self.invalidate_resource_caches();
         Ok(())
@@ -73,7 +71,6 @@ mod tests {
     async fn assignment_retirement_replaces_closed_router_without_inheriting_form_permission() {
         let runtime = super::super::McpRuntime::empty(false);
         let old = runtime.elicitation_router.snapshot();
-        old.set_auto_deny(true);
         old.enable_full_access_form_input();
         let domain = std::sync::Arc::new(codex_alab_core::assignment::Domain::default());
         let intent = codex_alab_core::assignment::Intent {
@@ -103,7 +100,6 @@ mod tests {
             .await
             .unwrap();
         let destination = runtime.elicitation_router.snapshot();
-        assert!(destination.auto_deny());
         assert!(!destination.full_access_form_input_enabled());
         assert!(
             old.full_access_form_input_enabled(),

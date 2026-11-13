@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "kind": "native-focused-failed-observation",
+  "observed_at": "2026-11-10T18:49:42.712086+00:00",
+  "source": "6efbec1123731e0739a3f6c4c6378d10b78da5bb",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "results": {
+    "parent_selection": "retained_cloud_transport_owns_its_actual_reader_and_destination_policy",
+    "parent_status": "failed",
+    "runtime_failure": "Synthetic auth document omitted last_refresh; get_token_data requires tokens and last_refresh. Failed before the first Cloud RPC.",
+    "tippy_status": "failed",
+    "tippy_diagnostics": [
+      "unwrap_used on native Ready registration",
+      "unwrap_used on fixture member census mutex"
+    ]
+  },
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native.sh",
+      "sha256": "71cf1ecb3b39fc8071947b2c492907760ab8445f9a7eefdbe016a7276a5bf082"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native.log",
+      "sha256": "7b31c6a54b4972d6b3dfd5e4cfbfbaa88f85a443e65c1686205611757e8101f7"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-cloud-reader-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Controller70354 terminal1 and sidecar1. No Cloud transport runtime pass is claimed. Nested child failure is the reason for the single selected parent failure, not an independent completed scenario. Refresh metadata fix3c6750e82f and invariant expectations require a corrected run. Candidate full gate/package remain on separate e13e source without this test-only crate."
+}

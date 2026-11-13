@@ -1,0 +1,197 @@
+{
+  "schema": 1,
+  "base": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "target": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "frontier": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "commits": [
+    {
+      "sha": "039d0f27d56c31913ffc0f2055a3432b1bcb0b06",
+      "subject": "Clarify safety recourse messaging and add a reporting option (#60613)",
+      "paths": [
+        "codex-rs/tui/src/app/tests/safety_buffering.rs",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__safety_buffering__safety_recourse.snap",
+        "codex-rs/tui/src/chatwidget/rendering.rs",
+        "codex-rs/tui/src/chatwidget/safety_recourse.rs",
+        "codex-rs/tui/src/chatwidget/safety_recourse/metadata.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__daybreak_recourse_picker.snap",
+        "codex-rs/tui/src/chatwidget/tests/status_and_layout.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "security-notices"
+      ],
+      "decision": "adopt",
+      "reason": "Retain clarified refusal/preparation status and explicit rewrite-to-new-chat explanation. Reporting is offered only when feedback is enabled and opens the existing consent flow; it does not upload immediately. Remove duplicate pending composer notice while preserving final policy explanation and selected-model Daybreak entitlement messages. Critical production and consent-return/Daybreak enabled versus unavailable fixture assertions reviewed. Preserve ALab source-scoped verified entitlement/notice behavior; runtime on composed source pending.",
+      "evidence": [
+        "codex-rs/tui/src/app/tests/safety_buffering.rs",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__safety_buffering__safety_recourse.snap",
+        "codex-rs/tui/src/chatwidget/rendering.rs",
+        "codex-rs/tui/src/chatwidget/safety_recourse.rs",
+        "codex-rs/tui/src/chatwidget/safety_recourse/metadata.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__daybreak_recourse_picker.snap",
+        "codex-rs/tui/src/chatwidget/tests/status_and_layout.rs"
+      ],
+      "revisit": "Qualify safety_recourse_handles_a_policy_block and daybreak_refusal_offers_enable_for_the_next_turn, including feedback consent cancellation and existing account/model entitlement controls."
+    },
+    {
+      "sha": "0d37c062de16c81caa1376e072ccd15cf3d68506",
+      "subject": "Support incremental tool declarations on GCP (#60617)",
+      "paths": [
+        "codex-rs/core/src/session/step_context.rs",
+        "codex-rs/core/tests/suite/gcp.rs",
+        "codex-rs/core/tests/suite/scenarios_incremental_tools.rs",
+        "codex-rs/features/src/lib.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Retain provider-specific IncrementalToolsLegacy support for GCP alongside existing Bedrock providers. Preserve ordinary opt-in feature setting: use additional_tools rather than top-level tools only when enabled, without changing historical inputs. Complete production and GCP namespace/tool-search/exec_command and enabled/disabled catalog-append fixture changes reviewed. Runtime on newly composed source pending.",
+      "evidence": [
+        "codex-rs/core/src/session/step_context.rs",
+        "codex-rs/core/tests/suite/gcp.rs",
+        "codex-rs/core/tests/suite/scenarios_incremental_tools.rs",
+        "codex-rs/features/src/lib.rs"
+      ],
+      "revisit": "Qualify Vertex request namespaces/search/exec tool with incremental feature both enabled and disabled, and GCP catalog append without history rewrite."
+    },
+    {
+      "sha": "c37fd5665f55fa2b5accdf1d229855416ce696c1",
+      "subject": "Allow sampling in-progress turns with `thread/sample` (#60620)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread_sample.rs",
+        "codex-rs/app-server/src/thread_sample.rs",
+        "codex-rs/app-server/tests/suite/v2/snapshots/all__suite__v2__thread_sample__sample_compacted_parent_with_pending_tool_call.snap",
+        "codex-rs/app-server/tests/suite/v2/thread_sample.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Retain explicit allowInProgressTurn default false for sampling the latest loaded turn. Running samples use a captured history copy and add a snapshot note rather than falsely report that the source was interrupted; pending calls may be aborted only in the copy. Source history version guard remains for ordinary samples and is deliberately waived for opted-in running snapshots. Complete critical production/protocol and independent gated-source legacy/paginated/compaction/pending-tool fixtures reviewed, including continued real tool output and unchanged source rollout. Runtime qualification pending.",
+      "evidence": [
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread_sample.rs",
+        "codex-rs/app-server/src/thread_sample.rs",
+        "codex-rs/app-server/tests/suite/v2/snapshots/all__suite__v2__thread_sample__sample_compacted_parent_with_pending_tool_call.snap",
+        "codex-rs/app-server/tests/suite/v2/thread_sample.rs"
+      ],
+      "revisit": "Qualify complete thread_sample suite on composed source: finished matrix with flag both ways, three in-progress history cases, compaction without pending tool, source continuation/isolation and stale latest-turn rejection."
+    },
+    {
+      "sha": "2df465732a10250121c9feb1255c9cecf72ee34f",
+      "subject": "Use app-server MCP configuration and startup events in the TUI (#60622)",
+      "paths": [
+        "codex-rs/tui/src/app/app_server_events.rs",
+        "codex-rs/tui/src/app/recap.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/active_reconnect_tests.rs",
+        "codex-rs/tui/src/app/tests/background_exit_tests.rs",
+        "codex-rs/tui/src/app/tests/disconnect_tests.rs",
+        "codex-rs/tui/src/app/tests/mcp_startup.rs",
+        "codex-rs/tui/src/app/tests/recap_generation_tests.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/tests/startup_defaults_tests.rs",
+        "codex-rs/tui/src/app/tests/startup_warnings_tests.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/app/thread_title.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/app_server_session/rollout_history.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/mcp_startup.rs",
+        "codex-rs/tui/src/chatwidget/tests/guardian.rs",
+        "codex-rs/tui/src/chatwidget/tests/mcp_startup.rs",
+        "codex-rs/tui/src/config_update.rs",
+        "codex-rs/tui/src/debug_config.rs",
+        "codex-rs/tui/src/dynamic_tools_mcp.rs",
+        "codex-rs/tui/src/managed_worktree_tools_tests.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__debug_config__tests__debug_config_requirement_sources.snap",
+        "codex-rs/tui/src/temporary_structured_request.rs",
+        "codex-rs/tui/src/temporary_structured_request_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "native-ui",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Retain app-server-effective MCP namespace checks before task-tool registration/start/fork/resume and shared config reader for disabling servers in temporary structured threads. Config-read failure remains an error; namespace collision cannot silently shadow a configured server. Managed requirements remain server-enforced, with integration checking blocked tools absent from actual inventory. Startup progress tracks observed starts/outcomes rather than stale local membership, settles with no observed pending start, deduplicates terminal diagnostics and resets diagnostic memory after lag. Reviewed critical production changes and namespace/managed-inventory/deferred-server/status/review fixtures. Large incidental deleted expectation wiring was not all reread. Preserve ALab actual MCP manager auth ownership and source-scoped runtime policy hooks; runtime on composed source pending.",
+      "evidence": [
+        "codex-rs/tui/src/app/app_server_events.rs",
+        "codex-rs/tui/src/app/recap.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/active_reconnect_tests.rs",
+        "codex-rs/tui/src/app/tests/background_exit_tests.rs",
+        "codex-rs/tui/src/app/tests/disconnect_tests.rs",
+        "codex-rs/tui/src/app/tests/mcp_startup.rs",
+        "codex-rs/tui/src/app/tests/recap_generation_tests.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/tests/startup_defaults_tests.rs",
+        "codex-rs/tui/src/app/tests/startup_warnings_tests.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/app/thread_title.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/app_server_session/rollout_history.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/mcp_startup.rs",
+        "codex-rs/tui/src/chatwidget/tests/guardian.rs",
+        "codex-rs/tui/src/chatwidget/tests/mcp_startup.rs",
+        "codex-rs/tui/src/config_update.rs",
+        "codex-rs/tui/src/debug_config.rs",
+        "codex-rs/tui/src/dynamic_tools_mcp.rs",
+        "codex-rs/tui/src/managed_worktree_tools_tests.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__debug_config__tests__debug_config_requirement_sources.snap",
+        "codex-rs/tui/src/temporary_structured_request.rs",
+        "codex-rs/tui/src/temporary_structured_request_tests.rs"
+      ],
+      "revisit": "Qualify current mcp_startup units/app tests, local_mcp_respects_configured_servers_and_managed_requirements, namespace edits after startup and temporary structured no-tool contracts. Check retained ALab selected MCP manager owner fixture after integration."
+    },
+    {
+      "sha": "627b579219d492b5445d6d433d3110eb53e507dc",
+      "subject": "Preserve script quotes in Windows sandbox cmd invocations (#60624)",
+      "paths": [
+        "codex-rs/mxc-sandbox/src/policy.rs",
+        "codex-rs/windows-sandbox-rs/src/cmd_script.rs",
+        "codex-rs/windows-sandbox-rs/src/cmd_script_tests.rs",
+        "codex-rs/windows-sandbox-rs/src/conpty/mod.rs",
+        "codex-rs/windows-sandbox-rs/src/lib.rs",
+        "codex-rs/windows-sandbox-rs/src/winutil.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Retain shared single-script cmd /c serializer using /s and one outer quote pair, preserving embedded script quotes across CreateProcess, ConPTY and MXC. Apply only to exactly program/switch/script with cmd basename and /c, rejecting NUL or quoted program; other argv uses existing generic serialization. Complete production and quoted certutil/PowerShell fixtures reviewed. Native Windows behavior remains unqualified on this Mac.",
+      "evidence": [
+        "codex-rs/mxc-sandbox/src/policy.rs",
+        "codex-rs/windows-sandbox-rs/src/cmd_script.rs",
+        "codex-rs/windows-sandbox-rs/src/cmd_script_tests.rs",
+        "codex-rs/windows-sandbox-rs/src/conpty/mod.rs",
+        "codex-rs/windows-sandbox-rs/src/lib.rs",
+        "codex-rs/windows-sandbox-rs/src/winutil.rs"
+      ],
+      "revisit": "Qualify quoted spaced-path script through actual Windows CreateProcess, ConPTY and MXC; portable string fixture alone is not native execution evidence."
+    }
+  ]
+}

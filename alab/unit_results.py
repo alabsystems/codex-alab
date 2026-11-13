@@ -59,7 +59,8 @@ def relative(path, root):
 def snapshot(path):
     value = Path(path).stat()
     require(stat.S_ISREG(value.st_mode), f"unit-test artifact is not a regular file: {path}")
-    return [value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns]
+    # A same-size rewrite can restore mtime; ctime still records that change.
+    return [value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns]
 
 
 def identity(copy):

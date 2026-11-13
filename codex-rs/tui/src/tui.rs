@@ -30,8 +30,8 @@ use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::disable_raw_mode;
-use ratatui::crossterm::terminal::enable_raw_mode;
+use codex_alab_tui::terminal_modes::disable_raw_mode; // ALAB(upgrade): restore the original mode retained across exec.
+use codex_alab_tui::terminal_modes::enable_raw_mode; // ALAB(upgrade): retain the native original before first raw-mode entry.
 use ratatui::layout::Offset;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
@@ -421,6 +421,7 @@ pub fn restore_after_exit() -> Result<()> {
 
 /// Discard reports and interleaved keystrokes before handing the terminal back to the shell.
 pub(super) fn restore_after_exit_with_events(events: Option<&EventBroker>) -> Result<()> {
+    if alab_terminal_handoff::preserve(events)? { return Ok(()); } // ALAB(upgrade): only committed native terminal custody skips exit input flush and mode resets.
     let raw_mode_restore = match events {
         Some(_) if std::thread::panicking() => {
             // The panic hook restored terminal modes. Flush queued reports without locking the reader.
@@ -504,6 +505,8 @@ pub(crate) fn init() -> Result<InitializedTerminal> {
     if !stdout().is_terminal() {
         return Err(std::io::Error::other("stdout is not a terminal"));
     }
+    #[cfg(unix)]
+    if let Some(restored) = alab_upgrade_startup::restore()? { return Ok(restored); } // ALAB(upgrade): restore before queries or duplicate keyboard-mode pushes.
     let mut restore_guard = TerminalInitializationGuard { active: true };
     let tmux_options = set_modes()?;
 
@@ -709,6 +712,8 @@ pub(crate) fn tmux_fullscreen_image_base() -> Option<u32> {
 pub struct Tui {
     pub(crate) link_hover: link_pointer::LinkHover,
     frame_requester: FrameRequester,
+    shortcut_hud: Option<crate::bottom_pane::ShortcutHud>,
+    pub(crate) shortcut_hud_area: Option<Rect>,
     draw_tx: broadcast::Sender<()>,
     pub(super) event_broker: Arc<EventBroker>,
     pub(crate) terminal_size_tags: crate::terminal_size_telemetry::LaunchTags,
@@ -785,9 +790,11 @@ impl Tui {
             draw_tx.clone(),
         );
 
-        Self {
+        alab_upgrade_startup::finish(Self { // ALAB(upgrade): transfer initialized view ownership before event consumers.
             link_hover: link_pointer::LinkHover::default(),
             frame_requester,
+            shortcut_hud: None,
+            shortcut_hud_area: None,
             draw_tx,
             event_broker: Arc::new(event_broker),
             terminal_size_tags: Vec::new(),
@@ -813,7 +820,7 @@ impl Tui {
             mouse_capture: MouseCapture::Inherit,
             clipboard: Default::default(),
             _stderr_guard: stderr_guard,
-        }
+        }) // ALAB(upgrade): source view state belongs to this exact Tui.
     }
 
     /// Set whether overlays switch to the alternate screen or stay inline.
@@ -1349,6 +1356,54 @@ impl Tui {
         Ok(())
     }
 
+    /// A pager may draw several times while handling an event. Decorate only frames from its owner.
+    pub(crate) fn with_shortcut_hud<T>(
+        &mut self,
+        hud: Option<crate::bottom_pane::ShortcutHud>,
+        render: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = std::mem::replace(&mut self.shortcut_hud, hud);
+        let result = render(self);
+        self.shortcut_hud = previous;
+        result
+    }
+
+    /// On standalone screens, paste, loss of focus and mouse input dismiss pending chords.
+    /// A press on the visible guide belongs to the guide rather than the control beneath it.
+    pub(crate) fn dismiss_shortcut_on_input(
+        &self,
+        event: &TuiEvent,
+        matcher: &mut crate::keymap::KeyChordMatcher,
+    ) -> bool {
+        let covered = match event {
+            TuiEvent::Paste(_) | TuiEvent::FocusLost => false,
+            TuiEvent::Mouse(mouse) if mouse.kind != crossterm::event::MouseEventKind::Moved => {
+                matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_))
+                    && self.shortcut_hud_contains(*mouse)
+            }
+            _ => return false,
+        };
+        if matcher.cancel() {
+            self.frame_requester.schedule_frame();
+            return covered;
+        }
+        false
+    }
+
+    pub(crate) fn shortcut_hud_contains(&self, mouse: crossterm::event::MouseEvent) -> bool {
+        self.shortcut_hud_area
+            .is_some_and(|area| area.contains((mouse.column, mouse.row).into()))
+    }
+
+    pub(crate) fn draw_with_shortcut_hud(
+        &mut self,
+        height: u16,
+        hud: Option<crate::bottom_pane::ShortcutHud>,
+        draw_fn: impl FnOnce(&mut custom_terminal::Frame),
+    ) -> Result<()> {
+        self.with_shortcut_hud(hud, |tui| tui.draw(height, draw_fn))
+    }
+
     pub fn draw(
         &mut self,
         height: u16,
@@ -1436,7 +1491,10 @@ impl Tui {
                 self.suspend_context.set_cursor_y(inline_area_bottom);
             }
 
-            terminal.draw_with_size(screen_size, &mut self.retained_images, draw_fn)
+            terminal.draw_with_size(screen_size, &mut self.retained_images, |frame| {
+                draw_fn(frame);
+                self.shortcut_hud_area = self.shortcut_hud.as_ref().map(|hud| hud.paint(frame));
+            })
         })??;
         Ok(())
     }
@@ -1505,10 +1563,11 @@ impl Tui {
     /// This is the feature-gated counterpart to `draw`. It intentionally skips
     /// `pending_viewport_area`, whose cursor-position heuristic is part of the legacy path, and
     /// instead lets transcript reflow rebuild scrollback before the frame is rendered.
-    pub fn draw_with_resize_reflow(
+    pub(crate) fn draw_with_resize_reflow(
         &mut self,
         height: u16,
         screen_size: Size,
+        hud: Option<crate::bottom_pane::ShortcutHud>,
         draw_fn: impl FnOnce(&mut custom_terminal::Frame),
     ) -> Result<()> {
         // If we are resuming from ^Z, we need to prepare the resume action now so we can apply it
@@ -1577,6 +1636,7 @@ impl Tui {
 
             terminal.draw_with_size(screen_size, &mut self.retained_images, |frame| {
                 draw_fn(frame);
+                self.shortcut_hud_area = hud.as_ref().map(|hud| hud.paint(frame));
             })
         })??;
         Ok(())
@@ -1586,7 +1646,7 @@ impl Tui {
         let terminal = &mut self.terminal;
         let last_known_screen_size = terminal.last_known_screen_size;
         if screen_size != last_known_screen_size
-            && let Ok(cursor_pos) = terminal.get_cursor_position()
+            && let Ok(cursor_pos) = codex_alab_tui::cursor_position(|| terminal.get_cursor_position()) // ALAB(upgrade-input): cursor queries retain queued user input in the shared owner.
         {
             let last_known_cursor_pos = terminal.last_known_cursor_pos;
             // If we resized AND the cursor moved, we adjust the viewport area to keep the
@@ -1653,3 +1713,9 @@ fn ensure_virtual_terminal_processing() -> Result<()> {
 }
 
 #[path = "../../alab-tui/glue/pet_exit.rs"] mod alab_pet_exit; // ALAB(pet-perf): normal and early exits share pet image cleanup
+
+#[path = "../../alab-tui/glue/terminal_handoff.rs"] mod alab_terminal_handoff; // ALAB(upgrade): native terminal handoff keeps the normal stderr release path.
+
+#[path = "../../alab-tui/glue/upgrade_startup.rs"] mod alab_upgrade_startup; // ALAB(upgrade): capture and restore native terminal startup facts.
+
+#[cfg(unix)] pub use alab_upgrade_startup::restore_after_failed_upgrade; // ALAB(upgrade): early CLI failure uses the actual terminal protocol cleanup.

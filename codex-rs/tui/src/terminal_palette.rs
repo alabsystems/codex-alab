@@ -197,6 +197,8 @@ mod imp {
         }
     }
 
+    #[cfg(unix)] include!("../../alab-tui/glue/upgrade_palette.rs"); // ALAB(upgrade): read the native palette cache without querying input.
+
     /// Queries terminal default colors through the bounded startup probe path.
     ///
     /// The palette cache treats `None` as an attempted-but-unavailable result, so this function
@@ -495,6 +497,10 @@ pub const XTERM_COLORS: [(u8, u8, u8); 256] = [
     (228, 228, 228), // 254 Grey89
     (238, 238, 238), // 255 Grey93
 ];
+
+
+#[cfg(all(unix, not(test)))] pub(crate) use imp::alab_cached_colors; // ALAB(upgrade): expose only cached startup data.
+#[cfg(all(unix, test))] include!("../../alab-tui/glue/upgrade_palette.rs"); // ALAB(upgrade): use the native scoped palette in tests.
 
 #[cfg(test)]
 mod tests {

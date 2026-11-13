@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:10:12.183911+00:00",
+  "source": "effd428484f6240ecd0bec63d4d57bdfa06f81e9",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "app::tests::saved_chat_loading::saved_chat_retry_and_supersession_with_pending_requests",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::closed_saved_chat_keeps_its_live_read_receipt_during_install",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::saved_chat_replays_approval_after_a_stale_runtime_close",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::fork_releases_a_provisional_saved_chat_on_its_original_connection",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::sidebar_reopens_saved_side_chat_after_restart",
+      "status": "ok"
+    },
+    {
+      "name": "app::thread_event_buffer::tests::thread_event_store_coalesces_only_adjacent_matching_agent_message_deltas",
+      "status": "ok"
+    }
+  ],
+  "summaries": [
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6347 filtered out; finished in 0.07s",
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6347 filtered out; finished in 1.63s",
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6347 filtered out; finished in 1.47s",
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6347 filtered out; finished in 2.29s",
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6347 filtered out; finished in 2.65s",
+    "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6347 filtered out; finished in 0.00s"
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-saved-chat-r6-native.sh",
+      "sha256": "7e977e7e93ad8d045532d60293f0a5f257b1d1f23f9732737403689231a76479"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-saved-chat-r6-native.log",
+      "sha256": "6ac423a67505bef5c7fa911d3495ee781d5e8a9b1ee88433ea93e7285f50b953"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-saved-chat-r6-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "earlier_observations": {
+    "r3": "Exit 1: two saved-chat tests hit Insta runtime failure in shared selection; event-buffer module filter matched no tests. Compilation succeeded.",
+    "r4": "Exit 1 before build: controller was invoked without native project selection; no test evidence.",
+    "r5": "Exit 1: corrected event-buffer test passed, but two saved-chat tests still hit shared-process Insta failure.",
+    "r6": "Each saved-chat test selected in its own test process, followed by restart and event-buffer cases. All six nonempty selections passed and helper admitted each."
+  },
+  "limits": "Exact-source focused evidence for saved-chat retry/supersession, stale-close approval replay, original-connection provisional release, live read receipt, restart and event coalescing. Does not qualify the full TUI, native credential image lifecycle, all platform behavior, complete intake, remote landing or installed adoption. Compilation passes the previously failing git-attribution path with owned standard-library future erasure; no recursion limit or dependency waiver."
+}

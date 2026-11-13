@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T17:35:40.737315+00:00",
+  "source": "ecd1195d68016f5550a45f7ae8eed8c51b324c6e",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "app::tests::patch_approval_tests::active_patch_approval_pager_preserves_changes_and_accepts_once",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-chooser-approval-native.sh",
+      "sha256": "899d5f66a83166d1d328b06cd76234e58ce9f92be488f7646ee0f1830f09713a"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-chooser-approval-native.log",
+      "sha256": "a12a2690737d1cab90ef8055229b7960b05320633bebcbd8a573a2bf15f83324"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-chooser-approval-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Controller68081 terminal0 exact formatted cookie source. Current patch-approval pager integration passed, including a chooser painted before approval arrival and an Enter that must not accept the unpainted approval. Focused modal interaction evidence only; does not qualify all pane UI, native credential retirement, final composed main or adoption."
+}

@@ -142,3 +142,12 @@ impl AuthProvider for SnapshotProvider {
         })
     }
 }
+
+impl ResolvedProviderAuth {
+    /// Keep concrete runtime selection and credential-source state inside the provider crate.
+    pub(crate) fn alab_bound_resolution<'a>(
+        resolution: impl std::future::Future<Output = Result<Self, AuthError>> + Send + 'a,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self, AuthError>> + Send + 'a>> {
+        Box::pin(resolution)
+    }
+}

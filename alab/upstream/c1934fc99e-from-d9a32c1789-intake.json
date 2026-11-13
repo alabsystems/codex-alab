@@ -1,0 +1,238 @@
+{
+  "schema": 1,
+  "base": "a43cb28f03184079a7d4007c93c86f15e1d8da9b",
+  "target": "c1934fc99e6b40ddff4261c910ce7733e3abea26",
+  "frontier": "d9a32c178951695f365faa36a39d542e06a96e4f",
+  "commits": [
+    {
+      "sha": "2b60119af8072af8e842b271f5272e82378cd0f9",
+      "subject": "Add snapshot coverage for history and notes tool contracts (#60753)",
+      "paths": [
+        "codex-rs/ext/history-notes/BUILD.bazel",
+        "codex-rs/ext/history-notes/src/snapshots/codex_history_notes_extension__tools__tests__bundled_tool_contracts.snap",
+        "codex-rs/ext/history-notes/src/tools_tests.rs"
+      ],
+      "classes": [
+        "other",
+        "removed-path"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Retain upstream snapshot coverage for all nine bundled history/notes tool descriptions and input schemas; it adds test data without changing activation or backend behavior.",
+      "evidence": [
+        "Read the new bundled_tool_contracts case and Bazel snapshot inclusion; the later typed-schema commit deliberately consumes this published contract.",
+        "Reapplied existing alab/removed-paths for Bazel-only changes. The Cargo graph does not read these deleted build descriptions; upstream snapshot fixture data remains available to Cargo tests."
+      ],
+      "revisit": "Run the bundled contract snapshot and existing history/notes tests without snapshot acceptance on the integrated source."
+    },
+    {
+      "sha": "4f8205c8084168d264083b4113ac00490484555f",
+      "subject": "Use typed context window IDs throughout thread persistence (#60757)",
+      "paths": [
+        "codex-rs/app-server/src/external_agent_migration/session_importer.rs",
+        "codex-rs/app-server/tests/suite/conversation_summary.rs",
+        "codex-rs/app-server/tests/suite/v2/remote_thread_store.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_read.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_timeline.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_unarchive.rs",
+        "codex-rs/core/src/session/compaction_replay_tests.rs",
+        "codex-rs/core/src/session/guardian_checkpoint.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/rollout_reconstruction.rs",
+        "codex-rs/core/src/session/rollout_reconstruction_tests.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/tests/suite/subagent_notifications.rs",
+        "codex-rs/ext/guardian-v3/tests/evidence.rs",
+        "codex-rs/history/src/lib.rs",
+        "codex-rs/history/src/rollout_payload.rs",
+        "codex-rs/history/src/tests.rs",
+        "codex-rs/protocol/src/context_window_id.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/rollout/src/recorder.rs",
+        "codex-rs/rollout/src/recorder_tests.rs",
+        "codex-rs/thread-store/src/in_memory.rs",
+        "codex-rs/thread-store/src/local/mod.rs",
+        "codex-rs/thread-store/src/local/pending_thread_metadata_tests.rs",
+        "codex-rs/thread-store/src/local/revert_thread_tests.rs",
+        "codex-rs/thread-store/src/local/thread_history_materialization_tests.rs",
+        "codex-rs/thread-store/src/thread_metadata_sync.rs",
+        "codex-rs/thread-store/src/types.rs"
+      ],
+      "classes": [
+        "refactor",
+        "protocol"
+      ],
+      "features": [
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Carry ContextWindowId through checkpoints, rollout recording and thread creation, retaining UUIDv7/legacy numeric handling. Adapt ALab-owned memory/ephemeral records to the typed IDs instead of converting generated identities to strings.",
+      "evidence": [
+        "Reviewed typed window fields in session checkpoints, reconstruction validation, CompactedItem/rollout wire and thread creation. ALab MemoryCompacted still stores String fields and requires a typed adaptation; structured allocation support follows in340a18ed7c."
+      ],
+      "revisit": "Exercise UUIDv7, unsupported/legacy IDs, typed checkpoint restoration and actual ALab capture/decode/install with generated window metadata."
+    },
+    {
+      "sha": "95dcd1e8378021080bf380e42587ef891f611897",
+      "subject": "Fix Unicode caseless matching in thread search (#60759)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/app-server/tests/suite/v2/thread_read.rs",
+        "codex-rs/thread-store/Cargo.toml",
+        "codex-rs/thread-store/src/local/thread_history/search.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Use Unicode caseless folding with source-character boundaries for literal search so expansions and Greek sigma variants highlight original UTF-16 ranges correctly. Keep the existing nonempty query/page-size validation and pagination.",
+      "evidence": [
+        "Read LiteralMatcher folding and boundary advancement plus the actual paginated app-server search regression covering emoji, sigma variants, sharp-s expansion and newer Unicode mapping. Confirmed the public search entry rejects empty/whitespace-only needles before matching."
+      ],
+      "revisit": "Run the changed searchOccurrences integration test and relevant thread-store search tests on the exact integrated source."
+    },
+    {
+      "sha": "3a89580f08c985e99b9cc99df53c67fb8482ef93",
+      "subject": "Hand off approved plans through attachments in fresh sessions (#60763)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/src/protocol/common.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server/src/message_processor.rs",
+        "codex-rs/app-server/src/request_processors/turn_processor.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/session/approved_plan.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/tui/BUILD.bazel",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__session_lifecycle_requests__new_session_tests__clear_context_plan_request.snap",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/attachment_files.rs",
+        "codex-rs/tui/src/chatwidget/plan_implementation.rs",
+        "codex-rs/tui/src/chatwidget/tests/plan_mode.rs",
+        "codex-rs/tui/src/goal_files.rs",
+        "codex-rs/tui/src/lib.rs",
+        "defs.bzl"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "removed-path"
+      ],
+      "features": [
+        "exec-handoff",
+        "native-ui",
+        "product-policy",
+        "native-session"
+      ],
+      "decision": "adapt",
+      "reason": "Prepare approved plans against the new thread executor before replacing the current UI. Prefer an app-server attachment verified byte-for-byte under executor permissions; bounded complete fallback becomes untrusted tool output, and oversized/unavailable fallback preserves the original session. Retain native permission-root switch holds and explicit startup configuration precedence. Bind ALab continuation classification to the exact already-prepared thread and its first accepted approved prompt, rather than a next-root marker sent after thread creation.",
+      "evidence": [
+        "Reviewed experimental RPC routing, direct-input gate, absolute attachment-path parsing, active-turn rejection, executor filesystem metadata/content checks and five-second timeout. Read fallback byte/context/item bounds and UTF-8 chunking, TUI prepare/adopt/error unsubscribe flow, shared goal attachment helpers and plan-mode event routing. The new attachment path is local app-server storage, not an external publication.",
+        "Reapplied existing alab/removed-paths for Bazel-only changes. The Cargo graph does not read these deleted build descriptions; upstream snapshot fixture data remains available to Cargo tests.",
+        "Audited Shared::continue_work/take_continuation and the actual Autopilot ThreadLifecycleContributor: upstream now starts the target before preparation returns, so the old marker would miss it and leak to a subsequent root. The owned target/prompt fact is consumed only by the current runtime at native UserMessage completion; it neither grants action nor stamps human input. Legacy pre-creation provider continuations retain their existing path."
+      ],
+      "revisit": "Run actual large-plan attachment, write/read failure fallback and oversized fallback TUI cases, native startup/default/draft/goal/composer contracts, and retained session handoff under the exact new source. Require actual native opening tests for exact target/prompt acceptance, unrelated roots, edited first input and no work before acceptance, alongside successful/failing TUI preparation cases."
+    },
+    {
+      "sha": "32234ddac478f362ef12f3bf3c26d1861ea54b4a",
+      "subject": "Derive history and notes tool schemas from typed requests (#60770)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/ext/history-notes/Cargo.toml",
+        "codex-rs/ext/history-notes/src/lib.rs",
+        "codex-rs/ext/history-notes/src/requests.rs",
+        "codex-rs/ext/history-notes/src/tools.rs"
+      ],
+      "classes": [
+        "refactor",
+        "protocol"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Generate history/notes tool contracts from typed Rust requests while preserving published nullability, numeric bounds, enum values, encrypted annotations and note-write required ordering. Continue forwarding original JSON to evolving HTTP backends; do not introduce strict deserialization or enable new telemetry.",
+      "evidence": [
+        "Read typed request definitions, positive-count/schema helpers and derive mapping for all nine actions. The tool builder still uses strict=false and the original JSON backend path is unchanged; existing bundled snapshot captures the wire contract."
+      ],
+      "revisit": "Run unchanged bundled-tool snapshot and all history/notes schema/catalog/backend cases, including optional/null and encrypted properties."
+    },
+    {
+      "sha": "340a18ed7cd0aea3bc218838d9ac1f0f30efb1ac",
+      "subject": "Preserve model-facing ID allocations in saved history (#60771)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/core/src/responses_metadata.rs",
+        "codex-rs/history/src/guardian_history.rs",
+        "codex-rs/history/src/rollout_payload.rs",
+        "codex-rs/history/src/tests.rs",
+        "codex-rs/protocol/Cargo.toml",
+        "codex-rs/protocol/src/context_window_id.rs",
+        "codex-rs/protocol/src/context_window_id_tests.rs",
+        "codex-rs/protocol/src/lib.rs",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/protocol/src/response_item_id.rs",
+        "codex-rs/protocol/src/response_item_id_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor",
+        "protocol"
+      ],
+      "features": [
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Preserve allocation provenance separately from string-only provider IDs in all ALab memory history paths. Keep upstream equality/hash/order based on rendered IDs and legacy string reading; never rely on equality alone to prove allocation retention or send private sidecars to provider requests.",
+      "evidence": [
+        "Read ResponseItemId::Generated/ResponseItemIdAllocation, OptionalWireItemId on ResponseItem and InterAgentCommunication, rollout ItemPayload and Guardian checkpoint sidecars, structured window validation and string request metadata. Audited ALab MemoryItem and MemoryRecord::InterAgentCommunication: both need explicit allocation retention because provider serialization drops it and new equality ignores it."
+      ],
+      "revisit": "Implement owned typed sidecars and direct allocation assertions for ordinary/review/compacted/raw/private/inter-agent history, actual capture/decode/install, plus upstream legacy/wire/invalid-window tests before qualification."
+    },
+    {
+      "sha": "c1934fc99e6b40ddff4261c910ce7733e3abea26",
+      "subject": "Resolve saved Daybreak choices for each subagent turn (#60773)",
+      "paths": [
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/helper_daybreak.rs",
+        "codex-rs/core/src/agent/helper_daybreak/turn.rs",
+        "codex-rs/core/src/agent/types.rs",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/core/src/session/step_activation.rs",
+        "codex-rs/core/src/session/turn_context.rs",
+        "codex-rs/core/src/tasks/regular.rs",
+        "codex-rs/core/src/thread_manager/helper_daybreak_tests.rs",
+        "codex-rs/core/src/thread_spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/tests/suite/cyber_access_program.rs"
+      ],
+      "classes": [
+        "feature",
+        "model",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "model-discovery",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Retain upstream default-false DaybreakProgramPropagation and its explicit activation boundary while adopting per-turn child-model selection. Keep implicit choices bound to their admitted AuthOwner, preserve explicit child/parent overrides and next-turn model changes, and retain rejected input without issuing unauthorized model requests.",
+      "evidence": [
+        "Read SavedProgramResolution and HelperTurnAdmission, child source distinction and adaptation, both spawn entry points, regular-task rejection/input persistence and live model-change rejection. Unlike preceding d9, saved intent now actually selects requests. Existing ALab cold resumes intentionally create InitialHistory::Resumed; old AuthOwner/enrollment must not be serialized into fresh runtime authority.",
+        "The new real helper/tree fixture exercises first-party compressed requests. The ALab-owned test-support decoder handles standard zstd frames independently with bounded output/window memory; it does not disable production compression. Native metadata resolution changes only the ALab crate dependency edge and retains every upstream registry/git identity, with the unchanged source-recorded allocative override."
+      ],
+      "revisit": "Run native helper model-specific/compaction/WebSocket/account-change/rejected-input-resume tests for both spawn versions and explicit overrides; audit restored/pending ALab child options under fresh authority and rerun account, model-discovery and policy contracts without enabling the feature by default. Complete same-account implicit, cross-account refusal/input retention and explicit-override native tree scenarios against actual compressed requests; malformed/oversized fixture payloads must refuse."
+    }
+  ]
+}

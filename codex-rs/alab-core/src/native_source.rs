@@ -222,6 +222,12 @@ impl std::fmt::Debug for Retirement {
 /// One native-issued member on a retained authenticated connection. Storage, auth-derived
 /// HTTP bodies and WebSockets share its lifetime. EOF is Unknown, never implicit retirement.
 pub trait Member: Send + Sync {
+    /// The original authenticated constructor connection, never selected by
+    /// runtime data, a supplied socket path or a matching process number.
+    fn runtime_upgrade(&self) -> Option<Arc<dyn crate::runtime_upgrade::Host>> {
+        None
+    }
+
     /// Isolated debug qualification fault: close only this member's own work
     /// connection. Refusal is the default; this grants no source or readiness.
     #[cfg(debug_assertions)]

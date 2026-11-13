@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:02:22.696669+00:00",
+  "source": "ec689d30ee3d329dea44d671c6dc4c2fa0ef4a1b",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "compact_remote_v2::media_budget_tests::file_audio_cutoff_does_not_backfill_older_uncharged_media",
+      "status": "ok"
+    },
+    {
+      "name": "compact_remote_v2::media_budget_tests::image_only_boundary_is_atomic_and_does_not_backfill_older_messages",
+      "status": "ok"
+    },
+    {
+      "name": "compact_remote_v2::media_budget_tests::image_treatment_preserves_text_only_boundary_behavior",
+      "status": "ok"
+    },
+    {
+      "name": "compact_remote_v2::media_budget_tests::image_treatment_preserves_client_developer_boundary_behavior",
+      "status": "ok"
+    },
+    {
+      "name": "compact_remote_v2::media_budget_tests::file_audio_is_charged_and_atomic_in_both_image_budget_modes",
+      "status": "ok"
+    },
+    {
+      "name": "compact_remote_v2::media_budget_tests::later_image_parts_preserve_labels_audio_and_annotations",
+      "status": "ok"
+    },
+    {
+      "name": "compact_remote_v2::media_budget_tests::older_media_keeps_both_labels_or_is_dropped_after_file_audio_fits",
+      "status": "ok"
+    },
+    {
+      "name": "session::file_audio::tests::history_sums_measured_and_unknown_file_audio",
+      "status": "ok"
+    },
+    {
+      "name": "tests::file_audio_uses_the_measured_length_or_the_full_file_budget",
+      "status": "ok"
+    },
+    {
+      "name": "suite::compact_remote::remote_compact_v2_budgets_persisted_file_audio_atomically::audio_only",
+      "status": "ok"
+    },
+    {
+      "name": "suite::compact_remote::remote_compact_v2_budgets_persisted_file_audio_atomically::mixed_media_boundary",
+      "status": "ok"
+    },
+    {
+      "name": "suite::compact_remote::remote_compact_v2_budgets_persisted_file_audio_atomically::with_partial_metadata",
+      "status": "ok"
+    },
+    {
+      "name": "suite::compact_remote::remote_compact_v2_budgets_persisted_file_audio_atomically::metadata_unavailable",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::uploaded_audio_survives_compaction_and_cold_resume::measured_duration",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::audio_file::interrupt_during_audio_lookup_preserves_steered_batch_on_follow_up_and_resume",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-audio-budget-native.sh",
+      "sha256": "f3d106a12953ad6478c88a23352f4de902e9ad69b0ed8eca52e4a4870bcd0c79"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-audio-budget-native.log",
+      "sha256": "10d01f3355a991154f1dec5251f35181c92c28bdf9f52c4655d9eacc83c48a39"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-audio-budget-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Six nonempty native selections:15 passed, zero failed/ignored, no reported skip. Seven atomic-media unit fixtures, mixed measured/unknown history estimate, rounding/fallback utility test, four remote-compaction metadata cases, measured cold resume and interruption during metadata lookup preserving the accepted batch. Other tests filtered out. Does not qualify all audio admission/recovery, musl packaging, native credential images, full gate, complete intake or adoption."
+}

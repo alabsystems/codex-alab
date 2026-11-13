@@ -39,8 +39,8 @@ pub(super) fn record(
                 None
             }
         });
-    let captured_owner = setup.auth_owner.clone();
-    let owner = captured_owner
+    let selected_owner = setup.auth_owner.clone();
+    let owner = selected_owner
         .as_ref()
         .map(codex_login::AuthOwner::alab_generation);
     let generation = setup.auth_revision;
@@ -68,7 +68,7 @@ pub(super) fn record(
         owner.unwrap_or_default(),
         generation.unwrap_or_default(),
         move || {
-            captured_owner
+            selected_owner
                 .as_ref()
                 .is_some_and(codex_login::AuthOwner::is_current)
                 && manager

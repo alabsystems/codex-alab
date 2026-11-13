@@ -67,19 +67,16 @@ pub(super) async fn check(
         tokio::pin!(events);
         loop {
             let height = view.desired_height(tui.terminal.size()?.width);
-            tui.draw(height, |frame| {
+            let hud = chord_matcher.guide(&keymap.chords, &tui.frame_requester());
+            tui.draw_with_shortcut_hud(height, hud, |frame| {
                 view.render(frame.area(), frame.buffer_mut())
             })?;
             let Some(event) = events.next().await else {
                 break None;
             };
             tui.screen_size_for_event(&event)?;
-            if matches!(
-                &event,
-                crate::tui::TuiEvent::Paste(_) | crate::tui::TuiEvent::FocusLost
-            ) || matches!(&event, crate::tui::TuiEvent::Mouse(mouse) if mouse.kind != crossterm::event::MouseEventKind::Moved)
-            {
-                chord_matcher.cancel();
+            if tui.dismiss_shortcut_on_input(&event, &mut chord_matcher) {
+                continue;
             }
             if let crate::tui::TuiEvent::Key(key) = event
                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
@@ -97,8 +94,11 @@ pub(super) async fn check(
                     crate::keymap::KeyChordMatch::PassThrough => key,
                     crate::keymap::KeyChordMatch::Completed(key) => key,
                     crate::keymap::KeyChordMatch::Pending(_)
-                    | crate::keymap::KeyChordMatch::Cancelled
-                    | crate::keymap::KeyChordMatch::Ignored => continue,
+                    | crate::keymap::KeyChordMatch::Cancelled => {
+                        tui.frame_requester().schedule_frame();
+                        continue;
+                    }
+                    crate::keymap::KeyChordMatch::Ignored => continue,
                 };
                 view.handle_key_event(key);
             }
@@ -115,7 +115,7 @@ pub(super) async fn check(
         ))),
         (Some(1), Some(features)) if managed_daemon => {
             tui.with_restored(crate::tui::TerminalHandoff::Restore, || async {
-                crossterm::terminal::disable_raw_mode()?;
+                codex_alab_tui::terminal_modes::disable_raw_mode()?; // ALAB(upgrade): restore the retained original mode on this exit path.
                 codex_app_server_daemon::restart_with_features(features)
                     .await
                     .map_err(|err| {

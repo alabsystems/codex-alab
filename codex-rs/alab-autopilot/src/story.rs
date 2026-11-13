@@ -14,6 +14,13 @@
 //! | --- | --- |
 //! | a question box answered | `chose <policy word>` (`land` under Land) |
 //!
+//! The word is the answer's rule's. aterm's loop tells its dialog's priority word only where a
+//! text answered the dialog, and `recommended` where only options did (`tell_answered`'s
+//! `by_text`): an unmarked destructive question answered by an option under a text word or
+//! under Land is told by that word here and as `recommended` by aterm. aterm checks a story's
+//! text and keeps none of it (`control_query.rs` `parse_story`), so its band counts the two
+//! alike.
+//!
 //! Every other act (an approval, the plan box's yes, a prose question answered in the
 //! composer, a continuation, the owner's standing go-ahead, Land's acts, a wall's try, a
 //! compaction, a re-exec), a wait, a point left to a person and the worker's NEEDS YOU tell
@@ -89,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_is_told_by_its_policy_word_as_aterms_loop_tells_it() {
+    fn an_answer_is_told_by_its_rules_policy_word() {
         assert_eq!(
             for_act(answer::RULE_ANSWER_RECOMMENDED),
             Some(("chose", "recommended"))
@@ -98,8 +105,9 @@ mod tests {
             for_act(answer::RULE_ANSWER_LONG_TERM),
             Some(("chose", "long-term"))
         );
-        // Land's answer is told by the word aterm's own loop tells it by (`QuestionPriority::Land`
-        // `word()`). MUTANT: no Land row, and Land's answer tells no story.
+        // Land's answer is told by its rule's word, `QuestionPriority::Land`'s `word()` (which
+        // aterm's loop tells for a dialog a text answered). MUTANT: no Land row, and Land's
+        // answer tells no story.
         assert_eq!(for_act(answer::RULE_ANSWER_LAND), Some(("chose", "land")));
     }
 }

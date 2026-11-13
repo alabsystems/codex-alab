@@ -68,6 +68,7 @@ fn emit_when_active(active: bool, error: &ApiError) -> bool {
                 | ApiError::ModelNotFound { .. }
                 | ApiError::InvalidPrompt { .. }
                 | ApiError::CyberPolicy { .. }
+                | ApiError::InferenceHookDenied { .. }
                 | ApiError::BioPolicy { .. }
                 | ApiError::MisalignmentPolicyViolation { .. }
         )
@@ -125,6 +126,9 @@ mod tests {
             },
             ApiError::InvalidPrompt {
                 message: "invalid".into(),
+            },
+            ApiError::InferenceHookDenied {
+                message: "denied".into(),
             },
             ApiError::CyberPolicy {
                 message: "refused".into(),

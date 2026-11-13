@@ -13,7 +13,7 @@ pub(super) fn facade(real: Arc<AuthManager>) -> Arc<AuthManager> {
     if !codex_alab_core::native_source_launch::requested() || real.alab_context_host.is_some() { return real; }
     wrap(real)
 }
-fn wrap(real: Arc<AuthManager>) -> Arc<AuthManager> {
+pub(super) fn wrap(real: Arc<AuthManager>) -> Arc<AuthManager> {
     let host = match group().register(real.clone()) {
         Ok(host) => host,
         Err(_) => Host::closed(real.clone()),
@@ -156,6 +156,87 @@ pub(super) use {async_bool, async_option, async_result, io, metadata, option};
 mod tests {
     use super::*;
     use std::future::Future;
+    #[test]
+    fn credential_export_rechecks_before_delivering_rendered_response() {
+        use std::io::Write as _;
+        let a = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("same-fixture"));
+        let b = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("same-fixture"));
+        let host = wrap(a.clone());
+        let original = host.auth_cached().unwrap();
+        let changes = host.auth_change_receiver();
+        let export = host
+            .alab_prepare_credential_export(&original, "same-fixture".into())
+            .unwrap();
+        let mut output = Vec::new();
+        let result = export.write_with(&mut output, |staged, token| {
+            writeln!(staged, "credential={token}")?;
+            group()
+                .publish(&[codex_alab_core::context_host::Replacement {
+                    host: host.alab_context_host.as_ref().unwrap(),
+                    expected: &a,
+                    next: b.clone(),
+                }])
+                .unwrap();
+            Ok(())
+        });
+        assert!(Arc::ptr_eq(
+            &host.alab_capture_current_manager().unwrap(),
+            &b
+        ));
+        assert!(!changes.has_changed().unwrap());
+        assert!(result.is_err());
+        assert!(output.is_empty(), "no partial protocol record may escape");
+        host.alab_context_host.as_ref().unwrap().close();
+    }
+
+    #[test]
+    fn credential_export_refuses_host_replacement_with_unchanged_watch_counters() {
+        let a = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("same-fixture"));
+        let b = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("same-fixture"));
+        let host = wrap(a.clone());
+        let original = host.auth_cached().unwrap();
+        let changes = host.auth_change_receiver();
+        let export = host
+            .alab_prepare_credential_export(&original, "same-fixture".into())
+            .unwrap();
+        assert!(
+            host.alab_validate_credential_export(&original, "same-fixture")
+                .is_ok()
+        );
+        group()
+            .publish(&[codex_alab_core::context_host::Replacement {
+                host: host.alab_context_host.as_ref().unwrap(),
+                expected: &a,
+                next: b,
+            }])
+            .unwrap();
+        assert!(!changes.has_changed().unwrap());
+        assert!(
+            host.alab_prepare_credential_export(&original, "same-fixture".into())
+                .is_err()
+        );
+        assert!(
+            host.alab_validate_credential_export(&original, "same-fixture")
+                .is_err()
+        );
+        let mut output = Vec::new();
+        assert!(
+            export
+                .write_with(&mut output, |_, _| panic!("refused source must not render"))
+                .is_err()
+        );
+        assert!(output.is_empty(), "a refused export writes no bearer bytes");
+        let current = host.auth_cached().unwrap();
+        assert!(
+            host.alab_validate_credential_export(&current, "same-fixture")
+                .is_ok()
+        );
+        host.alab_context_host.as_ref().unwrap().close();
+        assert!(
+            host.alab_validate_credential_export(&current, "same-fixture")
+                .is_err()
+        );
+    }
     #[tokio::test]
     async fn async_host_dispatch_follows_real_epochs_and_refuses_a_closed_host() {
         let a = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("fixture-a"));
@@ -191,6 +272,23 @@ mod tests {
         assert!(original.same_channel(&a.auth_change_state_receiver()));
         assert!(rebound.same_channel(&b.auth_change_state_receiver()));
         assert!(!original.same_channel(&rebound));
+    }
+    #[tokio::test]
+    async fn typed_pair_follows_the_actual_host_context_and_refuses_a_closed_host() {
+        let a = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("pair-a"));
+        let b = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("pair-b"));
+        let host = wrap(a.clone());
+        let (old, old_factory) = host.alab_auth_with_http_client_factory().await.unwrap().unwrap();
+        group().publish(&[codex_alab_core::context_host::Replacement {
+            host: host.alab_context_host.as_ref().unwrap(), expected: &a, next: b.clone(),
+        }]).unwrap();
+        let (selected, factory) = host.alab_auth_with_http_client_factory().await.unwrap().unwrap();
+        assert!(selected.alab_credential_epoch().epoch().unwrap().same(&b.alab_source_epoch().unwrap()));
+        assert!(old.alab_credential_epoch().epoch().unwrap().same(&a.alab_source_epoch().unwrap()));
+        assert!(old.alab_bind_http_client_factory(factory).is_err());
+        assert!(selected.alab_bind_http_client_factory(old_factory).is_err());
+        host.alab_context_host.as_ref().unwrap().close();
+        assert!(host.alab_auth_with_http_client_factory().await.is_err());
     }
     #[test]
     fn host_selects_real_context_without_relabeling_captured_auth_or_owning_watch_authority() {

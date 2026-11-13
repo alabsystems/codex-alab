@@ -16,6 +16,7 @@ fn thread_settings_for_test(
         thread_id: thread_id.to_string(),
         thread_settings: codex_app_server_protocol::ThreadSettings {
             disabled_plugin_ids: Vec::new(),
+            environments: None,
             cwd: test_path_buf("/tmp/thread-settings").abs(),
             approval_policy: AskForApproval::OnRequest,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::AutoReview,
@@ -256,6 +257,36 @@ fn safety_buffering_notification(
     }
 }
 
+fn observe_active_headless_harness(
+    chat: &ChatWidget,
+    shared: &codex_alab_tui::boxes::Shared,
+    thread_id: ThreadId,
+) {
+    let key = thread_id.to_string();
+    let config = chat.config_ref();
+    shared.observe(
+        &codex_alab_tui::session::Frame {
+            primary_thread: Some(&key),
+            displayed_thread: Some(&key),
+            rollout_path: None,
+            cwd: config.cwd.as_path(),
+            model: chat.current_model(),
+            codex_home: &config.codex_home,
+            embedded: true,
+            state: codex_alab_tui::session::ProgramState::Idle,
+            draft_empty: true,
+            queued_input: false,
+            popup_open: false,
+            editor_open: false,
+            pending_user_turn: false,
+        },
+        codex_alab_tui::boxes::now_ms(),
+    );
+    shared.note_root_thread(&key);
+    shared.set_claim(Some("codex-alab@test".into()));
+    shared.set_autopilot(codex_alab_tui::session::Autopilot::Active);
+}
+
 fn open_safety_buffering_retry_confirmation(
     chat: &mut ChatWidget,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
@@ -345,6 +376,7 @@ async fn safety_buffering_offers_one_retry_with_app_wording() {
                 model,
                 turn,
                 prompt,
+                autonomous: false,
             }) => break (thread_id, turn_id, model, turn, prompt),
             Ok(_) => continue,
             Err(err) => panic!("expected safety-buffering retry event: {err}"),
@@ -432,6 +464,167 @@ async fn safety_buffering_does_not_offer_retry_in_side_conversation() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("safety_buffering_side_conversation_without_retry", popup);
+}
+
+#[tokio::test]
+async fn safety_buffering_active_harness_retries_without_a_person() {
+    let shared = Box::leak(Box::new(codex_alab_tui::boxes::Shared::new()));
+    let _scope = codex_alab_tui::boxes::scoped(shared);
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (thread_id, turn_id, _) = start_safety_buffering_test_turn(&mut chat, &mut op_rx);
+    observe_active_headless_harness(&chat, shared, thread_id);
+    chat.apply_external_edit("unsent draft".into());
+    while rx.try_recv().is_ok() {}
+
+    chat.handle_server_notification(
+        ServerNotification::ModelSafetyBufferingUpdated(safety_buffering_notification(
+            thread_id, turn_id, /*faster_model*/ None,
+        )),
+        /*replay_kind*/ None,
+    );
+    assert!(chat.no_modal_or_popup_active());
+    assert!(rx.try_recv().is_err());
+
+    for _ in 0..2 {
+        chat.handle_server_notification(
+            ServerNotification::ModelSafetyBufferingUpdated(safety_buffering_notification(
+                thread_id,
+                turn_id,
+                Some("faster-model"),
+            )),
+            /*replay_kind*/ None,
+        );
+    }
+    let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    let retries: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event, AppEvent::RetrySafetyBufferedTurn { .. }))
+        .collect();
+    assert_eq!(retries.len(), 1, "duplicate updates must not fork twice");
+    assert!(retries.iter().any(|event| matches!(
+        event,
+        AppEvent::RetrySafetyBufferedTurn { model, turn_id: retry_turn, autonomous: true, .. }
+            if model == "faster-model" && retry_turn == turn_id
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AppEvent::ConfirmSafetyBufferedRetry { .. }))
+    );
+    assert!(chat.no_modal_or_popup_active());
+    assert_eq!(chat.composer_text_with_pending(), "unsent draft");
+
+    chat.handle_server_notification(
+        ServerNotification::ModelSafetyBufferingUpdated(safety_buffering_notification(
+            thread_id,
+            turn_id,
+            Some("different-faster-model"),
+        )),
+        /*replay_kind*/ None,
+    );
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(AppEvent::RetrySafetyBufferedTurn { model, autonomous: true, .. })
+            if model == "different-faster-model"
+    ));
+    assert!(chat.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn safety_buffering_active_harness_stops_after_two_automatic_retries() {
+    let shared = Box::leak(Box::new(codex_alab_tui::boxes::Shared::new()));
+    let _scope = codex_alab_tui::boxes::scoped(shared);
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (thread_id, turn_id, mut turn) = start_safety_buffering_test_turn(&mut chat, &mut op_rx);
+    let AppCommand::UserTurn {
+        alab_safety_retries,
+        ..
+    } = &mut turn
+    else {
+        panic!("test turn must be a user turn");
+    };
+    *alab_safety_retries = 2;
+    chat.record_safety_buffering_turn(turn_id.to_string(), &turn);
+    observe_active_headless_harness(&chat, shared, thread_id);
+    while rx.try_recv().is_ok() {}
+
+    chat.handle_server_notification(
+        ServerNotification::ModelSafetyBufferingUpdated(safety_buffering_notification(
+            thread_id,
+            turn_id,
+            Some("faster-model"),
+        )),
+        /*replay_kind*/ None,
+    );
+
+    assert!(chat.no_modal_or_popup_active());
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn rejected_harness_turn_does_not_become_a_blocking_draft() {
+    let shared = Box::leak(Box::new(codex_alab_tui::boxes::Shared::new()));
+    let _scope = codex_alab_tui::boxes::scoped(shared);
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    observe_active_headless_harness(&chat, shared, thread_id);
+    let text = "[codex-alab] Continue the independently authorized work.";
+    shared.expect_own_turn(text);
+    chat.safety_buffering_prompt = Some(UserMessage::from(text));
+    chat.input_queue.pending_user_message_client_id = Some("own-turn-1".into());
+    chat.input_queue.user_turn_pending_start = true;
+
+    chat.restore_rejected_user_message("own-turn-1", "submission rejected".into());
+
+    assert_eq!(chat.composer_text_with_pending(), "");
+    assert!(!shared.is_own_turn(text));
+}
+
+#[tokio::test]
+async fn safety_recourse_active_harness_stays_non_modal() {
+    let shared = Box::leak(Box::new(codex_alab_tui::boxes::Shared::new()));
+    let _scope = codex_alab_tui::boxes::scoped(shared);
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    observe_active_headless_harness(&chat, shared, thread_id);
+    handle_turn_started(&mut chat, "recourse");
+    chat.apply_external_edit("unsent draft".into());
+    safety_recourse::on_metadata(
+        &mut chat,
+        codex_app_server_protocol::TurnModerationMetadataNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "recourse".into(),
+            metadata: json!({"safety_recourse": {
+                "schema_version": 1, "domain": "cyber", "source": "user_request",
+                "source_message": {"id":"1", "kind":"ordinary_message", "role":"user"},
+                "topic": "unauthorized_account_or_system_access",
+                "suggestions": [
+                    {"label": "Overview", "prompt_text": "Explain access"},
+                    {"label": "Recovery", "prompt_text": "Explain account recovery"},
+                    {"label": "Prevention", "prompt_text": "Explain account protection"}
+                ]
+            }}),
+        },
+    );
+    let pending = chat.safety_recourse.take();
+    let error = AppServerTurnError {
+        message: "blocked".into(),
+        codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+        misalignment: None,
+        additional_details: None,
+    };
+    assert!(safety_recourse::render_failure(&mut chat, pending, &error));
+    assert!(chat.no_modal_or_popup_active());
+    assert!(!chat.has_active_view());
+    assert_eq!(chat.composer_text_with_pending(), "unsent draft");
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok()).all(|event| !matches!(
+            event,
+            AppEvent::ContinueSafetyRecourse { .. } | AppEvent::PersistDaybreakSelection { .. }
+        ))
+    );
 }
 
 #[tokio::test]
@@ -526,6 +719,14 @@ async fn safety_buffering_ignores_hidden_stale_and_historical_updates() {
     hidden.show_buffering_ui = false;
     chat.handle_server_notification(
         ServerNotification::ModelSafetyBufferingUpdated(hidden),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ModelSafetyBufferingUpdated(safety_buffering_notification(
+            ThreadId::new(),
+            turn_id,
+            Some("faster-model"),
+        )),
         /*replay_kind*/ None,
     );
     chat.handle_server_notification(
@@ -1048,6 +1249,7 @@ async fn live_app_server_turn_started_sets_feedback_turn_id() {
         crate::app_event::FeedbackCategory::Bug,
         /*include_logs*/ false,
         crate::bottom_pane::FeedbackAudience::External,
+        /*can_save*/ true,
     );
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1058,6 +1260,7 @@ async fn live_app_server_turn_started_sets_feedback_turn_id() {
             reason: None,
             turn_id: Some(turn_id),
             include_logs: false,
+            destination: crate::app_event::FeedbackDestination::OpenAi,
         }) if turn_id == "turn-1"
     );
 }
@@ -1801,6 +2004,7 @@ async fn live_app_server_turn_completion_repairs_dropped_message_deltas() {
         .filter_map(|event| match event {
             AppEvent::ConsolidateAgentMessage {
                 source,
+                phase: Some(MessagePhase::FinalAnswer),
                 scrollback_reflow,
                 ..
             } => {
@@ -2172,7 +2376,7 @@ async fn live_app_server_manual_thread_name_updates_status_surfaces() {
         ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").expect("thread id");
     chat.thread_id = Some(thread_id);
 
-    chat.expect_manual_thread_name(thread_id, "review-fix".to_string());
+    chat.display_thread_name(thread_id, "review-fix".to_string());
 
     chat.handle_server_notification(
         ServerNotification::ThreadNameUpdated(
@@ -2241,7 +2445,7 @@ async fn live_app_server_manual_thread_name_is_visible_before_notification() {
     let thread_id = ThreadId::new();
     chat.thread_id = Some(thread_id);
 
-    chat.expect_manual_thread_name(thread_id, "Manual title".to_string());
+    chat.display_thread_name(thread_id, "Manual title".to_string());
 
     assert_eq!(chat.thread_name(), Some("Manual title".to_string()));
     assert!(drain_insert_history(&mut rx).is_empty());

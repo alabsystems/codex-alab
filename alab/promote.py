@@ -113,17 +113,38 @@ class Version(tuple):
 WAIT_LOCK_SECONDS = 1800
 
 
+def file_identity(metadata):
+    """Identity and mutation fields; reading may change access time."""
+    return (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+
+def regular_fd_bytes(fd, label):
+    """Read bounded, unchanged regular metadata while the caller retains its fd."""
+    before = os.fstat(fd)
+    if not stat.S_ISREG(before.st_mode) or before.st_size > LIMIT:
+        raise ValueError(f"not bounded regular metadata: {label}")
+    chunks, length = [], 0
+    while length <= LIMIT:
+        chunk = os.pread(fd, LIMIT + 1 - length, length)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        length += len(chunk)
+    if length > LIMIT:
+        raise ValueError(f"oversized metadata: {label}")
+    if file_identity(before) != file_identity(os.fstat(fd)):
+        raise ValueError(f"metadata changed while reading: {label}")
+    return b''.join(chunks)
+
+
 def regular_bytes(path):
     """Bounded metadata, never through a link or a special file."""
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, "rb") as stream:
-        metadata = os.fstat(stream.fileno())
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > LIMIT:
-            raise ValueError(f"not bounded regular metadata: {path}")
-        data = stream.read(LIMIT + 1)
-        if len(data) > LIMIT:
-            raise ValueError(f"oversized metadata: {path}")
-        return data
+    try:
+        return regular_fd_bytes(fd, path)
+    finally:
+        os.close(fd)
 
 
 def package(path, root):
@@ -169,9 +190,19 @@ def package(path, root):
     return source, Version((int(version[index]) for index in (1, 2, 3)), version[0])
 
 
+def git_environment():
+    """Keep explicit repository operations independent of inherited Git context."""
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("GIT_")}
+    environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                       GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1",
+                       GIT_OPTIONAL_LOCKS="0")
+    return environment
+
+
 def git(repo, *args):
     result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                            timeout=60)
+                            timeout=60, env=git_environment())
     return result.returncode, result.stdout.strip()
 
 

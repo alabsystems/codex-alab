@@ -1,0 +1,24 @@
+{
+  "account_id": "target-account",
+  "plan_type": "pro",
+  "rate_limit": {
+    "allowed": true,
+    "limit_reached": false,
+    "primary_window": {
+      "limit_window_seconds": 18000,
+      "reset_after_seconds": 3600,
+      "reset_at": 1800003600,
+      "used_percent": 0
+    },
+    "secondary_window": {
+      "limit_window_seconds": 604800,
+      "reset_after_seconds": 86400,
+      "reset_at": 1800086400,
+      "used_percent": 0
+    }
+  },
+  "rate_limit_reset_credits": {
+    "available_count": 0
+  },
+  "user_id": "target-user"
+}

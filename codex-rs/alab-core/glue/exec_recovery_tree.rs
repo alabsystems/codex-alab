@@ -21,7 +21,7 @@ use tokio::sync::watch;
 
 type AdmissionFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 type Admission = Arc<dyn Fn(ThreadId, Option<String>) -> AdmissionFuture + Send + Sync>;
-type Outcome = Result<StartIfIdleSubmission, String>;
+type Outcome = Result<Option<StartIfIdleSubmission>, String>;
 
 /// A destination tree with immutable runtime bindings and native admission.
 /// Preparation does not start turns. Activation is owned and retryable even
@@ -30,9 +30,10 @@ pub struct ExecRecoveryTree {
     root: Arc<CodexThread>,
     tree: ExecTreeSnapshot,
     children: Vec<Arc<ExecRestoredChild>>,
+    idle_root: Option<Arc<codex_core::ExecIdleRestore>>,
     threads: HashMap<ThreadId, Arc<CodexThread>>,
     reviews: HashMap<ThreadId, codex_extension_api::ExtensionDataInit>,
-    barrier: ExecLaunchBarrier,
+    barrier: OnceLock<ExecLaunchBarrier>,
     admit: Admission,
     deadline: tokio::time::Instant,
     outcome: OnceLock<watch::Receiver<Option<Outcome>>>,
@@ -43,9 +44,26 @@ pub struct ExecRecoveryTree {
 mod tests;
 
 impl ExecRecoveryTree {
+    pub(crate) fn native_threads(&self) -> Vec<Arc<CodexThread>> {
+        self.threads.values().cloned().collect()
+    }
+
     /// The root already owns its frame from `inputs`; remaining frames are
     /// consumed parent-first into fresh children in that root's local runtime.
+    #[cfg(test)]
     pub async fn prepare(
+        root: Arc<CodexThread>,
+        tree: ExecTreeSnapshot,
+        inputs: PreparedExecInputBatch,
+        deadline: tokio::time::Instant,
+        admit: impl Fn(ThreadId, Option<String>) -> AdmissionFuture + Send + Sync + 'static,
+    ) -> Result<Arc<Self>, String> {
+        let prepared = Self::prepare_unbound(root, tree, inputs, deadline, admit).await?;
+        Self::bind_forest(std::slice::from_ref(&prepared))?;
+        Ok(prepared)
+    }
+
+    pub(crate) async fn prepare_unbound(
         root: Arc<CodexThread>,
         tree: ExecTreeSnapshot,
         mut inputs: PreparedExecInputBatch,
@@ -53,6 +71,11 @@ impl ExecRecoveryTree {
         admit: impl Fn(ThreadId, Option<String>) -> AdmissionFuture + Send + Sync + 'static,
     ) -> Result<Arc<Self>, String> {
         tree.validate(root.exec_thread_id(), tree.turn())?;
+        let idle_root = if tree.turn().is_none() {
+            Some(root.prepare_exec_idle_root_restore(inputs.take_idle(tree.root())?)?)
+        } else {
+            None
+        };
         let mut threads = HashMap::from([(root.exec_thread_id(), Arc::clone(&root))]);
         let mut children = Vec::new();
         let mut reviews = HashMap::new();
@@ -91,31 +114,79 @@ impl ExecRecoveryTree {
                     reviews.insert(node.thread(), review.prepare_recovery(parent, child).await?);
                 }
             }
-            let loaded = threads.values().cloned().collect::<Vec<_>>();
-            ExecLaunchBarrier::prepare(&tree, &loaded)
+            Ok::<(), String>(())
         }
         .await;
-        let barrier = match prepared {
-            Ok(barrier) => barrier,
+        match prepared {
+            Ok(()) => {}
             Err(reason) => {
                 let _ = root.shutdown_exec_tree().await;
                 return Err(reason);
             }
-        };
+        }
         Ok(Arc::new(Self {
             root,
             tree,
             children,
+            idle_root,
             threads,
             reviews,
-            barrier,
+            barrier: OnceLock::new(),
             admit: Arc::new(admit),
             deadline,
             outcome: OnceLock::new(),
         }))
     }
 
-    pub async fn activate(self: &Arc<Self>) -> Outcome {
+    pub(crate) fn bind_forest(trees: &[Arc<Self>]) -> Result<(), String> {
+        if trees.iter().any(|tree| tree.barrier.get().is_some()) {
+            return Err("tree launch is already bound".into());
+        }
+        let snapshots = trees.iter().map(|tree| &tree.tree).collect::<Vec<_>>();
+        let loaded = trees
+            .iter()
+            .flat_map(|tree| tree.threads.values().cloned())
+            .collect::<Vec<_>>();
+        let barrier = ExecLaunchBarrier::prepare_forest(&snapshots, &loaded)?;
+        for tree in trees {
+            tree.barrier
+                .set(barrier.clone())
+                .map_err(|_| "tree launch was bound concurrently")?;
+        }
+        Ok(())
+    }
+    fn barrier(&self) -> Result<&ExecLaunchBarrier, String> {
+        self.barrier
+            .get()
+            .ok_or_else(|| "tree launch is not bound".into())
+    }
+    pub(crate) async fn stop(&self, reason: &str) {
+        if let Ok(barrier) = self.barrier() {
+            barrier.abort(reason.into());
+        }
+        let _ = self.root.shutdown_exec_tree().await;
+    }
+
+    pub async fn activate(self: &Arc<Self>) -> Result<StartIfIdleSubmission, String> {
+        if self.tree.turn().is_none() {
+            return Err("idle root requires idle activation".into());
+        }
+        self.activate_once()
+            .await?
+            .ok_or_else(|| "active tree has no recovered root".into())
+    }
+
+    pub async fn activate_idle(self: &Arc<Self>) -> Result<(), String> {
+        if self.tree.turn().is_some() {
+            return Err("active root requires original-turn activation".into());
+        }
+        if self.activate_once().await?.is_some() {
+            return Err("idle activation unexpectedly recovered a root turn".into());
+        }
+        Ok(())
+    }
+
+    async fn activate_once(self: &Arc<Self>) -> Outcome {
         let owner = Arc::clone(self);
         let mut outcome = self
             .outcome
@@ -126,8 +197,7 @@ impl ExecRecoveryTree {
                         .await
                         .unwrap_or_else(|_| Err("native tree activation deadline elapsed".into()));
                     if let Err(reason) = &result {
-                        owner.barrier.abort(reason.clone());
-                        let _ = owner.root.shutdown_exec_tree().await;
+                        owner.stop(reason).await;
                     }
                     send.send_replace(Some(result));
                 });
@@ -146,7 +216,28 @@ impl ExecRecoveryTree {
     }
 
     async fn run(&self) -> Outcome {
+        let result = self.install().await?;
+        self.barrier()?.wait_ready().await?;
+        self.barrier()?.release()?;
+        self.publish_idle().await?;
+        Ok(result)
+    }
+
+    pub(crate) async fn install(&self) -> Outcome {
+        self.barrier()?;
         // Idle mail must precede any model work or new inter-agent delivery.
+        if let Some(root) = &self.idle_root {
+            let admit = Arc::clone(&self.admit);
+            let deadline = self.deadline;
+            root.restore(move |thread| {
+                Box::pin(async move {
+                    tokio::time::timeout_at(deadline, admit(thread, None))
+                        .await
+                        .map_err(|_| "native idle-root admission deadline elapsed".to_owned())?
+                })
+            })
+            .await?;
+        }
         for child in &self.children {
             if child.recovery().is_none() {
                 let admit = Arc::clone(&self.admit);
@@ -176,7 +267,7 @@ impl ExecRecoveryTree {
             let deadline = self.deadline;
             let mut request = ExecRecoveryRequest::new_for_launch(
                 options.clone(),
-                self.barrier.permit(id)?,
+                self.barrier()?.permit(id)?,
                 move |turn| {
                     let admit = Arc::clone(&admit);
                     Box::pin(async move {
@@ -197,14 +288,25 @@ impl ExecRecoveryTree {
                 root_result = Some(result);
             }
         }
-        self.barrier.wait_ready().await?;
-        self.barrier.release()?;
+        Ok(root_result)
+    }
+
+    pub(crate) async fn ready(&self) -> Result<(), String> {
+        self.barrier()?.wait_ready().await
+    }
+    pub(crate) fn release(&self) -> Result<(), String> {
+        self.barrier()?.release()
+    }
+    pub(crate) async fn publish_idle(&self) -> Result<(), String> {
         for child in &self.children {
             if child.recovery().is_none() {
-                child.activate_idle_inputs()?;
+                child.activate_idle_inputs().await?;
             }
             child.release_residency_pin();
         }
-        root_result.ok_or_else(|| "tree has no recovered root".into())
+        if let Some(root) = &self.idle_root {
+            root.activate().await?;
+        }
+        Ok(())
     }
 }

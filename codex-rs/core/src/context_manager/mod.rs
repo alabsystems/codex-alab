@@ -5,7 +5,7 @@ mod sampling;
 pub(crate) mod updates;
 
 pub(crate) use history::ContextManager;
-pub(crate) use history::alab_exec_context::PreparedExecContext; // ALAB(exec-ephemeral): restore data before binding a fresh session's item generator.
+pub(crate) use history::alab_exec_context::PreparedExecContext; // ALAB(exec-ephemeral): validation precedes binding to a destination-owned generator.
 pub(crate) use history::HistoryReplacement;
 pub(crate) use history::estimate_image_reference_bytes;
 pub(crate) use history::estimate_item_token_count;

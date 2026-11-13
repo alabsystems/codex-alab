@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:59:13.516258+00:00",
+  "source": "b9782f8dd20749e49114cff4c69e03a7bbf5c60e",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "context_manager::history::tests::sampling_checkpoint_excludes_input_appended_during_request",
+      "status": "ok"
+    },
+    {
+      "name": "suite::compact::manual_compact_twice_preserves_latest_user_messages",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::compaction::remote_slash_compact_preserves_context_across_windows",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::injected_agent_mail::injected_agent_message_interrupting_sampling_survives_mid_turn_compaction::instant_interrupt_enabled",
+      "status": "ok"
+    },
+    {
+      "name": "suite::scenarios::injected_agent_mail::injected_agent_message_interrupting_sampling_survives_mid_turn_compaction::instant_interrupt_disabled",
+      "status": "FAILED"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-pending-mail-native.sh",
+      "sha256": "66ee31eab8cd092fc459495855eebf5f784fe1047bb2efb6aa3bef6fc5dcd92e"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-pending-mail-native.log",
+      "sha256": "56c7a0b3465121e48dfa2ffbed9eec5855086c1d279820e03e876bb40048f98a"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-pending-mail-native.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "Four native passes: request-boundary checkpoint, local repeated compaction pending mail, remote repeated compaction/cold resume and instant-interrupt-enabled preemption. The disabled parameter case failed writing the shared second Insta snapshot with PermissionDenied; controller overall exit1. This is not a green combined preemption result. Both parameter cases are being selected in separate processes without changing snapshots or bypassing containment. No full-gate, complete intake or adoption claim."
+}

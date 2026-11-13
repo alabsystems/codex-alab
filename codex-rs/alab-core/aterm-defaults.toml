@@ -4,7 +4,10 @@
 # ALab's packaged defaults that hold only inside aterm (`TERM_PROGRAM=aterm`), merged over
 # `defaults.toml` in the same lowest layer: any user, profile, project or `-c` value wins.
 
-# Native defaults also cover direct launches and older aterm resume/fork wrappers.
+# Native defaults, so a direct launch of the binary and an older aterm resume/fork wrapper get
+# them too, but only where `TERM_PROGRAM=aterm`: under tmux inside aterm, over ssh or in
+# another terminal upstream's prompts and sandbox stand. Under `never` upstream still refuses
+# a forced `rm` and declines MCP elicitations that ask for data, rather than asking.
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 

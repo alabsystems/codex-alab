@@ -25,6 +25,8 @@ import sys
 import time
 
 import capacity_exec as probe
+import native_host_record
+import provider_fixture
 
 
 # (causal-outcome hang detector, guardian), in seconds. These bound only the
@@ -46,7 +48,15 @@ CASE_BUDGETS = {
     "successor-prefix-crash": (450, 480),
     "post-signal-resume": (390, 420),
     "post-signal-expiry-diagnostic": (390, 420),
+    # A five-hour wall whose reset is within fifteen minutes is waited out on its own
+    # account. The far-reset case (handed to another account) belongs to the commit
+    # that makes alab-quota-recovery yield a five-hour wall; it is not written here.
+    "five-hour-wall-soon": (270, 300),
 }
+# How long after the provider refused it the five-hour-wall-soon source is usable again,
+# and how far off that refusal says its window resets.
+WALL_LIFT_SECONDS = 20
+WALL_RESET_SECONDS = 600
 
 
 TITLE_FORMAT = {"type": "json_schema", "strict": True, "name": "codex_output_schema",
@@ -174,10 +184,287 @@ def validate_completed_original_turn(events, wall, expected_starts=2):
     return starts
 
 
+# Each fixture login's role, and the identity its token claims carry (fake_auth).
+QUOTA_ACCOUNTS = {"old": ("source", "source-account", "fixture-user"),
+                  "new": ("target", "target-account", "target-user"),
+                  "next": ("final", "final-account", "final-user")}
+CREDITS_PATH = "/rate-limit-reset-credits"
+
+
+def monotonic_us():
+    """The clock the native host stamps its control trace with."""
+    return time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000
+
+
+def token_part(value):
+    return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
+
+
+def access_token(generation, account="fixture-account", *, email="fixture@example.invalid",
+                 user="fixture-user"):
+    """A fixture login's access token: an unsigned JWT, as a real one is a JWT.
+
+    Its payload carries the identity claims of the login's id token, an expiry thirty
+    days off (so no client refreshes it) and the private claim `fixture_generation`,
+    by which this fixture knows the login. It has no chatgpt_account_user_id.
+    """
+    return token_part({"alg": "none"}) + "." + token_part({
+        **identity_claims(account, email, user), "exp": int(time.time()) + 30 * 86400,
+        "fixture_generation": generation}) + ".sig"
+
+
+def identity_claims(account, email, user):
+    return {"sub": user, "email": email, "https://api.openai.com/auth": {
+        "chatgpt_user_id": user, "chatgpt_account_id": account, "chatgpt_plan_type": "pro"}}
+
+
+def bearer_generation(headers):
+    """Which fixture login a request's bearer belongs to: its access token's
+    `fixture_generation`, or None. Nothing of the token is kept."""
+    value = headers.get("authorization") or headers.get("Authorization") or ""
+    scheme, _, token = value.partition(" ")
+    parts = token.split(".")
+    if scheme != "Bearer" or len(parts) != 3:
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except ValueError:
+        return None
+    generation = payload.get("fixture_generation") if isinstance(payload, dict) else None
+    return generation if isinstance(generation, str) else None
+
+
+def request_account(headers):
+    """Which fixture login sent a request; never its bearer text."""
+    return QUOTA_ACCOUNTS.get(bearer_generation(headers), (None,))[0]
+
+
+def request_client(headers):
+    """Which program sent a request: aterm's usage reader names itself exactly
+    `codex-cli`; codex-alab's user agent begins with its originator and version."""
+    return "host" if headers.get("user-agent") == "codex-cli" else "codex"
+
+
+def require_no_fixture_fault(model):
+    """A reply the fixture could not build correctly fails the run where it is seen.
+
+    The reply is built on a server thread, whose exception only closes the connection.
+    The client reads that as "usage unknown" and keeps a walled turn polling until the
+    hang detector, so the controller's own loop has to look.
+    """
+    with model.lock:
+        fault = model.fixture_faults[0] if model.fixture_faults else None
+    probe.require(fault is None, "fixture served a reply the client cannot decode"
+        + (f" on {fault['path']}: {fault['error']}" if fault else ""))
+
+
+def live_snapshot_outcomes(trace):
+    """The host's live-snapshot verdicts in order, for a run that reached no outcome."""
+    outcomes = []
+    try:
+        for line in trace.read_text().splitlines():
+            event = json.loads(line)
+            if event.get("kind") == "live-snapshot" and isinstance(event.get("outcome"), str):
+                outcomes.append(event["outcome"][:64])
+    except (OSError, ValueError, AttributeError):
+        pass
+    return "live snapshot: " + (", ".join(outcomes[-8:]) if outcomes else "none traced")
+
+
+def wall_evidence(events, trace):
+    """What followed the first weekly wall, for a quota run that reached no outcome."""
+    def path(event):
+        return event["path"].split("?", 1)[0]
+    wall = next((index for index, event in enumerate(events) if event["method"] == "POST"
+        and event.get("kind") == "foreground" and event.get("status") == 429), None)
+    if wall is None:
+        return "no foreground request was refused with 429"
+    later = [event for event in events[wall + 1:]
+        if event["method"] == "GET" and event.get("client") == "codex"]
+    usage = sum(path(event).endswith("/usage") for event in later)
+    credits = sum(path(event).endswith(CREDITS_PATH) for event in later)
+    prepares = 0
+    try:
+        for line in trace.read_text().splitlines():
+            event = json.loads(line)
+            stamp = event.get("monotonicUs")
+            prepares += (event.get("kind") == "rotation" and event.get("verb") == "prepare"
+                and type(stamp) is int and stamp > events[wall]["monotonicUs"])
+    except (OSError, ValueError, AttributeError):
+        prepares = 0
+    meaning = ("the turn ended and the host was asked" if prepares else
+        "the earned reset was read but the handoff was not ready (host policy, or a pool "
+        "snapshot showing no other account)" if credits else
+        "the usage reply is not decoding or does not name the login's account" if usage else
+        "the walled turn read nothing")
+    return (f"after the first 429: {usage} codex usage reads, {credits} codex credit-list "
+        f"reads, {prepares} prepares traced; {meaning}")
+
+
+def validate_creditless_yield(events, prepares):
+    """Earned reset first, then another account, for every weekly wall.
+
+    `events` are the fixture server's requests in arrival order and `prepares`
+    the host's completed `codex-rotation prepare` stamps. After an account's
+    usage 429 its turn must read that account's (empty) earned-reset credits,
+    redeem nothing, send no further model request, and only then end for the
+    host to prepare rotation. A turn that keeps polling never reaches prepare.
+    """
+    def path(event):
+        return event["path"].split("?", 1)[0]
+    probe.require(not any(event["method"] == "POST" and path(event).endswith(CREDITS_PATH + "/consume")
+        for event in events), "a creditless wall attempted an earned-reset redemption")
+    walls = [(index, event) for index, event in enumerate(events)
+        if event["method"] == "POST" and event.get("kind") == "foreground" and event.get("status") == 429]
+    probe.require(bool(walls) and all(event.get("account") for _, event in walls),
+        "no attributable weekly wall was exercised")
+    proofs = []
+    for index, wall in walls:
+        later = events[index + 1:]
+        probe.require(not any(event["method"] == "POST" and event.get("kind") == "foreground"
+            and event.get("account") == wall["account"] for event in later),
+            "the walled account sent another model request")
+        credit = next((event for event in later if event["method"] == "GET"
+            and path(event).endswith(CREDITS_PATH) and event.get("account") == wall["account"]), None)
+        probe.require(credit is not None, "the wall was not followed by its own earned-reset read")
+        prepare = min((stamp for stamp in prepares if stamp > wall["monotonicUs"]), default=None)
+        probe.require(prepare is not None, "the walled turn never ended for account rotation")
+        probe.require(wall["monotonicUs"] <= credit["monotonicUs"] < prepare,
+            "account rotation was prepared before the earned reset was tried")
+        proofs.append({"account": wall["account"], "wallUs": wall["monotonicUs"],
+            "creditReadUs": credit["monotonicUs"], "firstPrepareUs": prepare})
+    return proofs
+
+
+def validate_wall_waited_out(events, lift_seconds=None):
+    """A five-hour wall that resets soon is waited out on its own account.
+
+    `events` are the fixture server's requests in arrival order. The source login is
+    refused once, reads its own walled usage, and sends its turn's request again only
+    once the wall has lifted; no other login sends a model request.
+    """
+    lift_seconds = WALL_LIFT_SECONDS if lift_seconds is None else lift_seconds
+
+    def path(event):
+        return event["path"].split("?", 1)[0]
+    posts = [(index, event) for index, event in enumerate(events)
+        if event["method"] == "POST" and path(event).endswith("/responses")]
+    probe.require(all(event.get("account") == "source" for _, event in posts),
+        "a login other than the walled one sent a model request")
+    turns = [(index, event) for index, event in posts if event.get("kind") == "foreground"]
+    walls = [(index, event) for index, event in turns if event.get("status") == 429]
+    probe.require(len(walls) == 1, f"the source was refused {len(walls)} times, not once")
+    index, wall = walls[0]
+    probe.require(len(turns) == 3 and turns[1][0] == index and turns[2][1].get("status") == 200,
+        "the walled turn was not the second request, retried once and answered")
+    retry_index, retry = turns[2]
+    waited = retry["monotonicUs"] - wall["monotonicUs"]
+    probe.require(waited >= lift_seconds * 1_000_000,
+        "the walled turn was retried before its wall lifted")
+    reads = [event for event in events[index + 1:retry_index] if event["method"] == "GET"
+        and path(event).endswith("/usage") and event.get("account") == "source"
+        and event.get("client") == "codex"]
+    probe.require(any(event.get("allowed") is False for event in reads),
+        "the walled turn never read its own wall")
+    return {"wallUs": wall["monotonicUs"], "retryUs": retry["monotonicUs"],
+        "waitedSeconds": round(waited / 1_000_000, 3),
+        "walledUsageReads": sum(event.get("allowed") is False for event in reads),
+        "usageReads": len(reads)}
+
+
+def wall_case_finished(events, observed):
+    """Whether `five-hour-wall-soon` has reached its end.
+
+    Nothing is handed over in that case: it ends when the source's own turn was answered
+    after its wall (its third foreground request, with 200) and a session record is at
+    rest. `observed` are the session records under the fixture's CODEX_HOME.
+    """
+    turns = [event for event in events if event["method"] == "POST"
+             and event.get("kind") == "foreground" and event.get("account") == "source"]
+    return (len(turns) >= 3 and turns[2].get("status") == 200 and any(
+        successor_rest(record, record.get("sessionId")) is not None for record in observed))
+
+
+def wall_handoff_evidence(root, events):
+    """What a handoff of the walled session leaves under `root`, in words; empty if none.
+
+    The pool had somewhere to go (the other account reads as usable throughout), so
+    each of these is the host or the client moving a session that should have waited: a
+    charged rotation, a handoff receipt, a native action on the session, or a model
+    request from a login other than the walled one.
+    """
+    found = []
+    pool = root / "host-state" / "accounts-codex"
+    try:
+        rotations = json.loads((pool / "state.json").read_text()).get("rotations")
+    except FileNotFoundError:
+        rotations = None
+    if rotations:
+        found.append(f"{len(rotations)} rotation(s) charged")
+    receipts = [path.name for path in (pool / "renewal-follow").glob("*") if path.is_file()]
+    if receipts:
+        found.append(f"{len(receipts)} handoff receipt file(s)")
+    actions = [event.get("action") for event in native_actions(root)]
+    if actions:
+        found.append("native action(s): " + ", ".join(sorted({str(action) for action in actions})))
+    others = sorted({str(event.get("account")) for event in events if event["method"] == "POST"
+        and event["path"].split("?", 1)[0].endswith("/responses") and event.get("account") != "source"})
+    if others:
+        found.append("model request(s) from " + ", ".join(others))
+    return found
+
+
+def require_wall_held(root, events):
+    """Fail `five-hour-wall-soon` by name as soon as its session is being handed over."""
+    found = wall_handoff_evidence(root, events)
+    probe.require(not found, "a five-hour wall that resets soon was handed over, charged or "
+        "replayed: " + "; ".join(found))
+
+
+def wall_verdict(root, events, requests, trace):
+    """The oracle of a finished `five-hour-wall-soon` run, and what it records.
+
+    The wall was waited out on its own account (validate_wall_waited_out), nothing of a
+    handoff exists (require_wall_held), and the turn's work went to the model exactly
+    three times: the plan, the refused request and its one retry.
+    """
+    waited = validate_wall_waited_out(events)
+    require_wall_held(root, events)
+    probe.require(len(requests) == 3, "a five-hour wall that resets soon was handed over, "
+        f"charged or replayed: {len(requests)} foreground model requests, not 3")
+    # Recorded, not required: whether the host was asked to move the walled turn.
+    try:
+        waited["preparesTraced"] = len(rotation_prepares(trace))
+    except RuntimeError:
+        waited["preparesTraced"] = None
+    return waited
+
+
+def rotation_prepares(trace):
+    """Completion stamps of the host's `codex-rotation prepare` calls, in order."""
+    probe.require(trace.is_file() and not trace.is_symlink(), "native control trace is absent")
+    events = [json.loads(line) for line in trace.read_text().splitlines()]
+    stamps = [event.get("monotonicUs") for event in events
+        if event.get("kind") == "rotation" and event.get("verb") == "prepare"]
+    probe.require(all(type(stamp) is int and stamp > 0 for stamp in stamps),
+        "native rotation trace has no usable clock")
+    return stamps
+
+
 class Model(probe.Mock):
-    def __init__(self, root, weekly_quota=False, all_exhausted=False, chain=False):
+    def __init__(self, root, weekly_quota=False, all_exhausted=False, chain=False, wall=None):
         super().__init__(False)
+        probe.require(wall in (None, "five-hour-soon") and (wall is None or weekly_quota),
+                      "unknown fixture wall")
+        probe.require(wall is None or not (all_exhausted or chain),
+                      "the five-hour wall has one usable destination and no chain")
         self.root = root
+        # None: the weekly wall of the quota cases. "five-hour-soon": the source's second
+        # request is refused on its five-hour window, which lifts WALL_LIFT_SECONDS later.
+        self.wall = wall
+        # When the provider served that refusal: (monotonic, unix), or None.
+        self.wall_served = None
+        self.monotonic = time.monotonic
         self.http_events = []
         self.auxiliary_requests = []
         self.unknown_requests = []
@@ -186,25 +473,107 @@ class Model(probe.Mock):
         self.chain = chain
         self.middle_exhausted = False
         self.usage_reads = []
+        # Replies this fixture built that the client would not decode: {path, error}.
+        self.fixture_faults = []
+        # POSTs to a path the fixture has no route for: {path, client}.
+        self.unrouted_posts = []
+        # Whether the provider has refused the source login's model request yet.
+        self.source_walled = False
+
+    def week_spent(self, old_token, new_token, next_token=False):
+        """Whether that login's week is spent now. Asked by usage() and by each model
+        response's headers, so it has no side effect."""
+        if self.wall is not None:
+            # The five-hour wall is not on the week, and the other account is usable from
+            # the start: the case asserts that a wall which resets soon is not handed
+            # over, and that is only an assertion if the pool has somewhere to go.
+            return False
+        if old_token:
+            # Healthy until the provider has refused it: an account's usage never says
+            # "spent" before a request of its own was turned away, and a turn's first
+            # preflight must find the source permitting.
+            return self.source_walled
+        return bool(self.all_exhausted or not (self.root / "renewed").exists()
+                    or (self.chain and ((new_token and self.middle_exhausted)
+                                        or (next_token and not self.middle_exhausted))))
+
+    def wall_lifted(self):
+        """Whether the five-hour wall, once served, has lifted."""
+        with self.lock:
+            served = self.wall_served
+        return served is not None and self.monotonic() >= served[0] + WALL_LIFT_SECONDS
+
+    def usage_body(self, generation):
+        """The usage reply `generation`'s login would read now, with no read recorded."""
+        if not self.weekly_quota:
+            return provider_fixture.usage("fixture-account", "fixture-user", week_used=0, allowed=True)
+        generation = generation if generation in QUOTA_ACCOUNTS else "old"
+        _, account, user = QUOTA_ACCOUNTS[generation]
+        if self.wall == "five-hour-soon" and generation == "old":
+            with self.lock:
+                served = self.wall_served
+            if served is None or self.wall_lifted():
+                return provider_fixture.usage(account, user, week_used=10, allowed=True)
+            # The window's reset stays where the refusal put it: one reading of the clock
+            # gives both the distance and the instant it is measured from.
+            now = int(time.time())
+            remaining = max(1, int(served[1]) + WALL_RESET_SECONDS - now)
+            return provider_fixture.usage(account, user, week_used=10, session_used=100,
+                                          allowed=False, session_resets_in=remaining, now=now)
+        full = self.week_spent(generation == "old", generation == "new", generation == "next")
+        return provider_fixture.usage(account, user, week_used=100 if full else 0, allowed=not full)
+
+    def limit_headers(self, generation, wall=False, usage=None):
+        """The rate-limit headers of a model response to `generation`'s login.
+
+        `usage` is the reading already taken for this response, when one was.
+        """
+        return provider_fixture.limit_headers(
+            self.usage_body(generation) if usage is None else usage, wall=wall)
+
+    def refused(self, record, generation, message):
+        """The 429 of a model request `generation`'s login sent at its wall.
+
+        Its headers and its body come from one reading of that login's usage, and it is
+        held to what the client decodes (provider_fixture `refusal`). A login whose usage
+        states no spent window has no wall: that is a FixtureFault, which the handler
+        records for the controller's loop.
+        """
+        usage = self.usage_body(generation)
+        reply = provider_fixture.check("refusal", provider_fixture.refusal(
+            usage, message, headers=self.limit_headers(generation, wall=True, usage=usage)))
+        record["responseHeaders"] = reply["headers"]
+        return reply["status"], json.dumps(reply["body"]).encode(), "application/json", None, record
+
+    def answered(self, record, generation):
+        """Put the rate-limit headers of a 200 to `generation`'s login in its record.
+
+        A response the provider answers never states a spent window. This fixture does
+        answer a login whose usage reads as not allowed: a title request that arrives
+        after the wall, and a walled or exhausted login that sends a model request again,
+        which the cases' own oracles fail. Such a 200 states no windows, as every response
+        did before these headers existed, and its record says they were withheld.
+        """
+        if self.usage_body(generation)["rate_limit"]["allowed"]:
+            record["responseHeaders"] = self.limit_headers(generation)
+        else:
+            record["responseHeaders"] = {}
+            record["limitHeadersWithheld"] = True
 
     def usage(self, old_token, new_token, next_token=False):
         probe.require(self.weekly_quota and (old_token or new_token or next_token), "unexpected usage identity")
-        if new_token or next_token:
+        if (new_token or next_token) and self.wall is None:
+            # The weekly cases hold a destination's first reading until the host has
+            # opened it. The five-hour case opens nothing: its destination answers at once.
             deadline = time.monotonic() + 60
             while not (self.root / "renewed").exists() and time.monotonic() < deadline:
                 time.sleep(0.01)
         with self.lock:
             self.usage_reads.append("source" if old_token else "target")
-        full = (self.all_exhausted or old_token or not (self.root / "renewed").exists()
-                or (self.chain and ((new_token and self.middle_exhausted)
-                                     or (next_token and not self.middle_exhausted))))
-        return {"plan_type": "pro", "rate_limit": {
-            "allowed": not full, "limit_reached": full,
-            "primary_window": {"used_percent": 0, "limit_window_seconds": 18000,
-                               "reset_at": int(time.time()) + 3600},
-            "secondary_window": {"used_percent": 100 if full else 0,
-                                 "limit_window_seconds": 604800,
-                                 "reset_at": int(time.time()) + 86400}}}
+        # The reply names the account it is for. A reply with no identity makes the
+        # client refuse any earned-reset attempt and end the walled turn at
+        # once, which hid a turn that never ended once the account was named.
+        return self.usage_body("old" if old_token else "next" if next_token else "new")
 
     def reply(self, body, generation=None):
         with self.lock:
@@ -219,20 +588,32 @@ class Model(probe.Mock):
         if kind == "thread-title":
             item = {"type": "message", "role": "assistant", "id": "fixture-title",
                 "content": [{"type": "output_text", "text": json.dumps({"title": "Recover original work"})}]}
+            self.answered(record, generation)
             return 200, probe.response("fixture-title", item), "text/event-stream", None, record
+        if self.wall == "five-hour-soon" and number > 1:
+            if number == 2:
+                with self.lock:
+                    self.wall_served = (self.monotonic(), time.time())
+            if not self.wall_lifted():
+                # The first refusal, or a request sent again before the wall lifted. Its
+                # reset is the five-hour window's own: WALL_RESET_SECONDS after the wall.
+                return self.refused(record, generation, "Fixture five-hour limit reached")
+            item = {"type": "message", "role": "assistant", "id": "renewed-reply",
+                    "content": [{"type": "output_text", "text": "Native renewal fixture recovered."}]}
+            self.answered(record, generation)
+            return 200, probe.response(f"renewal-{number}", item), "text/event-stream", None, record
         if self.chain and number > 1:
             expected = {2: "old", 3: "new", 4: "next"}.get(number)
             probe.require(generation == expected, "quota chain used an unexpected account")
             if number == 3:
                 self.middle_exhausted = True
-                return 429, json.dumps({"error": {"type": "usage_limit_reached",
-                    "resets_at": int(time.time()) + 86400,
-                    "message": "Fixture second account exhausted"}}).encode(), "application/json", None, record
+                return self.refused(record, generation, "Fixture second account exhausted")
         if number > 1 and not (self.root / "renewed").exists():
             if self.weekly_quota:
-                return 429, json.dumps({"error": {"type": "usage_limit_reached",
-                    "resets_at": int(time.time()) + 86400,
-                    "message": "Fixture weekly quota exhausted"}}).encode(), "application/json", None, record
+                if generation in (None, "old"):
+                    with self.lock:
+                        self.source_walled = True
+                return self.refused(record, generation, "Fixture weekly quota exhausted")
             return 401, json.dumps({"error": {"type": "invalid_request_error",
                 "code": "invalid_api_key", "message": "Fixture login expired"}}).encode(), "application/json", None, record
         if number == 1:
@@ -241,7 +622,22 @@ class Model(probe.Mock):
         else:
             item = {"type": "message", "role": "assistant", "id": "renewed-reply",
                     "content": [{"type": "output_text", "text": "Native renewal fixture recovered."}]}
+        self.answered(record, generation)
         return 200, probe.response(f"renewal-{number}", item), "text/event-stream", None, record
+
+
+def spent_window_on_success(status, headers):
+    """The header of an answered model response that states a spent window, or None.
+
+    No provider answers a request and reports the account's window at 100 in the same
+    response. The client reads those headers as evidence against the turn's clear usage
+    reading, so such a reply sets it re-reading a usage that says not allowed while the
+    model goes on answering.
+    """
+    if status != 200:
+        return None
+    return next((name for name, value in headers.items()
+                 if name.endswith("-used-percent") and float(value) >= 100), None)
 
 
 
@@ -251,25 +647,47 @@ def serve(model, secure=True):
             pass
 
         def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            event = {"method": "GET", "path": self.path,
+                "account": request_account(self.headers), "client": request_client(self.headers),
+                "monotonicUs": monotonic_us()}
             with model.lock:
-                model.http_events.append({"method": "GET", "path": self.path})
+                model.http_events.append(event)
                 (model.root / "http-events-live.json").write_text(json.dumps(model.http_events))
             body = {"models": []}
-            if model.weekly_quota and self.path.split("?", 1)[0].endswith("/usage"):
-                old_token = self.headers.get("authorization") == "Bearer fixture-access-old"
-                new_token = self.headers.get("authorization") == "Bearer fixture-access-new"
-                next_token = self.headers.get("authorization") == "Bearer fixture-access-next"
-                if not (old_token or new_token or (model.chain and next_token)):
-                    self.send_error(401)
-                    return
-                body = model.usage(old_token, new_token, next_token)
-            if self.path.split("?", 1)[0].endswith("/accounts/check"):
+            try:
+                if path.endswith(CREDITS_PATH):
+                    # No earned reset exists in this fixture: a valid empty list.
+                    body = provider_fixture.check("credits", provider_fixture.credit_list())
+                if path.endswith("/usage") and not model.weekly_quota:
+                    # The same-account cases have one login and no quota story: its
+                    # account is healthy. Model.usage is the quota cases' alone.
+                    body = provider_fixture.check("usage", provider_fixture.usage(
+                        "fixture-account", "fixture-user", week_used=0, allowed=True))
+                if model.weekly_quota and path.endswith("/usage"):
+                    generation = bearer_generation(self.headers)
+                    old_token, new_token, next_token = (
+                        generation == "old", generation == "new", generation == "next")
+                    if not (old_token or new_token or (model.chain and next_token)):
+                        self.send_error(401)
+                        return
+                    # Every model's reply is held to what the client decodes: none opts out.
+                    body = provider_fixture.check("usage", model.usage(old_token, new_token, next_token))
+                    # What the reader was told, for the oracles: the verdict alone.
+                    with model.lock:
+                        event["allowed"] = body["rate_limit"]["allowed"]
+            except Exception as error:
+                # Seen by the controller's loop (require_no_fixture_fault), not by the client.
+                with model.lock:
+                    model.fixture_faults.append({"path": path, "error": f"{type(error).__name__}: {error}"})
+                self.send_error(500)
+                return
+            if path.endswith("/accounts/check"):
                 account = "fixture-account"
                 if model.weekly_quota:
                     account = self.headers.get("chatgpt-account-id") or (
-                        "final-account" if self.headers.get("authorization") == "Bearer fixture-access-next"
-                        else "target-account" if self.headers.get("authorization") == "Bearer fixture-access-new"
-                        else "source-account")
+                        {"next": "final-account", "new": "target-account"}.get(
+                            bearer_generation(self.headers), "source-account"))
                 body = {"accounts": [{"id": account, "can_access_with_session": True,
                     "is_deactivated": False, "plan_type": "pro", "name": "Fixture",
                     "workspace_backend_origin": "NO_CONSTRAINT", "account_routing_override": "NO_CONSTRAINT"}],
@@ -283,7 +701,9 @@ def serve(model, secure=True):
 
         def do_POST(self):
             with model.lock:
-                event = {"method": "POST", "path": self.path, "kind": "non-responses"}
+                event = {"method": "POST", "path": self.path, "kind": "non-responses",
+                    "account": request_account(self.headers), "client": request_client(self.headers),
+                    "monotonicUs": monotonic_us()}
                 model.http_events.append(event)
                 (model.root / "http-events-live.json").write_text(json.dumps(model.http_events))
             length = int(self.headers.get("content-length", "0"))
@@ -291,12 +711,40 @@ def serve(model, secure=True):
                 self.send_error(413)
                 return
             payload = self.rfile.read(length)
-            if not self.path.split("?", 1)[0].endswith("/responses"):
+            path = self.path.split("?", 1)[0]
+            record = {}
+            if path.endswith(CREDITS_PATH + "/consume"):
+                # Nothing can be redeemed here. Any case that redeems fails its own
+                # oracle (validate_creditless_yield); the reply is still a real one.
+                status, data, content_type = 200, json.dumps(provider_fixture.check(
+                    "consume", provider_fixture.consume_reply())).encode(), "application/json"
+            elif path.endswith("/oauth/token"):
+                # A fixture login cannot be refreshed: its refresh token is spent.
                 status, data, content_type = 400, b'{"error":"invalid_grant"}', "application/json"
+            elif not path.endswith("/responses"):
+                # No route: answered as before, and listed apart from model requests of
+                # unknown shape (unknown-requests.json), which fail a run.
+                status, data, content_type = 400, b'{"error":"invalid_grant"}', "application/json"
+                with model.lock:
+                    model.unrouted_posts.append({"path": path, "client": event["client"]})
             else:
-                authorization = self.headers.get("authorization", "")
-                generation = authorization.removeprefix("Bearer fixture-access-")
-                status, data, content_type, _, record = model.reply(json.loads(payload), generation)
+                # A bearer that is no fixture login's stays a login the model does not know.
+                generation = bearer_generation(self.headers) or ""
+                try:
+                    status, data, content_type, _, record = model.reply(json.loads(payload), generation)
+                except provider_fixture.FixtureFault as error:
+                    # Seen by the controller's loop (require_no_fixture_fault), not by the client.
+                    with model.lock:
+                        model.fixture_faults.append({"path": path, "error": f"FixtureFault: {error}"})
+                    self.send_error(500)
+                    return
+                stated = spent_window_on_success(status, record.get("responseHeaders", {}))
+                if stated is not None:
+                    # Seen by the controller's loop (require_no_fixture_fault). The reply
+                    # goes out as built: the fault, not a changed reply, fails the run.
+                    with model.lock:
+                        model.fixture_faults.append({"path": path, "error":
+                            f"FixtureFault: a 200 states a spent window in {stated}"})
                 # Retain only proof booleans and allowlisted UUIDs, never bearer text.
                 with model.lock:
                     metadata = json.loads(self.headers.get("x-codex-turn-metadata", "{}"))
@@ -308,19 +756,22 @@ def serve(model, secure=True):
                     event["kind"] = record["kind"]
                     event["status"] = status
                     (model.root / "http-events-live.json").write_text(json.dumps(model.http_events))
-                    record["oldTokenMatched"] = self.headers.get("authorization") == "Bearer fixture-access-old"
+                    record["oldTokenMatched"] = generation == "old"
                     record["newTokenMatched"] = generation == ("next" if model.chain else "new")
             self.send_response(status)
             self.send_header("content-type", content_type)
             self.send_header("content-length", str(len(data)))
+            # The account's rate-limit windows, as every model response states them.
+            for key, value in record.get("responseHeaders", {}).items():
+                self.send_header(key, value)
             self.end_headers()
             self.wfile.write(data)
     if not secure:
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server = provider_fixture.LoopbackHTTPServer(("127.0.0.1", 0), Handler)
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         return server, worker
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = provider_fixture.LoopbackHTTPServer(("127.0.0.1", 0), Handler)
     server.socket = fixture_tls(model.root).wrap_socket(server.socket, server_side=True)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
@@ -332,7 +783,7 @@ def fixture_tls(root):
     cert = root / "fixture-ca.pem"
     key = root / "fixture-tls.key"
     config = root / "fixture-tls.cnf"
-    config.write_text("[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN=127.0.0.1\n[v3]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyEncipherment,keyCertSign\n")
+    config.write_text("[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN=ALab loopback fixture CA\n[v3]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyEncipherment,keyCertSign\nsubjectKeyIdentifier=hash\n")
     subprocess.run(["/usr/bin/openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
         "-days", "1", "-config", str(config), "-keyout", str(key), "-out", str(cert)],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -344,7 +795,7 @@ def fixture_tls(root):
     server_cert = root / "fixture-server.pem"
     request = root / "fixture-server.csr"
     extensions = root / "fixture-server.ext"
-    extensions.write_text("subjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n")
+    extensions.write_text("subjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n")
     subprocess.run(["/usr/bin/openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
         "-subj", "/CN=127.0.0.1", "-keyout", str(server_key), "-out", str(request)],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -372,15 +823,11 @@ def process_evidence(record):
 
 def fake_auth(path, generation, issuer, account="fixture-account", *,
               email="fixture@example.invalid", user="fixture-user"):
-    def part(value):
-        return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
-    claims = {"sub": user, "email": email,
-              "https://api.openai.com/auth": {"chatgpt_user_id": user,
-                  "chatgpt_account_id": account, "chatgpt_plan_type": "pro"}}
-    token = part({"alg": "none"}) + "." + part(claims) + ".sig"
+    token = token_part({"alg": "none"}) + "." + token_part(identity_claims(account, email, user)) + ".sig"
     path.parent.mkdir()
     probe.write_json(path, {"auth_mode": "chatgpt", "OPENAI_API_KEY": None,
-        "tokens": {"id_token": token, "access_token": f"fixture-access-{generation}",
+        "tokens": {"id_token": token,
+                   "access_token": access_token(generation, account, email=email, user=user),
                    "refresh_token": f"fixture-refresh-{generation}", "account_id": account,
                    "oauth_provenance": {"issuer": issuer, "client_id": "fixture-client"}},
         "last_refresh": datetime.now(timezone.utc).isoformat()})
@@ -716,16 +1163,10 @@ def main():
     args = parser.parse_args()
     drive_seconds, guardian_seconds = CASE_BUDGETS[args.case]
     host = args.host.resolve(strict=True)
-    host_record_path = host.parent / "build.json"
-    probe.require(host_record_path.is_file() and not host_record_path.is_symlink()
-        and host_record_path.stat().st_size <= 1024 * 1024, "native host build record missing")
-    host_record = json.loads(host_record_path.read_text())
-    probe.require(isinstance(host_record.get("source"), str)
-        and re.fullmatch(r"[0-9a-f]{40}", host_record["source"])
-        and host_record.get("production_constructor_enabled") is False,
-        "native qualification needs an exact source and disabled production constructors")
-    host_sha = hashlib.sha256(host.read_bytes()).hexdigest()
-    probe.require(host_record.get("host_sha256") == host_sha, "native host image disagrees with build record")
+    # The record says which host image this is and what its own self-run reported. Which
+    # constructors the session may use is the fixture policy's, set by --renewal-config.
+    host_record = native_host_record.load(host)
+    native_host_record.require_aterm_name(host)
     package = args.package.resolve(strict=True)
     build, manifest, codex = probe.package_records(package)
     root = args.output.resolve()
@@ -754,20 +1195,24 @@ def main():
     env["XDG_CONFIG_HOME"] = str(root / "config")
     launcher_root = launcher_fixture_root(env)
     chain = args.case == "weekly-quota-chain"
-    weekly_quota = args.quota or args.case in ("weekly-quota", "weekly-quota-rollback", "weekly-quota-exhausted", "weekly-quota-chain")
+    soon_wall = args.case == "five-hour-wall-soon"
+    weekly_quota = args.quota or args.case in ("weekly-quota", "weekly-quota-rollback", "weekly-quota-exhausted", "weekly-quota-chain", "five-hour-wall-soon")
     rollback_case = args.case in ("failed-forward-rollback", "weekly-quota-rollback")
     model = Model(root, weekly_quota=weekly_quota,
-                  all_exhausted=args.case == "weekly-quota-exhausted", chain=chain)
+                  all_exhausted=args.case == "weekly-quota-exhausted", chain=chain,
+                  wall="five-hour-soon" if soon_wall else None)
     server, server_thread = serve(model)
     report = {"passed": False, "scope": "isolated native host and real Codex PTY",
               "source": build["source"], "version": manifest["version"], "case": args.case,
               "quotaAccounts": weekly_quota,
               "observationBudgetSeconds": {"drive": drive_seconds, "guardian": guardian_seconds},
-              "nativeHost": {"source": host_record["source"], "sha256": host_sha,
-                  "productionConstructorEnabled": host_record["production_constructor_enabled"],
-                  "fixturePolicy": host_record["fixture_policy"]},
+              "nativeHost": native_host_record.summary(host_record),
               "packageRecords": {"build": build, "manifest": manifest},
-              "controllerSha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+              "controllerSha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+              # The modules that decide what the fixture serves and which host it accepts.
+              "fixtureSha256": {Path(module.__file__).name: hashlib.sha256(
+                  Path(module.__file__).read_bytes()).hexdigest()
+                  for module in (provider_fixture, native_host_record)}}
     try:
         probe.configure(root, server.server_port)
         provider_config = root / "codex-home" / "config.toml"
@@ -802,6 +1247,9 @@ def main():
         if weekly_quota:
             config["weekly_quota"] = True
         config["env"]["CODEX_CA_CERTIFICATE"] = str(root / "fixture-ca.pem")
+        # What this run asked the host's fixture policy for, as written to fixture.json.
+        report["fixtureConfig"] = {"weekly_quota": config.get("weekly_quota", False),
+            "additionalAuthCount": len(config.get("additional_auth_paths", []))}
         config_path = root / "fixture.json"
         probe.write_json(config_path, config)
         config_path.chmod(0o600)
@@ -819,6 +1267,7 @@ def main():
             source_record_transitions = 0
             try:
                 while time.monotonic() < deadline:
+                    require_no_fixture_fault(model)
                     ready, _, _ = select.select([process.stdout], [], [], 0.1)
                     if ready:
                         data = os.read(process.stdout.fileno(), 65536)
@@ -850,6 +1299,20 @@ def main():
                         if any(event.get("action") == "signal" and event.get("replyOk") is True
                                for event in native_actions(root)):
                             report["sourceRecordsAfterSignal"] = structural_records(root / "codex-home", report["thread"])
+                    if soon_wall:
+                        # Nothing is handed over, so this controller publishes no `renew`
+                        # and follows no receipt: it fails the run the moment anything of
+                        # a handoff exists, and ends it when the source's own turn was
+                        # answered after its wall and its session is at rest.
+                        with model.lock:
+                            seen = list(model.http_events)
+                        require_wall_held(root, seen)
+                        if wall_case_finished(seen, observed):
+                            with model.lock:
+                                report["requestCount"] = len(model.requests)
+                            renewed = True
+                            break
+                        continue
                     if previous is None:
                         source_record = next((record for record in observed if recovery_marker(record.get("owed"))), None)
                         live_path = root / "live-snapshot-first-ready.json"
@@ -1603,7 +2066,14 @@ def main():
                             report["newAuthPath"] = True
                             renewed = True
                             break
-                probe.require(renewed, "native same-account renewal did not reach its required causal outcome before the hang detector")
+                hang = "native same-account renewal did not reach its required causal outcome before the hang detector"
+                if not renewed:
+                    hang += "; " + live_snapshot_outcomes(root / "renewal-control-trace.jsonl")
+                if not renewed and weekly_quota:
+                    with model.lock:
+                        seen = list(model.http_events)
+                    hang += "; " + wall_evidence(seen, root / "renewal-control-trace.jsonl")
+                probe.require(renewed, hang)
             finally:
                 (root / "stop").touch()
 
@@ -1643,10 +2113,22 @@ def main():
                 except subprocess.TimeoutExpired:
                     process.terminate()
                     code = process.wait(timeout=10)
+                process.stdout.close()
                 probe.write_json(root / "host-wait.json", {"pid": process.pid, "returncode": code})
         probe.require(code == 0, "native host did not exit cleanly")
         probe.require(not model.unknown_requests, "unknown model request shape")
         report["auxiliaryTitleRequestCount"] = len(model.auxiliary_requests)
+        if soon_wall:
+            # Not a wall that yields: validate_creditless_yield does not apply.
+            with model.lock:
+                events = list(model.http_events)
+            report["fiveHourWallWaitedOut"] = wall_verdict(
+                root, events, model.requests, root / "renewal-control-trace.jsonl")
+        elif weekly_quota:
+            with model.lock:
+                events = list(model.http_events)
+            report["creditlessWallsYieldedToRotation"] = validate_creditless_yield(
+                events, rotation_prepares(root / "renewal-control-trace.jsonl"))
         probe.require(len(model.requests) >= (2 if args.case in ("owner-stop", "owner-stop-after-signal", "post-signal-expiry-diagnostic", "weekly-quota-rollback", "weekly-quota-exhausted") else 3),
                       "renewal did not exercise completed-tool work")
         for request in model.requests:
@@ -1691,10 +2173,12 @@ def main():
         server_thread.join()
         server.server_close()
         report["requestAttribution"] = {"foreground": len(model.requests),
-            "threadTitle": len(model.auxiliary_requests), "unknown": len(model.unknown_requests)}
+            "threadTitle": len(model.auxiliary_requests), "unknown": len(model.unknown_requests),
+            "unroutedPosts": len(model.unrouted_posts)}
         probe.write_json(root / "requests.json", model.requests)
         probe.write_json(root / "auxiliary-requests.json", model.auxiliary_requests)
         probe.write_json(root / "unknown-requests.json", model.unknown_requests)
+        probe.write_json(root / "unrouted-posts.json", model.unrouted_posts)
         probe.write_json(root / "http-events.json", model.http_events)
         probe.write_json(root / "result.json", report)
     print(json.dumps(report, indent=2))

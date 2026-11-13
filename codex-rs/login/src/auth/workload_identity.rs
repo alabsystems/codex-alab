@@ -435,12 +435,19 @@ impl WorkloadIdentityExternalAuth {
         previous_account_id: Option<&str>,
     ) -> std::io::Result<CodexAuth> {
         let auth = match &token.metadata {
-            WorkloadIdentityMetadata::Api(metadata) => CodexAuth::ApiKey(ApiKeyAuth {
-                alab_epoch: Default::default(), // ALAB(accounts): cache publication attaches runtime provenance to the new credential.
-                api_key: token.access_token.clone(),
-                alab_source: None, // ALAB(accounts): native constructor admission attaches source membership separately.
-                workload_identity: Some(metadata.clone()),
-            }),
+            WorkloadIdentityMetadata::Api(metadata) => {
+                if !super::source::has_session_claim(&token.access_token) {
+                    return Err(std::io::Error::other(
+                        WorkloadIdentityError::InvalidExchangeResponse,
+                    ));
+                }
+                CodexAuth::ApiKey(ApiKeyAuth {
+                    alab_epoch: Default::default(), // ALAB(accounts): construct workload payloads without runtime provenance.
+                    alab_source: None, // ALAB(accounts): source admission attaches the actual native membership.
+                    api_key: token.access_token.clone(),
+                    workload_identity: Some(metadata.clone()),
+                })
+            }
             WorkloadIdentityMetadata::Chatgpt(metadata) => {
                 let auth = CodexAuth::from_external_chatgpt_tokens(
                     &token.access_token,

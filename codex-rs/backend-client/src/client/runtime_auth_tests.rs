@@ -466,7 +466,7 @@ async fn reusable_runtime_client_keeps_the_selected_accounts_transport_policy() 
     );
     assert!(controller.publish(policy.revision(), DestinationPolicy::Unrestricted));
     let auth = credentials.auth().await.unwrap();
-    let runtime = runtime_provider(&server, credentials, RuntimeAuthMode::AssertionOnly);
+    let runtime = runtime_provider(&server, Arc::clone(&credentials), RuntimeAuthMode::AssertionOnly); // ALAB(test): retain the actual manager for explicit account-policy cache publication.
     let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
     let client = Client::from_auth_with_selected_runtime(
         server.uri(),
@@ -495,6 +495,7 @@ async fn reusable_runtime_client_keeps_the_selected_accounts_transport_policy() 
         RequestError::Policy(NetworkPolicyDenied::Revoked)
     ));
 
+    credentials.reload_with_cached_auth().await.unwrap(); // ALAB(test): a new client uses explicitly republished credentials; old snapshots stay revoked.
     let fresh = Client::from_auth_with_selected_runtime(
         server.uri(),
         &auth,
@@ -517,6 +518,7 @@ async fn reusable_runtime_client_keeps_the_selected_accounts_transport_policy() 
             allowed_hosts: Default::default()
         }
     ));
+    credentials.reload_with_cached_auth().await.unwrap(); // ALAB(test): destination denial is checked using the newly published restricted account policy.
     let selectors = HeaderMap::from_iter([(
         HeaderName::from_static("openai-organization"),
         HeaderValue::from_static("org-b"),

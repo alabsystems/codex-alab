@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "kind": "focused-upstream-batch-observation",
+  "source": "f5bbefae8d4c3e683d755cfa3c699ee4b50a259c",
+  "upstream": "a2b7c4a655a124c3e798b7744c5f83397eb2ada3",
+  "exit": 0,
+  "log": "${HOME}/.ubd/codex-alignment-a2b7-focused-native.log",
+  "log_sha256": "8ac75520070bf739be6b6e41dadb342c40bc21cd7085c333352ed786c806144b",
+  "controller": "${HOME}/.ubd/codex-alignment-a2b7-focused-native.sh",
+  "controller_sha256": "fd2572e42f367afa9c2ca886df94b5eb0722b81ff94206fc2dde0d02ddfa1846",
+  "completed_selections": 17,
+  "reported_passes": 64,
+  "failed": 0,
+  "ignored": 0,
+  "lane": "Protected native explicit-unverified Trust15698, locked source, qualified producer, actual nonempty completed selections required. No formal proof claim.",
+  "scope": [
+    "stale Apps fetch invalidation/logout, call drain guard ordering and next-model-step refreshed catalog",
+    "host tier pending acceptance does not block interrupt, startup cancellation survives, failed same-tier retry",
+    "managed Guardian tenant/extra rules and explicit host templates; requirements precedence; removed settings migration warnings",
+    "strict MCP review and Auto/Writes conflicting annotations; managed policy reaches reviewer despite hostile catalog",
+    "Cloud archive/restore RPC and attachment EOF/failure semantics",
+    "key chords delayed/narrow-inline guide, input ownership; backend+thread archive scoping; attached child draft/voice retained; startup-safe editor actions; official consent fixture"
+  ],
+  "limits": [
+    "Source f5bb predates the one owned exec_review_registration startup receipt adaptation in b1c283d5c4. These cases do not qualify that adaptation; the fresh full gate on3824 remains separate.",
+    "Reported pass totals are libtest completions, not a claim of unique names; parameterized output can repeat display names.",
+    "Synthetic local servers exercise real transport/session paths; no live Cloud service entitlement, actual remote model inference, package selection or installed adoption claim.",
+    "Full upstream/pristine failure attribution still pending."
+  ]
+}

@@ -32,6 +32,7 @@ impl std::fmt::Debug for Allocation {
 
 #[derive(Default)]
 struct Pending {
+    upgrade: OnceLock<Option<Arc<dyn crate::runtime_upgrade::Host>>>,
     result: OnceCell<Result<Mutex<Option<Allocation>>, ()>>,
     changed: Notify,
 }
@@ -60,7 +61,10 @@ impl Startup {
                     .await
                     .ok()
                     .and_then(Result::ok)
-                    .map(|value| Mutex::new(Some(value)))
+                    .map(|value| {
+                        let _ = result.upgrade.set(value.member.runtime_upgrade());
+                        Mutex::new(Some(value))
+                    })
                     .ok_or(());
                 let _ = result.result.set(outcome);
                 result.changed.notify_waiters();
@@ -107,6 +111,17 @@ impl Requirement {
     }
 }
 static REQUIRED: Requirement = Requirement(AtomicBool::new(false));
+
+/// Obtain the host selected by the actual fresh constructor before its
+/// allocation is consumed by config/SDK startup. This supplies no model grant.
+pub fn runtime_upgrade() -> io::Result<Arc<dyn crate::runtime_upgrade::Host>> {
+    STARTUP
+        .seed
+        .get()
+        .and_then(|pending| pending.upgrade.get())
+        .and_then(Clone::clone)
+        .ok_or_else(unavailable)
+}
 
 static STARTUP: Startup = Startup {
     seed: OnceLock::new(),

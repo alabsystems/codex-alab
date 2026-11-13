@@ -72,6 +72,9 @@ mod terminal_recovery;
 #[path = "autopilot/wall_acts.rs"]
 mod wall_acts;
 
+#[path = "autopilot/rotation_decline.rs"]
+mod rotation_decline;
+
 #[path = "autopilot/policy_continuation.rs"]
 mod policy_continuation;
 
@@ -346,7 +349,19 @@ async fn harness_login_with_error_hook(
         builder.turn_lifecycle_contributor(hook);
     }
     let server = responses::start_mock_server().await;
-    let mock = responses::mount_response_sequence(&server, replies).await;
+    let mock = if replies.is_empty() {
+        // No scripted reply: the test answers the model's requests itself, with a responder
+        // it mounts on `_server` (one whose reply depends on when the request arrives). This
+        // mock matches no request and so answers none.
+        responses::mount_response_once_match(
+            &server,
+            |_: &wiremock::Request| false,
+            wiremock::ResponseTemplate::new(418),
+        )
+        .await
+    } else {
+        responses::mount_response_sequence(&server, replies).await
+    };
     let mut test_builder = test_codex()
         .with_extensions(Arc::new(builder.build()))
         .with_config(move |config| {
@@ -952,7 +967,10 @@ fn a_person_typing_holds_the_continuation() {
         h.shared.human_input(now_ms());
         h.test.submit_turn("do the task").await.expect("first turn");
         wait_until("the act waits for the person", || {
-            journal_has(&h, "not now (a person typed in the TUI)")
+            journal_has(
+                &h,
+                "not now (a draft or an unrendered key stands in the composer)",
+            )
         })
         .await;
         let rt = h.autopilot.thread_rt(&h.thread).expect("rt");

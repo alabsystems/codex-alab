@@ -43,7 +43,9 @@ pub(super) fn register(session: &Arc<Session>) {
             let Some(session) = weak.upgrade() else {
                 break;
             };
-            session.request_mcp_runtime_refresh();
+            session.request_mcp_runtime_refresh(
+                crate::thread_manager::McpRefreshReason::RuntimeAuthChanged,
+            );
         }
     });
     session

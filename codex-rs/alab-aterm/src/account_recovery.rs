@@ -14,6 +14,9 @@ use crate::renewal;
 use crate::rotation;
 use codex_alab_core::account_handoff::AccountHandoff;
 use codex_alab_core::account_handoff::Purpose;
+use codex_alab_core::quota::SpentWall;
+use codex_alab_core::quota::SpentWindow;
+use std::time::Duration;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Receipt {
@@ -57,6 +60,58 @@ pub fn policy_allows(policy: &crate::policy::HarnessPolicy, purpose: Purpose) ->
         }
         && policy.switch("relaunch")
         && policy.switch("resume_limits")
+}
+
+/// The policy word by which a host says it also leaves a five-hour wall: the
+/// seconds a spent five-hour window's reset must be further away than for the
+/// host to move the session (aterm prints its own bound beside
+/// `codex_rotation=1`). A host that prints no such word leaves only a spent
+/// week, and answers `not-needed` at every five-hour wall.
+pub const FIVE_HOUR_HANDOFF: &str = "codex_rotation_five_hour";
+
+/// How much nearer its reset a five-hour wall may be when the host reads the
+/// account, after the turn has ended, than it is when this question is
+/// answered. The time left at the answer must clear the host's bound by this,
+/// or the host could find the wall inside it and decline a turn that has
+/// already ended. It covers only what comes after the answer (the turn's end
+/// and the host's own read): the time left is measured at `now`, not when the
+/// walled request read its usage.
+const HANDOFF_SKEW: Duration = Duration::from_secs(60);
+
+/// Whether this host, by its own policy reply, would move a session that
+/// stands at `wall` to another account, asked at `now` (seconds since the
+/// Unix epoch). A local mirror of the host's rule, never wider than it: a yes
+/// ends a running turn, so it is given only where the host's own later reading
+/// should agree. It selects nothing and shows nothing about where the session
+/// could go.
+///
+/// A spent week is left under the rotation policy alone. A spent five-hour
+/// window also needs the host's advertised bound, cleared at `now` by
+/// [`HANDOFF_SKEW`], and `limit_wait`: without that switch a turn the host
+/// then declines raises attention at once, where the request it ended would
+/// have waited the wall out.
+pub fn leaves_wall(policy: &crate::policy::HarnessPolicy, wall: SpentWall, now: i64) -> bool {
+    policy_allows(policy, Purpose::WeeklyQuota)
+        && match wall.window {
+            SpentWindow::Week => true,
+            SpentWindow::FiveHour => {
+                policy.switch("limit_wait")
+                    && five_hour_bound(policy)
+                        .and_then(|bound| bound.checked_add(HANDOFF_SKEW))
+                        .is_some_and(|least| wall.resets_in(now) > least)
+            }
+        }
+}
+
+/// The bound a host's policy reply advertises for leaving a five-hour wall
+/// ([`FIVE_HOUR_HANDOFF`], a canonical count of seconds); `None` for a reply
+/// that prints no such word, or one this reader cannot take. A reply with no
+/// bound leaves no five-hour wall, whatever else it says.
+pub fn five_hour_bound(policy: &crate::policy::HarnessPolicy) -> Option<Duration> {
+    policy
+        .get(FIVE_HOUR_HANDOFF)
+        .and_then(crate::wire::canonical_u64)
+        .map(Duration::from_secs)
 }
 
 pub enum Outcome {
@@ -171,6 +226,156 @@ pub async fn consume(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host policy under which a spent week rotates, with these keys besides.
+    fn rotating(keys: &[(&str, &str)]) -> crate::policy::HarnessPolicy {
+        crate::policy::HarnessPolicy {
+            generation: 1,
+            effective: true,
+            why: "enabled".into(),
+            keys: [
+                ("codex_rotation", "1"),
+                ("accounts", "wall"),
+                ("relaunch", "true"),
+                ("resume_limits", "true"),
+            ]
+            .iter()
+            .chain(keys)
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect(),
+        }
+    }
+
+    #[test]
+    fn a_five_hour_wall_is_left_only_under_the_hosts_advertised_bound() {
+        // The moment the host is asked, and walls that many seconds from
+        // their reset then.
+        const NOW: i64 = 1_800_000_000;
+        let wall = |window, seconds: u64| SpentWall {
+            window,
+            resets_at: NOW.saturating_add_unsigned(seconds),
+        };
+        let leaves_wall =
+            |policy: &crate::policy::HarnessPolicy, wall: SpentWall| leaves_wall(policy, wall, NOW);
+        let week = wall(SpentWindow::Week, 3 * 24 * 3600);
+        let five_hours = |seconds| wall(SpentWindow::FiveHour, seconds);
+        let advertised: &[(&str, &str)] = &[(FIVE_HOUR_HANDOFF, "900"), ("limit_wait", "true")];
+
+        // A host that prints no word leaves a spent week and no five-hour wall.
+        let silent = rotating(&[("limit_wait", "true")]);
+        assert!(leaves_wall(&silent, week));
+        assert!(!leaves_wall(&silent, five_hours(4 * 3600)));
+        assert_eq!(five_hour_bound(&silent), None);
+
+        // The bound, cleared by the skew: 900 s + 60 s is not far enough, one
+        // second more is.
+        let host = rotating(advertised);
+        assert_eq!(five_hour_bound(&host), Some(Duration::from_secs(900)));
+        assert!(leaves_wall(&host, week));
+        assert!(leaves_wall(&host, five_hours(961)));
+        assert!(leaves_wall(&host, five_hours(18_000)));
+        for near in [960, 959, 900, 60, 0] {
+            assert!(!leaves_wall(&host, five_hours(near)), "{near}");
+        }
+        // The host's own number is followed, whatever it is.
+        let wider = rotating(&[(FIVE_HOUR_HANDOFF, "3600"), ("limit_wait", "true")]);
+        assert!(!leaves_wall(&wider, five_hours(3660)));
+        assert!(leaves_wall(&wider, five_hours(3661)));
+        let zero = rotating(&[(FIVE_HOUR_HANDOFF, "0"), ("limit_wait", "true")]);
+        assert!(!leaves_wall(&zero, five_hours(60)));
+        assert!(leaves_wall(&zero, five_hours(61)));
+
+        // Without `limit_wait` a declined five-hour turn would alert a person
+        // hours early; a spent week does not depend on it.
+        for limit_wait in [None, Some("false"), Some("1"), Some("")] {
+            let mut keys = vec![(FIVE_HOUR_HANDOFF, "900")];
+            keys.extend(limit_wait.map(|value| ("limit_wait", value)));
+            let host = rotating(&keys);
+            // The bound is the word's alone: `limit_wait` is the rule's.
+            assert_eq!(five_hour_bound(&host), Some(Duration::from_secs(900)));
+            assert!(
+                !leaves_wall(&host, five_hours(4 * 3600)),
+                "limit_wait={limit_wait:?}"
+            );
+            assert!(leaves_wall(&host, week), "limit_wait={limit_wait:?}");
+        }
+
+        // A word that is not a canonical count of seconds is no word.
+        for word in [
+            "",
+            "-",
+            "soon",
+            "900s",
+            "15m",
+            "+900",
+            "0900",
+            "9e2",
+            "900.0",
+            " 900",
+            "-1",
+            "99999999999999999999999",
+        ] {
+            let host = rotating(&[(FIVE_HOUR_HANDOFF, word), ("limit_wait", "true")]);
+            assert_eq!(five_hour_bound(&host), None, "{word:?}");
+            assert!(!leaves_wall(&host, five_hours(4 * 3600)), "{word:?}");
+            assert!(leaves_wall(&host, week), "{word:?}");
+        }
+        // A bound no duration can add the skew to is never cleared.
+        let huge = rotating(&[
+            (FIVE_HOUR_HANDOFF, &u64::MAX.to_string()),
+            ("limit_wait", "true"),
+        ]);
+        assert!(!leaves_wall(&huge, five_hours(u64::MAX)));
+
+        // The word is no rotation policy of its own: each key rotation needs.
+        for (key, off) in [
+            ("codex_rotation", "0"),
+            ("accounts", "off"),
+            ("relaunch", "false"),
+            ("resume_limits", "false"),
+        ] {
+            let mut host = rotating(advertised);
+            host.keys.insert(key.into(), off.into());
+            assert!(!leaves_wall(&host, five_hours(4 * 3600)), "{key}={off}");
+            assert!(!leaves_wall(&host, week), "{key}={off}");
+        }
+        let mut standby = rotating(advertised);
+        standby.effective = false;
+        assert!(!leaves_wall(&standby, five_hours(4 * 3600)));
+        assert!(!leaves_wall(&standby, week));
+    }
+
+    /// The bound is judged with the time left when the host is asked. The
+    /// requests between the usage read and the question (the credit list, the
+    /// host's policy) take time, and a wall that cleared the bound when it was
+    /// read may be inside it by then.
+    #[test]
+    fn a_five_hour_walls_bound_is_judged_when_the_host_is_asked() {
+        const READ: i64 = 1_800_000_000;
+        let host = rotating(&[(FIVE_HOUR_HANDOFF, "900"), ("limit_wait", "true")]);
+        // 965 s from its reset when the usage was read: clear of 900 s + 60 s.
+        let wall = SpentWall {
+            window: SpentWindow::FiveHour,
+            resets_at: READ + 965,
+        };
+        assert!(leaves_wall(&host, wall, READ));
+        assert!(leaves_wall(&host, wall, READ + 4));
+        // Asked after a slow credit list, the same wall is inside the bound.
+        for later in [5, 40, 965, 966, 86_400] {
+            assert!(!leaves_wall(&host, wall, READ + later), "{later}");
+        }
+        // A clock read before the usage was (it cannot be, but it is not this
+        // rule's to assume) only makes the wall look further away.
+        assert!(leaves_wall(&host, wall, READ - 30));
+        // A spent week is left whenever it is asked about.
+        let week = SpentWall {
+            window: SpentWindow::Week,
+            resets_at: READ + 965,
+        };
+        for now in [READ, READ + 40, READ + 86_400] {
+            assert!(leaves_wall(&host, week, now), "{now}");
+        }
+    }
 
     #[test]
     fn quota_handoff_cannot_change_its_origin_destination_or_receipt() {

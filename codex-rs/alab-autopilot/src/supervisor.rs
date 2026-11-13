@@ -53,7 +53,8 @@
 //!   straddled re-confirm (below) that codex-alab's own release explains gives the claim back
 //!   without counting it cleared.
 //! - Mail typed into the session (`Inbox: task @<off>`) is read while the proven claim is
-//!   held, on standby too (aterm types the line; reading it is not codex-alab's act, and unread
+//!   held, on standby too (a person or a driver types the line, aterm no longer does; reading
+//!   it is not codex-alab's act, and unread
 //!   it would reach the model bare). A mail turn's verdict and its owed receipt and report are
 //!   recorded at its end whatever codex-alab's state; the receipt and the report are SENT only
 //!   while codex-alab acts (the claim held and not on standby): at the turn's end, or deferred
@@ -321,6 +322,9 @@ pub(crate) struct AdmissionFence {
 
 #[derive(Default)]
 struct State {
+    manual_resume_at: Option<u64>,
+    activity_sent: Option<(String, Option<u64>)>,
+    activity_sequence: u64,
     client: Option<Client>,
     policy: Option<Policy>,
     /// A proven claim is held (acting or not).
@@ -2043,6 +2047,19 @@ impl Supervisor {
         }
     }
 
+    /// Full-runtime supervision waits for native settlement, then asks the host
+    /// to adopt its independent socket under the still-live fresh constructor.
+    async fn connect_control(&self, endpoint: Endpoint) -> Result<Client, AtermError> {
+        if codex_alab_tui::upgrade_state::pending().is_some() {
+            return codex_alab_aterm::source_member::connect_settled_runtime_client(
+                endpoint,
+                self.opts.client.clone(),
+            )
+            .await;
+        }
+        Client::connect(endpoint, self.opts.client.clone()).await
+    }
+
     /// THE LAUNCH PROBE (CONTRACT §4, carry-on): connect, and read `@self status` once, as
     /// this process starts and before codex-alab does anything, into the shared state
     /// ([`Shared::set_launch_witness`]): whether aterm's harness holds its hand on the tab
@@ -2055,7 +2072,7 @@ impl Supervisor {
             shared.set_launch_witness(None);
             return None;
         };
-        let client = match Client::connect(endpoint, self.opts.client.clone()).await {
+        let client = match self.connect_control(endpoint).await {
             Ok(client) => client,
             Err(e) => {
                 self.note(format!("launch probe: aterm unreachable: {e}"));
@@ -2094,7 +2111,7 @@ impl Supervisor {
     ) -> SessionEnd {
         let connected = match probed.filter(Client::is_open) {
             Some(client) => Ok(client),
-            None => Client::connect(endpoint, self.opts.client.clone()).await,
+            None => self.connect_control(endpoint).await,
         };
         let client = match connected {
             Ok(client) => client,
@@ -3299,6 +3316,8 @@ impl Supervisor {
             st.since = Some(clock());
             st.unproven_gen = None;
             st.claims_taken = st.claims_taken.wrapping_add(1);
+            st.activity_sent = None;
+            st.manual_resume_at = None;
             st.startup_attention_retry = None;
             // The claim, then the Autopilot with its word in one store, under the lock that
             // stored the policy: a mode [`Supervisor::adopt_word`] moves after it is never
@@ -3597,33 +3616,90 @@ impl Supervisor {
         now: Instant,
     ) -> Option<(Instant, &'static str)> {
         let shared = self.opts.shared;
+        let resume_at = self.lock().manual_resume_at;
+        let why = if shared.screen_taken() {
+            Some("an overlay or the external editor has the screen")
+        } else if !shared.record_draft_empty() {
+            Some("a draft or an unrendered key stands in the composer")
+        } else if shared.queued_input() {
+            Some("the TUI holds a person's queued input")
+        } else if act == Act::Turn && shared.popup_open() {
+            Some("a popup or modal is open")
+        } else if shared.pending_user_turn() {
+            Some("a person's turn is starting")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Some((now + self.recheck(), why));
+        }
         let grace_ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX);
         if let Some(at) = shared.last_human_input_ms() {
             let age = now_ms().saturating_sub(at);
-            if age < grace_ms {
+            if age < grace_ms && !resume_at.is_some_and(|resumed| at <= resumed) {
                 return Some((
                     now + Duration::from_millis(grace_ms - age),
                     "a person typed in the TUI",
                 ));
             }
         }
-        let why = if shared.screen_taken() {
-            "an overlay or the external editor has the screen"
-        } else if !shared.record_draft_empty() {
-            "a draft or an unrendered key stands in the composer"
-        } else if shared.queued_input() {
-            "the TUI holds a person's queued input"
-        } else if act == Act::Turn && shared.popup_open() {
-            "a popup or modal is open"
-        } else if shared.pending_user_turn() {
-            "a person's turn is starting"
-        } else {
-            return None;
-        };
-        Some((now + self.recheck(), why))
+        None
     }
 
     async fn ready_for(&self, act: Act) -> Ready {
+        let answer = self.ready_for_inner(act).await;
+        self.report_continuation(&answer);
+        answer
+    }
+
+    fn report_continuation(&self, answer: &Ready) {
+        let (reason, wait_ms) = match answer {
+            Ready::Go => ("ready", None),
+            Ready::Passive(_) => return,
+            Ready::Wait { until, why } => {
+                let reason = if why.contains("draft") || why.contains("queued input") {
+                    "composing"
+                } else if why.contains("popup") || why.contains("overlay") || why.contains("editor")
+                {
+                    "dialog"
+                } else if why.contains("Hold") {
+                    "paused"
+                } else if why.contains("person") {
+                    "person"
+                } else {
+                    "waiting"
+                };
+                let wait = (reason == "person").then(|| {
+                    u64::try_from(until.saturating_duration_since(clock()).as_millis())
+                        .unwrap_or(u64::MAX)
+                });
+                (reason, wait)
+            }
+        };
+        let stamp = (
+            reason.to_owned(),
+            wait_ms.map(|ms| now_ms().saturating_add(ms) / 1000),
+        );
+        let (client, sequence) = {
+            let mut state = self.lock();
+            if state.activity_sent.as_ref() == Some(&stamp) {
+                return;
+            }
+            state.activity_sent = Some(stamp);
+            state.activity_sequence = state.activity_sequence.saturating_add(1);
+            (
+                state.client.clone().filter(Client::holds_claim),
+                state.activity_sequence,
+            )
+        };
+        if let Some(client) = client {
+            tokio::spawn(async move {
+                let _ = client.harness_activity(reason, wait_ms, sequence).await;
+            });
+        }
+    }
+
+    async fn ready_for_inner(&self, act: Act) -> Ready {
         if codex_alab_core::is_alab_binary() && !codex_alab_core::active() {
             return Ready::Passive("vanilla mode".into());
         }
@@ -3652,12 +3728,6 @@ impl Supervisor {
         let now = clock();
         let grace = policy.human_grace;
         let grace_ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX);
-        if let Some((until, why)) = self.tui_wait_for(act, grace, now) {
-            return Ready::Wait {
-                until,
-                why: why.to_string(),
-            };
-        }
         let epoch = self.lost_epoch.load(Ordering::SeqCst);
         let released = self.released.load(Ordering::SeqCst);
         let status = match client.status().await {
@@ -3669,7 +3739,25 @@ impl Supervisor {
                 };
             }
         };
-        match status.ready_for_act(client.holder(), grace) {
+        let resume_at = status
+            .fields
+            .get("resume_seq")
+            .filter(|seq| seq.as_str() != "-" && status.fields.get("human_seq") == Some(*seq))
+            .and_then(|_| status.fields.get("resume_at"))
+            .and_then(|at| at.parse::<u64>().ok());
+        self.lock().manual_resume_at = resume_at;
+        if let Some((until, why)) = self.tui_wait_for(act, grace, now) {
+            return Ready::Wait {
+                until,
+                why: why.to_string(),
+            };
+        }
+        let native_grace = if resume_at.is_some() && act == Act::Turn {
+            Duration::ZERO
+        } else {
+            grace
+        };
+        match status.ready_for_act(client.holder(), native_grace) {
             Ok(()) => {}
             Err(NotReady::Human(HumanInput::Ago(ms))) => {
                 return Ready::Wait {

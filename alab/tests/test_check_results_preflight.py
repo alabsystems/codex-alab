@@ -55,6 +55,7 @@ class CheckResultsPreflightTests(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "fixture")
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.git("update-ref", "refs/remotes/upstream/main", "HEAD")
 
     def git(self, *args):
         subprocess.run(

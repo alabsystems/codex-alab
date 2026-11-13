@@ -28,7 +28,7 @@ pub(crate) fn item(turn: &TurnContext, item: &TurnItem, started: bool) {
 }
 
 /// Upstream preserves an already completed answer on post-turn compaction failure.
-/// Keep that answer, but do not let Cruise replay a policy-denied context reset.
+/// Keep that answer, but surface terminal policy refusals to lifecycle observers.
 pub(crate) async fn result(
     sess: &Session,
     turn: &TurnContext,
@@ -38,7 +38,10 @@ pub(crate) async fn result(
     if codex_alab_core::active()
         && matches!(phase, CompactionPhase::PostTurn)
         && let Some(error) = error
-        && error.to_codex_protocol_error() == CodexErrorInfo::CyberPolicy
+        && matches!(
+            error.to_codex_protocol_error(),
+            CodexErrorInfo::CyberPolicy | CodexErrorInfo::InferenceHookDenied
+        )
     {
         sess.send_event(
             turn,
@@ -47,7 +50,7 @@ pub(crate) async fn result(
             ),
         )
         .await;
-        sess.emit_turn_error_lifecycle(turn, CodexErrorInfo::CyberPolicy, error.details())
+        sess.emit_turn_error_lifecycle(turn, error.to_codex_protocol_error(), error.details())
             .await;
     }
 }

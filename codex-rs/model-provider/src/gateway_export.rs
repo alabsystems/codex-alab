@@ -39,11 +39,13 @@ impl GatewayExport {
         reason = "concurrent cache misses must share a single credential export"
     )]
     pub(crate) async fn token(&self) -> Result<Arc<str>> {
+        self.alab_check_policy()?; // ALAB(accounts): cache hits cannot bypass source/account retirement.
         let mut cached = self.cached.lock().await;
+        self.alab_check_policy()?; // ALAB(accounts): a queued cache reader must still own the selected source.
         if let Some(token) = cached.as_ref() {
             return Ok(Arc::clone(token));
         }
-        let policy = self.policy.clone().for_current_account();
+        let policy = self.policy.clone(); // ALAB(accounts): captured exports never revive under a different current account.
         let permit = policy
             .acquire_for_unsupported_sdk()
             .map_err(|error| CodexErr::Fatal(error.to_string()))?;
@@ -66,3 +68,6 @@ impl GatewayExport {
         Ok(token)
     }
 }
+
+#[path = "../../alab-core/glue/gateway_export_scope.rs"]
+mod alab_source; // ALAB(accounts): command completion and rejected-token invalidation keep exact source custody.

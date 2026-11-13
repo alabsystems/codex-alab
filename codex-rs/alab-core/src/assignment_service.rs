@@ -270,13 +270,20 @@ pub trait Host: Send + Sync {
     fn target<'a>(&'a self, _operation: &'a str) -> TargetFuture<'a> {
         Box::pin(async { Err(unavailable()) })
     }
+    /// Declared, because `target` cannot be probed without a prepared operation. A host that
+    /// overrides `target` overrides this to `true`; one that forgets stays unavailable.
+    fn previews_target(&self) -> bool {
+        false
+    }
 }
 static HOST: OnceLock<Arc<dyn Host>> = OnceLock::new();
 pub fn install(host: Arc<dyn Host>) {
     let _ = HOST.set(host);
 }
-pub fn available() -> bool {
-    HOST.get().is_some()
+/// Whether the installed host can answer [`target`]. A request is refused before admission
+/// closes while this is false: the operation could never pass its target preview.
+pub fn previews_target() -> bool {
+    HOST.get().is_some_and(|host| host.previews_target())
 }
 pub async fn command(command: &Command) -> io::Result<Status> {
     command.validate()?;
@@ -422,6 +429,26 @@ mod target_policy_tests {
     }
 }
 
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    struct CommandOnly;
+    impl Host for CommandOnly {
+        fn command<'a>(&'a self, _command: &'a Command) -> ReplyFuture<'a> {
+            Box::pin(async { Err(unavailable()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_host_that_only_sends_commands_declares_no_target_preview() {
+        assert!(!CommandOnly.previews_target());
+        assert!(CommandOnly.target(&"a".repeat(32)).await.is_err());
+        // Nothing installs a host in this test process.
+        assert!(!previews_target());
+        assert!(!crate::assignment::process_host_installed());
+    }
+}
 #[cfg(test)]
 mod reconciliation_tests {
     use super::*;

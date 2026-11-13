@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "kind": "focused-qualification-observations",
+  "observed_at": "2026-11-10T13:05:30.532700+00:00",
+  "source": "d15035ac5d29f0dc1902248eea62fd09a3232a75",
+  "upstream": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "exit_code": 1,
+  "log": "${HOME}/.ubd/codex-alignment-b32-gateway-recovery-native.log",
+  "log_sha256": "e7af5466def499f8d18024009e288ff45c41194776ed51e3b9a39ad54c1712c8",
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "suites": [
+    {
+      "package": "codex-core",
+      "target": "all",
+      "filter": "command_gateway_reexports_after_401",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "package": "codex-core",
+      "target": "all",
+      "filter": "command_gateway_retry_then_recovers_refreshable_primary_auth",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0
+    },
+    {
+      "package": "codex-core",
+      "target": "all",
+      "filter": "command_gateway_stops_after_a_second_unauthorized_websocket_upgrade",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "full_gate_qualified": false,
+  "attribution": "unresolved",
+  "limits": "Actual gateway run failed overall. Two command-export retry variants and the WebSocket stop case passed; primary-auth gateway recovery remains unqualified. Tracing identified policy revocation before any inference request; the ordinary external-auth recovery control passed. The tracing-only hook is removed. No pristine attribution, fixed behavior, live account result or full gate claimed.",
+  "diagnosis": {
+    "trace_log": "${HOME}/.ubd/codex-alignment-b32-gateway-diagnostic-native.log",
+    "trace_log_sha256": "779a0dbda2fde33edd259fa23350374036a2ac3e6cbf3ea4a26936891266317d",
+    "diagnostic_source": "Uncommitted tracing-only child module at d15035ac5d; it invoked the exact original fixture without changing its request. Temporary module/hook removed after terminal completion; worktree restored clean.",
+    "terminal_status": 1,
+    "observed_turn_error": "Fatal error: application network permission was revoked",
+    "control": {
+      "source": "d15035ac5d29f0dc1902248eea62fd09a3232a75",
+      "filter": "external_auth_401_retry_uses_refreshed_chatgpt_headers",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "log": "${HOME}/.ubd/codex-alignment-b32-external-auth-control-native.log",
+      "log_sha256": "bac941e9d81978f28551184015b7cd1d5fe0603d0afa3a6c523389242922e572"
+    },
+    "inference": "The ordinary external-auth replacement/401 recovery control passes, while the gateway variant is revoked before dispatch. GatewayExport retains the manager network policy captured at provider construction; ALab adds an immutable native/catalog source binding to that policy. Changing the primary owner leaves this cached gateway source binding stale. A fix must reselect the gateway cache for the selected primary source rather than weakening revocation. Pristine integration-test attribution has not been run."
+  }
+}

@@ -102,6 +102,8 @@ pub(crate) enum CloudSubmissionIntent {
     StartOrSteer,
     /// A message leaving the local queue starts a fresh turn.
     StartIfIdle,
+    /// Use Cloud admission for answers, with steering enabled during a running turn.
+    QuestionAnswer { during_turn: bool },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -141,6 +143,8 @@ pub(crate) enum AppCommand {
         service_tier: Option<Option<String>>,
         final_output_json_schema: Option<Value>,
         collaboration_mode: Option<CollaborationMode>,
+        #[serde(skip_serializing)]
+        alab_safety_retries: u32, // ALAB(daybreak): bound automatic retries across accepted fork commands.
     },
     OverrideTurnContext {
         cwd: Option<PathBuf>,
@@ -265,6 +269,7 @@ impl AppCommand {
             service_tier,
             final_output_json_schema,
             collaboration_mode,
+            alab_safety_retries: 0,
         }
     }
 

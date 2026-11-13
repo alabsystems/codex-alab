@@ -134,6 +134,38 @@ async fn queued_and_observed_hold_revoke_a_previously_ready_admission() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_resume_skips_only_the_matching_input_grace() {
+    let fixture = Fixture::new().await;
+    fixture.fake.set_policy_key("human_grace_s", "120");
+    wait("human grace policy", || {
+        fixture
+            .sup
+            .policy()
+            .is_some_and(|p| p.human_grace == Duration::from_secs(120))
+    })
+    .await;
+    // This is an established claim; only the person's recent input is under test.
+    fixture.sup.lock().since = Some(clock() - Duration::from_secs(121));
+    fixture.shared.human_input(now_ms());
+    fixture.frame(true);
+    fixture.fake.set_status("human_ms", "0");
+    fixture.fake.set_status("human_seq", "7");
+    assert!(matches!(fixture.sup.ready().await, Ready::Wait { .. }));
+    fixture.fake.set_status("resume_seq", "7");
+    fixture.fake.set_status("resume_at", &now_ms().to_string());
+    assert_eq!(fixture.sup.ready().await, Ready::Go);
+    fixture.frame(false);
+    assert!(matches!(fixture.sup.ready().await, Ready::Wait { why, .. } if why.contains("draft")));
+    fixture.frame(true);
+    fixture.fake.set_status("human_seq", "8");
+    assert!(matches!(fixture.sup.ready().await, Ready::Wait { why, .. } if why.contains("person")));
+    fixture.fake.set_status("human_seq", "7");
+    assert_eq!(fixture.sup.ready().await, Ready::Go);
+    fixture.fake.set_status("hold", "1");
+    assert!(matches!(fixture.sup.ready().await, Ready::Wait { why, .. } if why.contains("Hold")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claim_loss_and_reacquisition_never_regrant_an_old_admission() {
     let fixture = Fixture::new().await;
     let before = fixture.fence().await;

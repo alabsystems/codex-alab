@@ -122,6 +122,30 @@ class PromotionTests(unittest.TestCase):
                                       str(self.new), "bin/codex", "--if-checkout", str(self.old),
                                       "--if-prefix", str(self.prefix), "--wait-lock", "1800"]])
 
+    def test_inherited_git_directory_cannot_choose_promotion_ancestry(self):
+        foreign = self.home / "foreign.git"
+        self.git("clone", "--bare", "--quiet", str(self.repo), str(foreign))
+        self.git("--git-dir", str(foreign), "update-ref", "refs/remotes/origin/main", self.source)
+        self.git("update-ref", "refs/remotes/origin/main", self.old_source)
+        marker = self.marker.read_bytes()
+        self.assertFalse(self.promote()[0])
+        self.assertEqual(self.calls, [])
+
+        # The foreign repository admits the candidate; the requested one does not.
+        with mock.patch.dict(os.environ, GIT_DIR=str(foreign)):
+            self.assertFalse(self.promote()[0])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.marker.read_bytes(), marker)
+
+        # Reverse the two refs to prove the explicit repository remains authoritative.
+        self.git("update-ref", "refs/remotes/origin/main", self.source)
+        self.git("--git-dir", str(foreign), "update-ref", "refs/remotes/origin/main", self.old_source)
+        with mock.patch.dict(os.environ, GIT_DIR=str(foreign)):
+            self.assertTrue(self.promote()[0])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.calls[-1][4], str(self.new))
+        self.assertEqual(self.marker.read_bytes(), marker)
+
     def test_codex_alab_s_own_line_advances_a_selection_named_on_upstream_s(self):
         # Decision 8: the selected build was named on upstream's numbering (0.164.0); the
         # next one on origin/main carries codex-alab's own line (0.1.0). It is the forward

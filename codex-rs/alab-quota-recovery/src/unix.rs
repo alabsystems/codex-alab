@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Redeem earned resets for the original in-flight request, never purchased credits.
+use codex_alab_core::quota::SpentWall;
+use codex_alab_core::quota::SpentWindow;
 use codex_backend_client::Client;
 use codex_backend_client::ConsumeRateLimitResetCreditCode;
 use codex_backend_client::RateLimitsWithResetCredits;
@@ -14,6 +16,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const PREFLIGHT_USED_PERCENT: f64 = 95.0;
+/// How long one point of headroom below the redemption threshold excuses the
+/// next authoritative read. A reused reading can miss the threshold only if
+/// the whole account burns faster than `1 / PREFLIGHT_SECONDS_PER_POINT`
+/// points a second after it was taken (alab/QUOTA-RECOVERY.md).
+const PREFLIGHT_SECONDS_PER_POINT: f64 = 4.0;
+/// No reading is reused for longer than this, whatever its headroom.
+const PREFLIGHT_CLEAR_MAX_SECONDS: f64 = 60.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Purpose {
@@ -89,6 +98,83 @@ fn usage_below(
         })
 }
 
+/// A preflight read that permitted the request, kept for the turn that made it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Clear {
+    /// Wall-clock seconds, taken just before the usage request was sent.
+    read_at: i64,
+    /// The same moment on the monotonic clock, which no clock step moves.
+    read: std::time::Instant,
+    /// The highest ordinary window that reading reported.
+    used: f64,
+}
+
+impl Clear {
+    /// Whether this reading still excuses an authoritative read at `now`, the
+    /// wall clock's second. `observed` is what a later model response
+    /// reported: it can only raise the usage this is judged against, never
+    /// lower it.
+    fn holds(self, now: i64, observed: Option<f64>) -> bool {
+        self.holds_after(now, self.read.elapsed(), observed)
+    }
+
+    /// The reading's age must be inside the window on both clocks. The wall
+    /// clock counts host sleep, which the monotonic clock may not; `elapsed`,
+    /// the monotonic age, is what a wall clock stepped back cannot shorten. A
+    /// wall clock behind `read_at` proves nothing and forces a read.
+    fn holds_after(self, now: i64, elapsed: Duration, observed: Option<f64>) -> bool {
+        // `f64::max` would drop an unreadable value instead of honoring it.
+        if !self.used.is_finite() || observed.is_some_and(|observed| !observed.is_finite()) {
+            return false;
+        }
+        let used = observed.map_or(self.used, |observed| observed.max(self.used));
+        let Some(age) = now.checked_sub(self.read_at).filter(|age| *age >= 0) else {
+            return false;
+        };
+        let good_for = ((PREFLIGHT_USED_PERCENT - used) * PREFLIGHT_SECONDS_PER_POINT)
+            .min(PREFLIGHT_CLEAR_MAX_SECONDS);
+        (age as f64) < good_for && elapsed.as_secs_f64() < good_for
+    }
+}
+
+/// The highest ordinary window of an authoritative reading, over the windows
+/// `usage_below` judges.
+fn ordinary_used(read: &RateLimitsWithResetCredits) -> Option<f64> {
+    read.rate_limits
+        .iter()
+        .filter(|s| s.limit_id.as_deref().is_none_or(|id| id == "codex"))
+        .flat_map(|s| [s.primary.as_ref(), s.secondary.as_ref()])
+        .flatten()
+        .filter(|w| matches!(w.window_minutes, Some(300 | 10080)))
+        .map(|w| w.used_percent)
+        .reduce(f64::max)
+}
+
+/// The highest window a model response reported for the ordinary bucket. It
+/// carries no identity, permission or observation time, so it is evidence
+/// against a clear reading only: an unreadable value counts as full, and a
+/// window of unknown length counts as an ordinary one.
+fn response_used(snapshot: &codex_protocol::protocol::RateLimitSnapshot) -> Option<f64> {
+    if snapshot.limit_id.as_deref().is_some_and(|id| id != "codex") {
+        return None;
+    }
+    [snapshot.primary.as_ref(), snapshot.secondary.as_ref()]
+        .into_iter()
+        .flatten()
+        .filter(|w| {
+            w.window_minutes
+                .is_none_or(|minutes| matches!(minutes, 300 | 10080))
+        })
+        .map(|w| {
+            if w.used_percent.is_finite() {
+                w.used_percent
+            } else {
+                100.0
+            }
+        })
+        .reduce(f64::max)
+}
+
 fn identity(manager: &AuthManager) -> Option<(String, String, u64)> {
     let auth = manager.auth_cached()?;
     if !auth.uses_codex_backend() {
@@ -154,6 +240,81 @@ fn stale_exhaustion(
             })
 }
 
+/// The 429's named reset and the usage read's five-hour reset are two reports
+/// of one moment (seconds since the Unix epoch). Further apart than this many
+/// seconds they are not the same wall, and it is not offered to a host.
+const RESET_AGREEMENT: u64 = 60;
+
+/// The account's own allowance is spent and will not return by itself before
+/// the reset this names: the wall another account could answer. The week is
+/// judged first, as the host judges it, and a spent five-hour window is named
+/// only where no weekly window is in the way: every weekly window the read
+/// carries shows a finite figure under 100%. A read that carries no weekly
+/// window satisfies that too, and names the five-hour wall. A weekly window
+/// that is spent with no reset ahead, or whose figure is not a finite number,
+/// names no wall at all. Among several spent windows of one length the wall is
+/// the latest reset: it stands until the last of them. Whether a host would
+/// leave the wall is the host's answer, not this one's.
+fn spent_wall(
+    read: &RateLimitsWithResetCredits,
+    owner: &(String, String, u64),
+    now: i64,
+) -> Option<SpentWall> {
+    if !matches(read, owner) || explicit_denial(read) || read.ordinary_usage_allowed != Some(false)
+    {
+        return None;
+    }
+    let windows = |minutes: i64| {
+        read.rate_limits
+            .iter()
+            .filter(|snapshot| snapshot.limit_id.as_deref().is_none_or(|id| id == "codex"))
+            .flat_map(|snapshot| [snapshot.primary.as_ref(), snapshot.secondary.as_ref()])
+            .flatten()
+            .filter(move |window| window.window_minutes == Some(minutes))
+    };
+    // The latest reset ahead among the spent windows of that length.
+    let resets_at = |minutes: i64| {
+        windows(minutes)
+            .filter(|window| window.used_percent.is_finite() && window.used_percent >= 100.0)
+            .filter_map(|window| window.resets_at)
+            .filter(|reset| *reset > now)
+            .max()
+    };
+    if let Some(resets_at) = resets_at(10080) {
+        return Some(SpentWall {
+            window: SpentWindow::Week,
+            resets_at,
+        });
+    }
+    let week_usable =
+        windows(10080).all(|window| window.used_percent.is_finite() && window.used_percent < 100.0);
+    if !week_usable {
+        return None;
+    }
+    Some(SpentWall {
+        window: SpentWindow::FiveHour,
+        resets_at: resets_at(300)?,
+    })
+}
+
+/// Whether a host may be asked about this wall at all. A spent week always:
+/// the turn that ends is resumed, or asked about, at whatever the 429 named
+/// (which need not be the week's own reset: the Autopilot's bound on asking
+/// says what that costs). A spent five-hour window only when the 429 named a
+/// reset and it is the window's own: what follows the ended turn (the
+/// Autopilot's limit on asking and its usage resume) runs on the 429's reset,
+/// so with none named nothing would bound the ask, and one that disagrees
+/// would resume the session at the wrong moment. Both are moments, not times
+/// left, so the comparison does not depend on when it is made.
+fn offerable(wall: SpentWall, reset_at: Option<i64>) -> bool {
+    match wall.window {
+        SpentWindow::Week => true,
+        SpentWindow::FiveHour => {
+            reset_at.is_some_and(|reset| reset.abs_diff(wall.resets_at) <= RESET_AGREEMENT)
+        }
+    }
+}
+
 fn restored(read: &RateLimitsWithResetCredits, owner: &(String, String, u64)) -> bool {
     usage_below(read, owner, 100.0)
 }
@@ -165,6 +326,18 @@ fn digest(text: &str) -> String {
 #[derive(Default)]
 pub struct State {
     owner: Option<(String, String, u64)>,
+    /// This turn's last permitting preflight read. A turn owns its `State`, so
+    /// the first request of every turn reads, and nothing is shared between
+    /// sessions or written to the custody ledger.
+    clear: std::sync::Mutex<Option<Clear>>,
+}
+
+impl State {
+    fn clear(&self) -> std::sync::MutexGuard<'_, Option<Clear>> {
+        self.clear
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 struct Settings {
     home: PathBuf,
@@ -241,6 +414,16 @@ struct Credit {
 enum Recovery {
     Stop,
     Wait,
+    /// One of the account's own windows is spent (`wall`), nothing is in
+    /// redemption custody and no earned credit can be redeemed now. Polling is
+    /// one answer; a host that would leave that wall for another account is
+    /// the other. `conclusive` only when this attempt read the credit list and
+    /// it offered nothing: an unread list, or one whose credit the backend
+    /// just refused, may hide a credit.
+    NoCredit {
+        wall: SpentWall,
+        conclusive: bool,
+    },
     Spent,
     Restored,
 }
@@ -252,8 +435,11 @@ async fn wait_for_reset(
     turn_id: &str,
     interval: Duration,
     reset_at: Option<i64>,
+    handoff: Option<&codex_alab_core::quota::WallHandoff>,
 ) -> bool {
     let max_attempt = Duration::from_secs(45);
+    // Consecutive creditless answers that did not rest on a clean list read.
+    let mut inconclusive = 0_u32;
     loop {
         if !codex_alab_core::active() || identity(manager).as_ref() != Some(owner) {
             return false;
@@ -264,16 +450,51 @@ async fn wait_for_reset(
         if attempt.is_zero() {
             return false;
         }
-        match tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             attempt,
             recover(manager, config, owner, turn_id, Purpose::Recover),
         )
-        .await
-        {
+        .await;
+        // The earned reset comes before another account, so one unread credit
+        // list does not end the request: it is listed once more, one poll
+        // later. A second such answer in a row does, so a list outage cannot
+        // hold a spent allowance away from another account. The count is of
+        // unread lists, not of readings of one wall: the two answers may name
+        // different walls (a five-hour window, then the week), and the wall
+        // offered is the second's.
+        inconclusive = match outcome {
+            Ok(Recovery::NoCredit {
+                conclusive: false, ..
+            }) => inconclusive.saturating_add(1),
+            _ => 0,
+        };
+        match outcome {
             Ok(Recovery::Restored) => return true,
             Ok(Recovery::Stop) => return false,
             Ok(Recovery::Spent) if reset_at.is_none() => return false,
-            Ok(Recovery::Spent | Recovery::Wait) | Err(_) => {}
+            Ok(Recovery::NoCredit { wall, conclusive })
+                if (conclusive || inconclusive >= 2) && offerable(wall, reset_at) =>
+            {
+                // The earned reset was tried first and has nothing to redeem.
+                // `recover` has returned, so neither the account resource nor
+                // the custody lock is held while the host is asked. Ending
+                // here returns the original usage error to the turn; a host
+                // that is not ready leaves this request polling for a credit.
+                if let Some(handoff) = handoff {
+                    let ready = match reset_at {
+                        Some(reset) => {
+                            tokio::time::timeout(until_reset(reset), handoff.ready(wall))
+                                .await
+                                .unwrap_or(false)
+                        }
+                        None => handoff.ready(wall).await,
+                    };
+                    if ready {
+                        return false;
+                    }
+                }
+            }
+            Ok(Recovery::Spent | Recovery::Wait | Recovery::NoCredit { .. }) | Err(_) => {}
         }
         let mut delay = interval;
         if let Some(reset) = reset_at {
@@ -300,8 +521,10 @@ pub async fn recover_weekly(
     factory: HttpClientFactory,
     turn_id: &str,
     state: &State,
-    reset_at: Option<i64>,
+    wall: crate::Wall<'_>,
 ) -> bool {
+    // A wall contradicts a clear reading, and recovery changes the ledger.
+    *state.clear() = None;
     if !codex_alab_core::active() {
         return false;
     }
@@ -323,13 +546,19 @@ pub async fn recover_weekly(
         &owner,
         turn_id,
         Duration::from_secs(30),
-        reset_at,
+        wall.reset_at,
+        wall.handoff,
     )
     .await
 }
 
 /// Check the authenticated allowance before sampling, independently of model text.
 /// The existing account-bound ledger owns every redemption and uncertain retry.
+///
+/// A read that permitted an earlier request of this turn is reused while its
+/// headroom proves the threshold out of reach ([`Clear::holds`]); `observed`,
+/// the session's latest response rate limits, can only end that reuse sooner.
+/// A reused reading takes no lock, no account lease and no HTTP request.
 pub async fn preflight(
     manager: &AuthManager,
     home: &Path,
@@ -337,6 +566,7 @@ pub async fn preflight(
     factory: HttpClientFactory,
     turn_id: &str,
     state: &State,
+    observed: Option<&codex_protocol::protocol::RateLimitSnapshot>,
 ) {
     if !codex_alab_core::active() {
         return;
@@ -348,6 +578,19 @@ pub async fn preflight(
     else {
         return;
     };
+    {
+        let mut clear = state.clear();
+        if clear.is_some_and(|clear| {
+            clear.holds(
+                chrono::Utc::now().timestamp(),
+                observed.and_then(response_used),
+            )
+        }) {
+            return;
+        }
+        // Only the read below can clear this turn again.
+        *clear = None;
+    }
     let config = Settings {
         home: home.to_owned(),
         base: base.to_owned(),
@@ -355,7 +598,14 @@ pub async fn preflight(
     };
     let _ = tokio::time::timeout(
         Duration::from_secs(45),
-        recover(manager, &config, &owner, turn_id, Purpose::Preflight),
+        recover_with(
+            manager,
+            &config,
+            &owner,
+            turn_id,
+            Purpose::Preflight,
+            Some(state),
+        ),
     )
     .await;
 }
@@ -366,6 +616,19 @@ async fn recover(
     owner: &(String, String, u64),
     turn_id: &str,
     purpose: Purpose,
+) -> Recovery {
+    recover_with(manager, config, owner, turn_id, purpose, None).await
+}
+
+/// `clearing` is the turn whose permitting preflight read may excuse its later
+/// preflights; no other outcome, and no redemption, records one.
+async fn recover_with(
+    manager: &AuthManager,
+    config: &Settings,
+    owner: &(String, String, u64),
+    turn_id: &str,
+    purpose: Purpose,
+    clearing: Option<&State>,
 ) -> Recovery {
     let current = || codex_alab_core::active() && identity(manager).as_ref() == Some(owner);
     if !current() {
@@ -432,6 +695,8 @@ async fn recover(
     if !current() {
         return Recovery::Stop;
     }
+    let read_at = chrono::Utc::now().timestamp();
+    let read_started = std::time::Instant::now();
     let Ok(mut read) = client.get_rate_limits_with_reset_credits().await else {
         return Recovery::Wait;
     };
@@ -454,6 +719,17 @@ async fn recover(
                 ledger.current.as_ref().map(|op| op.credit.as_str()),
                 turn_id,
             );
+        }
+        // Recorded only here, after settlement: a reused reading is always
+        // backed by a read that restored and released what the ledger held.
+        if let Some(state) = clearing
+            && let Some(used) = ordinary_used(&read)
+        {
+            *state.clear() = Some(Clear {
+                read_at,
+                read: read_started,
+                used,
+            });
         }
         return Recovery::Stop;
     }
@@ -516,8 +792,21 @@ async fn recover(
             }
             op
         } else {
-            let Some(id) = available(&client, &dir, &tried, now).await else {
-                return Recovery::Wait;
+            let listed = available(&client, &dir, &tried, now).await;
+            let Ok(Some(id)) = listed else {
+                // Nothing is in custody here: a consumed credit awaiting
+                // propagation returned above, and a pending operation never
+                // lists credits. Only a list that was read, in an attempt that
+                // had no credit refused, shows there is none; the caller
+                // decides how long anything less may keep the request.
+                let spent = spent_wall(&read, owner, now).filter(|_| purpose == Purpose::Recover);
+                return match spent {
+                    Some(wall) => Recovery::NoCredit {
+                        wall,
+                        conclusive: listed.is_ok() && tried.is_empty(),
+                    },
+                    None => Recovery::Wait,
+                };
             };
             let Some(op) = begin(&dir, &account, &mut ledger, cycle, &id) else {
                 return Recovery::Stop;
@@ -662,17 +951,25 @@ fn begin(
     Some(op)
 }
 
+/// The earned-credit list could not be read: it shows neither a credit nor
+/// the absence of one.
+struct Unlisted;
+
+/// The credit to redeem next, `None` where the list was read and offers none.
 async fn available(
     client: &Client,
     dir: &Path,
     tried: &std::collections::BTreeSet<String>,
     now: i64,
-) -> Option<String> {
-    let details = client.list_rate_limit_reset_credits().await.ok()?;
+) -> Result<Option<String>, Unlisted> {
+    let details = client
+        .list_rate_limit_reset_credits()
+        .await
+        .map_err(|_| Unlisted)?;
     if details.available_count <= 0 {
-        return None;
+        return Ok(None);
     }
-    details
+    let next = details
         .credits
         .iter()
         .filter(|c| {
@@ -696,7 +993,8 @@ async fn available(
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map_or(i64::MAX, |t| t.timestamp())
         })
-        .map(|c| c.id.clone())
+        .map(|c| c.id.clone());
+    Ok(next)
 }
 
 fn release(dir: &Path, id: Option<&str>, turn: &str) -> Recovery {
@@ -863,6 +1161,7 @@ impl State {
         let _ = manager.auth().await;
         Self {
             owner: identity(manager),
+            clear: std::sync::Mutex::new(None),
         }
     }
 }
@@ -1059,6 +1358,7 @@ mod tests {
                 HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault),
                 "turn",
                 &state,
+                None,
             )
             .await;
         }
@@ -1153,6 +1453,7 @@ mod tests {
                         state.owner.as_ref().unwrap(),
                         "turn",
                         Duration::from_secs(3600),
+                        None,
                         None
                     )
                 )
@@ -1170,6 +1471,7 @@ mod tests {
                     state.owner.as_ref().unwrap(),
                     "turn",
                     Duration::from_millis(10),
+                    None,
                     None
                 )
             )
@@ -1394,7 +1696,7 @@ mod tests {
                 HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault),
                 "original-turn",
                 &state,
-                None
+                crate::Wall::default()
             )
             .await
         );
@@ -1424,14 +1726,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut ledger = Ledger::default();
         let tried = std::collections::BTreeSet::new();
-        let first = available(&client, dir.path(), &tried, 1000).await.unwrap();
+        let first = available(&client, dir.path(), &tried, 1000)
+            .await
+            .ok()
+            .flatten()
+            .unwrap();
         assert_eq!(first, "A", "parsed expiry orders offsets correctly");
         let a = begin(dir.path(), "account", &mut ledger, 44200, &first).unwrap();
         assert_eq!(a.key, operation_key("account", 44200, "A", 1));
         let mut record = credit_at(dir.path(), "A").unwrap();
         record.consumed = true;
         save(&credit_path(dir.path(), "A"), &record).unwrap();
-        let second = available(&client, dir.path(), &tried, 1000).await.unwrap();
+        let second = available(&client, dir.path(), &tried, 1000)
+            .await
+            .ok()
+            .flatten()
+            .unwrap();
         assert_eq!(second, "B");
         let b = begin(dir.path(), "account", &mut ledger, 44200, &second).unwrap();
         assert_ne!(a.key, b.key);
@@ -1439,7 +1749,7 @@ mod tests {
         record.consumed = true;
         save(&credit_path(dir.path(), "B"), &record).unwrap();
         assert!(
-            available(&client, dir.path(), &tried, 1000).await.is_none(),
+            matches!(available(&client, dir.path(), &tried, 1000).await, Ok(None)),
             "stale A/B lists never forget either consumed credit"
         );
     }
@@ -1482,7 +1792,11 @@ mod tests {
         std::fs::write(credit_path(dir.path(), "uncertain"), "interrupted receipt").unwrap();
         let tried = std::collections::BTreeSet::from(["tried".to_owned()]);
         assert_eq!(
-            available(&client, dir.path(), &tried, now).await.as_deref(),
+            available(&client, dir.path(), &tried, now)
+                .await
+                .ok()
+                .flatten()
+                .as_deref(),
             Some("usable")
         );
     }
@@ -1503,3 +1817,15 @@ mod reconciliation_tests;
 #[cfg(test)]
 #[path = "deadline_tests.rs"]
 mod deadline_tests;
+
+#[cfg(test)]
+#[path = "handoff_tests.rs"]
+mod handoff_tests;
+
+#[cfg(test)]
+#[path = "clear_tests.rs"]
+mod clear_tests;
+
+#[cfg(test)]
+#[path = "fixture_tests.rs"]
+mod fixture_tests;

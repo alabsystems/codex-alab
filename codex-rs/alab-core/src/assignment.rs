@@ -1268,6 +1268,11 @@ static PROCESS_HOST: std::sync::OnceLock<Arc<dyn ProcessHost>> = std::sync::Once
 pub fn install_process_host(host: Arc<dyn ProcessHost>) {
     let _ = PROCESS_HOST.set(host);
 }
+/// Whether [`admit_process`] can ever succeed here. A request that will need it is refused
+/// before admission closes while this is false.
+pub fn process_host_installed() -> bool {
+    PROCESS_HOST.get().is_some()
+}
 pub async fn admit_process(
     target: &crate::assignment_service::Target,
 ) -> Result<Box<dyn ProcessAdmission>, Refused> {

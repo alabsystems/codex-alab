@@ -294,10 +294,6 @@ impl ChatWidget {
             let bottom_pane = super::alab_pet_layout::wrap(self, bottom_pane); // ALAB(interface): reserve the pet's column for prompt, status and footer together
             let above_composer = if self.quick_dial_menu && !options.floating_shortcuts {
                 RenderableItem::Owned(Box::new(self.quick_dial_hud()))
-            } else if let Some(pending) = &self.safety_recourse
-                && !self.bottom_pane.has_active_view()
-            {
-                RenderableItem::Borrowed(&pending.notice)
             } else if let Some(backend) = self.visible_new_backend_control() {
                 let mut spans = vec!["  ".into(), backend.into()];
                 let keymap = self.bottom_pane.keymap();

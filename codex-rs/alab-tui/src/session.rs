@@ -140,12 +140,22 @@ pub fn human_input(may_edit: bool) {
     }
 }
 
-/// ALAB(session) hook: the TUI is about to start a thread that carries on `source`'s work
-/// (plan mode's "clear context and implement", a provider error's continuation), so the
-/// autopilot takes it past its session's opening ([`Shared::continue_work`]; edges-3).
+/// A provider continuation names its source before creating the new thread.
+/// Prepared plans use [`continues_prepared_work`] after preparation succeeds.
 pub fn continues_work(source: Option<impl std::fmt::Display>) {
     if let Some(source) = source.filter(|_| active()) {
         shared().continue_work(&source.to_string());
+    }
+}
+
+/// The app server prepared the target before the UI adopted its approved plan.
+pub fn continues_prepared_work(
+    source: Option<impl std::fmt::Display>,
+    target: impl std::fmt::Display,
+    prompt: &str,
+) {
+    if let Some(source) = source.filter(|_| active()) {
+        shared().continue_prepared_work(&source.to_string(), &target.to_string(), prompt);
     }
 }
 

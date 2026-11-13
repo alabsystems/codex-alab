@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T17:24:27.153220+00:00",
+  "source": "ecd1195d68016f5550a45f7ae8eed8c51b324c6e",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "app::provider::editor::tests::cloud_provider_edits_preserve_credentials",
+      "status": "ok"
+    },
+    {
+      "name": "app::provider::editor::tests::hidden_gateway_settings_stay_out_of_rename_patch",
+      "status": "ok"
+    },
+    {
+      "name": "app::provider::editor::tests::clearing_configured_url_keeps_the_form_open_until_corrected",
+      "status": "ok"
+    },
+    {
+      "name": "app::provider::editor::tests::entering_a_key_for_a_legacy_gateway_prompts_for_its_address",
+      "status": "ok"
+    },
+    {
+      "name": "app::provider::tests::adding_a_custom_provider_saves_to_the_server_and_preserves_the_default",
+      "status": "ok"
+    },
+    {
+      "name": "app::provider::tests::space_saves_once_retries_and_preserves_the_current_chat",
+      "status": "ok"
+    },
+    {
+      "name": "app::provider::tests::only_ambiguous_write_failures_invalidate_the_model_catalog",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::model_catalog::queued_model_choice_expires_when_the_default_provider_changes",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::session_lifecycle_requests::new_session_tests::new_session_refreshes_account_for_the_started_provider",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::session_lifecycle_requests::new_session_tests::thread_account_uses_only_a_matching_server_default",
+      "status": "ok"
+    },
+    {
+      "name": "chatwidget::tests::session_model_selection_tests::provider_switch_blocks_cached_choices_in_old_and_new_chats",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::handle_start_side_seeds_navigation_before_thread_started",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::sidebar_reopens_saved_side_chat_after_restart",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::side_close_key_cannot_accept_a_replacing_approval",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::key_chords::sidebar_chooser_resize_survives_startup_thread_assignment",
+      "status": "ok"
+    },
+    {
+      "name": "app::tests::key_chords::sidebar_chooser_preserves_the_parent_draft_and_starts_a_side_chat",
+      "status": "ok"
+    },
+    {
+      "name": "app::agents_overview::tests::discovery::overview_show_more_refills_archived_rows_and_retries_without_losing_rows",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-provider-sidebar-native.sh",
+      "sha256": "83c9478ec1bf760aba3f1edae356b1858b3628c24e2378959bbcb0cb50c4b032"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-provider-sidebar-native.log",
+      "sha256": "50908b2acde3f8331d2a8e0e6058b4ead8badf540fb0f634c0b64a5e4d54be06"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-provider-sidebar-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Controller49250 terminal0 on exact formatted cookie source. Fourteen nonempty selections passed: full provider editor units, custom creation preserving default, persistence/retry, ambiguous-write cache invalidation, provider-compatible model/account state, side navigation startup, persisted side-chat recovery, approval replacement fencing, chooser resizing/draft preservation and paginated overview retry. Focused coverage only; does not qualify all Cloud/onboarding cases, every platform, full gate, installed adoption or later main commits."
+}

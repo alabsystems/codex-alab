@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use anyhow::Context as _;
 use codex_core::RecoverTurnRequest;
 use codex_core::StartIfIdleSubmission;
 use codex_core::TurnInputRequest;
@@ -9,6 +10,7 @@ use codex_core::TurnInputSubmission;
 use codex_core::TurnStartOptions;
 use codex_core::WithTurnExtensionData;
 use codex_extension_api::ExtensionDataInit;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::user_input::UserInput;
@@ -27,14 +29,14 @@ use std::time::Duration;
 #[test]
 fn exec_recovery_preserves_original_settings_and_requires_live_admission() -> anyhow::Result<()> {
     run_test_with_large_stack("exec-recovery-settings", || {
-        recovery_case(false, false, false)
+        recovery_case(false, false, false, None)
     })
 }
 
 #[test]
 fn exec_recovery_preserves_original_turn_across_compacted_history() -> anyhow::Result<()> {
     run_test_with_large_stack("exec-recovery-compacted", || {
-        recovery_case(true, false, false)
+        recovery_case(true, false, false, None)
     })
 }
 
@@ -42,16 +44,69 @@ fn exec_recovery_preserves_original_turn_across_compacted_history() -> anyhow::R
 fn ephemeral_exec_recovery_restores_original_turn_and_settings_without_storage()
 -> anyhow::Result<()> {
     run_test_with_large_stack("exec-recovery-ephemeral", || {
-        recovery_case(false, true, false)
+        recovery_case(false, true, false, None)
     })
 }
 
 #[test]
 fn exec_recovery_waits_for_explicit_tree_release_after_native_admission() -> anyhow::Result<()> {
-    run_test_with_large_stack("exec-recovery-launch", || recovery_case(false, false, true))
+    run_test_with_large_stack("exec-recovery-launch", || {
+        recovery_case(false, false, true, None)
+    })
 }
 
-async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::Result<()> {
+#[test]
+fn exec_recovery_preserves_requested_reviewer_across_protected_model_switches() -> anyhow::Result<()>
+{
+    run_test_with_large_stack("exec-recovery-reviewer", || async {
+        for ephemeral in [false, true] {
+            for reviewer in [ApprovalsReviewer::User, ApprovalsReviewer::AutoReview] {
+                recovery_case(false, ephemeral, false, Some(reviewer))
+                    .await
+                    .with_context(|| format!("reviewer {reviewer:?}, ephemeral={ephemeral}"))?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn recovery_extensions(
+    reviewer: Option<ApprovalsReviewer>,
+) -> Arc<codex_extension_api::ExtensionRegistry<codex_core::config::Config>> {
+    let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
+    if reviewer.is_some() {
+        crate::extensions::quota_runtime_host::install_exec_fixture(&mut builder);
+    }
+    Arc::new(builder.build())
+}
+
+fn reviewer_recovery_config(
+    config: &mut codex_core::config::Config,
+    reviewer: Option<ApprovalsReviewer>,
+) {
+    let Some(reviewer) = reviewer else { return };
+    config.approvals_reviewer = reviewer;
+    config.requested_approvals_reviewer = Some(reviewer);
+    let stack = &config.config_layer_stack;
+    let mut requirements = stack.requirements().clone();
+    requirements.auto_review_required_models = Some(codex_config::Sourced::new(
+        ["gpt-5.6-sol".to_owned()].into(),
+        codex_config::RequirementSource::Unknown,
+    ));
+    config.config_layer_stack = codex_config::ConfigLayerStack::new(
+        stack.all_layers_low_to_high().cloned().collect(),
+        requirements,
+        stack.requirements_toml().clone(),
+    )
+    .expect("reviewer requirements");
+}
+
+async fn recovery_case(
+    compact: bool,
+    ephemeral: bool,
+    launch: bool,
+    reviewer: Option<ApprovalsReviewer>,
+) -> anyhow::Result<()> {
     let (_release, gate) = oneshot::channel();
     let (server, _) = start_streaming_sse_server(vec![vec![StreamingSseChunk {
         gate: Some(gate),
@@ -60,15 +115,18 @@ async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::
     .await;
     let mock = responses::start_mock_server().await;
     let fixture = test_codex()
+        .with_extensions(recovery_extensions(reviewer))
         .with_model("gpt-5.6-sol")
-        .with_config(|config| {
+        .with_config(move |config| {
+            reviewer_recovery_config(config, reviewer);
             config
                 .features
                 .enable(codex_features::Feature::FastMode)
                 .expect("fast mode");
         })
         .build_with_auto_env(&mock)
-        .await?;
+        .await
+        .context("source fixture")?;
     let mut options = fixture.start_thread_options().await;
     options.config.ephemeral = ephemeral;
     options.config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
@@ -83,7 +141,11 @@ async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::
         &options.config,
         &codex_core::config::ConfigOverrides::default(),
     )?;
-    let started = fixture.thread_manager.start_thread(options).await?;
+    let started = fixture
+        .thread_manager
+        .start_thread(options)
+        .await
+        .context("source exec thread")?;
     let thread_id = started.thread_id;
     let thread = started.thread;
     let schema = serde_json::json!({
@@ -120,8 +182,14 @@ async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::
         .await
         .map_err(|_| anyhow::anyhow!("original turn rejected pending context"))?;
     assert!(
-        !serde_json::to_string(&thread.exec_recovery_history().await?.items)?
-            .contains("queued accepted context"),
+        !serde_json::to_string(
+            &thread
+                .exec_recovery_history()
+                .await
+                .context("source queued-input history")?
+                .items
+        )?
+        .contains("queued accepted context"),
         "fixture must leave the accepted items queued, outside recorded history",
     );
 
@@ -163,10 +231,11 @@ async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::
             &invocation,
         )
         .await
-        .map_err(anyhow::Error::msg)?;
+        .map_err(anyhow::Error::msg)
+        .context("source suspension")?;
     let tree: codex_core::ExecTreeSnapshot =
         serde_json::from_slice(&serde_json::to_vec(suspended.tree())?)?;
-    assert!(tree.validate(thread_id, "wrong-turn").is_err());
+    assert!(tree.validate(thread_id, Some("wrong-turn")).is_err());
     let saved = tree.threads()[0].recovery().unwrap().clone();
     let memory_history = tree.threads()[0].ephemeral_history().cloned();
     if ephemeral {
@@ -191,10 +260,13 @@ async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::
     let response =
         responses::mount_sse_once(&recovery_server, responses::sse_completed("recovered")).await;
     let replacement = test_codex()
+        .with_extensions(recovery_extensions(reviewer))
         .with_model("gpt-5.4")
         .with_home(Arc::clone(&fixture.home))
         .with_thread_store(Arc::clone(&fixture.thread_store))
         .with_config(move |config| {
+            // The replacement default must not become the source preference.
+            reviewer_recovery_config(config, reviewer.map(|_| ApprovalsReviewer::User));
             config.ephemeral = ephemeral;
             config.model_reasoning_effort =
                 Some(codex_protocol::openai_models::ReasoningEffort::Low);
@@ -206,8 +278,16 @@ async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::
                 .expect("fast mode");
         })
         .build_with_auto_env(&recovery_server)
-        .await?;
+        .await
+        .context("replacement fixture")?;
     let mut options = replacement.start_thread_options().await;
+    if reviewer.is_some() {
+        // Bind the fresh local executor to the original workspace before restoring
+        // thread settings, as production bootstrap does. Only request data is copied.
+        options.config.cwd = fixture.config.cwd.clone();
+        options.config.workspace_roots = fixture.config.workspace_roots.clone();
+        options.environments = fixture.start_thread_options().await.environments;
+    }
     if let Some(history) = memory_history {
         options = history
             .prepare_start(options, thread_id, &turn_id)
@@ -243,9 +323,28 @@ async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::
         .map_err(anyhow::Error::msg)?
         .prepare_start(options, thread_id, &turn_id)
         .map_err(anyhow::Error::msg)?;
-    let resumed = replacement.thread_manager.start_thread(options).await?;
+    let resumed = replacement
+        .thread_manager
+        .start_thread(options)
+        .await
+        .context("replacement exec thread")?;
     assert_eq!(resumed.thread_id, thread_id);
     let resumed = resumed.thread;
+    if let Some(reviewer) = reviewer {
+        // Production bootstrap restores both fields before recovering the original turn.
+        let node = &tree.threads()[0];
+        let (fresh, roots) = resumed.exec_child_restore_bindings().await;
+        let settings = node
+            .restore_settings(&fresh, &roots)
+            .map_err(anyhow::Error::msg)?;
+        resumed
+            .restore_thread_settings(settings)
+            .await
+            .context("restore captured reviewer settings")?;
+        let before = resumed.thread_settings_snapshot().await;
+        assert_eq!(before.approvals_reviewer, ApprovalsReviewer::AutoReview);
+        assert_eq!(before.requested_approvals_reviewer, Some(reviewer));
+    }
     let launch_barrier = if launch {
         Some(
             codex_core::ExecLaunchBarrier::prepare(&tree, &[Arc::clone(&resumed)])
@@ -331,7 +430,8 @@ async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::
     let result = recovery
         .run(&replacement.thread_manager, admitted.clone())
         .await
-        .map_err(anyhow::Error::msg)?;
+        .map_err(anyhow::Error::msg)
+        .context("recover original turn")?;
     assert_eq!(
         result,
         StartIfIdleSubmission::Started {
@@ -418,6 +518,21 @@ async fn recovery_case(compact: bool, ephemeral: bool, launch: bool) -> anyhow::
             .is_err()
     );
     assert_eq!(response.requests().len(), 1);
+    if let Some(reviewer) = reviewer {
+        let restored = resumed.thread_settings_snapshot().await;
+        assert_eq!(restored.approvals_reviewer, ApprovalsReviewer::AutoReview);
+        assert_eq!(restored.requested_approvals_reviewer, Some(reviewer));
+        resumed
+            .update_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides {
+                model: Some("gpt-5.4".into()),
+                ..Default::default()
+            })
+            .await
+            .context("switch recovered thread model")?;
+        let ordinary = resumed.thread_settings_snapshot().await;
+        assert_eq!(ordinary.approvals_reviewer, reviewer);
+        assert_eq!(ordinary.requested_approvals_reviewer, Some(reviewer));
+    }
     resumed.shutdown_and_wait().await?;
     server.shutdown().await;
     Ok(())

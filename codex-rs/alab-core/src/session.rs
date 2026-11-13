@@ -9,7 +9,7 @@
 //! stamp, and the exit's signal or exec request.
 //! The session-record writer and, later, the autopilot read it. It is one `static` in one
 //! crate, so the TUI and the in-process app-server extension see the same copy (tui-life §6).
-//! Plain `std` only: no codex crate, no I/O.
+//! Shared state performs no I/O; post-commit capture has a separate owned operation.
 
 use crate::boxes::BoxAnswer;
 use crate::boxes::BoxOutcome;
@@ -1060,6 +1060,7 @@ pub struct Shared {
     mail_badge: Mutex<Option<crate::mail::MailBadge>>,
     signal: AtomicI32,
     exec_pending: AtomicBool,
+    upgrade_execution: Mutex<Option<UpgradeExecution>>,
     /// The [`Autopilot`] and the [`HarnessWord`] together ([`AUTOPILOT_BITS`]).
     autopilot: AtomicU8,
     /// aterm's `status land_at=` at the supervisor's last read of the word: unix seconds, 0
@@ -1080,6 +1081,8 @@ pub struct Shared {
     /// The TUI is about to start a thread that carries on another's work
     /// ([`Self::continue_work`]); the next root thread taken takes it.
     continues: Mutex<Option<String>>,
+    // A prepared thread already exists; only its accepted plan prompt consumes this.
+    prepared_continuation: Mutex<BTreeMap<String, (String, String)>>,
     preapprovals: Mutex<Vec<crate::boxes::Preapproval>>,
     resume_lines: AtomicU64,
     carry_on_owed: AtomicBool,
@@ -1135,13 +1138,25 @@ pub type Callback = Box<dyn Fn() + Send + Sync>;
 
 /// An upgrade has its own conditional event; an explicit user exit stays unconditional.
 pub type UpgradeLeave = Box<dyn Fn(UpgradeRequest) + Send + Sync>;
-type UpgradeDecision = Box<dyn FnOnce(bool) -> bool + Send>;
+pub use crate::upgrade_completion::UpgradeCompletion;
+type UpgradeContext = Box<dyn std::any::Any + Send>;
+type UpgradeDecision = Box<dyn FnOnce(bool, Option<UpgradeContext>) -> UpgradeDispatch + Send>;
+/// Only Capturing carries a post-commit operation. Ready is the existing plain
+/// leave protocol; neither outcome is native SDK or execution authority.
+pub enum UpgradeDispatch {
+    Refused,
+    Ready,
+    Capturing(UpgradeCompletion),
+}
+/// Exact admitted process execution, owned by its committing session until teardown.
+pub type UpgradeExecution = Box<dyn FnOnce() -> String + Send + 'static>;
 
 /// A queued TUI handoff. Dropping either end rejects a decision not yet dispatched.
 /// Once dispatch takes the decision, the caller's cancellation invalidates its native
 /// generation before restoring the prior act, fencing an in-flight commit as well.
 pub struct UpgradeRequest {
     decision: std::sync::Arc<Mutex<Option<UpgradeDecision>>>,
+    requires_context: bool,
 }
 
 pub struct UpgradeCancellation {
@@ -1156,19 +1171,74 @@ impl std::fmt::Debug for UpgradeRequest {
 
 impl UpgradeRequest {
     pub fn new(decide: impl FnOnce(bool) -> bool + Send + 'static) -> (Self, UpgradeCancellation) {
-        let decision = std::sync::Arc::new(Mutex::new(Some(Box::new(decide) as UpgradeDecision)));
+        let decision: UpgradeDecision = Box::new(move |ready, _| {
+            if decide(ready) {
+                UpgradeDispatch::Ready
+            } else {
+                UpgradeDispatch::Refused
+            }
+        });
+        let decision = std::sync::Arc::new(Mutex::new(Some(decision)));
         (
             Self {
                 decision: std::sync::Arc::clone(&decision),
+                requires_context: false,
             },
             UpgradeCancellation { decision },
         )
     }
 
+    /// The final callback runs only with the exact native context supplied by
+    /// the TUI. Missing/wrong context and cancellation drop preparation before
+    /// any source effects. The context is a Rust owner, not decoded authority.
+    pub fn with_context<T: std::any::Any + Send>(
+        decide: impl FnOnce(T) -> Option<UpgradeCompletion> + Send + 'static,
+    ) -> (Self, UpgradeCancellation) {
+        let decision: UpgradeDecision = Box::new(move |ready, context| {
+            if !ready {
+                return UpgradeDispatch::Refused;
+            }
+            let Some(runtime) = UpgradeCompletion::runtime() else {
+                return UpgradeDispatch::Refused;
+            };
+            let Some(context) = context.and_then(|context| context.downcast::<T>().ok()) else {
+                return UpgradeDispatch::Refused;
+            };
+            match decide(*context) {
+                Some(completion) => {
+                    completion.start_on(runtime);
+                    UpgradeDispatch::Capturing(completion)
+                }
+                None => UpgradeDispatch::Refused,
+            }
+        });
+        let decision = std::sync::Arc::new(Mutex::new(Some(decision)));
+        (
+            Self {
+                decision: decision.clone(),
+                requires_context: true,
+            },
+            UpgradeCancellation { decision },
+        )
+    }
+    pub fn requires_context(&self) -> bool {
+        self.requires_context
+    }
+    pub fn decide_with_context<T: std::any::Any + Send>(
+        self,
+        native_ready: bool,
+        context: T,
+    ) -> UpgradeDispatch {
+        let decide = { lock(&self.decision).take() };
+        decide.map_or(UpgradeDispatch::Refused, |decide| {
+            decide(native_ready, Some(Box::new(context)))
+        })
+    }
+
     /// Called synchronously at the TUI's actual leave boundary, with current native facts.
     pub fn decide(self, native_ready: bool) -> bool {
         let decide = { lock(&self.decision).take() };
-        decide.is_some_and(|decide| decide(native_ready))
+        decide.is_some_and(|decide| matches!(decide(native_ready, None), UpgradeDispatch::Ready))
     }
 }
 
@@ -1176,7 +1246,7 @@ impl Drop for UpgradeRequest {
     fn drop(&mut self) {
         let decide = { lock(&self.decision).take() };
         if let Some(decide) = decide {
-            decide(false);
+            decide(false, None);
         }
     }
 }
@@ -1185,7 +1255,7 @@ impl Drop for UpgradeCancellation {
     fn drop(&mut self) {
         let decide = { lock(&self.decision).take() };
         if let Some(decide) = decide {
-            decide(false);
+            decide(false, None);
         }
     }
 }
@@ -1262,6 +1332,7 @@ impl Shared {
             mail_badge: Mutex::new(None),
             signal: AtomicI32::new(0),
             exec_pending: AtomicBool::new(false),
+            upgrade_execution: Mutex::new(None),
             autopilot: AtomicU8::new(0),
             land_at: AtomicU64::new(0),
             task_faces: Mutex::new(BTreeMap::new()),
@@ -1282,6 +1353,7 @@ impl Shared {
             upgrade_generation: Mutex::new(0),
             own_turns: Mutex::new(Vec::new()),
             continues: Mutex::new(None),
+            prepared_continuation: Mutex::new(BTreeMap::new()),
             preapprovals: Mutex::new(Vec::new()),
             resume_lines: AtomicU64::new(0),
             carry_on_owed: AtomicBool::new(false),
@@ -2163,6 +2235,27 @@ impl Shared {
         true
     }
 
+    /// Own the admitted execution together with this session's successful native
+    /// commit. The opaque closure crosses the core/TUI dependency boundary; it
+    /// supplies no execution authority. No fallible work follows `decide`.
+    pub fn commit_upgrade_execution(
+        &self,
+        execution: UpgradeExecution,
+        decide: impl FnOnce() -> bool,
+    ) -> bool {
+        let mut pending = lock(&self.upgrade_execution);
+        if pending.is_some() || !decide() {
+            return false;
+        }
+        *pending = Some(execution);
+        true
+    }
+
+    /// Consume only the plan this session committed, after its native teardown.
+    pub fn take_upgrade_execution(&self) -> Option<UpgradeExecution> {
+        lock(&self.upgrade_execution).take()
+    }
+
     /// Withdraw a rejected/cancelled intent and restore any still-current act while a
     /// native turn start cannot supersede it between the check and timer restoration.
     pub fn cancel_upgrade(&self, restore: impl FnOnce()) -> bool {
@@ -2209,11 +2302,9 @@ impl Shared {
         }
     }
 
-    /// THE TUI IS ABOUT TO START A THREAD THAT CARRIES ON `source`'S WORK (edges-3): plan mode's
-    /// "clear context and implement", which submits the plan as the thread starts, or a provider
-    /// error's continuation, whose composer holds "let's continue where we left off". The
-    /// thread is no new session: the autopilot takes it past its opening as it starts
-    /// ([`Self::take_continuation`]). A later mark replaces an earlier one no thread took.
+    /// A pre-creation provider continuation carries on `source`'s work. The next
+    /// root creation takes this mark. Already prepared plan targets instead use
+    /// [`Self::continue_prepared_work`] at their accepted input boundary.
     pub fn continue_work(&self, source: &str) {
         *lock(&self.continues) = Some(source.to_owned());
     }
@@ -2222,6 +2313,24 @@ impl Shared {
     /// ([`Self::continue_work`]), used up: the next root thread to start takes it.
     pub fn take_continuation(&self) -> Option<String> {
         lock(&self.continues).take()
+    }
+
+    /// A successfully prepared plan continues only this target and accepted prompt.
+    /// It cannot classify a later root creation or an edited first message as work.
+    pub fn continue_prepared_work(&self, source: &str, target: &str, prompt: &str) {
+        lock(&self.prepared_continuation).insert(target.into(), (source.into(), prompt.into()));
+    }
+
+    /// Another target cannot consume the mark. Different first input cancels it.
+    pub fn take_prepared_continuation(&self, target: &str, prompt: &str) -> Option<String> {
+        lock(&self.prepared_continuation)
+            .remove(target)
+            .and_then(|(source, expected)| (expected == prompt).then_some(source))
+    }
+
+    /// A stopped target cannot leave a classification for a later incarnation.
+    pub fn discard_prepared_continuation(&self, target: &str) {
+        lock(&self.prepared_continuation).remove(target);
     }
 
     /// The approval contributor's review of a box (its `keys`): `Some(what)` when it would

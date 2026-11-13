@@ -200,7 +200,7 @@ async fn bedrock_auth_stays_independent_when_openai_runtime_auth_is_enabled() {
     let server = MockServer::start().await;
     let credentials =
         AuthManager::from_auth_for_testing(CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
-            alab_epoch: Default::default(), // ALAB(accounts): persistent fixtures begin without runtime provenance.
+            alab_epoch: Default::default(), // ALAB(accounts): fixture auth starts without runtime source provenance.
             api_key: "bedrock-key".into(),
             region: "us-east-1".into(),
         }));

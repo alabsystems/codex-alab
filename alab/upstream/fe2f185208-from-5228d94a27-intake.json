@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "base": "e79d99064514040f0fc45852362ff38dc843f50b",
+  "target": "fe2f18520864ddbee86cdd4b103a9fefffe9c6a2",
+  "frontier": "5228d94a27b7f84cae4854acbb5ea3b3e90dfeaf",
+  "commits": [
+    {
+      "sha": "fe2f18520864ddbee86cdd4b103a9fefffe9c6a2",
+      "subject": "Gate plugin recommendation cache warming on feature flags (#60721)",
+      "paths": [
+        "codex-rs/app-server/tests/common/lib.rs",
+        "codex-rs/app-server/tests/common/test_app_server.rs",
+        "codex-rs/app-server/tests/suite/v2/config_rpc.rs",
+        "codex-rs/app-server/tests/suite/v2/connection_handling_stdio_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/connection_handling_websocket.rs",
+        "codex-rs/app-server/tests/suite/v2/daemon_update_recovery.rs",
+        "codex-rs/app-server/tests/suite/v2/experimental_feature_list.rs",
+        "codex-rs/app-server/tests/suite/v2/recommended_plugins.rs",
+        "codex-rs/core-plugins/src/manager.rs",
+        "codex-rs/core-plugins/src/manager_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/tests/common/lib.rs",
+        "codex-rs/core/tests/suite/builtin_model_catalog.rs"
+      ],
+      "classes": [
+        "fix",
+        "background",
+        "defaults"
+      ],
+      "features": [
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Gate recommendation cache warming on the effective apps/plugins and recommendation flags. This closes unwanted recommendation background work with ALab packaged apps=false/plugins=false/tool_suggest=false, while retaining installed-plugin refresh and explicit user opt-in. Test helpers now disable recommendation flags explicitly and recommendation scenarios opt in; config RPC assertions retain the resulting SessionFlags layer. Retain ALab packaged-default precedence and lifecycle fixture adapters. Source review complete; exact-candidate feature scenarios, focused regressions and full native qualification remain pending.",
+      "evidence": [
+        "Reviewed all thirteen changed paths at fe2f18520864ddbee86cdd4b103a9fefffe9c6a2 against 5228d94a27b7f84cae4854acbb5ea3b3e90dfeaf.",
+        "core-plugins/src/manager.rs: installed-plugin refresh precedes the new recommendation-only early return; builder defaults false and config supplies Features::plugin_recommendations_enabled().",
+        "features/src/lib.rs: predicate requires apps && plugins && (tool_suggest || recommended_plugins); alab-core/defaults.toml disables apps/plugins/tool_suggest without overriding explicit user settings.",
+        "app-server config RPC tests assert session feature overrides; external-login recommendation tests opt in separately through tool_suggest or recommended_plugins."
+      ],
+      "revisit": "Before integration lands, complete both declared feature contracts, test recommendation-disabled no-request behavior and enabled warming, and run the native full gate on the exact composed candidate."
+    }
+  ]
+}

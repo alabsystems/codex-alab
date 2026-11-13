@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "kind": "composed-native-gate-failed-observation",
+  "source": "3b7f39355360548226b1540427ed8efe420cabf4",
+  "base": "27f8f15e063d5b4676f1aff1af568c980626871c",
+  "upstream": "a2b7c4a655a124c3e798b7744c5f83397eb2ada3",
+  "exit": 1,
+  "reviewed": 95,
+  "log": "${HOME}/.ubd/codex-alignment-main-27f8-full-gate-r1.log",
+  "log_sha256": "58160b516e59c8b944e7cec015212d5e98f762c1ba69f199f89e3c5e93cbcf07",
+  "findings": [
+    "duplicate FileAudioDurations capture/restore implementations from parallel migrations",
+    "obsolete second tuple destructuring and await in private reviewer startup",
+    "obsolete run_with_exec_launch production call after native admission moved before host admission",
+    "unused Arc import left by the context install merge"
+  ],
+  "limits": "No runtime qualification on this composed source. The preceding 3824 pass does not qualify this merge."
+}

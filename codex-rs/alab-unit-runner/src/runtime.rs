@@ -30,7 +30,7 @@ struct Library {
     key: String,
     binary: String,
     cwd: String,
-    snapshot: [u64; 4],
+    snapshot: [u64; 5],
 }
 
 #[derive(Deserialize)]
@@ -79,7 +79,7 @@ fn read_regular_file(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn snapshot(path: &Path) -> Result<[u64; 4]> {
+fn snapshot(path: &Path) -> Result<[u64; 5]> {
     let metadata = path.metadata().map_err(io)?;
     require(
         metadata.is_file(),
@@ -87,11 +87,15 @@ fn snapshot(path: &Path) -> Result<[u64; 4]> {
     )?;
     let timestamp =
         i128::from(metadata.mtime()) * 1_000_000_000 + i128::from(metadata.mtime_nsec());
+    // Restoring mtime after an in-place rewrite does not restore ctime.
+    let change_timestamp =
+        i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec());
     Ok([
         metadata.dev(),
         metadata.ino(),
         metadata.len(),
         u64::try_from(timestamp).map_err(io)?,
+        u64::try_from(change_timestamp).map_err(io)?,
     ])
 }
 

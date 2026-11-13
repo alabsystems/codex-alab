@@ -174,8 +174,12 @@ if kind == "git":
             raise SystemExit(71)
         sys.stdout.buffer.write(os.fsencode(Path(repo) / ".git") + b"\\n")
     elif args in (["rev-parse", "-q", "--verify", "HEAD^{commit}"],
-                   ["rev-parse", "HEAD"], ["rev-parse", "HEAD^{commit}"]):
+                   ["rev-parse", "HEAD"], ["rev-parse", "HEAD^{commit}"],
+                   ["merge-base", "HEAD", "upstream/main"],
+                   ["rev-parse", "-q", "--verify", "refs/remotes/origin/main^{commit}"]):
         print("1" * 40)
+    elif args == ["rev-list", "-1", "1" * 40 + ".." + "1" * 40]:
+        pass  # This fixture has no newly integrated upstream commits.
     else:
         raise SystemExit(72)
 ''')
@@ -272,11 +276,12 @@ class PristineRetentionTests(unittest.TestCase):
                               check=True, capture_output=True, text=True,
                               timeout=60).stdout.removesuffix("\n")
 
-    def shell(self, body, *args):
+    def shell(self, body, *args, environment=None):
         return subprocess.run(
             ["/bin/bash", "-c", 'set -euo pipefail; . "$1/alab/lib.sh"; shift; ' + body,
              "pristine-revisions", str(ROOT), str(self.repo), *map(str, args)],
-            cwd=self.repo, env=self.environment, capture_output=True, text=True, timeout=60)
+            cwd=self.repo, env=self.environment if environment is None else environment,
+            capture_output=True, text=True, timeout=60)
 
     def path(self, revision):
         return Path(str(self.base) + "-" + revision)
@@ -296,6 +301,158 @@ class PristineRetentionTests(unittest.TestCase):
     def snapshot(self, paths):
         return [(path.read_bytes(), path.stat().st_dev, path.stat().st_ino,
                  path.stat().st_mtime_ns) for path in paths]
+
+    def independent_pristine(self, name):
+        checkout = self.directory / name
+        self.git("worktree", "add", "-q", "--detach", str(checkout), self.first)
+        done = self.shell('alab_pristine_at "$2" "$3"; alab_pristine "$2" "$3"',
+                          checkout, self.first)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return checkout, Path(done.stdout.removesuffix("\n"))
+
+    def test_hidden_source_edits_refuse_clean_and_reuse_without_changing_evidence(self):
+        for kind in ("assume-unchanged", "skip-worktree", "stat-cache", "filemode"):
+            with self.subTest(kind=kind):
+                checkout, tree = self.independent_pristine(kind)
+                source = tree / "source"
+                witness = self.witness(tree)
+                if kind in ("assume-unchanged", "skip-worktree"):
+                    self.git("-C", str(tree), "update-index", "--" + kind, "source")
+                    source.write_bytes(b"owner source edit\n")
+                elif kind == "stat-cache":
+                    self.git("config", "core.trustctime", "false")
+                    self.git("config", "core.checkStat", "minimal")
+                    os.utime(source, ns=(1_600_000_000_000_000_000,) * 2)
+                    self.git("-C", str(tree), "update-index", "--refresh")
+                    before = source.stat()
+                    original = source.read_bytes()
+                    source.write_bytes(b"!" + original[1:])
+                    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+                else:
+                    self.git("config", "core.filemode", "false")
+                    source.chmod((source.stat().st_mode & 0o777) ^ 0o111)
+                self.assertEqual(self.git("-C", str(tree), "status", "--porcelain"), "",
+                                 "CONTROL: ordinary status conceals the owner edit")
+                index = Path(self.git("-C", str(tree), "rev-parse", "--path-format=absolute",
+                                      "--git-path", "index"))
+                watched = [source, index, witness]
+                before = self.snapshot(watched), source.stat().st_mode
+                registrations = self.git("worktree", "list", "--porcelain")
+                clean = self.shell('alab_pristine_clean "$2" "$3" "$4"',
+                                   tree, self.first, checkout)
+                reuse = self.shell('alab_pristine_at "$2" "$3"', checkout, self.first)
+                self.assertEqual((self.snapshot(watched), source.stat().st_mode), before)
+                self.assertEqual(self.git("worktree", "list", "--porcelain"), registrations)
+                self.assertEqual((clean.returncode, reuse.returncode), (1, 1),
+                                 clean.stderr + reuse.stderr)
+                self.assertIn("kept pristine tree", reuse.stderr)
+
+    def test_clean_sources_with_detection_flags_reuse_without_rewriting_the_real_index(self):
+        for kind in ("assume-unchanged", "skip-worktree", "stat-cache", "filemode"):
+            with self.subTest(kind=kind):
+                checkout, tree = self.independent_pristine("clean-" + kind)
+                if kind in ("assume-unchanged", "skip-worktree"):
+                    self.git("-C", str(tree), "update-index", "--" + kind, "source")
+                elif kind == "stat-cache":
+                    self.git("config", "core.trustctime", "false")
+                    self.git("config", "core.checkStat", "minimal")
+                else:
+                    self.git("config", "core.filemode", "false")
+                witness = self.witness(tree)
+                index = Path(self.git("-C", str(tree), "rev-parse", "--path-format=absolute",
+                                      "--git-path", "index"))
+                watched = [tree / "source", index, witness]
+                before = self.snapshot(watched)
+                clean = self.shell('alab_pristine_clean "$2" "$3" "$4"',
+                                   tree, self.first, checkout)
+                reuse = self.shell('alab_pristine_at "$2" "$3"', checkout, self.first)
+                self.assertEqual((clean.returncode, reuse.returncode), (0, 0),
+                                 clean.stderr + reuse.stderr)
+                self.assertEqual(self.snapshot(watched), before)
+
+    def test_deleted_intent_to_add_refuses_clean_and_reuse_and_preserves_the_index(self):
+        tree = self.prepare(self.first)
+        witness = self.witness(tree)
+        planned = tree / "planned"
+        planned.write_bytes(b"owner's planned source\n")
+        self.git("-C", str(tree), "add", "-N", "planned")
+        planned.unlink()
+        self.assertIn("D planned", self.git("-C", str(tree), "status", "--porcelain"))
+        index = Path(self.git("-C", str(tree), "rev-parse", "--path-format=absolute",
+                              "--git-path", "index"))
+        watched = [tree / "source", index, witness]
+        before = self.snapshot(watched)
+        registrations = self.git("worktree", "list", "--porcelain")
+        clean = self.shell('alab_pristine_clean "$2" "$3" "$1"', tree, self.first)
+        reuse = self.shell('alab_pristine_at "$1" "$2"', self.first)
+        self.assertEqual(self.snapshot(watched), before)
+        self.assertEqual(self.git("worktree", "list", "--porcelain"), registrations)
+        self.assertFalse(planned.exists())
+        self.assertIn("planned", self.git("-C", str(tree), "ls-files", "--stage", "planned"))
+        self.assertEqual((clean.returncode, reuse.returncode), (1, 1), clean.stderr + reuse.stderr)
+
+    def test_post_checkout_source_edit_refuses_fresh_tree_and_keeps_its_registration(self):
+        hooks = self.directory / "hooks"
+        hooks.mkdir()
+        hook = hooks / "post-checkout"
+        hook.write_text("#!/bin/sh\nprintf 'owner checkout-hook edit\\n' >source\n")
+        hook.chmod(0o700)
+        self.git("config", "core.hooksPath", str(hooks))
+        tree = self.path(self.first)
+        done = self.shell('alab_pristine_at "$1" "$2"', self.first)
+        self.assertTrue(tree.is_dir())
+        self.assertTrue((tree / ".git").is_file())
+        self.assertEqual((tree / "source").read_bytes(), b"owner checkout-hook edit\n")
+        self.assertIn(f"worktree {tree}\n", self.git("worktree", "list", "--porcelain") + "\n")
+        self.assertNotEqual(done.returncode, 0, done.stderr)
+
+    def test_external_filter_cannot_make_modified_pristine_source_reusable(self):
+        tree = self.prepare(self.first)
+        original = self.directory / "committed-source"
+        original.write_bytes((tree / "source").read_bytes())
+        called = self.directory / "filter-called"
+        helper = self.directory / "clean-filter"
+        helper.write_text('#!/bin/sh\nprintf ran >"$1"\ncat "$2"\n')
+        helper.chmod(0o700)
+        self.git("config", "filter.pristine-fixture.clean", " ".join(
+            shlex.quote(str(path)) for path in (helper, called, original)))
+        self.git("config", "filter.pristine-fixture.required", "true")
+        (self.repo / ".git/info/attributes").write_text("source filter=pristine-fixture\n")
+        (tree / "source").write_bytes(b"owner source concealed by the filter\n")
+        # The old pristine check used diff, which accepts the filter's substituted bytes.
+        self.git("-C", str(tree), "diff", "--quiet", "HEAD", "--")
+        self.assertTrue(called.is_file())
+        called.unlink()
+        before = self.snapshot([tree / "source"])
+        refused = self.shell('alab_pristine_at "$1" "$2"', self.first)
+        self.assertNotEqual(refused.returncode, 0, refused.stderr)
+        self.assertEqual(self.snapshot([tree / "source"]), before)
+        self.assertFalse(called.exists(), "source checking must not invoke the clean filter")
+
+    def test_system_python39_observes_hidden_source_edits(self):
+        python = Path("/usr/bin/python3")
+        if not python.is_file():
+            self.skipTest("system Python is unavailable")
+        version = subprocess.run([str(python), "-I", "-c", "import sys; print(sys.version_info[:2])"],
+                                 capture_output=True, text=True, timeout=30)
+        if version.returncode or version.stdout.strip() != "(3, 9)":
+            self.skipTest("requires system Python 3.9")
+        tree = self.prepare(self.first)
+        witness = self.witness(tree)
+        environment = {**self.environment, "ALAB_PYTHON": str(python)}
+        clean = self.shell('alab_pristine_clean "$2" "$3" "$1"', tree, self.first,
+                           environment=environment)
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        self.git("-C", str(tree), "update-index", "--assume-unchanged", "source")
+        (tree / "source").write_bytes(b"owner hidden source\n")
+        index = Path(self.git("-C", str(tree), "rev-parse", "--path-format=absolute",
+                              "--git-path", "index"))
+        watched = [tree / "source", index, witness]
+        before = self.snapshot(watched)
+        done = self.shell('alab_pristine_clean "$2" "$3" "$1"', tree, self.first,
+                          environment=environment)
+        self.assertEqual(self.snapshot(watched), before)
+        self.assertEqual(done.returncode, 1, done.stderr)
 
     def test_two_upstream_bases_advance_without_changing_any_retained_world(self):
         self.git("worktree", "add", "-q", "--detach", str(self.base), self.first)
@@ -367,7 +524,11 @@ class PristineRetentionTests(unittest.TestCase):
     @unittest.skipUnless(Path("/usr/bin/sandbox-exec").is_file(), "requires macOS sandbox-exec")
     def test_contained_exact_revision_reuse_needs_no_git_write(self):
         tree = self.prepare(self.first)
-        target = self.witness(tree).parent
+        witness = self.witness(tree)
+        target = witness.parent
+        index = Path(self.git("-C", str(tree), "rev-parse", "--path-format=absolute",
+                              "--git-path", "index"))
+        before = self.snapshot([tree / "source", index, witness])
         scratch = self.directory / "scratch"
         cargo_home = self.directory / "cargo-home"
         scratch.mkdir()
@@ -382,10 +543,12 @@ class PristineRetentionTests(unittest.TestCase):
         done = subprocess.run(
             ["/usr/bin/sandbox-exec", "-p", profile.stdout, "/bin/bash", "-c", command,
              "contained-pristine-reuse", str(ROOT), str(self.repo), self.first],
-            cwd=self.repo, env=self.environment, capture_output=True, text=True, timeout=60)
+            cwd=self.repo, env={**self.environment, "TMPDIR": str(scratch)},
+            capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout.removesuffix("\n"), str(tree))
         self.assertFalse((self.repo / ".git/not-admitted").exists())
+        self.assertEqual(self.snapshot([tree / "source", index, witness]), before)
 
     def test_same_revision_paths_are_distinct_between_checkouts(self):
         other = self.directory / "other-checkout"
@@ -436,6 +599,38 @@ class RetentionTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.repo), *args],
                               check=True, capture_output=True, text=True).stdout.strip()
+
+    def test_inherited_git_context_cannot_select_another_clones_policy(self):
+        other = self.repo / "other"
+        self.git("init", "-q", str(other))
+        marker = other / ".git" / POLICY["MARKER"]
+        for protected in (self.repo, other):
+            with self.subTest(protected=protected):
+                owned_marker = self.marker if protected == self.repo else marker
+                foreign = other if protected == self.repo else self.repo
+                owned_marker.write_text("Preserve this clone\n")
+                contexts = [
+                    {"GIT_DIR": str(foreign / ".git")},
+                    {"GIT_COMMON_DIR": str(foreign / ".git")},
+                    {"GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign)},
+                ]
+                for context in contexts:
+                    with self.subTest(context=context), mock.patch.dict(os.environ, context):
+                        self.assertFalse(POLICY["cleanup_allowed"](protected))
+                        self.assertTrue(POLICY["cleanup_allowed"](foreign))
+                self.assertEqual(owned_marker.read_text(), "Preserve this clone\n")
+                owned_marker.unlink()
+
+    def test_cli_checks_the_requested_clone_despite_inherited_git_directory(self):
+        other = self.repo / "unmarked"
+        self.git("init", "-q", str(other))
+        self.marker.write_text("Preserve requested builds\n")
+        environment = {**os.environ, "GIT_DIR": str(other / ".git")}
+        result = subprocess.run(
+            [sys.executable, "-I", str(self.repo / "alab/retention.py"), "--repo", str(self.repo)],
+            env=environment, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.marker.read_text(), "Preserve requested builds\n")
 
     def test_presence_is_shared_by_linked_worktrees_without_reading_marker_contents(self):
         self.assertTrue(POLICY["cleanup_allowed"](self.repo))

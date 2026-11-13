@@ -9,7 +9,6 @@ use codex_alab_core::quota::HeadlessExec;
 use codex_alab_core::renewal::TurnAdmission;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::ThreadId;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::error::CodexErr;
@@ -17,7 +16,12 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::turn_input::CyberAccessProgram;
+use codex_protocol::turn_input::PromptCacheTtl;
 use codex_protocol::turn_input::TurnStartOptions;
+
+#[path = "exec_prompt_cache_lifetime.rs"]
+mod cache_lifetime;
+use cache_lifetime::CacheLifetime;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -28,9 +32,13 @@ pub use tree_wire::ExecTreeSnapshot;
 
 #[path = "exec_tree_capture.rs"]
 mod tree_capture;
+pub use tree_capture::CommittedUpgradeForest;
+pub use tree_capture::DecodedUpgradeForest;
 pub use tree_capture::ExecCapturedThread;
 pub use tree_capture::ExecCapturedTree;
 pub use tree_capture::ExecPreparedTree;
+pub use tree_capture::PreparedUpgradeForest;
+pub use tree_capture::UpgradeForestSnapshot;
 
 #[path = "exec_child_suspension.rs"]
 mod child_suspension;
@@ -58,8 +66,11 @@ pub struct ExecRecoveryOptions {
     turn: String,
     review: bool,
     schema: Option<serde_json::Value>,
+    direct_only_tool_namespaces: Option<Vec<String>>,
     service_tier: Option<String>,
+    prompt_cache_ttl: Option<CacheLifetime>,
     cyber_access_program: Option<CyberAccessProgram>,
+    helper_choice: Option<crate::agent::helper_daybreak::turn::alab_exec_helper::ActiveChoice>,
     step: ExecStepSettings,
 }
 
@@ -69,11 +80,16 @@ struct ExecStepSettings {
     collaboration_mode: CollaborationMode,
     summary: ReasoningSummary,
     approval_policy: AskForApproval,
-    approvals_reviewer: ApprovalsReviewer,
     disabled_plugin_ids: Vec<String>,
 }
 
 impl ExecRecoveryOptions {
+    pub(crate) fn helper_choice(
+        &self,
+    ) -> Option<&crate::agent::helper_daybreak::turn::alab_exec_helper::ActiveChoice> {
+        self.helper_choice.as_ref()
+    }
+
     /// Capture the named regular or frozen review turn without reading mutable CLI files.
     /// The caller must still stop execution and flush its history before handoff.
     pub async fn capture(thread: &CodexThread, expected_turn: &str) -> Option<Self> {
@@ -98,12 +114,18 @@ impl ExecRecoveryOptions {
             turn: context.sub_id.clone(),
             review: crate::tasks::review_recovery::has_consumer(context),
             schema: context.final_output_json_schema.clone(),
+            direct_only_tool_namespaces: context.overridden_direct_only_tool_namespaces.clone(),
             // An absent override must clear a different default in the new
             // process, just as Core's daemon recovery capture does.
             service_tier: Some(settings.service_tier.clone().unwrap_or_else(|| {
                 codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_owned()
             })),
+            prompt_cache_ttl: context.prompt_cache_ttl.map(Into::into),
             cyber_access_program: context.cyber_access_program,
+            helper_choice:
+                crate::agent::helper_daybreak::turn::alab_exec_helper::ActiveChoice::capture(
+                    context,
+                ),
             step: ExecStepSettings {
                 collaboration_mode: settings.effective_collaboration_mode().with_updates(
                     None,
@@ -112,7 +134,6 @@ impl ExecRecoveryOptions {
                 ),
                 summary: settings.reasoning_summary,
                 approval_policy: settings.approval_policy(),
-                approvals_reviewer: settings.approvals_reviewer(),
                 disabled_plugin_ids: context.disabled_plugin_ids.clone(),
             },
         }
@@ -120,12 +141,14 @@ impl ExecRecoveryOptions {
 
     /// Core applies these through its ordinary managed-constraint validation.
     /// The snapshot restores choices; it cannot grant an exception to current policy.
+    /// Reviewer preference belongs to the restored thread settings, which retain
+    /// requested and effective reviewers separately. Replaying the effective value
+    /// here as an explicit request would overwrite the user's original preference.
     pub fn thread_settings(&self) -> ThreadSettingsOverrides {
         ThreadSettingsOverrides {
             collaboration_mode: Some(self.step.collaboration_mode.clone()),
             summary: Some(self.step.summary),
             approval_policy: Some(self.step.approval_policy),
-            approvals_reviewer: Some(self.step.approvals_reviewer),
             disabled_plugin_ids: Some(self.step.disabled_plugin_ids.clone()),
             ..Default::default()
         }
@@ -208,8 +231,16 @@ impl ExecRecoveryOptions {
         // Preserve Core's restored attribution and lineage. Only the original
         // per-turn settings missing from that reconstruction are supplied here.
         options.final_output_json_schema.clone_from(&self.schema);
+        options
+            .direct_only_tool_namespaces
+            .clone_from(&self.direct_only_tool_namespaces);
         options.service_tier.clone_from(&self.service_tier);
-        options.cyber_access_program = self.cyber_access_program;
+        options.prompt_cache_ttl = self.prompt_cache_ttl.map(Into::into);
+        options.cyber_access_program = if self.helper_choice.is_some() {
+            None
+        } else {
+            self.cyber_access_program
+        };
         Ok(options)
     }
 }
@@ -302,8 +333,11 @@ mod tests {
             turn: "original".to_owned(),
             review: false,
             schema: Some(serde_json::json!({"type": "object", "additionalProperties": false})),
+            direct_only_tool_namespaces: Some(vec!["original-tools".into()]),
             service_tier: Some("priority".to_owned()),
+            prompt_cache_ttl: Some(CacheLifetime::TwelveHours),
             cyber_access_program: Some(CyberAccessProgram::DaybreakBlue),
+            helper_choice: None,
             step: ExecStepSettings {
                 collaboration_mode: CollaborationMode {
                     mode: codex_protocol::config_types::ModeKind::Default,
@@ -315,7 +349,6 @@ mod tests {
                 },
                 summary: ReasoningSummary::Detailed,
                 approval_policy: AskForApproval::Never,
-                approvals_reviewer: ApprovalsReviewer::User,
                 disabled_plugin_ids: vec!["disabled-plugin".into()],
             },
         }
@@ -331,7 +364,7 @@ mod tests {
         );
         assert_eq!(settings.summary, Some(ReasoningSummary::Detailed));
         assert_eq!(settings.approval_policy, Some(AskForApproval::Never));
-        assert_eq!(settings.approvals_reviewer, Some(ApprovalsReviewer::User));
+        assert!(settings.approvals_reviewer.is_none());
         assert_eq!(
             settings.disabled_plugin_ids,
             Some(vec!["disabled-plugin".into()])
@@ -358,9 +391,36 @@ mod tests {
             .expect("matching metadata with live admission");
         assert_eq!(restored.final_output_json_schema, saved.schema);
         assert_eq!(restored.service_tier, saved.service_tier);
+        assert_eq!(
+            restored.direct_only_tool_namespaces,
+            saved.direct_only_tool_namespaces
+        );
+        assert!(matches!(
+            restored.prompt_cache_ttl,
+            Some(PromptCacheTtl::TwelveHours)
+        ));
         assert_eq!(restored.cyber_access_program, saved.cyber_access_program);
         assert_eq!(restored.root_turn_id.as_deref(), Some("causal-root"));
         assert_eq!(restored.turn_trigger.as_deref(), Some("exec"));
+    }
+
+    #[test]
+    fn explicit_empty_tool_namespaces_clear_replacement_turn_defaults() {
+        let mut saved = saved();
+        saved.direct_only_tool_namespaces = Some(Vec::new());
+        let restored = saved
+            .apply(
+                saved.thread,
+                &saved.turn,
+                true,
+                true,
+                TurnStartOptions {
+                    direct_only_tool_namespaces: Some(vec!["replacement-tools".into()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(restored.direct_only_tool_namespaces, Some(Vec::new()));
     }
 
     #[test]
@@ -386,3 +446,30 @@ mod tests {
 
 #[path = "exec_quota_observation.rs"]
 pub(crate) mod quota_observation;
+
+/// Process-local metadata from the real started turn, never authority to recover.
+struct StartedCacheLifetime {
+    turn: String,
+    value: Option<PromptCacheTtl>,
+}
+pub(crate) fn remember_prompt_cache_lifetime(
+    session: &super::Session,
+    context: &super::turn_context::TurnContext,
+) {
+    session
+        .services
+        .thread_extension_data
+        .insert(StartedCacheLifetime {
+            turn: context.sub_id.clone(),
+            value: context.prompt_cache_ttl,
+        });
+}
+impl CodexThread {
+    /// A fresh runtime without this observation cannot infer a lifetime from rollout.
+    pub fn recovery_prompt_cache_ttl(&self, turn: &str) -> Option<PromptCacheTtl> {
+        self.thread_extension_data()
+            .get::<StartedCacheLifetime>()
+            .filter(|saved| saved.turn == turn)
+            .and_then(|saved| saved.value)
+    }
+}

@@ -144,8 +144,8 @@ impl RuntimeAuthBinding {
         self.check_source(expected_source)?;
         let (auth, http_client_factory) = self
             .credentials
-            .auth_with_http_client_factory()
-            .await
+            .alab_auth_with_http_client_factory() // ALAB(accounts): failed credential/transport pairing is a policy error, not missing login.
+            .await.map_err(alab_auth_pair::error)?
             .ok_or(RuntimeAuthError::Unavailable)?;
         let mut recovery = self.credentials.unauthorized_recovery();
         let mut result = self
@@ -175,8 +175,8 @@ impl RuntimeAuthBinding {
             })?;
             let (auth, http_client_factory) = self
                 .credentials
-                .auth_with_http_client_factory()
-                .await
+                .alab_auth_with_http_client_factory() // ALAB(accounts): refresh retains the same typed pairing failure.
+                .await.map_err(alab_auth_pair::error)?
                 .ok_or(RuntimeAuthError::Unavailable)?;
             result = self
                 .auth_once(
@@ -412,3 +412,5 @@ impl From<RegistrationError> for RuntimeAuthError {
         }
     }
 }
+
+#[path = "../../alab-core/glue/runtime_auth_pair.rs"] mod alab_auth_pair; // ALAB(accounts): keep policy error adaptation in the owned layer.

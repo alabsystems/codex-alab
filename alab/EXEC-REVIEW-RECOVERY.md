@@ -251,7 +251,7 @@ and a rebuilt package passing the real quota probe.
 
 Source capture now freezes every review consumer before stopping tree members,
 retains the original delegate and pending output, and records the review task
-kind in recovery options. The private tree snapshot is version 2 and rejects a
+kind in recovery options. The private tree snapshot is version 3 and rejects a
 review without its consumer, delegate, matching parent, or original delegate
 turn. Suspension accepts a review only while its consumer has acknowledged the
 freeze. Ordinary review cancellation remains unchanged.
@@ -383,3 +383,12 @@ Seven existing delegate tests pass. Core all-target Tippy reports no ALab
 diagnostics (47 upstream diagnostics set aside). The receiver-drain method has
 a scoped lint expectation explaining why its asynchronous lock must span the
 read loop; the concurrent-reader test verifies that serialization boundary.
+
+
+The tree snapshot also requires the captured immutable root capability restriction.
+Root and active or idle child startup reapply a captured restriction before Core
+constructs the session and retained authorization context. A fresh host restriction
+is never removed. Version 2 and snapshots missing the restriction are rejected;
+missing data cannot silently restore a restricted root with unrestricted capabilities.
+The capability restriction does not change attribution, lineage, permission profiles
+or the requirement for fresh execution admission. Native qualification is pending.

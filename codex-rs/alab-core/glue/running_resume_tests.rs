@@ -125,7 +125,7 @@ fn create_params(home: &TempDir, history_mode: ThreadHistoryMode) -> CreateThrea
         history_mode,
         history_base: None,
         subagent_history_start_ordinal: None,
-        initial_window_id: "window-1".to_owned(),
+        initial_window_id: codex_protocol::ContextWindowId::new_uuid_v7(),
         runtime_workspace_roots: None,
         metadata: ThreadPersistenceMetadata {
             cwd: Some(home.path().to_path_buf()),

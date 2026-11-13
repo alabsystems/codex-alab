@@ -253,7 +253,7 @@ async fn committed_transfer_drains_the_live_bridge_after_parent_cancellation() {
         watch::channel(codex_protocol::protocol::AgentStatus::PendingInit);
     let io = crate::codex_delegate::forward_session_io(
         Arc::new(SessionIo {
-            tx_sub: ops,
+            tx_sub: ops.into(),
             rx_event: receive,
             agent_status,
             session_loop_termination: crate::session::completed_session_loop_termination(),

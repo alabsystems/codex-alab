@@ -190,11 +190,13 @@ async fn capability_alias_order_must_match_the_new_owner() {
         thread: session.thread_id,
         parent: None,
         source: SessionSource::Exec,
+        root_capabilities_restricted: false,
         configuration: ExecConfiguration::capture(&config, &Default::default()).unwrap(),
         settings: Settings::capture(&source).unwrap(),
         tools: Vec::new(),
         capability_roots: roots.clone(),
         ephemeral: None,
+        helper: None,
         recovery: None,
         history: HistoryEvidence::capture(&codex_thread_store::StoredThreadHistory {
             thread_id: session.thread_id,

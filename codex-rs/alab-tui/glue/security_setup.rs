@@ -12,96 +12,19 @@
 //! An unavailable native observation cannot settle anything; an unavailable filing retains
 //! upstream's banner fallback. No account identifiers are logged or sent to aterm.
 
+use crate::app_event::AppEvent;
+use crate::app_event_sender::AppEventSender;
+use crate::app_server_session::AppServerSession;
 use super::Config;
 use super::Identity;
 use super::Notice;
 use codex_alab_tui::notices::ObservedLater;
 use codex_alab_tui::notices::RoutedNotice;
+use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::GetAccountSecuritySetupResponse;
+use codex_app_server_protocol::RequestId;
 use std::time::Duration;
-
-/// Capture the native observation before app-server performs its account-owned fetch.
-/// An empty successful response may settle only that captured identity and revision.
-pub(crate) fn prefetch_using(
-    config: &Config,
-    server: &crate::app_server_session::AppServerSession,
-    tx: crate::app_event_sender::AppEventSender,
-    request_id: uuid::Uuid,
-    delivery: Delivery,
-) -> Option<tokio::task::JoinHandle<()>> {
-    if config.model_provider_id != "openai" || server.uses_remote_workspace() {
-        return None;
-    }
-    let config = config.clone();
-    let request_handle = server.request_handle();
-    Some(tokio::spawn(async move {
-        let result = tokio::time::timeout(Duration::from_secs(3), async {
-            let auth = config.auth_config().load_auth(false).await.ok().flatten()?;
-            if !matches!(auth, codex_login::CodexAuth::Chatgpt(_)) || auth.is_fedramp_account() {
-                return None;
-            }
-            let identity = Identity::from_auth(&auth)?;
-            let observed = delivery.observe(&identity).await;
-            let response: codex_app_server_protocol::GetAccountSecuritySetupResponse =
-                request_handle
-                    .request_typed(
-                        codex_app_server_protocol::ClientRequest::GetAccountSecuritySetup {
-                            request_id: codex_app_server_protocol::RequestId::String(
-                                uuid::Uuid::new_v4().to_string(),
-                            ),
-                            params: None,
-                        },
-                    )
-                    .await
-                    .ok()?;
-            let notice = match response.notice {
-                Some(fetched) => {
-                    if fetched.account_id != identity.account || fetched.user_id != identity.user {
-                        return None;
-                    }
-                    let notice = Notice {
-                        title: fetched.title,
-                        description: fetched.description,
-                        action: super::Action {
-                            label: fetched.action.label,
-                            url: fetched.action.url,
-                        },
-                    };
-                    if !notice.valid() {
-                        return None;
-                    }
-                    Some(notice)
-                }
-                None if observed.is_some()
-                    && response
-                        .alab_successful_empty
-                        .as_ref()
-                        .is_some_and(|fetched| {
-                            fetched.account_id == identity.account
-                                && fetched.user_id == identity.user
-                        }) =>
-                {
-                    None
-                }
-                None => return None,
-            };
-            let current = config.auth_config().load_auth(false).await.ok().flatten()?;
-            if Identity::from_auth(&current).as_ref() != Some(&identity) {
-                return None;
-            }
-            Some((identity, notice, observed))
-        })
-        .await
-        .ok()
-        .flatten();
-        if let Some((identity, notice, observed)) = result {
-            tx.send(crate::app_event::AppEvent::SecuritySetupLoaded {
-                request_id,
-                identity,
-                notice: Fetched::new(notice, observed, delivery),
-            });
-        }
-    }))
-}
+use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Fetched {
@@ -153,6 +76,16 @@ pub(crate) trait TestTransport: Send + Sync {
 }
 
 impl Delivery {
+    async fn begin(&self, config: &Config) -> Option<(Identity, Option<ObservedLater>)> {
+        let auth = config.auth_config().load_auth(false).await.ok().flatten()?;
+        if !matches!(auth, codex_login::CodexAuth::Chatgpt(_)) || auth.is_fedramp_account() {
+            return None;
+        }
+        let identity = Identity::from_auth(&auth)?;
+        let observed = self.observe(&identity).await;
+        Some((identity, observed))
+    }
+
     pub(super) async fn observe(&self, identity: &Identity) -> Option<ObservedLater> {
         #[cfg(test)]
         if let Some(transport) = &self.transport {
@@ -176,6 +109,89 @@ impl Delivery {
             return;
         }
         codex_alab_tui::notices::settle_observed(&observed).await;
+    }
+}
+
+pub(crate) fn prefetch_using(
+    config: &Config,
+    server: &AppServerSession,
+    tx: AppEventSender,
+    request_id: Uuid,
+    delivery: Delivery,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if config.model_provider_id != "openai" || server.uses_remote_workspace() {
+        return None;
+    }
+    let config = config.clone();
+    let request_handle = server.request_handle();
+    Some(tokio::spawn(async move {
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            let (identity, observed) = delivery.begin(&config).await?;
+            let response: GetAccountSecuritySetupResponse = request_handle
+                .request_typed(ClientRequest::GetAccountSecuritySetup {
+                    request_id: RequestId::String(Uuid::new_v4().to_string()),
+                    params: None,
+                })
+                .await
+                .ok()?;
+            let notice = notice_from_response(&identity, response, observed.is_some())?;
+            if notice.as_ref().is_some_and(|notice| !notice.valid()) {
+                return None;
+            }
+            let current = config
+                .auth_config()
+                .load_auth(/*enable_codex_api_key_env*/ false)
+                .await
+                .ok()
+                .flatten()?;
+            if Identity::from_auth(&current).as_ref() != Some(&identity) {
+                tracing::debug!("security setup identity changed during fetch");
+                return None;
+            }
+            Some((identity, notice, observed))
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some((identity, notice, observed)) = result {
+            tracing::debug!("security setup response ready");
+            tx.send(AppEvent::SecuritySetupLoaded {
+                request_id,
+                identity,
+                notice: Fetched::new(notice, observed, delivery),
+            });
+        }
+    }))
+}
+
+/// An absent payload is authoritative only with a matching successful-read receipt.
+/// Old servers can still return a real notice; an unavailable read cannot clear one.
+fn notice_from_response(
+    identity: &Identity,
+    response: GetAccountSecuritySetupResponse,
+    observed: bool,
+) -> Option<Option<Notice>> {
+    match response.notice {
+        Some(notice)
+            if notice.account_id == identity.account && notice.user_id == identity.user =>
+        {
+            Some(Some(Notice {
+                title: notice.title,
+                description: notice.description,
+                action: super::Action {
+                    label: notice.action.label,
+                    url: notice.action.url,
+                },
+            }))
+        }
+        Some(_) => None,
+        None if observed => response
+            .alab_successful_empty
+            .filter(|verified| {
+                verified.account_id == identity.account && verified.user_id == identity.user
+            })
+            .map(|_| None),
+        None => None,
     }
 }
 
@@ -253,5 +269,57 @@ mod tests {
         assert_eq!(routed.url, "https://chatgpt.com/cyber?from=cli#%C3%A9");
         assert_ne!(routed.url, notice.action.url);
         assert!(codex_alab_tui::notices::later(&routed).line().is_ok());
+    }
+    #[test]
+    fn only_matching_verified_absence_can_settle_an_existing_reminder() {
+        let identity = Identity {
+            account: "account-a".into(),
+            user: "user-a".into(),
+        };
+        let matching = serde_json::json!({"accountId":"account-a","userId":"user-a"});
+        let other = serde_json::json!({"accountId":"account-b","userId":"user-a"});
+        for (receipt, observed, expected) in [
+            (None, true, None),
+            (Some(matching.clone()), false, None),
+            (Some(matching), true, Some(false)),
+            (Some(other), true, None),
+        ] {
+            let mut wire = serde_json::json!({"notice":null});
+            if let Some(receipt) = receipt {
+                wire["alabSuccessfulEmpty"] = receipt;
+            }
+            let response: GetAccountSecuritySetupResponse = serde_json::from_value(wire).unwrap();
+            assert_eq!(
+                notice_from_response(&identity, response, observed).map(|notice| notice.is_some()),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_reminder_requires_its_own_identity_even_with_a_receipt() {
+        let identity = Identity {
+            account: "account-a".into(),
+            user: "user-a".into(),
+        };
+        for (account, receipt, expected) in [
+            ("account-a", false, Some(true)),
+            ("account-b", false, None),
+            ("account-b", true, None),
+        ] {
+            let mut wire = serde_json::json!({"notice":{
+                "accountId":account,"userId":"user-a","title":"Secure account",
+                "description":"Account settings", "action":{"label":"Open", "url":"https://chatgpt.com/security"}
+            }});
+            if receipt {
+                wire["alabSuccessfulEmpty"] =
+                    serde_json::json!({"accountId":"account-a","userId":"user-a"});
+            }
+            let response: GetAccountSecuritySetupResponse = serde_json::from_value(wire).unwrap();
+            assert_eq!(
+                notice_from_response(&identity, response, false).map(|notice| notice.is_some()),
+                expected
+            );
+        }
     }
 }

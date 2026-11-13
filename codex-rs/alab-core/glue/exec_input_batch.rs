@@ -190,7 +190,7 @@ pub(super) async fn capture(
     ))
 }
 
-/// Private snapshot of several suspended threads. The first frame is the root.
+/// Private queue data. The consumer explicitly binds an active or idle root.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecInputBatch {
@@ -252,8 +252,100 @@ impl ExecInputBatch {
         Ok(batch)
     }
 
+    /// Capture an idle root only after each supplied native session loop has
+    /// completed. The caller also joins the shared runtime's producer shutdown.
+    pub async fn capture_idle_root(
+        root: ThreadId,
+        active: &[(&crate::CodexThread, &str)],
+        idle: &[&crate::CodexThread],
+    ) -> Result<Self, String> {
+        if idle
+            .first()
+            .is_none_or(|thread| thread.exec_thread_id() != root)
+        {
+            return Err("idle input capture requires its root first".into());
+        }
+        for thread in active
+            .iter()
+            .map(|(thread, _)| *thread)
+            .chain(idle.iter().copied())
+        {
+            if futures::FutureExt::now_or_never(thread.io.session_loop_termination.clone())
+                .is_none()
+            {
+                return Err("idle-root input capture requires completed native shutdown".into());
+            }
+        }
+        let batch = Self::capture_with_idle(active, idle).await?;
+        batch.validate_idle(root)?;
+        Ok(batch)
+    }
+
+    pub(crate) async fn capture_idle_forest(
+        roots: &[ThreadId],
+        members: &[&crate::CodexThread],
+    ) -> Result<Self, String> {
+        for member in members {
+            if futures::FutureExt::now_or_never(member.io.session_loop_termination.clone())
+                .is_none()
+            {
+                return Err("forest input capture requires completed native shutdown".into());
+            }
+        }
+        let batch = Self::capture_with_idle(&[], members).await?;
+        let ids = members
+            .iter()
+            .map(|member| member.exec_thread_id())
+            .collect::<Vec<_>>();
+        batch.clone().prepare_idle_forest(roots, &ids)?;
+        Ok(batch)
+    }
+
+    pub(crate) fn select_idle_tree(&self, ids: &[ThreadId]) -> Result<Self, String> {
+        if !self.frames.is_empty() {
+            return Err("idle forest contains active input frames".into());
+        }
+        let mut frames = Vec::new();
+        let mut selected = Vec::new();
+        for id in ids {
+            let index = self
+                .idle
+                .iter()
+                .position(|frame| frame.thread == *id)
+                .ok_or("forest lost a member input frame")?;
+            frames.push(self.idle[index].clone());
+            selected.push(index);
+        }
+        Ok(Self {
+            version: self.version,
+            frames: Vec::new(),
+            idle: frames,
+            input: self.input.select_groups(&selected)?,
+        })
+    }
+
+    pub(crate) fn prepare_idle_forest(
+        self,
+        roots: &[ThreadId],
+        ids: &[ThreadId],
+    ) -> Result<PreparedExecInputBatch, String> {
+        self.check_frames()?;
+        self.validate_members(&[], ids)?;
+        let owners = self
+            .idle
+            .iter()
+            .filter(|frame| frame.controller_routes.is_some())
+            .map(|frame| frame.thread)
+            .collect::<HashSet<_>>();
+        let expected = roots.iter().copied().collect::<HashSet<_>>();
+        if expected.is_empty() || expected.len() != roots.len() || owners != expected {
+            return Err("forest input controller owners differ from its roots".into());
+        }
+        self.prepare_groups()
+    }
+
     fn check_frames(&self) -> Result<(), String> {
-        if self.version != 2 || self.frames.is_empty() {
+        if self.version != 2 || (self.frames.is_empty() && self.idle.is_empty()) {
             return Err("input batch has no supported root frame".into());
         }
         let mut threads = HashSet::new();
@@ -308,9 +400,48 @@ impl ExecInputBatch {
     /// This neither enqueues input nor authorizes execution in any thread.
     pub fn prepare(self, root: ThreadId, turn: &str) -> Result<PreparedExecInputBatch, String> {
         self.check_frames()?;
-        if self.frames[0].thread != root || self.frames[0].turn != turn {
+        if self
+            .frames
+            .first()
+            .is_none_or(|frame| frame.thread != root || frame.turn != turn)
+            || self
+                .idle
+                .iter()
+                .any(|frame| frame.controller_routes.is_some())
+        {
             return Err("input batch belongs to another root or turn".into());
         }
+        self.prepare_groups()
+    }
+
+    /// Decode a tree with an idle root without inventing a suspended root turn.
+    /// This is retained data; native ownership and fresh admission remain separate.
+    pub fn prepare_idle(self, root: ThreadId) -> Result<PreparedExecInputBatch, String> {
+        self.check_frames()?;
+        if self
+            .idle
+            .first()
+            .is_none_or(|frame| frame.thread != root || frame.controller_routes.is_none())
+            || self
+                .idle
+                .iter()
+                .skip(1)
+                .any(|frame| frame.controller_routes.is_some())
+            || self
+                .frames
+                .iter()
+                .any(|frame| !frame.controller_routes.is_empty())
+        {
+            return Err("input batch does not have one idle root controller".into());
+        }
+        self.prepare_groups()
+    }
+
+    pub fn validate_idle(&self, root: ThreadId) -> Result<(), String> {
+        self.clone().prepare_idle(root).map(|_| ())
+    }
+
+    fn prepare_groups(self) -> Result<PreparedExecInputBatch, String> {
         let groups = self.input.restore_groups()?;
         if groups.len() != self.frames.len() + self.idle.len() {
             return Err("input batch frame and group counts differ".into());
@@ -333,6 +464,25 @@ impl ExecInputBatch {
 }
 
 impl PreparedExecInputBatch {
+    pub(crate) fn take_idle_tree(&mut self, ids: &[ThreadId]) -> Result<Self, String> {
+        let unique = ids.iter().copied().collect::<HashSet<_>>();
+        if unique.len() != ids.len() || ids.iter().any(|id| !self.idle.contains_key(id)) {
+            return Err("forest input members were already taken or repeated".into());
+        }
+        let mut idle = HashMap::new();
+        for id in ids {
+            let input = self
+                .idle
+                .remove(id)
+                .ok_or("forest input frame disappeared")?;
+            idle.insert(*id, input);
+        }
+        Ok(Self {
+            entries: HashMap::new(),
+            idle,
+        })
+    }
+
     fn take(&mut self, thread: ThreadId, turn: &str) -> Result<Prepared, String> {
         let (expected, _) = self
             .entries
@@ -501,6 +651,7 @@ mod tests {
         .unwrap();
         batch.idle.push(idle::IdleMetadata {
             thread: idle,
+            controller_routes: None,
             mailbox_options: vec![
                 TurnStartOptions {
                     parent_turn_id: Some("original-parent".into()),
@@ -596,6 +747,7 @@ mod tests {
         let idle = ThreadId::new();
         batch.idle.push(idle::IdleMetadata {
             thread: idle,
+            controller_routes: None,
             mailbox_options: Vec::new(),
         });
         let mut groups = batch.input.restore_groups().unwrap();
@@ -609,5 +761,130 @@ mod tests {
         assert!(idle_input.is_empty());
         assert_eq!(idle_input.thread(), idle);
         assert_eq!(prepared.len(), 2);
+    }
+
+    fn idle_root_fixture() -> (ExecInputBatch, ThreadId, ThreadId) {
+        let root = ThreadId::new();
+        let child = ThreadId::new();
+        let mail = TurnInput::InterAgentCommunication(crate::PendingAgentMessage::new(
+            InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::root(),
+                Vec::new(),
+                "shared idle publication".into(),
+                false,
+            ),
+            Some(MessageDelivery::publish(root, &[])),
+        ));
+        let root_group = vec![mail.clone(), mail.clone()];
+        let child_group = vec![mail];
+        (
+            ExecInputBatch {
+                version: 2,
+                frames: Vec::new(),
+                idle: vec![
+                    idle::IdleMetadata {
+                        thread: root,
+                        mailbox_options: vec![TurnStartOptions::default().into()],
+                        controller_routes: Some(vec![ControllerRoute {
+                            thread: child,
+                            receive_id: Some("original-receive".into()),
+                        }]),
+                    },
+                    idle::IdleMetadata {
+                        thread: child,
+                        mailbox_options: vec![TurnStartOptions::default().into()],
+                        controller_routes: None,
+                    },
+                ],
+                input: ExecPendingInputs::capture_groups(&[&root_group, &child_group]).unwrap(),
+            },
+            root,
+            child,
+        )
+    }
+
+    #[test]
+    fn idle_root_batch_round_trips_without_a_fabricated_active_turn() {
+        let (batch, root, child) = idle_root_fixture();
+        assert!(batch.clone().prepare(root, "invented-turn").is_err());
+        let encoded = serde_json::to_vec(&batch).unwrap();
+        let decoded: ExecInputBatch = serde_json::from_slice(&encoded).unwrap();
+        let mut prepared = decoded.prepare_idle(root).unwrap();
+        assert!(prepared.take(root, "invented-turn").is_err());
+        let root_input = prepared.take_idle(root).unwrap();
+        let child_input = prepared.take_idle(child).unwrap();
+        assert_eq!(root_input.len(), 2);
+        assert_eq!(child_input.len(), 1);
+        assert!(prepared.is_empty());
+        assert!(prepared.take_idle(root).is_err());
+        root_input.mailbox[0]
+            .0
+            .delivery
+            .as_ref()
+            .unwrap()
+            .consumed(root);
+        let publication = child_input.mailbox[0]
+            .0
+            .delivery
+            .as_ref()
+            .unwrap()
+            .capture_exec()
+            .unwrap()
+            .1;
+        assert_eq!(publication, ExecPublication::Consumed);
+    }
+
+    #[test]
+    fn idle_root_batch_rejects_wrong_controller_owner_membership_and_boundaries() {
+        let (batch, root, child) = idle_root_fixture();
+        assert!(batch.validate_idle(child).is_err());
+        let mut missing = batch.clone();
+        missing.idle[0].controller_routes = None;
+        assert!(missing.validate_idle(root).is_err());
+        let mut duplicate_owner = batch.clone();
+        duplicate_owner.idle[1].controller_routes = Some(Vec::new());
+        assert!(duplicate_owner.validate_idle(root).is_err());
+        let mut duplicate_member = batch.clone();
+        duplicate_member.idle[1].thread = root;
+        assert!(duplicate_member.validate_idle(root).is_err());
+        let mut truncated = batch;
+        truncated.idle[0]
+            .controller_routes
+            .as_mut()
+            .unwrap()
+            .push(ControllerRoute {
+                thread: child,
+                receive_id: None,
+            });
+        assert!(truncated.validate_idle(root).is_err());
+    }
+    #[test]
+    fn forest_decode_preserves_publication_identity_across_root_partitions() {
+        let (mut batch, first, second) = idle_root_fixture();
+        batch.idle[1].controller_routes = Some(Vec::new());
+        let bytes = serde_json::to_vec(&batch).unwrap();
+        let batch: ExecInputBatch = serde_json::from_slice(&bytes).unwrap();
+        let mut inputs = batch
+            .prepare_idle_forest(&[first, second], &[first, second])
+            .unwrap();
+        let mut a = inputs.take_idle_tree(&[first]).unwrap();
+        let mut b = inputs.take_idle_tree(&[second]).unwrap();
+        assert!(inputs.is_empty());
+        assert!(inputs.take_idle_tree(&[first]).is_err());
+        let a = a.take_idle(first).unwrap();
+        let b = b.take_idle(second).unwrap();
+        a.mailbox[0].0.delivery.as_ref().unwrap().consumed(first);
+        assert!(matches!(
+            b.mailbox[0]
+                .0
+                .delivery
+                .as_ref()
+                .unwrap()
+                .capture_exec()
+                .unwrap()
+                .1,
+            ExecPublication::Consumed
+        ));
     }
 }

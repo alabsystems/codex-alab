@@ -7,6 +7,7 @@ use tokio::sync::OwnedRwLockReadGuard;
 
 #[derive(Debug)]
 pub(crate) struct Submission {
+    pub alab_upgrade: Vec<codex_alab_core::upgrade_barrier::Admission>, // ALAB(upgrade): retain admission through queueing, forwarding and dispatch.
     pub id: String,
     pub op: Op,
     /// Accepted with settings, never separately from the request that supplied them.

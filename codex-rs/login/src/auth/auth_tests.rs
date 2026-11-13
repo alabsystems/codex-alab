@@ -1480,7 +1480,7 @@ async fn provider_credentials_follow_the_primary_network_policy() {
     let policy = controller.policy();
     let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
         .with_network_policy(policy.clone());
-    let primary = super::alab_manager_catalog::fixture::configured( // ALAB(manager-catalog): configure the transport before publishing its weak catalog handle.
+    let primary = super::alab_manager_catalog::fixture::configured( // ALAB(manager-catalog): configure policy before publishing the weak catalog handle.
         move |manager| manager.auth_route_config = AuthRouteConfig::from_http_client_factory(factory),
         || AuthManager::from_auth_for_testing(CodexAuth::from_api_key("login-key")),
     );
@@ -1497,11 +1497,14 @@ async fn provider_credentials_follow_the_primary_network_policy() {
     let allowed = "https://allowed.example/".parse().unwrap();
     let blocked = "https://blocked.example/".parse().unwrap();
     let permit = transport.network_policy().acquire(&allowed).unwrap();
+    let probe = super::alab_manager_catalog::fixture::ProviderPolicyProbe::new(policy, &allowed); // ALAB(manager-catalog): observe application policy independently of credential epochs.
     assert_eq!(
         provider.auth().await.unwrap().api_key(),
         Some("provider-key"),
     );
     permit.check().unwrap();
+    let (_, transport) = provider.auth_with_http_client_factory().await.unwrap(); // ALAB(manager-catalog): credential revocation applies to the paired transport.
+    let permit = transport.network_policy().acquire(&allowed).unwrap();
     let first_owner = provider.auth_owner();
 
     provider.refresh_token().await.unwrap();
@@ -1510,11 +1513,13 @@ async fn provider_credentials_follow_the_primary_network_policy() {
         Some("rotated-provider-key"),
     );
     assert!(!first_owner.is_current());
+    let (transport, permit) = probe.renew(&provider, &transport, &permit, &allowed, &blocked); // ALAB(manager-catalog): retain stale-source refusal across credential publication.
     permit.check().unwrap();
     assert!(transport.network_policy().acquire(&allowed).is_ok());
     assert!(transport.network_policy().acquire(&blocked).is_err());
 
     primary.set_cached_auth(Some(CodexAuth::from_api_key("another-login-key")));
+    probe.assert_revoked(); // ALAB(manager-catalog): primary replacement still retires the application policy.
     assert!(permit.check().is_err());
     assert!(transport.network_policy().acquire(&allowed).is_err());
 }

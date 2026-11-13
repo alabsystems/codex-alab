@@ -219,8 +219,60 @@ reinterpret a refresh request or transfer its ownership authority.
 
 ## Recovery order
 
-On quota exhaustion, attempt an eligible earned reset under the existing
-inclusive twelve-hour policy, then choose another eligible account if needed.
+On quota exhaustion, attempt an eligible earned reset first, then choose another
+eligible account if needed. Any ordinary wall whose reset is still ahead is
+eligible: the twelve-hour refusal was removed on 2026-11-06 (`76eacbc29b`), and
+only the preflight keeps a five-minute headroom.
+
+The second step needs the walled turn to end, because both the Autopilot's
+`follow_renewal` and aterm's rotation act on an ended usage wall. An
+interactive root turn therefore ends on its original usage error when all of
+these hold: the fresh usage read shows a wall the host would leave (below), no
+earned credit can be redeemed (a credit list read as empty, or two polls in a
+row whose list could not be read or whose credit was refused), no redemption
+is in custody, and a host that can rotate accounts is acting for that turn and
+shows another account to move to (`codex_alab_core::quota::WallHandoff` in the
+turn's store, installed by the Autopilot and answered from the same policy
+gate rotation later needs, and from the host's `codex-accounts` snapshot: two
+rows a session could move to, or one besides the row the host names as the
+session's own).
+
+A wall the host would leave is one of two, and the host is told which
+(`codex_alab_core::quota::SpentWall`):
+
+- The weekly window spent with its reset ahead.
+- The five-hour window spent on a week that reads as usable, with its reset
+  further away than the bound the host advertises plus one minute, measured
+  when the host's policy has been read (the wall carries the moment it
+  resets, not a time left). The host
+  advertises the bound as `codex_rotation_five_hour=<seconds>` in its
+  `harness policy` reply; a host without the word leaves no five-hour wall.
+  `limit_wait` must be on, and the 429 itself must name that window's reset
+  to within a minute, because everything after the ended turn runs on the
+  429's reset. The installed aterm measured on 2026-11-12 (0.198.0) does not
+  print the word, so under it only a spent week is left.
+
+In every other case the original request stays and checks for a credit every
+30 seconds until the provider's reset: no such host, a standby, a thread that
+is not the primary one, a pool with no other able account (one enrolled
+account included), a host that does not show its pool, a five-hour wall the
+host would not leave, a usage outage, or an uncertain or propagating
+redemption. Exec keeps its request across the wall and never consults the
+handoff. The pool evidence is the host's cached record;
+`alab/continuous-earned-resets.md` lists the refusals it cannot show.
+
+Once the turn has ended, the host is asked for the handoff only until the
+wall's own reset plus the reset grace, counted in real time across host sleep,
+unless a receipt is already bound. After that the session resumes on the
+account it is on, as it does when the host answers `not-needed`. The reset is
+the one the 429 named: for a spent week whose 429 named an earlier one, that
+resume meets the wall again and a handoff is asked for again. An unbound
+intent carries its wall's reset in the record, so the limit holds in the
+process after a restart too. A wall whose 429 named no reset has no such
+limit, and neither has an intent that was bound before a restart and retired
+after it (`alab/continuous-earned-resets.md`, "The wall of an asked handoff is
+carried across a restart").
+
 Preserve the original request and completed tool results through the existing
 handoff protocol. Do not replay a completed side effect. A fresh authenticated
 allowance observation precedes retry. An exhausted pool waits on the earliest

@@ -1,0 +1,191 @@
+{
+  "schema": 1,
+  "base": "6d53bcd128fa952709c75cbdbbccfcf9f89cfb14",
+  "target": "c875667eb837663697d5ffa32d375043434e73b4",
+  "frontier": "39b42aaacdbb55b86528b4294443696985c348ee",
+  "commits": [
+    {
+      "sha": "d15bf1deb77e0b43dd73ee7dbf7fd6487e6c5837",
+      "subject": "Fragment large Responses WebSocket messages into bounded frames (#60522)",
+      "paths": [
+        "MODULE.bazel.lock",
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml",
+        "codex-rs/codex-api/src/endpoint/responses_websocket.rs"
+      ],
+      "classes": [
+        "fix",
+        "packaging"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Bound Responses text frames to 1 MiB with awaited backpressure while retaining a single text message and continuation opcodes. Boundary and split-UTF8 regression inspected. Accept the accompanying pinned WebSocket forks; retain ALab removal of Bazel inputs. Native dependency resolution and transport tests still required.",
+      "evidence": [
+        "Primary source inspection: git show d15bf1deb77e0b43dd73ee7dbf7fd6487e6c5837",
+        "alab/upstream/c875667eb8-resolution.md"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "b514f638aa67840c4836a8dfeb1404675159fa8a",
+      "subject": "Add policy-checked TCP upstream tunneling for SOCKS (#60523)",
+      "paths": [
+        "MODULE.bazel.lock",
+        "codex-rs/Cargo.lock",
+        "codex-rs/linux-sandbox/Cargo.toml",
+        "codex-rs/linux-sandbox/src/lib.rs",
+        "codex-rs/linux-sandbox/src/linux_run_main.rs",
+        "codex-rs/linux-sandbox/src/managed_tcp.rs",
+        "codex-rs/linux-sandbox/src/managed_tcp_dns.rs",
+        "codex-rs/linux-sandbox/src/managed_tcp_relay_tests.rs",
+        "codex-rs/linux-sandbox/src/managed_tcp_tests.rs",
+        "codex-rs/linux-sandbox/src/proxy_routing.rs",
+        "codex-rs/linux-sandbox/src/proxy_routing_tests.rs",
+        "codex-rs/network-proxy/src/connect_policy.rs",
+        "codex-rs/network-proxy/src/domain_matcher.rs",
+        "codex-rs/network-proxy/src/http_proxy.rs",
+        "codex-rs/network-proxy/src/lib.rs",
+        "codex-rs/network-proxy/src/mitm.rs",
+        "codex-rs/network-proxy/src/mitm_forwarding_tests.rs",
+        "codex-rs/network-proxy/src/network_policy.rs",
+        "codex-rs/network-proxy/src/policy.rs",
+        "codex-rs/network-proxy/src/runtime.rs",
+        "codex-rs/network-proxy/src/socks5.rs",
+        "codex-rs/network-proxy/src/tcp_upstream.rs",
+        "codex-rs/network-proxy/src/tcp_upstream_tests.rs"
+      ],
+      "classes": [
+        "security",
+        "feature"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Primary admission, direct-dial, HTTP/MITM and SOCKS paths inspected: destination-scoped approval does not transfer to another port or hostname; explicit IP deny survives approval and mapped/numeric aliases; remote DNS requires policy independent of resolved IP. Executor supplies the mandatory next hop, with no direct fallback after tunnel refusal. Linux relay preserves original names, rejects unassigned synthetic addresses, bounds name and worker capacity, and validates managed ports before bridge creation. Source review is not platform qualification: network-proxy native tests and Linux sandbox tests remain required.",
+      "evidence": [
+        "Primary source inspection: git show b514f638aa67840c4836a8dfeb1404675159fa8a",
+        "alab/upstream/c875667eb8-resolution.md"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "ab541fb9908198d95e9420668bb03f94dfe6324e",
+      "subject": "Encapsulate thread metadata construction (#60524)",
+      "paths": [
+        "codex-rs/app-server/src/request_processors/thread_processor_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/memory_reset.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_list.rs",
+        "codex-rs/cli/src/doctor/thread_inventory.rs",
+        "codex-rs/core/tests/suite/realtime_conversation.rs",
+        "codex-rs/core/tests/suite/rollout_list_find.rs",
+        "codex-rs/memories/write/src/startup_tests.rs",
+        "codex-rs/rollout/src/metadata.rs",
+        "codex-rs/rollout/src/recorder_tests.rs",
+        "codex-rs/rollout/src/state_db.rs",
+        "codex-rs/rollout/src/tests.rs",
+        "codex-rs/state/src/model/mod.rs",
+        "codex-rs/state/src/model/thread_metadata.rs",
+        "codex-rs/state/src/model/thread_metadata_builder.rs",
+        "codex-rs/state/src/runtime/threads.rs",
+        "codex-rs/thread-store/src/local/archive_thread.rs",
+        "codex-rs/thread-store/src/local/list_threads.rs",
+        "codex-rs/thread-store/src/local/live_writer.rs",
+        "codex-rs/thread-store/src/local/mod.rs",
+        "codex-rs/thread-store/src/local/read_thread.rs",
+        "codex-rs/thread-store/src/local/rollout_lineage_tests.rs",
+        "codex-rs/thread-store/src/local/thread_history/read_tests.rs",
+        "codex-rs/thread-store/src/local/thread_history_materialization_tests.rs",
+        "codex-rs/thread-store/src/local/unarchive_thread.rs",
+        "codex-rs/thread-store/src/local/update_thread_metadata.rs",
+        "codex-rs/tui/src/named_session_lookup_tests.rs",
+        "codex-rs/tui/src/session_archive_commands_tests.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Move creation inputs into private builder fields and setters. Build mutable canonical metadata before incremental application; existing DB fields win except seed rollout path, with explicit update-time override retained. Creator/account/history/source fields remain in the builder. No owned ALab ThreadMetadataBuilder references found. Compile and state/rollout coverage remain required.",
+      "evidence": [
+        "Primary source inspection: git show ab541fb9908198d95e9420668bb03f94dfe6324e",
+        "alab/upstream/c875667eb8-resolution.md"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "86a5522deddc5e52333a35e6191e4503ed95e5a0",
+      "subject": "Preserve first-party catalog display order in app-server model lists (#60525)",
+      "paths": [
+        "codex-rs/app-server/src/model_catalog.rs",
+        "codex-rs/app-server/tests/suite/v2/model_list.rs"
+      ],
+      "classes": [
+        "fix",
+        "model"
+      ],
+      "features": [
+        "model-discovery"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve provider display order only for first-party OpenAI catalogs whose entries all originate from the provider; bundled/configured/third-party ordering remains priority based. Manager still filters availability and chooses the default by priority before sorting. Inspected integration regression deliberately separates display order from selection default. Does not itself establish catalog refresh or new-model readiness.",
+      "evidence": [
+        "Primary source inspection: git show 86a5522deddc5e52333a35e6191e4503ed95e5a0",
+        "alab/upstream/c875667eb8-resolution.md"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "b6d93b4cbadd6f449395d326f72465a5823f1492",
+      "subject": "Disable Daybreak when the selected model lacks access (#60526)",
+      "paths": [
+        "codex-rs/tui/src/app/daybreak.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__session_lifecycle_requests__daybreak_model_switch_warning.snap",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget/model_popup_state.rs",
+        "codex-rs/tui/src/chatwidget/settings.rs"
+      ],
+      "classes": [
+        "fix",
+        "model"
+      ],
+      "features": [
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Disable Daybreak for new turns only after explicit model access metadata excludes it, and only after thread persistence succeeds. Queued events recheck the active thread/current model; unknown or stale discovery does not imply exclusion. Retain ALab captured per-turn CyberAccessProgram for recovery of already-started turns. Inspected account-refresh/model-switch/persistence regression; TUI and ALab recovery execution on this revision still pending.",
+      "evidence": [
+        "Primary source inspection: git show b6d93b4cbadd6f449395d326f72465a5823f1492",
+        "alab/upstream/c875667eb8-resolution.md"
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "c875667eb837663697d5ffa32d375043434e73b4",
+      "subject": "Reuse installed Git objects when upgrading marketplaces (#60528)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/marketplace_upgrade.rs",
+        "codex-rs/core-plugins/src/marketplace_upgrade.rs",
+        "codex-rs/core-plugins/src/marketplace_upgrade/activation.rs",
+        "codex-rs/core-plugins/src/marketplace_upgrade/git.rs",
+        "codex-rs/core-plugins/src/marketplace_upgrade_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "feature"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Reuse objects only from a standalone non-symlink installed Git store with matching source/sparse metadata and validated recorded SHA. Restrict alternate negotiation to the installed revision, dissociate before activation, and fall back to a fresh plain clone if reference cloning fails or Git version is unsupported. Preserve validated-source selection and root validation. Inspected packet-trace regression excluding private refs and checking fsck/no alternates; execution remains pending.",
+      "evidence": [
+        "Primary source inspection: git show c875667eb837663697d5ffa32d375043434e73b4",
+        "alab/upstream/c875667eb8-resolution.md"
+      ],
+      "revisit": ""
+    }
+  ],
+  "superseded_by": "alab/upstream/c875667eb8-from-b79d2d3c59-intake.json",
+  "supersession_reason": "Historical partial assessment reconciled into the complete immutable 409-commit review from b79d2d3c59; retain this observation, but use the replacement for admission of the unlanded range."
+}

@@ -11,6 +11,9 @@ mod alab_resume_defaults_tests; // ALAB(defaults): exercise remote preflight sep
 use super::*;
 use codex_config::ConfigLayerSource;
 
+#[path = "../../../alab-tui/glue/reasoning_defaults.rs"]
+mod alab_reasoning_defaults; // ALAB(defaults): conversation-only Ultra keeps an existing same-model default.
+
 async fn build_config_on_runtime_worker(
     builder: ConfigBuilder,
     application_network_policy: codex_http_client::NetworkPolicy,
@@ -1117,7 +1120,7 @@ impl App {
         model: &str,
         effort: ReasoningEffortConfig,
     ) -> Option<ReasoningEffortConfig> {
-        let default_effort = self.default_reasoning_effort_for_conversation_model(model);
+        let default_effort = self.alab_conversation_default_effort(model); // ALAB(defaults): retain the configured same-model Ultra default.
         if let Some(default_effort) = default_effort.as_ref() {
             self.config.model = Some(model.to_string());
             self.config.model_reasoning_effort = Some(default_effort.clone());

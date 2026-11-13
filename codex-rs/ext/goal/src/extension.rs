@@ -158,6 +158,7 @@ where
                 )
             });
             runtime.set_enabled(enabled);
+            runtime.alab_bind_startup_hold(input.thread_store.get::<codex_alab_core::upgrade_startup_hold::Fence>()); // ALAB(upgrade): bind the actual native startup hold before publishing the runtime.
             self.goal_service.register_runtime(&runtime);
         })
     }
@@ -588,9 +589,9 @@ where
                 self.metrics.clone(),
             ),
             GoalToolExecutor::create(
-                runtime.thread_id(),
+                &runtime,
+                self.thread_manager.clone(),
                 Arc::clone(&self.state_dbs),
-                runtime.accounting_state(),
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),

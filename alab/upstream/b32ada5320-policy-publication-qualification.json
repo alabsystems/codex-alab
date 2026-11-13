@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "kind": "focused-qualification-observations",
+  "observed_at": "2026-11-10T14:40:06.810639+00:00",
+  "upstream": "b32ada5320b043bde03a10edab6b88fc126812b4",
+  "source": "5113042743cf222fb80e5c9928b598a261609ced",
+  "outer_process_terminal": true,
+  "outer_exit_code": 0,
+  "log": "${HOME}/.ubd/codex-alignment-b32-policy-publication-r2-native.log",
+  "log_sha256": "1059e85d12f41a1a97c52d982df42a420560ee69d84cdfa389bd20aefa80e426",
+  "controller": "${HOME}/.ubd/codex-alignment-b32-policy-publication-r2-native.sh",
+  "controller_sha256": "8ac919773dbfbefc9381d1b844acae7c78a7352c1986b4795680c28367add036",
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "package": "codex-login",
+  "target": "lib",
+  "suite_results": [
+    {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 318
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 322
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 322
+    },
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 322
+    }
+  ],
+  "tests": [
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::api_header_and_workload_payload_snapshots_capture_actual_manager_epoch",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::current_cache_read_requires_publication_after_policy_retirement",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::native_constructor_presence_cannot_export_an_unresolved_legacy_snapshot",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::a_captured_credential_cannot_be_relabelled_by_another_managers_cache",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_epoch_snapshot::tests::snapshot_keeps_its_epoch_through_refresh_but_cannot_adopt_a_new_source_factory",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_native_member::tests::native_cache_capture_retains_cache_reader_and_rejects_missing_or_foreign_ready_members",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_native_member::tests::native_unrelated_completion_never_recaptures_a_foreign_ready_member",
+      "outcome": "ok"
+    },
+    {
+      "name": "auth::manager::alab_native_member::tests::native_exact_ready_rebind_revalidates_manager_before_publication",
+      "outcome": "ok"
+    }
+  ],
+  "launcher_correction": "The preceding same-source controller had all eight raw tests pass but exited 1 because it requested five suites from a single binary. This r2 controller requests one suite per selection and completed all four owned-helper checks. No previous failed controller is relabeled successful.",
+  "limits": "Eight tests passed with no failures, ignored tests or reported skips. The new real-manager local policy control proves cache reads cannot rebind a published credential after policy retirement, explicit publication may capture current restrictions, retained values stay revoked and a foreign manager cannot adopt them. Three additional protocol/bridge-fixture membership selections preserve exact ready-member/cache guards and publication revalidation, including internal child cases. This does not fix the backend typed-error mismatch, qualify repository sandbox integration, prove native compiled-image lifetime or provide a full gate. The read-time recapture experiment was removed; auth_native_source.rs matches the earlier a4cc18a641 production implementation."
+}

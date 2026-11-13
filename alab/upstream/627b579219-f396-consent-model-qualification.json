@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T18:20:58.645970+00:00",
+  "source": "f39624f6e0f6c6449c16e3610126e7624b69f5cf",
+  "upstream": "627b579219d492b5445d6d433d3110eb53e507dc",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "chatwidget::tests::status_and_layout::daybreak_refusal_offers_enable_for_the_next_turn",
+      "status": "ok"
+    },
+    {
+      "name": "suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::custom",
+      "status": "ok"
+    },
+    {
+      "name": "suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::persistent_override",
+      "status": "ok"
+    },
+    {
+      "name": "suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::persistent",
+      "status": "ok"
+    },
+    {
+      "name": "suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::empty_persistent_override",
+      "status": "ok"
+    },
+    {
+      "name": "suite::remote_models::remote_models_merge_adds_new_high_priority_first",
+      "status": "ok"
+    },
+    {
+      "name": "suite::models_cache_auth::auth_and_provider_switches_do_not_reuse_chatgpt_catalog",
+      "status": "ok"
+    },
+    {
+      "name": "suite::models_cache_ttl::refreshes_when_cache_version_differs",
+      "status": "ok"
+    },
+    {
+      "name": "suite::model_switching::service_tier_change_is_applied_on_next_http_turn",
+      "status": "ok"
+    },
+    {
+      "name": "a_launch_reads_a_catalog_downloaded_ten_minutes_ago",
+      "status": "ok"
+    },
+    {
+      "name": "vanilla_rejects_an_old_cache_from_a_manager_created_while_enhanced",
+      "status": "ok"
+    },
+    {
+      "name": "a_launch_after_codex_old_reads_its_own_cache",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-consent-model-native.sh",
+      "sha256": "9081494d4746a61f63594d5d15e3e3637cdc3d39a15ffb6cfda3bbbcb9e49c4d"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-consent-model-native.log",
+      "sha256": "d41d2cd50262346b2ca24910deb903102e5ee218c9f149b22d1d362a24517b43"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-627b-consent-model-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Controller30979 terminal0 and sidecar0. All seven selections completed,12 actual tests passed. Corrected Daybreak consent label verified without changing production consent behavior. Deterministic catalog/new-model priority, exact requested model ID and supported reasoning, auth/provider isolation, stale-version refresh, service-tier and ALab/vendor cache isolation fixtures passed. Does not prove live account entitlement/catalog availability/inference, full gate or installed adoption."
+}

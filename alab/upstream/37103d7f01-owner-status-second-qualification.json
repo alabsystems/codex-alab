@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T16:22:57.393639+00:00",
+  "source": "e41ad6d02f",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 1,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "message_processor::workspace_routing_tests::background_routing_call_sites_skip_config::signed_out",
+      "status": "ok"
+    },
+    {
+      "name": "message_processor::workspace_routing_tests::background_routing_call_sites_skip_config::api_key",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-native-r2.sh",
+      "sha256": "d824380f446efdd25e522cf07f5131750f78f1cc57850c4adfb2fb31c84d5592"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-native-r2.log",
+      "sha256": "7f734fee113e2a6b6d29bde513de1dcbf24ce4d4ffcea7128c55c3d403522c3d"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-owner-status-native-r2.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+  ],
+  "limits": "MCP owner fixture compiled but failed its prerequisite assertion: an initially signed-out harness returns no account grant without reading corrupted storage. No owner-path pass claimed. Routing checks passed (2). Corrected fixture first hydrates an independent harness manager, then corrupts its store; that later run is separate. Full gate and adoption remain separate."
+}

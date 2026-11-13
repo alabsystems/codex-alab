@@ -6,6 +6,10 @@ use super::*;
 use codex_alab_core::native_source_lifetime::NetworkScope;
 use codex_alab_core::native_source_lifetime::NetworkUse;
 
+#[path = "http_idle_source.rs"]
+mod idle;
+pub use idle::IdleNetworkPermit;
+
 // Policies are copied through model/HTTP futures. Source observations stay on
 // the heap; only actual UseState below owns counted resource/activity leases.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -66,11 +70,15 @@ impl Origin {
     }
     fn acquire(&self) -> Result<OriginUse, codex_alab_core::assignment::Refused> {
         match self {
-            Self::Manager(scope) => scope.acquire().map(|actual| OriginUse::Manager(Box::new(actual))),
-            Self::Reader(scope) => scope.acquire().map(|actual| OriginUse::Reader(Box::new(actual))),
-            Self::Both(manager, reader) if reader.compatible_manager(manager) => {
-                Ok(OriginUse::Both(Box::new(manager.acquire()?), Box::new(reader.acquire()?)))
-            }
+            Self::Manager(scope) => scope
+                .acquire()
+                .map(|actual| OriginUse::Manager(Box::new(actual))),
+            Self::Reader(scope) => scope
+                .acquire()
+                .map(|actual| OriginUse::Reader(Box::new(actual))),
+            Self::Both(manager, reader) if reader.compatible_manager(manager) => Ok(
+                OriginUse::Both(Box::new(manager.acquire()?), Box::new(reader.acquire()?)),
+            ),
             Self::Both(..) => Err(codex_alab_core::assignment::Refused::Unavailable),
         }
     }

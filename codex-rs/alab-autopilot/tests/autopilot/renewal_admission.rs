@@ -23,7 +23,7 @@ mod renewal_repeat;
 mod renewal_consume;
 
 /// File-backed subscription identity for durable ChatGPT renewal intent.
-async fn subscription_fixture(
+pub(super) async fn subscription_fixture(
     label: &str,
 ) -> (
     TestLogin,
@@ -2824,12 +2824,28 @@ fn old_auth_error_cannot_block_replacement_goal_after_cache_ownership_changes() 
                 hook.original.get(),
                 "replacement owns a fresh native request"
             );
-            let texts = h.mock.requests()[2].message_input_texts("user");
+            let requests = h.mock.requests();
+            let contexts = requests[2].inputs_of_type("function_call_output");
+            let objective = contexts
+                .iter()
+                .rev()
+                .find(|item| item["name"] == "goal_objective" && item["namespace"] == "agent")
+                .expect("replacement goal's untrusted objective context");
+            assert_eq!(objective["output"], "Replacement goal owns its own request");
+            let texts = requests[2].message_input_texts("user");
             assert!(
                 texts
                     .last()
                     .expect("goal input")
-                    .contains("Replacement goal owns its own request")
+                    .contains("<codex_internal_context source=\"goal\">"),
+                "replacement request user messages: {texts:#?}"
+            );
+            assert!(
+                !texts
+                    .last()
+                    .unwrap()
+                    .contains("Replacement goal owns its own request"),
+                "the objective must remain data outside continuation instructions"
             );
             assert!(
                 h.fake

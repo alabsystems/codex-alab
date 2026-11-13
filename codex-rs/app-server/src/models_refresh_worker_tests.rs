@@ -29,7 +29,7 @@ use tracing_subscriber::layer::SubscriberExt;
 
 use super::*;
 
-fn test_thread_manager(
+pub(super) fn test_thread_manager( // ALAB(model-poll): owned regressions reuse the actual startup-model factory.
     config: &codex_core::config::Config,
     models_manager: Option<SharedModelsManager>,
     auth_manager: Arc<codex_login::AuthManager>,

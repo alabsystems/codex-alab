@@ -26,7 +26,6 @@ use crate::session::step_context::StepContext;
 use crate::session::turn::get_last_assistant_message_from_turn;
 use crate::session::turn_context::TurnContext;
 use crate::state::AutoCompactWindowIds;
-use crate::util::backoff;
 use codex_analytics::CodexCompactionEvent;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
@@ -40,6 +39,7 @@ use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::truncate_annotated_text;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
+use codex_http_client::RetryAfter;
 use codex_protocol::ResponseItemId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
@@ -350,24 +350,6 @@ async fn run_compact_task_inner_impl(
             Err(e) if crate::responses_retry::alab_capacity_retry::recover_compaction_weekly(&e, &sess, turn_context.as_ref()).await? => continue, // ALAB(weekly-reset): verified earned reset retries this compaction with its original history and prompt.
             Err(e) if crate::responses_retry::alab_capacity_retry::should_retry(&e, turn_context.as_ref()) => crate::responses_retry::alab_capacity_retry::compact_capacity_wait(&mut capacity, e, &sess, turn_context.as_ref()).await, // ALAB(capacity): retry the same compaction without shrinking history or spending ordinary retries
             Err(e) if crate::responses_retry::alab_capacity_retry::compact_should_stop(&e, turn_context.as_ref()) => return Err(e), // ALAB(recovery): remember compaction advice and stop terminal refusals before replaying them
-            Err(err)
-                if matches!(
-                    err.details(),
-                    CodexErrorDetails::Interrupted | CodexErrorDetails::TurnAborted
-                ) =>
-            {
-                return Err(err);
-            }
-            Err(e)
-                if matches!(
-                    e.details(),
-                    CodexErrorDetails::SessionBudgetExceeded
-                        | CodexErrorDetails::ResponseIncomplete(_)
-                        | CodexErrorDetails::Fatal(_)
-                ) =>
-            {
-                return Err(e);
-            }
             Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
                 if turn_input_len > 1 {
                     // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
@@ -381,23 +363,25 @@ async fn run_compact_task_inner_impl(
                 sess.set_total_tokens_full(turn_context.as_ref()).await;
                 return Err(e);
             }
-            Err(e) => {
-                if retries < max_retries {
-                    retries += 1;
-                    let delay = backoff(retries);
-                    let retry_at = crate::responses_retry::alab_capacity_retry::compact_retry_at(&e, delay, turn_context.as_ref()); // ALAB(recovery): retain the exact legacy wait's provider pacing through measured wake cuts
-                    sess.notify_stream_error(
-                        turn_context.as_ref(),
-                        format!("Reconnecting... {retries}/{max_retries}"),
-                        e,
-                    )
-                    .await;
-                    crate::responses_retry::alab_capacity_retry::compact_wait(delay, retry_at).await; // ALAB(recovery): reporting a wait never restarts Retry-After
-                    continue;
-                } else {
+            Err(e) if retries < max_retries => {
+                retries += 1;
+                let Some(delay) = e.retry_delay(retries) else {
                     return Err(e);
-                }
+                };
+                let selected_wait = crate::responses_retry::alab_capacity_retry::compact_retry_at(&e, delay, turn_context.as_ref()); // ALAB(recovery): select host-sleep-aware pacing before awaited reporting.
+                let retry_after = e.retry_after();
+                sess.notify_stream_error(
+                    turn_context.as_ref(),
+                    format!("Reconnecting... {retries}/{max_retries}"),
+                    e,
+                )
+                .await;
+                let retry_at = retry_after
+                    .map(RetryAfter::deadline)
+                    .unwrap_or_else(|| tokio::time::Instant::now() + delay);
+                crate::responses_retry::alab_capacity_retry::compact_wait(retry_at, selected_wait).await; // ALAB(recovery): retain upstream deadlines and active host-sleep accounting.
             }
+            Err(e) => return Err(e),
         }
     };
 

@@ -83,4 +83,26 @@ mod tests {
             ExecPublication::Consumed
         ));
     }
+    #[test]
+    fn restored_delivery_keeps_its_scope_identity_and_consumes_all_its_clones_once() {
+        let original = MessageDelivery::publish(ThreadId::new(), &[]);
+        let (_, saved) = original.capture_exec().unwrap();
+        let before = serde_json::to_value(&saved).unwrap();
+        let restored =
+            MessageDelivery::restore_exec(serde_json::from_value(before.clone()).unwrap());
+        assert_eq!(
+            serde_json::to_value(restored.capture_exec().unwrap().1).unwrap(),
+            before
+        );
+        let shared = restored.clone();
+        restored.consumed(ThreadId::new());
+        assert!(matches!(
+            shared.capture_exec().unwrap().1,
+            ExecPublication::Consumed
+        ));
+        assert!(matches!(
+            original.capture_exec().unwrap().1,
+            ExecPublication::Pending { .. }
+        ));
+    }
 }

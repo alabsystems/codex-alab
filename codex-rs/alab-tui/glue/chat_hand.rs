@@ -31,9 +31,8 @@ mod daybreak_recovery_tests;
 mod turns_session_tests;
 
 impl ChatWidget {
-    /// Keep an automatic access offer informational under the proven active harness.
-    /// The refusal remains in history, and /daybreak still opens the person's picker.
-    pub(super) fn alab_keep_policy_offer_non_modal(&self) -> bool {
+    /// An active claimed root has no person available to settle a headless prompt.
+    pub(crate) fn alab_autonomous_root_active(&self) -> bool {
         codex_alab_tui::boxes::tick_shared().is_some_and(|shared| {
             shared.autopilot() == codex_alab_tui::session::Autopilot::Active
                 && shared.claim().is_some()
@@ -41,6 +40,22 @@ impl ChatWidget {
                     .thread_id
                     .is_some_and(|id| shared.is_root_thread(&id.to_string()))
         })
+    }
+
+    pub(crate) fn alab_autonomous_safety_retry_allowed(
+        &self,
+        turn: &crate::app_command::AppCommand,
+    ) -> bool {
+        self.alab_autonomous_root_active()
+            && matches!(
+                turn,
+                crate::app_command::AppCommand::UserTurn { alab_safety_retries, .. }
+                if *alab_safety_retries < 2
+            )
+    }
+
+    pub(super) fn alab_safety_buffering_matches_thread(&self, thread_id: &str) -> bool {
+        self.thread_id.is_some_and(|id| id.to_string() == thread_id)
     }
 
     /// Queued messages, steers waiting for the running turn, rejected steers, or the startup
@@ -65,7 +80,17 @@ impl ChatWidget {
     /// `working` here (the session record and the autopilot wait it out), where the report
     /// codex-alab writes inside aterm leaves it out ([`Self::alab_report_frame`]).
     pub(crate) fn alab_program_state(&self) -> ProgramState {
-        program_state_of(self.desired_program_status())
+        program_state_of(self.alab_work_status(self.desired_program_status()))
+    }
+
+    // aterm's session/autopilot contract includes owned background terminals.
+    // Upstream's foreground title may show Done while that work remains alive.
+    fn alab_work_status(&self, status: ProgramStatus) -> ProgramStatus {
+        if !matches!(status, ProgramStatus::Blocked(_)) && !self.unified_exec_processes.is_empty() {
+            ProgramStatus::Working
+        } else {
+            status
+        }
     }
 
     /// ALAB(session): the displayed thread's active goal objective when Goals are enabled.
@@ -88,6 +113,7 @@ impl ChatWidget {
     /// submitted turn waits for the server, and whether a turn of a thread this widget does not
     /// show runs (a thread switch away from it and back begins none).
     pub(crate) fn alab_report_frame(&self, status: ProgramStatus) -> turns::Frame {
+        let status = self.alab_work_status(status);
         let goal_between_turns = self.status_state.program_status_after_turn == ProgramStatus::Done
             && self
                 .current_goal_status
@@ -192,7 +218,7 @@ impl ChatWidget {
     /// has not started.
     pub(crate) fn alab_plan_progress(&self) -> Option<(usize, usize)> {
         let its_turn = self.turn_lifecycle.agent_turn_running
-            || self.desired_program_status() == ProgramStatus::Error;
+            || self.alab_program_state() == ProgramState::Error;
         if !its_turn || !self.transcript.saw_plan_update_this_turn || self.alab_pending_user_turn()
         {
             return None;

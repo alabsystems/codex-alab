@@ -7,7 +7,7 @@
 #
 #   alab/delta.sh [<rev>]            summary, then the upstream files ALab modifies, riskiest first
 #   alab/delta.sh --patch [<rev>]    the diff of just those modifications (ALab's hook points)
-#   alab/delta.sh --topics [<rev>]   every ALAB(<topic>) hook marker, grouped by topic
+#   alab/delta.sh --topics [<rev>]   every ALAB(<topic>) hook marker, grouped by topic (Python 3.11+)
 #
 # risk = upstream commits touching the file in the last 90 days x lines ALab changed in it.
 # The top of the list is where the next sync conflict comes from, and where the occasional
@@ -34,6 +34,14 @@ for arg in "$@"; do
     *) rev="${arg}" ;;
   esac
 done
+g() { git -c core.quotepath=off "$@"; }
+
+if [[ "${topics}" -eq 1 ]]; then
+  # One shared parser keeps exact topic identities separate from display text.
+  python="$(alab_python_311)" || exit 1
+  exec "${python}" -I "${repo_root}/alab/hook_topics.py" --repo "${repo_root}" --source "${rev}"
+fi
+
 alab_upstream_ready
 
 # The newest upstream commit <rev> contains. Its last sync merge names it too, so the answer
@@ -41,16 +49,6 @@ alab_upstream_ready
 last_sync="$(git log -1 --first-parent --merges --grep='^alab sync:' --format=%H "${rev}" --)"
 base="$(git merge-base "${rev}" upstream/main ${last_sync:+"${last_sync}^2"})" \
   || alab_die "${rev} shares no history with upstream/main"
-g() { git -c core.quotepath=off "$@"; }
-
-if [[ "${topics}" -eq 1 ]]; then
-  { g grep -n -E "${ALAB_MARKER_RE}" "${rev}" -- ':!alab' ':!AGENTS.md' ':!codex-rs/alab-*' || true; } \
-    | cut -c "$((${#rev} + 2))-" \
-    | awk '{ t = "(untagged)"; if (match($0, /ALAB\([^)]+\):/)) t = substr($0, RSTART + 5, RLENGTH - 7)
-        print t "\t" $0 }' \
-    | sort -t$'\t' -k1,1 -s | awk -F'\t' '$1 != last { print $1; last = $1 } { print "  " $2 }'
-  exit 0
-fi
 
 # Derived files (merge=alab-upstream in alab/merge-attributes) are re-resolved by every sync,
 # so they are reported apart from the hand-maintained conflict surface.

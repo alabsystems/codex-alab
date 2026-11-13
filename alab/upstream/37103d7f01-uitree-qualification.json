@@ -1,0 +1,135 @@
+{
+  "schema": 1,
+  "kind": "native-focused-qualification",
+  "observed_at": "2026-11-10T15:49:07.670899+00:00",
+  "source": "e19ef010ad7e216de5e15234f04cbe009e21c8f6",
+  "upstream": "37103d7f01e82162472c6fba7b4088d5a1303321",
+  "exit_code": 0,
+  "compiler": {
+    "name": "Trust",
+    "version": 15698,
+    "lane": "explicit-unverified",
+    "protected_profile": true
+  },
+  "tests": [
+    {
+      "name": "ui_tree::tests::deserialization_checks_limits_across_the_whole_tree",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::directly_constructed_text_keeps_a_bounded_utf8_prefix",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::collapsed_space_keeps_the_first_whitespace_owners_link",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::earlier_sibling_grows_after_reserving_the_later_siblings_minimum",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::ellipsis_counts_toward_width_only_when_there_is_overflow",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::elements_round_trip_and_require_explicit_row_spacing",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::authored_line_breaks_and_collapsed_whitespace_preserve_styles_and_links",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::measures_natural_and_viewport_sizes_in_cells",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::links_only_annotate_their_own_cells",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::hex_colors_use_the_terminal_palette_for_both_channels",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::render_line_keeps_exactly_fitting_halfwidth_voiced_katakana",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::inline_modifiers_and_row_surfaces_follow_the_tree",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::reads_row_wrap_without_moving_existing_positional_props",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::rejects_invalid_gaps_and_elements",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::single_line_view_marks_vertical_overflow",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::styled_text_wraps_in_the_space_its_nowrap_row_assigns",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::terminal_commands_are_sanitized_within_each_string",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::shrinking_a_hyphenated_word_reserves_the_siblings_column",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::split_graphemes_use_the_first_style_and_require_unanimous_links",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::whitespace_collapses_across_styled_leaves",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::width_fitting_respects_word_hyphens_across_styles",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::text_and_row_share_the_color_contract",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::wrapped_link_offsets_follow_each_row_and_stop_before_clipping",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::wrapping_row_moves_a_hash_and_nonbreaking_pr_label_together",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::zero_width_fragments_do_not_style_the_ellipsis_or_add_row_gaps",
+      "status": "ok"
+    },
+    {
+      "name": "ui_tree::tests::semantic_colors_follow_the_theme_and_terminal",
+      "status": "ok"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-uitree-native.sh",
+      "sha256": "9a97cba93623c1a529fb3df75ed902381ce98462927680a179e27a66957186b3"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-uitree-native.log",
+      "sha256": "20b244d9ebd4722c588f7c7168b6c5f90cf713567efda2928056c9078a341782"
+    },
+    {
+      "path": "${HOME}/.ubd/codex-alignment-37103-uitree-native.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  ],
+  "limits": "Selected ui_tree::tests module: 26 passed, zero failed or ignored; 6322 other TUI tests filtered out. Includes semantic-color ANSI16 child-process and truecolor snapshots, bounded decoding, inherited styling, Unicode graphemes, multiline/wrapping, clipping and hyperlink offsets. Does not qualify lower-level text break tests, all footer integration, real terminal interaction, native credential images, full gate, complete intake or adoption."
+}
