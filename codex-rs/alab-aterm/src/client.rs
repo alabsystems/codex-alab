@@ -738,6 +738,19 @@ impl Client {
         self.request(&line).await
     }
 
+    /// [`Self::on_self`] waiting at most `deadline` instead of [`CALL_TIMEOUT`], for an ask
+    /// aterm may legitimately hold longer before it answers.
+    pub(crate) async fn on_self_within(
+        &self,
+        rest: &str,
+        deadline: Duration,
+    ) -> Result<Reply, Error> {
+        let line = format!("@{} {rest}", self.endpoint.sid);
+        self.conn
+            .request_within(&line, Framing::Status, deadline)
+            .await
+    }
+
     /// `whoami`.
     pub async fn whoami(&self) -> Result<Whoami, Error> {
         let reply = self.request("whoami").await?;

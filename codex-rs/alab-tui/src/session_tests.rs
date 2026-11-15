@@ -805,6 +805,73 @@ fn a_re_exec_inherits_its_generation_from_its_own_record() {
     assert_eq!(inherited.exec_generation, 1);
 }
 
+/// A record written before the in-process assignment request path was removed may carry its
+/// `assignment` locator. The next image still loads that record and takes the rest of it up,
+/// drops the locator, and is not held as acting on an assignment nothing will finish.
+///
+/// This checks the record and the TUI's rest only. That a resumed session admits a root
+/// turn is not tested here: it holds because nothing in production can close a
+/// `codex_alab_core::assignment::Domain` (only `Domain::request` and `hold_unresolved` move
+/// it out of `Phase::Open`, and neither has a production caller), and no key of the record
+/// seeds one.
+#[test]
+fn a_record_carrying_an_old_assignment_locator_still_loads_and_holds_nothing() {
+    let home = tempfile::tempdir().unwrap_or_else(|err| panic!("{err}"));
+    let pid = std::process::id();
+    let dir = record::sessions_dir(home.path());
+    let shared = shared_with(launch(pid, true));
+    shared.observe(&frame(None, ProgramState::Idle, home.path()), 1);
+    shared.set_carried_on(1);
+    let before = Writer::new(shared, dir.clone(), Duration::ZERO, None);
+    before.prepare();
+    let _ = before.write_now();
+    before
+        .finalize(&Ending::Upgrading)
+        .unwrap_or_else(|err| panic!("{err}"));
+    // The locator exactly as the removed path wrote it: an operation not yet acknowledged,
+    // which that path seeded as an act in progress and a held domain.
+    let path = dir.join(format!("{pid}.json"));
+    let mut value = read(&path);
+    value["assignment"] = serde_json::json!({
+        "schema": 1,
+        "operation": "a".repeat(32),
+        "boundary": null,
+        "thread": THREAD,
+        "mode": "manual",
+        "poolRevision": "d".repeat(64),
+        "target": "c".repeat(64),
+        "source": {
+            "credentialGeneration": 14,
+            "assignmentGeneration": 0,
+            "authGeneration": 2,
+            "ownerGeneration": 0,
+            "sourceGeneration": 0,
+            "loginGeneration": 0,
+        },
+        "destination": null,
+        "acknowledged": false,
+    });
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&value).unwrap_or_else(|err| panic!("{err}")),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    let loaded = record::read(&path).unwrap_or_else(|| panic!("an old record still loads"));
+    assert_eq!(loaded.carried_on, 1);
+    // The new image: same pid, same identity, a fresh shared state.
+    let shared = shared_with(launch(pid, true));
+    shared.observe(&frame(None, ProgramState::Idle, home.path()), 2);
+    let after = Writer::new(shared, dir.clone(), Duration::ZERO, None);
+    after.prepare();
+    assert_eq!(shared.carried_on(), 1, "the rest of the record is taken up");
+    assert_eq!(shared.unrest(), None, "the locator holds nothing");
+    let _ = after.write_now();
+    let written = read(&path);
+    assert!(written.get("assignment").is_none(), "{written}");
+    assert_eq!(written["status"], "idle");
+    assert!(record::remove(&dir, pid).is_ok());
+}
+
 /// Finding 4 (review of cf084e3b7): the live upgrade's execve is the same process, so its
 /// carry-on chain goes on: the new image starts from the old one's `carriedOn`, not 0.
 #[test]
@@ -1886,6 +1953,164 @@ fn an_owed_carry_on_keeps_the_record_busy() {
     let _ = writer.write_now();
     let record = record::read(&dir.join("4247.json")).unwrap_or_else(|| panic!("parses"));
     assert_eq!(record.status, Status::Idle);
+}
+
+#[test]
+fn the_idle_point_is_the_records_own_rest() {
+    // `idle_point` says what the written record says: `status:"idle"` with `draftEmpty:true`,
+    // which aterm reads last before an account move's signal (`account-busy` otherwise).
+    let states = [
+        ProgramState::Unknown,
+        ProgramState::Idle,
+        ProgramState::Working,
+        ProgramState::Blocked(BlockedKind::Permission),
+        ProgramState::Blocked(BlockedKind::Question),
+        ProgramState::Blocked(BlockedKind::Auth),
+        ProgramState::Done,
+        ProgramState::Error,
+    ];
+    let mut idle = 0;
+    for state in states {
+        for owed in [false, true] {
+            for draft in ["empty", "framed", "keyed"] {
+                let home = tempfile::tempdir().unwrap_or_else(|err| panic!("{err}"));
+                let shared = shared_with(launch(4250, true));
+                let mut shown = frame(None, state, home.path());
+                shown.draft_empty = draft != "framed";
+                shared.observe(&shown, 1);
+                // The footer's count rides along; only the `working` frame a background
+                // terminal keeps (the TUI's own reading) takes the record from rest.
+                shared.set_background_terminals(
+                    u32::from(state == ProgramState::Working),
+                    Instant::now(),
+                );
+                shared.set_carry_on_owed(owed);
+                if draft == "keyed" {
+                    shared.human_input(2);
+                }
+                let dir = record::sessions_dir(home.path());
+                let writer = Writer::new(shared, dir.clone(), Duration::ZERO, None);
+                writer.prepare();
+                assert_eq!(writer.write_now().ok(), Some(true));
+                let record =
+                    record::read(&dir.join("4250.json")).unwrap_or_else(|| panic!("parses"));
+                let at_rest =
+                    record.status == Status::Idle && record.draft_empty && record.exit.is_none();
+                let case = format!("{state:?} owed={owed} draft={draft}");
+                assert_eq!(writer.idle_point().is_ok(), at_rest, "{case}");
+                idle += usize::from(at_rest);
+                // The reason comes unrest first, then the frame, then the draft.
+                let expected = if owed {
+                    Err(session::NotIdle::Unrest(
+                        codex_alab_core::session::Unrest::CarryOnOwed,
+                    ))
+                } else if record.status != Status::Idle {
+                    Err(session::NotIdle::Frame(state))
+                } else if draft != "empty" {
+                    Err(session::NotIdle::Draft)
+                } else {
+                    Ok(())
+                };
+                assert_eq!(writer.idle_point(), expected, "{case}");
+                // No writer of this process's own is installed for `shared`: the same words.
+                assert_eq!(session::idle_point(shared), expected, "{case}");
+            }
+        }
+    }
+    // Idle, done and error, each with nothing owed and no draft.
+    assert_eq!(idle, 3);
+}
+
+/// AFTER A RELAUNCH THE IDLE POINT WAITS FOR THE LAUNCH PROBE: a start whose sweep took its
+/// predecessor's handoff (here the record an account move's `SIGTERM` left at rest) writes the
+/// busy initializer until aterm's first `status` read answers, whatever its frame reads, so its
+/// idle point is not reached (`Starting`) and a move asked then would be refused by aterm as
+/// `account-busy`. Once the probe answers, the record and the idle point stand at rest together.
+/// CONTROL: a start that took no handoff is at its idle point at its first idle frame.
+#[test]
+fn after_a_relaunch_the_idle_point_waits_for_the_launch_probe() {
+    use codex_alab_core::session::HandPid;
+    use codex_alab_core::session::HumanSeen;
+    use codex_alab_core::session::LaunchWitness;
+    let line = ["/twin/codex", "resume", THREAD];
+    for handoff in [true, false] {
+        let home = tempfile::tempdir().unwrap_or_else(|err| panic!("{err}"));
+        let rollout = home.path().join("rollout.jsonl");
+        std::fs::write(&rollout, "{}\n").unwrap_or_else(|err| panic!("{err}"));
+        let dir = record::sessions_dir(home.path());
+        record::ensure_dir(&dir).unwrap_or_else(|err| panic!("{err}"));
+        let written_at = 1_000_000_000;
+        if handoff {
+            dead_record(&dir, 999_966, THREAD, &line, written_at);
+            let path = dir.join("999966.json");
+            let mut value = read(&path);
+            value["status"] = "idle".into();
+            value["exit"] = "signal:15".into();
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&value).unwrap_or_else(|err| panic!("{err}")),
+            )
+            .unwrap_or_else(|err| panic!("{err}"));
+        }
+        let mut own = launch(4252, true);
+        own.started_at_ms = written_at + 60_000;
+        own.args = line.iter().map(OsString::from).collect();
+        let started = own.started_at_ms;
+        let shared = shared_with(own);
+        let writer: &'static Writer = Box::leak(Box::new(Writer::new(
+            shared,
+            dir,
+            Duration::ZERO,
+            Some(FakeCli::command),
+        )));
+        // This process's writer, as `start` installs it, read by `idle_point` for its own
+        // shared state only.
+        let slot = std::sync::OnceLock::new();
+        assert!(slot.set(writer).is_ok());
+        writer.prepare();
+        shared.observe(&frame(Some(&rollout), ProgramState::Idle, home.path()), 2);
+        let _ = writer.write_now();
+        let unprobed = record::read(&writer.path()).unwrap_or_else(|| panic!("parses"));
+        let at_rest = |record: &Record| {
+            record.status == Status::Idle && record.draft_empty && record.exit.is_none()
+        };
+        if handoff {
+            assert_eq!(unprobed.status, Status::Busy, "the busy initializer");
+            assert_eq!(writer.idle_point(), Err(session::NotIdle::Starting));
+            assert_eq!(
+                session::idle_point_in(shared, &slot),
+                Err(session::NotIdle::Starting),
+                "this process's installed writer"
+            );
+            let other = shared_with(launch(4253, true));
+            other.observe(&frame(Some(&rollout), ProgramState::Idle, home.path()), 2);
+            assert_eq!(
+                session::idle_point_in(other, &slot),
+                Ok(()),
+                "another shared state is not that writer's"
+            );
+        } else {
+            assert!(at_rest(&unprobed), "CONTROL: {unprobed:?}");
+            assert_eq!(writer.idle_point(), Ok(()), "CONTROL");
+            assert_eq!(session::idle_point_in(shared, &slot), Ok(()), "CONTROL");
+        }
+        shared.set_launch_witness(Some(LaunchWitness {
+            hand: Some("lease:aterm-harness@812".into()),
+            human: HumanSeen::Never,
+            read_at_ms: started + 1,
+            server_pid: Some(812),
+            hand_pid: HandPid::Absent,
+        }));
+        let _ = writer.write_now();
+        let probed = record::read(&writer.path()).unwrap_or_else(|| panic!("parses"));
+        assert!(at_rest(&probed), "handoff={handoff}: {probed:?}");
+        assert_eq!(writer.idle_point(), Ok(()), "handoff={handoff}: probed");
+        assert_eq!(
+            session::idle_point_in(shared, &slot),
+            Ok(()),
+            "handoff={handoff}"
+        );
+    }
 }
 
 #[test]

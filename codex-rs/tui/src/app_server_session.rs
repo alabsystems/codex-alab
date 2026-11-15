@@ -11,6 +11,7 @@ mod events;
 mod external_agent_config;
 pub(crate) mod fs;
 mod history;
+#[path = "../../alab-tui/glue/history_page.rs"] pub(crate) mod history_page; // ALAB(history): page items retain their turn identity and yield only valid borrowed groups.
 mod models;
 pub(crate) mod provider_selection;
 #[cfg(test)]

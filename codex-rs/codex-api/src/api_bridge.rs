@@ -218,6 +218,7 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                     {
                         CodexErr::InvalidImageRequest()
                     } else {
+                        if let Some(error) = alab_request_recovery::opaque_bad_request(&body_text) { return error; } // ALAB(recovery): an opaque backend 400 needs transport retry, not a fatal invalid request
                         CodexErr::InvalidRequest(body_text)
                     }
                 } else if status == http::StatusCode::INTERNAL_SERVER_ERROR {
@@ -352,6 +353,9 @@ const CLOUDFLARE_BLOCKED_MESSAGE: &str =
 #[cfg(test)]
 #[path = "api_bridge_tests.rs"]
 mod tests;
+
+#[path = "../../alab-core/glue/api_request_recovery.rs"]
+mod alab_request_recovery; // ALAB(recovery): classify opaque backend responses in the owned layer
 
 fn extract_request_tracking_id(headers: Option<&HeaderMap>) -> Option<String> {
     extract_request_id(headers).or_else(|| extract_header(headers, CF_RAY_HEADER))

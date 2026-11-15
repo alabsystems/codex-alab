@@ -2006,6 +2006,7 @@ async fn run_sampling_request(
             (submitted, pending)
         };
         let mut draining_for_mailbox = false;
+        crate::responses_retry::alab_capacity_retry::preflight_weekly(&sess, &turn_context).or_cancel(&cancellation_token).await?; // ALAB(weekly-reset): check earned-reset eligibility before every sampling attempt, including retries.
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),

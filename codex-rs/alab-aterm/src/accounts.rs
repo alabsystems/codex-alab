@@ -11,8 +11,14 @@ use sha2::Sha256;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+/// aterm's `codex-accounts` snapshot, of either schema. Schema 1 says only what the pool
+/// holds: no row is this session's, none is eligible, no capability is offered, and `pool` is
+/// `None`. Schema 2 also says what `restart account=` may ask for this session: the row aterm
+/// judges it to run on from the login its launch carried (`assignment.account_id`), the pool's
+/// own choice, pin and rotation (`pool`), the rows a move would not be refused on record
+/// (`eligible`), and whether the restart would be carried now (`capabilities`). It is aterm's
+/// judgement, not a proof: the relaunch still proves the row it starts on.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub schema: u32,
     pub observed_at: i64,
@@ -20,8 +26,68 @@ pub struct Snapshot {
     pub session: Session,
     pub revision: String,
     pub assignment: Assignment,
+    /// Schema 2's pool view; `None` for schema 1.
+    pub pool: Option<Pool>,
     pub accounts: Vec<Account>,
     pub capabilities: Capabilities,
+}
+
+/// Schema 1 as the wire carries it: `assignment` also carries `mode`, always `unknown`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireOne {
+    schema: u32,
+    observed_at: i64,
+    request: String,
+    session: Session,
+    revision: String,
+    assignment: AssignmentOne,
+    accounts: Vec<Account>,
+    capabilities: Capabilities,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssignmentOne {
+    account_id: Option<String>,
+    mode: ModeOne,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ModeOne {
+    Unknown,
+}
+
+/// Schema 2 as the wire carries it: `assignment` has no `mode`, and `pool` is required.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireTwo {
+    schema: u32,
+    observed_at: i64,
+    request: String,
+    session: Session,
+    revision: String,
+    assignment: Assignment,
+    pool: Pool,
+    accounts: Vec<Account>,
+    capabilities: Capabilities,
+}
+
+/// The snapshot schema a request asks for; a reply of the other is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Schema {
+    One,
+    Two,
+}
+
+impl Schema {
+    fn number(self) -> u32 {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -33,17 +99,31 @@ pub struct Session {
     pub epoch: String,
 }
 
+/// The row aterm names as this session's: always `None` in schema 1; in schema 2 the row the
+/// session's launch login names in the roster, where aterm could judge one.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Assignment {
     pub account_id: Option<String>,
-    pub mode: Mode,
 }
 
+/// Schema 2's pool: the row a new launch would get (`choice_id`), whether the pool is pinned
+/// to its active row, and the pool's rotation mode.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Pool {
+    pub choice_id: Option<String>,
+    pub pinned: bool,
+    pub rotation: Rotation,
+}
+
+/// `[harness] accounts` as aterm reports it.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum Mode {
-    Unknown,
+pub enum Rotation {
+    Off,
+    Wall,
+    Early,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -119,8 +199,9 @@ impl Snapshot {
     /// host reads each candidate afresh before it selects one, so this can
     /// only say that asking for a move is not known to be futile.
     ///
-    /// Where the host names no row as this session's, any one able row may be
-    /// the session's own, so two are required.
+    /// Where the host names no row as this session's (schema 1 never does;
+    /// schema 2 does where aterm could judge the session's launch login), any
+    /// one able row may be the session's own, so two are required.
     pub fn another_account_can_run(&self) -> bool {
         let able = self.accounts.iter().filter(|row| row.can_take_a_session());
         match self.assignment.account_id.as_deref() {
@@ -155,25 +236,69 @@ pub(crate) fn request_id() -> String {
         .to_owned()
 }
 
-fn parse(line: &str, request: &str, sid: &str, birth: &str) -> Result<Snapshot, Error> {
+/// The snapshot `line` carries for `request` of `schema`, bound to this process of `sid`. A
+/// reply of the other schema is refused, as is any field either schema does not carry. Schema
+/// 1 offers nothing: every capability and every row's `eligible` must be false. Schema 2 may
+/// offer `select` and `auto`, never `add`; `auto` only where `select` holds and the pool's
+/// choice is a row other than the session's own.
+fn parse(
+    line: &str,
+    schema: Schema,
+    request: &str,
+    sid: &str,
+    birth: &str,
+) -> Result<Snapshot, Error> {
     let invalid = || Error::Malformed("invalid native accounts snapshot".into());
     if line.len() > 64 * 1024 {
         return Err(invalid());
     }
-    let snapshot: Snapshot = serde_json::from_str(
-        line.strip_prefix("OK codex-accounts ")
-            .ok_or_else(invalid)?,
-    )
-    .map_err(|_| invalid())?;
-    if snapshot.schema != 1
+    let body = line
+        .strip_prefix("OK codex-accounts ")
+        .ok_or_else(invalid)?;
+    let snapshot = match schema {
+        Schema::One => {
+            let wire: WireOne = serde_json::from_str(body).map_err(|_| invalid())?;
+            let ModeOne::Unknown = wire.assignment.mode;
+            Snapshot {
+                schema: wire.schema,
+                observed_at: wire.observed_at,
+                request: wire.request,
+                session: wire.session,
+                revision: wire.revision,
+                assignment: Assignment {
+                    account_id: wire.assignment.account_id,
+                },
+                pool: None,
+                accounts: wire.accounts,
+                capabilities: wire.capabilities,
+            }
+        }
+        Schema::Two => {
+            let wire: WireTwo = serde_json::from_str(body).map_err(|_| invalid())?;
+            Snapshot {
+                schema: wire.schema,
+                observed_at: wire.observed_at,
+                request: wire.request,
+                session: wire.session,
+                revision: wire.revision,
+                assignment: wire.assignment,
+                pool: Some(wire.pool),
+                accounts: wire.accounts,
+                capabilities: wire.capabilities,
+            }
+        }
+    };
+    let offers = schema == Schema::Two;
+    let capabilities = &snapshot.capabilities;
+    if snapshot.schema != schema.number()
         || !(0..=253_402_300_799).contains(&snapshot.observed_at)
         || snapshot.request != request
         || !valid_session(&snapshot.session, sid, birth)
         || !codex_alab_core::managed_auth::valid_hex(&snapshot.revision, 64)
         || snapshot.accounts.len() > 128
-        || snapshot.capabilities.add
-        || snapshot.capabilities.select
-        || snapshot.capabilities.auto
+        || capabilities.add
+        || (!offers && (capabilities.select || capabilities.auto))
+        || (capabilities.auto && !capabilities.select)
     {
         return Err(invalid());
     }
@@ -183,7 +308,7 @@ fn parse(line: &str, request: &str, sid: &str, birth: &str) -> Result<Snapshot, 
         if !valid_text(&account.id, 256)
             || !ids.insert(&account.id)
             || !valid_text(&account.label, 128)
-            || account.eligible
+            || (!offers && account.eligible)
             || account
                 .masked_email
                 .as_ref()
@@ -204,16 +329,23 @@ fn parse(line: &str, request: &str, sid: &str, birth: &str) -> Result<Snapshot, 
             return Err(invalid());
         }
     }
-    if snapshot
-        .assignment
-        .account_id
+    let own = snapshot.assignment.account_id.as_ref();
+    let choice = snapshot
+        .pool
         .as_ref()
-        .is_some_and(|id| !ids.contains(id))
+        .and_then(|pool| pool.choice_id.as_ref());
+    if own.is_some_and(|id| !ids.contains(id))
+        || choice.is_some_and(|id| !ids.contains(id))
+        || (capabilities.auto && (choice.is_none() || choice == own))
     {
         return Err(invalid());
     }
     Ok(snapshot)
 }
+
+/// What an aterm that answers no schema 2 snapshot says to one, and only that: the line on
+/// which [`Client::accounts_snapshot_for_move`] asks schema 1 instead.
+const SCHEMA_TWO_UNKNOWN: &str = "ERR codex-accounts invalid request";
 
 impl Client {
     /// Account custody is independent of the optional presentation and supervision.
@@ -226,18 +358,42 @@ impl Client {
         }
     }
 
-    /// Ask the authenticated hosting session. No supervision claim or mutation is sent.
+    /// Ask the authenticated hosting session for its schema 1 snapshot, which offers nothing.
+    /// No supervision claim or mutation is sent.
     pub async fn accounts_snapshot(&self, process_birth: &str) -> Result<Snapshot, Error> {
         let request = request_id();
-        self.accounts_request(process_birth, &request).await
+        self.accounts_request(process_birth, Schema::One, &request)
+            .await
+    }
+
+    /// Ask the hosting session for its schema 2 snapshot: the row aterm judges this session
+    /// to run on, the pool's choice, and what `restart account=` may ask now. An aterm that
+    /// answers no schema 2 says exactly `ERR codex-accounts invalid request`; on that line,
+    /// and on no other, schema 1 is asked once, whose snapshot names no row as this session's
+    /// and offers no move. No supervision claim or mutation is sent.
+    pub async fn accounts_snapshot_for_move(&self, process_birth: &str) -> Result<Snapshot, Error> {
+        match self
+            .accounts_request(process_birth, Schema::Two, &request_id())
+            .await
+        {
+            Err(Error::Refused(line)) if line == SCHEMA_TWO_UNKNOWN => {
+                self.accounts_request(process_birth, Schema::One, &request_id())
+                    .await
+            }
+            answer => answer,
+        }
     }
 
     async fn accounts_request(
         &self,
         process_birth: &str,
+        schema: Schema,
         request: &str,
     ) -> Result<Snapshot, Error> {
-        let command = format!("codex-accounts snapshot schema=1 request={request}");
+        let command = format!(
+            "codex-accounts snapshot schema={} request={request}",
+            schema.number()
+        );
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
                 let reply = self.on_self(&command).await?;
@@ -248,7 +404,13 @@ impl Client {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     continue;
                 }
-                return parse(&reply.status, request, self.endpoint_sid(), process_birth);
+                return parse(
+                    &reply.status,
+                    schema,
+                    request,
+                    self.endpoint_sid(),
+                    process_birth,
+                );
             }
         })
         .await
@@ -286,8 +448,13 @@ mod tests {
     }
 
     fn read(value: &Value) -> Result<Snapshot, Error> {
+        read_as(value, Schema::One)
+    }
+
+    fn read_as(value: &Value, schema: Schema) -> Result<Snapshot, Error> {
         parse(
             &format!("OK codex-accounts {value}"),
+            schema,
             &"a".repeat(32),
             "s-abc",
             "Fri Nov 6 09:00:00 2026",
@@ -339,7 +506,7 @@ mod tests {
         changed["accounts"].as_array_mut().unwrap().push(duplicate);
         assert!(read(&changed).is_err());
         let oversized = format!("OK codex-accounts {}", " ".repeat(65536));
-        assert!(parse(&oversized, "", "", "").is_err());
+        assert!(parse(&oversized, Schema::One, "", "", "").is_err());
     }
 
     /// A two-row pool: `mine` and `other`, each a condition and whether its
@@ -481,6 +648,7 @@ mod tests {
                 } else {
                     parse(
                         &line,
+                        Schema::One,
                         request,
                         binding["sid"].as_str().unwrap(),
                         binding["process_birth"].as_str().unwrap(),
@@ -499,6 +667,284 @@ mod tests {
             }
         }
         assert_eq!(cases.len(), 22);
+    }
+
+    /// aterm's schema 2 reply, verbatim from its wire (aterm branch s51fb4f/codex-account-move,
+    /// `codex_accounts_control::snapshot_in`), with the abbreviated revision and epoch filled.
+    const SCHEMA_TWO: &str = r#"OK codex-accounts {"accounts":[{"condition":"unseen","eligible":false,"enrolled":true,"held":false,"id":"4e262b3b4b5afd6f1aad178108c7a27f56c1f3684c89d40695bbbf2752aac4cd","label":"main","masked_email":null,"quota":{"five_hour_reset_at":null,"five_hour_used_percent":null,"observed_at":null,"stale":true,"weekly_reset_at":null,"weekly_used_percent":null}},{"condition":"unseen","eligible":true,"enrolled":true,"held":false,"id":"52f9c7fe9a2c1f06a11b8fa847d0036264d06e08b18fbf2808f9187c14dce3b1","label":"work","masked_email":"p***@example.com","quota":{"five_hour_reset_at":null,"five_hour_used_percent":null,"observed_at":null,"stale":true,"weekly_reset_at":null,"weekly_used_percent":null}}],"assignment":{"account_id":"4e262b3b4b5afd6f1aad178108c7a27f56c1f3684c89d40695bbbf2752aac4cd"},"capabilities":{"add":false,"auto":false,"select":true},"observed_at":1792700000,"pool":{"choice_id":"4e262b3b4b5afd6f1aad178108c7a27f56c1f3684c89d40695bbbf2752aac4cd","pinned":false,"rotation":"early"},"request":"0123456789abcdef0123456789abcdef","revision":"REVISION","schema":2,"session":{"epoch":"EPOCH","process_birth":"birth","process_pid":42,"sid":"bound-session"}}"#;
+
+    const TWO_REQUEST: &str = "0123456789abcdef0123456789abcdef";
+    const MAIN: &str = "4e262b3b4b5afd6f1aad178108c7a27f56c1f3684c89d40695bbbf2752aac4cd";
+    const WORK: &str = "52f9c7fe9a2c1f06a11b8fa847d0036264d06e08b18fbf2808f9187c14dce3b1";
+
+    /// The schema 2 example as JSON, bound to this process.
+    fn fixture_two() -> Value {
+        let line = SCHEMA_TWO
+            .replace("REVISION", &"c".repeat(64))
+            .replace("EPOCH", "host-epoch");
+        let mut value: Value =
+            serde_json::from_str(line.strip_prefix("OK codex-accounts ").unwrap()).unwrap();
+        value["session"]["process_pid"] = json!(std::process::id());
+        value
+    }
+
+    fn read_two(value: &Value) -> Result<Snapshot, Error> {
+        parse(
+            &format!("OK codex-accounts {value}"),
+            Schema::Two,
+            TWO_REQUEST,
+            "bound-session",
+            "birth",
+        )
+    }
+
+    #[test]
+    fn accounts_schema_two_parses_aterms_reply_and_names_the_row_and_the_pools_choice() {
+        let snapshot = read_two(&fixture_two()).unwrap();
+        assert_eq!(snapshot.schema, 2);
+        assert_eq!(snapshot.assignment.account_id.as_deref(), Some(MAIN));
+        assert_eq!(
+            snapshot.pool,
+            Some(Pool {
+                choice_id: Some(MAIN.into()),
+                pinned: false,
+                rotation: Rotation::Early,
+            })
+        );
+        assert!(snapshot.capabilities.select && !snapshot.capabilities.auto);
+        assert!(!snapshot.accounts[0].eligible && snapshot.accounts[1].eligible);
+        // The same reply, as a schema 1 request would read it: refused.
+        assert!(
+            parse(
+                &format!("OK codex-accounts {}", fixture_two()),
+                Schema::One,
+                TWO_REQUEST,
+                "bound-session",
+                "birth",
+            )
+            .is_err()
+        );
+        // And a schema 1 reply to a schema 2 request.
+        let mut one = fixture();
+        one["request"] = json!(TWO_REQUEST);
+        one["session"]["sid"] = json!("bound-session");
+        one["session"]["process_birth"] = json!("birth");
+        assert!(
+            parse(
+                &format!("OK codex-accounts {one}"),
+                Schema::One,
+                TWO_REQUEST,
+                "bound-session",
+                "birth"
+            )
+            .is_ok()
+        );
+        assert!(
+            read_two(&one).is_err(),
+            "a schema 1 reply to a schema 2 request"
+        );
+    }
+
+    #[test]
+    fn accounts_schema_two_refuses_what_its_wire_does_not_carry() {
+        let refused = |change: &dyn Fn(&mut Value), why: &str| {
+            let mut value = fixture_two();
+            change(&mut value);
+            assert!(read_two(&value).is_err(), "{why}");
+        };
+        refused(&|v| v["capabilities"]["add"] = json!(true), "add");
+        refused(&|v| v["schema"] = json!(1), "schema 1 in a schema 2 shape");
+        refused(&|v| v["schema"] = json!(3), "schema 3");
+        refused(
+            &|v| v["assignment"]["mode"] = json!("unknown"),
+            "schema 1's mode",
+        );
+        refused(
+            &|v| v["pool"]["extra"] = json!(true),
+            "an unknown pool field",
+        );
+        refused(
+            &|v| v["access_token"] = json!("x"),
+            "an unknown top-level field",
+        );
+        refused(
+            &|v| {
+                v.as_object_mut().unwrap().remove("pool");
+            },
+            "no pool",
+        );
+        refused(
+            &|v| v["pool"]["choice_id"] = json!("missing"),
+            "a choice naming no row",
+        );
+        refused(
+            &|v| v["assignment"]["account_id"] = json!("missing"),
+            "an assignment naming no row",
+        );
+        for word in ["auto", "on", "", "Wall"] {
+            refused(&|v| v["pool"]["rotation"] = json!(word), word);
+        }
+        refused(
+            &|v| v["pool"]["pinned"] = json!("no"),
+            "a pin that is no bool",
+        );
+        refused(
+            &|v| v["accounts"][1]["eligible"] = json!(null),
+            "eligible not a bool",
+        );
+        refused(
+            &|v| {
+                v["capabilities"]["select"] = json!(false);
+                v["capabilities"]["auto"] = json!(true);
+                v["pool"]["choice_id"] = json!(WORK);
+            },
+            "auto without select",
+        );
+        refused(
+            &|v| v["capabilities"]["auto"] = json!(true),
+            "auto onto the session's own row",
+        );
+        refused(
+            &|v| {
+                v["capabilities"]["auto"] = json!(true);
+                v["pool"]["choice_id"] = json!(null);
+            },
+            "auto with no choice",
+        );
+        // What schema 2 may carry: any eligible and select, auto onto another row, no choice.
+        let mut value = fixture_two();
+        value["capabilities"]["auto"] = json!(true);
+        value["pool"]["choice_id"] = json!(WORK);
+        value["pool"]["pinned"] = json!(true);
+        value["pool"]["rotation"] = json!("off");
+        value["accounts"][0]["eligible"] = json!(true);
+        assert!(read_two(&value).is_ok());
+        let mut value = fixture_two();
+        value["assignment"]["account_id"] = json!(null);
+        value["pool"]["choice_id"] = json!(null);
+        value["capabilities"]["select"] = json!(false);
+        assert!(read_two(&value).is_ok());
+
+        // Schema 1 still offers nothing.
+        for pointer in [
+            "/capabilities/select",
+            "/capabilities/auto",
+            "/accounts/0/eligible",
+        ] {
+            let mut changed = fixture();
+            *changed.pointer_mut(pointer).unwrap() = json!(true);
+            assert!(read(&changed).is_err(), "{pointer}");
+        }
+        let mut changed = fixture();
+        changed["pool"] = json!({"choice_id": null, "pinned": false, "rotation": "wall"});
+        assert!(read(&changed).is_err(), "schema 1 carries no pool");
+    }
+
+    #[test]
+    fn accounts_schema_two_counts_one_spare_beside_the_row_it_names() {
+        // A session walled on `main` with exactly one other able row, `work`.
+        let mut value = fixture_two();
+        value["accounts"][0]["condition"] = json!("limited");
+        value["accounts"][1]["condition"] = json!("usable");
+        let two = read_two(&value).unwrap();
+        assert!(
+            two.another_account_can_run(),
+            "schema 2 names main as its own"
+        );
+        // The same pool where no row is named (schema 1 never names one): `work` may be the
+        // session's own, so it is not known to be another.
+        let mut unnamed = two;
+        unnamed.assignment.account_id = None;
+        assert!(!unnamed.another_account_can_run());
+        // The named row's own ability never counts.
+        let mut value = fixture_two();
+        value["accounts"][1]["condition"] = json!("limited");
+        assert!(!read_two(&value).unwrap().another_account_can_run());
+    }
+
+    /// The snapshot lines a fake host was sent, without the session selector and request id.
+    fn snapshot_asks(host: &crate::fake::FakeAterm) -> Vec<String> {
+        host.requests()
+            .iter()
+            .filter_map(|line| {
+                let rest = line.split_once(' ')?.1;
+                let (head, _) = rest.rsplit_once(" request=")?;
+                head.starts_with("codex-accounts snapshot ")
+                    .then(|| head.to_owned())
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn accounts_snapshot_for_move_asks_schema_two_and_falls_back_to_schema_one_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let host = crate::fake::FakeAterm::start(directory.path(), crate::fake::Mode::Current)
+            .await
+            .unwrap();
+        let client = Client::connect(host.endpoint(), crate::Options::default())
+            .await
+            .unwrap();
+        let rows = json!([fixture()["accounts"][0].clone()]);
+        host.set_account_pool(Some(("birth", Some("safe-account"), rows)));
+        host.set_account_moves(crate::fake::FakeAccountMoves {
+            choice: Some("safe-account".into()),
+            pinned: true,
+            rotation: "early".into(),
+            select: true,
+            auto: false,
+        });
+
+        // A new host: one schema 2 request.
+        let snapshot = client.accounts_snapshot_for_move("birth").await.unwrap();
+        assert_eq!(snapshot.schema, 2);
+        assert!(snapshot.capabilities.select);
+        assert_eq!(
+            snapshot.assignment.account_id.as_deref(),
+            Some("safe-account")
+        );
+        assert_eq!(snapshot_asks(&host), ["codex-accounts snapshot schema=2"]);
+
+        // An aterm before schema 2: schema 2, then schema 1 once, which offers nothing.
+        host.answer_account_schema_two(false);
+        let snapshot = client.accounts_snapshot_for_move("birth").await.unwrap();
+        assert_eq!(snapshot.schema, 1);
+        assert_eq!(snapshot.pool, None);
+        assert_eq!(
+            snapshot.capabilities,
+            Capabilities {
+                add: false,
+                select: false,
+                auto: false
+            }
+        );
+        assert!(snapshot.accounts.iter().all(|row| !row.eligible));
+        assert_eq!(
+            snapshot_asks(&host)[1..],
+            [
+                "codex-accounts snapshot schema=2",
+                "codex-accounts snapshot schema=1"
+            ]
+        );
+
+        // Any other refusal is not an aterm before schema 2: nothing more is asked.
+        host.answer_account_schema_two(true);
+        let before = snapshot_asks(&host).len();
+        host.set_account_pool(None);
+        assert!(matches!(
+            client.accounts_snapshot_for_move("birth").await,
+            Err(Error::Refused(line)) if line.starts_with("ERR unknown")
+        ));
+        assert_eq!(snapshot_asks(&host).len(), before + 1);
+
+        // The schema 1 read asks exactly the schema 1 line, of a new host too.
+        host.set_account_pool(Some(("birth", None, json!([]))));
+        let before = snapshot_asks(&host).len();
+        let snapshot = client.accounts_snapshot("birth").await.unwrap();
+        assert_eq!(snapshot.schema, 1);
+        assert_eq!(
+            snapshot_asks(&host)[before..],
+            ["codex-accounts snapshot schema=1"]
+        );
     }
 
     #[tokio::test]
@@ -523,7 +969,7 @@ mod tests {
         snapshot["session"]["sid"] = json!(host.sid());
         let read = tokio::spawn(async move {
             client
-                .accounts_request("Fri Nov 6 09:00:00 2026", &request)
+                .accounts_request("Fri Nov 6 09:00:00 2026", Schema::One, &request)
                 .await
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -570,7 +1016,7 @@ mod tests {
         ] {
             host.reply_once(&command, &format!("{refusal}\n"));
             assert!(
-                matches!(client.accounts_request("birth", &request).await, Err(Error::Refused(line)) if line == refusal)
+                matches!(client.accounts_request("birth", Schema::One, &request).await, Err(Error::Refused(line)) if line == refusal)
             );
         }
     }

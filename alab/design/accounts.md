@@ -19,27 +19,26 @@ credential path, token digest or mailbox content enters conversation history.
 authenticate concurrently; a shared credential lineage has one refresh owner.
 Existing active credentials remain usable until a new login is proved and bound.
 
-`/accounts use <label>` requests an assignment for this session. An active turn
-retains its account through completion; the operation reports pending until a
-safe handoff completes. Selection must not silently change a global pool pin.
-`/accounts auto` removes this session's explicit selection and returns it to the
-pool's eligible-account policy. Neither operation claims a switch before the
-native handoff acknowledges the destination generation.
-
-The safe boundary includes pending tools, approvals and compaction, not just the
-TUI busy flag. Manual selection carries a separate typed assignment intent,
-bound to its operation, thread, source generation and destination account. It
-does not reuse the owed-turn quota recovery request or fabricate a weekly wall.
-The agreed request grammar and interrupted-handoff rules are in
-[`accounts-assignment.md`](accounts-assignment.md); status grammar is specified there, while runtime
-qualification remains implementation work.
+`/accounts use <label>` moves this session to that signed-in account, and
+`/accounts auto` moves it to the row a new launch would start on, by asking aterm
+to restart the session there (`restart account=<label>` or `account-auto`). The
+relaunch resumes the same conversation in a new process under the other login.
+The move is this session's only: it changes no pool pin, active row or rotation
+count, and it is not a rotation. It is refused, with nothing sent, while the
+session record does not stand at its idle point (a turn runs, input waits, a
+background terminal runs, a box waits for its answer, an active goal works between
+its turns or the session is still starting), and aterm refuses a row that is not
+signed in, and a session it does not find at that idle point when it comes to
+restart it (`account-busy`). A background terminal (a dev server, a watch build)
+must be stopped before the session can move: nothing ends it for the person. A
+refusal the move meets after its pane was closed is said once in history. The decision,
+the wire and what a restart loses are in
+[`accounts-assignment.md`](accounts-assignment.md). The in-process assignment
+request grammar this section used to point at is withdrawn.
 
 Here a session is the running Codex process in its aterm session, including its
-background threads and subagents that share an auth manager. The originating
-conversation ID fences the intent and its UI; it does not make another thread's
-active work safe to switch. Block new turn/thread admission and drain every
-request, tool, approval and compaction using that manager before retiring its
-account resources. Keep the submission dispatcher able to finish existing work.
+background threads and subagents that share an auth manager. A move ends all of
+them with the process; only the conversation continues.
 
 ## Native boundary
 
@@ -73,18 +72,16 @@ opaque account reference from the displayed snapshot.
 | --- | --- |
 | Open or refresh | Keep the last snapshot visible with its observation time while loading; distinguish an empty pool from an unavailable host. |
 | Add account | Open one enrollment operation with its own progress and cancellation; an email or OTP is entered in aterm's private enrollment UI. |
-| Select an account | Show the destination and “Waiting for current work”; keep the current account marked until the handoff is acknowledged. |
-| Return to automatic selection | Show “Automatic selection pending”, then the acknowledged current account and automatic mode. |
-| Connection lost during a change | Show “Checking account change”; reconnect and poll the same operation. |
+| Select an account | Refuse while the session is not at rest (a turn, queued input, a background terminal, a waiting box, work between turns, a start), each with its own sentence; otherwise show “Restarting this session on <label>…” and ask aterm to restart the session there, which aterm refuses if the session left rest meanwhile. A refusal after the pane closed is said in history. |
+| Return to automatic selection | The same, toward the row a new launch would start on; nothing restarts when that is the session's own row. |
+| No answer from aterm | Say the session resumes this conversation if it restarts, and is otherwise unchanged; nothing is retried. |
 | Enrollment needs interaction | Show “Complete sign-in in aterm”; opening the account view must not start another login. |
 | Account or policy changed | Show the native reason and refresh the choices; a different destination requires a new explicit selection. |
 
-Closing a view dismisses presentation and does not cancel an enrollment or
-assignment. An explicit Cancel requests cancellation of the existing operation;
-show “Cancelling” until native custody proves its outcome. If publication has
-already begun, reconcile that operation and display its actual result. A
-successful response means the session can use the acknowledged destination,
-not merely that its credentials were saved.
+Closing a view dismisses presentation and does not cancel an enrollment. An
+explicit Cancel requests cancellation of the existing enrollment; show
+“Cancelling” until native custody proves its outcome. A move has nothing to
+cancel: once aterm accepted it, the process stops.
 
 Account metadata belongs in the account view, not model messages or transcript
 events. Navigation, refresh and dismissal remain available during network waits.
@@ -111,9 +108,11 @@ actual destination readiness and native acknowledgment before continuation.
 Source processes and captured resources retain their original ownership until
 actual retirement.
 
-Generic in-process assignment remains unavailable. A future implementation must
-prepare and atomically publish the complete destination resource graph across
-all actual participants. Configuration preparation and a standalone model-client
+Generic in-process assignment remains unavailable, and its request path was
+removed on 2026-11-12: a manual move restarts the session instead
+([`accounts-assignment.md`](accounts-assignment.md)). A future in-process
+implementation must prepare and atomically publish the complete destination
+resource graph across all actual participants. Configuration preparation and a standalone model-client
 reconstruction cannot establish that publication proof. Configuration cohort and
 resource-custody APIs remain separate; capability advertisement still requires
 joined qualification of the complete handoff.
@@ -141,9 +140,10 @@ catalog refresh, whose timeout must not authorize use of a source-account catalo
 `core/src/session/async_compaction.rs` and compacted-history installation compare
 the captured auth owner before publishing a result. Preserve that fence when
 waiting for compaction. `core/src/realtime_conversation.rs` has an awaited
-`shutdown` that cancels and joins conversation tasks; the assignment coordinator
-must explicitly retire realtime work, since cached WebSocket reset does not
-shut down this separate conversation manager.
+`shutdown` that cancels and joins conversation tasks; account retirement
+(`retire_session` in `alab-core/glue/assignment_lifecycle.rs`) shuts it down
+explicitly, since cached WebSocket reset does not shut down this separate
+conversation manager.
 
 The snapshot revision must describe authoritative roster, binding and policy
 state. Observation timestamps and time-derived quota presentation do not belong
@@ -250,7 +250,9 @@ A wall the host would leave is one of two, and the host is told which
   `limit_wait` must be on, and the 429 itself must name that window's reset
   to within a minute, because everything after the ended turn runs on the
   429's reset. The installed aterm measured on 2026-11-12 (0.198.0) does not
-  print the word, so under it only a spent week is left.
+  print the word, so under it only a spent week is left; aterm main prints
+  `codex_rotation_five_hour=900` since 2365b983b6c, so a release after
+  0.198.0 leaves both.
 
 In every other case the original request stays and checks for a credit every
 30 seconds until the provider's reset: no such host, a standby, a thread that
@@ -281,6 +283,12 @@ relevant reset or authenticated state change without repeated prompts.
 Authentication expiry asks the owning credential slot to refresh. Only a
 definitive need for a new grant starts staged sign-in. Human security challenges
 retain one quiet pending operation; automation does not bypass the challenge.
+
+A login lost for good (expired, reused, invalidated or revoked) stops the
+session today, even with other accounts signed in. The decided move to another
+signed-in account, limited to a token's ordinary end, and the deferred early
+move before a wall are in [`accounts-lost-login.md`](accounts-lost-login.md);
+neither is built.
 
 ## Qualification
 

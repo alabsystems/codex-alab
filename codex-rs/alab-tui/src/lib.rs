@@ -9,9 +9,6 @@
 //! `glue/banner_cell.rs` and its composer border's codex side in `glue/composer_border.rs`
 //! (both off under codex-tui's own tests unless a glue test forces them).
 
-#[cfg(unix)]
-mod assignment;
-mod assignment_record;
 pub mod banner;
 
 /// Native account observation used by the ALab-owned TUI glue.

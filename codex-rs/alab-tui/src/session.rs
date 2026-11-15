@@ -20,6 +20,7 @@ use crate::record::Record;
 use crate::record::Status;
 use crate::resume_argv;
 use codex_alab_core::session::Launch;
+use codex_alab_core::session::Unrest;
 use codex_alab_core::session::now_ms;
 pub use codex_alab_core::session::shared;
 use std::collections::BTreeMap;
@@ -28,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -319,6 +321,10 @@ pub struct Writer {
     command: Option<fn() -> clap::Command>,
     state: Mutex<WriterState>,
     writes: AtomicU64,
+    /// Whether this start's sweep took a predecessor's handoff ([`WriterState::pending_handoff`],
+    /// never dropped once taken), read without the state's lock ([`idle_point`]): until the
+    /// launch probe proves it, every record is the busy initializer ([`owes_probe`]).
+    handoff_taken: AtomicBool,
 }
 
 impl Writer {
@@ -335,6 +341,7 @@ impl Writer {
             command,
             state: Mutex::new(WriterState::default()),
             writes: AtomicU64::new(0),
+            handoff_taken: AtomicBool::new(false),
         }
     }
 
@@ -517,12 +524,6 @@ impl Writer {
                     if let Some(pace) = &previous.pace {
                         self.shared.set_pace(thread, pace.clone().into());
                     }
-                    self.shared.seed_assignment_receipt(
-                        previous
-                            .assignment
-                            .clone()
-                            .and_then(super::assignment_record::Receipt::into_core),
-                    );
                     if self.shared.owed_act().is_none() {
                         self.shared
                             .set_owed_act(previous.owed.clone().map(Into::into));
@@ -680,12 +681,6 @@ impl Writer {
                 // or aterm's relaunch typed this line ([`Self::handoff_allows`]).
                 let seeded = shared.seed_before_native_work(|| {
                     shared.set_carried_on(chain.max(shared.carried_on()));
-                    shared.seed_assignment_receipt(
-                        source
-                            .assignment
-                            .clone()
-                            .and_then(super::assignment_record::Receipt::into_core),
-                    );
                     if shared.owed_act().is_none() {
                         shared.set_owed_act(source.owed.clone().map(Into::into));
                     }
@@ -703,6 +698,7 @@ impl Writer {
                 });
                 if seeded {
                     state.pending_handoff = Some(source);
+                    self.handoff_taken.store(true, Ordering::SeqCst);
                 }
             }
         }
@@ -966,7 +962,7 @@ impl Writer {
         let launch = shared.launch();
         let view = shared.view();
         let (native_seen, native_thread, native_accepted) = shared.native_work();
-        let native_superseded = native_seen && (!shared.leaving_for_relaunch() || native_accepted);
+        let native_superseded = superseded(shared, native_seen, native_accepted);
         let (mut status, state_word, blocked_kind) = status_of(view.state);
         // `idle` only at true rest: no turn running, no act being carried out or owed, no
         // person's turn on its way (CONTRACT §4: aterm may end the process at `idle`).
@@ -1079,8 +1075,7 @@ impl Writer {
                 })
             })
             .flatten();
-        let pending_probe =
-            state.pending_handoff.is_some() && !shared.launch_probed() && !native_superseded;
+        let pending_probe = owes_probe(shared, state.pending_handoff.is_some(), native_superseded);
         let known_materialized = primary.as_deref().is_some_and(|thread| {
             let matches = |source: &Record| {
                 source.session_id.as_deref() == Some(thread) && source.resume_argv.is_some()
@@ -1168,7 +1163,6 @@ impl Writer {
             && in_flight_retry.is_none()
             && !busy_predecessor;
         let mut record = Record {
-            assignment: shared.assignment_receipt().as_ref().map(Into::into),
             v: record::SCHEMA_VERSION,
             pid: self.pid(),
             proc_start: launch.and_then(|launch| launch.proc_start.clone()),
@@ -1325,6 +1319,100 @@ pub fn written_through(last: &Record, next: &Record) -> bool {
 /// `codex resume <id>` cannot find it (`resumable_thread` needs a non-empty file).
 pub(crate) fn rollout_materialized(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+}
+
+/// Why this session's record would not stand at its idle point now ([`idle_point`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotIdle {
+    /// codex-alab is not at rest by its own account ([`Shared::unrest`]): the record says
+    /// `busy` whatever the frame reads.
+    Unrest(Unrest),
+    /// The record is still the busy initializer of a start whose sweep took a predecessor's
+    /// handoff that the launch probe has not yet proven ([`owes_probe`]): `busy` whatever the
+    /// frame reads, until aterm's first `status` read answers.
+    Starting,
+    /// The frame reads no rest, so the record's status is not `idle`: `working` (a turn, a
+    /// background terminal, an active goal between turns, MCP servers starting), `blocked`
+    /// (a box waits for its answer: `waiting`), or no frame yet (`busy`).
+    Frame(ProgramState),
+    /// The composer held a draft at the last frame, or a key, paste or click came after it:
+    /// `draftEmpty` reads `false`.
+    Draft,
+}
+
+/// Whether the record would stand at its idle point now: `status:"idle"` with `draftEmpty:true`,
+/// the rest at which aterm may end the process (CONTRACT §4: the watch-only worker's memory
+/// remedy, and an account move's restart, which refuses `account-busy` without it). It reads
+/// what the writer reads, in the writer's own words ([`Shared::unrest`], then the initializer a
+/// start writes until its launch probe answers ([`owes_probe`]), then [`status_of`], then
+/// [`Shared::record_draft_empty`]), without the writer's lock, which a write holds through its
+/// sync; the reasons are given in that order. The writer's other forms are not a running
+/// session's: the status a signal holds while the process ends, and the provisional records of
+/// a start whose frames name no thread yet (`/accounts` has no conversation to move then).
+/// Where this process keeps no record (outside aterm, or a test's own state), the writer's
+/// words are read with no handoff taken.
+pub fn idle_point(shared: &Shared) -> Result<(), NotIdle> {
+    idle_point_in(shared, &WRITER)
+}
+
+/// [`idle_point`], where `slot` holds this process's writer, if it started one.
+pub(crate) fn idle_point_in(
+    shared: &Shared,
+    slot: &OnceLock<&'static Writer>,
+) -> Result<(), NotIdle> {
+    let handoff = slot
+        .get()
+        .is_some_and(|writer| std::ptr::eq(writer.shared, shared) && writer.took_handoff());
+    rest_of(shared, handoff)
+}
+
+impl Writer {
+    /// [`idle_point`] of the record this writer writes.
+    pub fn idle_point(&self) -> Result<(), NotIdle> {
+        rest_of(self.shared, self.took_handoff())
+    }
+
+    fn took_handoff(&self) -> bool {
+        self.handoff_taken.load(Ordering::SeqCst)
+    }
+}
+
+/// [`idle_point`] of `shared`, where the sweep took a predecessor's handoff (`handoff`).
+fn rest_of(shared: &Shared, handoff: bool) -> Result<(), NotIdle> {
+    if let Some(unrest) = shared.unrest() {
+        return Err(NotIdle::Unrest(unrest));
+    }
+    let (native_seen, _, native_accepted) = shared.native_work();
+    if owes_probe(
+        shared,
+        handoff,
+        superseded(shared, native_seen, native_accepted),
+    ) {
+        return Err(NotIdle::Starting);
+    }
+    let state = shared.view().state;
+    if status_of(state).0 != Status::Idle {
+        return Err(NotIdle::Frame(state));
+    }
+    if !shared.record_draft_empty() {
+        return Err(NotIdle::Draft);
+    }
+    Ok(())
+}
+
+/// Whether this process's own native work supersedes the handoff its sweep took: it saw work
+/// of its own ([`Shared::native_work`]: `native_seen`), and it is not leaving for a relaunch or
+/// it accepted a turn (`native_accepted`).
+fn superseded(shared: &Shared, native_seen: bool, native_accepted: bool) -> bool {
+    native_seen && (!shared.leaving_for_relaunch() || native_accepted)
+}
+
+/// Whether the record is still the busy initializer: the sweep took a predecessor's handoff
+/// (`handoff`), the launch probe has not proven it yet, and no native work of this process's
+/// own superseded it (`superseded`). aterm inherits the typed line only from that initializer's
+/// complete shape, so its fields stay out until the probe answers.
+fn owes_probe(shared: &Shared, handoff: bool, superseded: bool) -> bool {
+    handoff && !shared.launch_probed() && !superseded
 }
 
 fn status_of(state: ProgramState) -> (Status, Option<record::State>, Option<record::BlockedKind>) {

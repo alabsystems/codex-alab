@@ -573,6 +573,19 @@ pub(crate) async fn bind_compaction_weekly(
     Ok(())
 }
 
+pub(crate) async fn preflight_compaction_weekly(
+    sess: &Session,
+    turn: &TurnContext,
+) -> Result<(), CodexErr> {
+    use codex_async_utils::OrCancelExt;
+    if let Some(cancellation) = compaction_task_token(sess, turn).await {
+        preflight_weekly(sess, turn)
+            .or_cancel(&cancellation)
+            .await?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn recover_compaction_weekly(
     err: &CodexErr,
     sess: &Session,
@@ -705,6 +718,11 @@ pub(crate) async fn bind_weekly(sess: &Session, turn: &TurnContext) {
         let state = codex_alab_quota_recovery::State::bind(&sess.services.auth_manager).await;
         turn.extension_data.insert_if(state, |old| old.is_none());
     }
+}
+
+/// Check quota at the send boundary, including attempts after retry waits.
+/// Authentication and custody were bound before request preparation.
+pub(crate) async fn preflight_weekly(sess: &Session, turn: &TurnContext) {
     if codex_alab_core::active()
         && weekly_provider(turn)
         && !turn.session_source.is_non_root_agent()

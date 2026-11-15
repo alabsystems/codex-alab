@@ -74,9 +74,23 @@ impl GoalSetOutcome {
     }
 
     pub async fn apply_runtime_effects(&self, goal_service: &GoalService) {
+        self.apply_runtime_effects_with_policy(goal_service, None)
+            .await;
+    }
+
+    // ALAB(policy-resume): reactivation and its policy instruction share one native continuation.
+    pub async fn apply_runtime_effects_with_policy(
+        &self,
+        goal_service: &GoalService,
+        policy: Option<String>,
+    ) {
         if let Some(runtime) = goal_service.runtime_for_thread(self.goal.thread_id)
             && let Err(err) = runtime
-                .apply_external_goal_set(self.state_goal.clone(), self.previous_goal.clone())
+                .apply_external_goal_set_with_policy(
+                    self.state_goal.clone(),
+                    self.previous_goal.clone(),
+                    policy,
+                )
                 .await
         {
             tracing::warn!("failed to apply external goal status runtime effects: {err}");

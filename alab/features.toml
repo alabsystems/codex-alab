@@ -29,11 +29,21 @@ equivalence = "Upstream supports the complete native tree handoff contract inclu
 id = "provider-recovery"
 lifecycle = "active"
 purpose = "Recover eligible foreground work while preserving provider pacing and account custody."
-topics = ["capacity", "quota", "recovery", "retry-status", "wake", "weekly-reset", "goal-recovery", "daybreak"]
-implementation = ["codex-rs/alab-quota-recovery", "codex-rs/alab-core/glue/responses_retry.rs", "alab/smoke/weekly_reset.py", "codex-rs/alab-tui/glue/app_safety_recovery.rs", "codex-rs/alab-tui/glue/chat_hand.rs"]
-invariants = ["Reset-credit redemption requires verified reset eligibility.", "Provider deadlines survive delayed reporting and host sleep.", "Terminal or unadvised errors do not become generic retry loops.", "Cancellation ends recovery waits and stale status cannot reach another connection.", "Automatic safety recovery revalidates current-thread authority at execution and keeps an explicit retry cap."]
-scenarios = ["Advised and unadvised overload, invalid compaction and retry exhaustion.", "Natural reset, earned reset, duplicate receipt, account switch and long-wait cancellation.", "Duplicate or cross-thread safety notices, revoked authority, capped retries, and fallback without repeating acknowledged effects."]
+topics = ["capacity", "quota", "recovery", "retry-status", "wake", "weekly-reset", "goal-recovery", "daybreak", "policy-resume"]
+implementation = ["codex-rs/alab-quota-recovery", "codex-rs/alab-core/glue/responses_retry.rs", "codex-rs/alab-core/glue/api_request_recovery.rs", "codex-rs/alab-core/src/request_error.rs", "alab/smoke/weekly_reset.py", "codex-rs/alab-tui/glue/app_safety_recovery.rs", "codex-rs/alab-tui/glue/chat_hand.rs", "codex-rs/alab-autopilot/glue/policy_goal_resume.rs"]
+invariants = ["Automatic reset-credit redemption requires at least 99 percent utilization and a positive natural refresh no more than 24 hours away on the same ordinary allowance window, including pending retries.", "Provider deadlines survive delayed reporting and host sleep.", "Terminal or unadvised errors do not become generic retry loops.", "Cancellation ends recovery waits and stale status cannot reach another connection.", "Automatic safety recovery revalidates current-thread authority at execution and keeps an explicit retry cap.", "A policy refusal to spend a credit preserves ordinary quota polling, account handoff and unresolved credit custody."]
+scenarios = ["Advised and unadvised overload, invalid compaction and retry exhaustion; retry an opaque HTTP 400, including a saved failure, while preserving specific refusals.", "Natural reset, earned reset, duplicate receipt, account switch and long-wait cancellation.", "Duplicate or cross-thread safety notices, revoked authority, capped retries, and fallback without repeating acknowledged effects.", "Reject consumption below 99 percent, beyond 24 hours, across mismatched windows, or after a delayed credit listing crosses the refresh; admit both inclusive boundaries."]
 equivalence = "Upstream matches earned-reset custody, absolute deadline handling and persisted-origin recovery behavior."
+
+[[features]]
+id = "history-pagination"
+lifecycle = "active"
+purpose = "Project older transcript pages without invalid slices or ambiguous item ownership."
+topics = ["history"]
+implementation = ["codex-rs/alab-tui/glue/history_page.rs", "codex-rs/alab-tui/glue/history_page_tests.rs"]
+invariants = ["Page item order determines completion order, independently of turn creation order.", "Item identities retain their owning turn through projection.", "Borrowed groups cover every page item exactly once without constructing dynamic slice ranges.", "Empty interruption notices stay attached to their owning page boundary."]
+scenarios = ["Turn endings at page offsets 76 and 38 in reversed metadata order.", "Interleaved turns and reused item IDs across turns.", "Every metadata permutation and partial page preserves exact item coverage.", "Leading and chained empty interruptions, absent endpoints and trailing items."]
+equivalence = "Upstream retains scoped item identities and groups arbitrary page timelines with the same coverage and interruption ownership."
 
 [[features]]
 id = "model-discovery"
@@ -112,10 +122,10 @@ id = "build-and-adoption"
 lifecycle = "active"
 purpose = "Build, identify and adopt exact native-qualified source through ALab tooling."
 topics = ["build", "toolchain", "release", "upgrade", "version", "publish", "update"]
-implementation = ["alab/check.sh", "alab/package.sh", "alab/upstream_intake.py", "alab/upstream_gate.py", "codex-rs/alab-core/src/version.rs"]
+implementation = ["alab/check.sh", "alab/package.sh", "alab/certified-build.sh", "alab/proof-policy.toml", "alab/proof_build.py", "alab/check_runtime.py", "alab/trust_memory.py", "alab/upstream_intake.py", "alab/upstream_gate.py", "codex-rs/alab-core/src/version.rs"]
 policy_files = ["alab/removed-paths", "alab/owned-paths", "alab/watched-paths"]
-invariants = ["Every shipped identity remains reachable; main is never rebased or force-pushed.", "Source qualification, artifact packaging, selection and running identity are separate evidence.", "Removal policy is reapplied and removed upstream behavior is assessed at intake.", "ALab lock requirements do not rewrite upstream dependency identities.", "Immutable ALab identity leaves package updates with atpkg independently of release numbering."]
-scenarios = ["Compiler/source identity mismatch, source race, hook loss and package rollback.", "Reject missing, uncommitted, stale or ambiguous upstream reviews before compilation; allow only reviewed stepwise prefixes, independently of hook-loss exceptions.", "Regular and development ALab versions retain atpkg update ownership; upstream binaries retain their updater behavior."]
+invariants = ["Every shipped identity remains reachable; main is never rebased or force-pushed.", "Source qualification, artifact packaging, selection and running identity are separate evidence.", "Removal policy is reapplied and removed upstream behavior is assessed at intake.", "ALab lock requirements do not rewrite upstream dependency identities.", "Immutable ALab identity leaves package updates with atpkg independently of release numbering.", "Application builds require live certified verification including dependencies; unproved obligations block publication.", "Saved report bytes and compiler identity alone confer no verification authority.", "Qualification executes the newly certified application against source-owned reset policy fixtures and retains separate runtime evidence."]
+scenarios = ["Compiler/source identity mismatch, source race, hook loss and package rollback.", "Reject missing, uncommitted, stale or ambiguous upstream reviews before compilation; allow only reviewed stepwise prefixes, independently of hook-loss exceptions.", "Regular and development ALab versions retain atpkg update ownership; upstream binaries retain their updater behavior.", "Reject compiler failures, stale reports, substituted source workspaces and caller overrides of the certified build policy."]
 equivalence = "Upstream exposes the required native qualification and adoption protocol; distribution policy remains ALab-owned."
 
 [[features]]

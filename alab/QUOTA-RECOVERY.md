@@ -4,13 +4,17 @@
 The root sampler also checks authenticated allowance before issuing a model
 request. The first request of every turn reads current backend usage; a later
 request of that turn reuses a reading that permitted it only while the reading's
-headroom proves the 95% threshold out of reach, and reads again otherwise (see
-"Reusing a clear usage reading" below). At 95% usage it can redeem an earned
-reset before either the five-hour or weekly window is exhausted. Either window
-must be at least five minutes from its natural reset. Unknown identity or permission, nonordinary
-quota and explicit spend denial do not authorize this action. Already denied
-usage requires an actually exhausted window, rather than inferring its cause
-from a near-full counter. No AI prompt chooses or redeems the reset.
+headroom proves the conservative 95% read threshold out of reach, and reads again
+otherwise (see "Reusing a clear usage reading" below). Automatic redemption needs
+the same five-hour or weekly window to report at least 99% utilization and a
+future natural refresh no more than 24 hours away. Both boundaries are inclusive;
+a missing or elapsed refresh does not authorize redemption. Unknown identity or
+permission, nonordinary quota and explicit spend denial do not authorize this
+action. These checks apply to preflight, reactive recovery and uncertain request
+retries alike. No AI prompt chooses or redeems the reset.
+The check runs before each sampling or foreground-compaction attempt, including
+a retry after a transport or capacity wait. Authentication is bound before
+request preparation; each attempt checks the same account-bound state again.
 
 Preflight uses the same account-bound custody lock and idempotent redemption
 record as reactive recovery. A consumed credit cannot lead to another preflight
@@ -265,10 +269,23 @@ package index, pin, selected runtime or credentials.
 
 An active ALab root turn can redeem an existing earned Codex reset credit when a
 fresh authenticated usage read reports a five-hour or weekly window at least
-95% used. An explicitly denied allowance must be at least 100% used. The natural
-reset must be at least five minutes away, including that exact boundary. An unknown account or user,
+99% used and that same window's natural refresh is in the next 24 hours, including
+exactly 24 hours. A missing or elapsed refresh is ineligible. An unknown account or user,
 explicit credit or spend-control refusal, and missing available reset credits do
 not authorize redemption. The operation does not purchase credits.
+
+The 2026-11-12 correction separates redemption policy from the conservative 95%
+read-cache threshold. The former policy redeemed at 95% and imposed only a
+five-minute minimum wait, allowing an earned reset below 99% or days before a
+weekly refresh. The common selector now requires both conditions on one window
+before credit selection or retrying a pending redemption; utilization from one
+window and the refresh time of another cannot be combined. Scratch HTTP tests
+offer a real mock credit and assert no consumption outside either condition,
+including retries using a durable pending key. No live credits are used.
+An exhausted allowance outside the redemption policy still polls for ordinary
+restoration or reaches an available account handoff. A policy refusal does not
+claim that the account has no credit. Pending or consumed-but-unreleased reset
+custody continues observing usage without spending again or yielding its request.
 
 The account, native user and authentication ownership generation are bound
 before sampling or foreground compaction. Recovery runs inside the original

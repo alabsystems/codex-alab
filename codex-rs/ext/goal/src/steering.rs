@@ -11,6 +11,8 @@ use codex_protocol::protocol::ThreadGoal;
 use codex_utils_template::Template;
 use std::sync::LazyLock;
 
+#[path = "../../../alab-autopilot/glue/policy_goal_resume.rs"] pub(crate) mod alab_policy_resume; // ALAB(policy-resume): a policy-wall goal continues with its exclusion attached.
+
 static CONTINUATION_PROMPT_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
     parse_embedded_template(
         include_str!("../templates/goals/continuation.md"),

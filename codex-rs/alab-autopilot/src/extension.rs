@@ -5037,6 +5037,14 @@ impl Autopilot {
             GoalStop::Usage(origin) => origin,
             GoalStop::Wall(..) => None,
         };
+        let policy = match stop {
+            GoalStop::Wall(_, Act::Type { rule, text })
+                if *rule == words::RULE_POLICY_CONTINUE =>
+            {
+                Some(text.clone())
+            }
+            _ => None,
+        };
         let Some(goals) = &self.goals else {
             return GoalResume::Failed("this build has no goal service".to_string());
         };
@@ -5126,7 +5134,9 @@ impl Autopilot {
         match result {
             Ok(outcome) => {
                 self.tell_land(rt);
-                outcome.apply_runtime_effects(goals).await;
+                outcome
+                    .apply_runtime_effects_with_policy(goals, policy)
+                    .await;
                 if outcome.goal.status == codex_protocol::protocol::ThreadGoalStatus::Active {
                     GoalResume::Resumed
                 } else {
@@ -7384,8 +7394,8 @@ pub(crate) struct TurnGoal {
 /// own continuation cannot loop), and codex-alab took that stop for a person's: every wall act
 /// was dropped at the goal check, the thread parked for good behind `goal: the goal is
 /// blocked`. The stop is the wall's where the walled turn began with the goal ACTIVE, ended on a
-/// wall codex-alab retries (a server's, the network's, an overlong reply's, a full context's),
-/// was not aborted, called no goal tool (the model's `update_goal` may block it at a person's
+/// wall codex-alab retries or answers with bounded independent work (a server's, the network's,
+/// an overlong reply's, a full context's, or a cybersecurity policy's), was not aborted, called no goal tool (the model's `update_goal` may block it at a person's
 /// request), and saw no person's stop of the goal (`thread/goal/set` from the person's hand
 /// while it ran, which upstream's `turn-error` stop then leaves as it is: the forever-persist
 /// lane, item c); the store keeps no stop event, so those are the evidence. The autopilot's own
@@ -7410,6 +7420,7 @@ pub(crate) fn wall_goal_after(
                 | Wall::Network { .. }
                 | Wall::Overlong { .. }
                 | Wall::Context { .. }
+                | Wall::Policy
         )
     );
     let (stops_at_start, stops_now) = turn.person_stops;
@@ -8102,6 +8113,15 @@ pub fn classify(
         // aterm's `CutOff`), a request that timed out, or a reply past its output token
         // maximum.
         CodexErrorInfo::Other => match details {
+            CodexErrorDetails::Stream(message)
+                if codex_alab_core::request_error::opaque_bad_request_stream(message) =>
+            {
+                Wall::Server {
+                    what: "an API error (opaque backend HTTP 400)".to_string(),
+                    cut_off: false,
+                    retry_at: None,
+                }
+            }
             CodexErrorDetails::Stream(_) => Wall::Server {
                 what: "an API error (the reply was cut off)".to_string(),
                 cut_off: true,
@@ -8129,6 +8149,15 @@ pub fn classify(
                 cut_off: false,
                 retry_at: None,
             },
+            CodexErrorDetails::InvalidRequest(message)
+                if codex_alab_core::request_error::opaque_bad_request(message) =>
+            {
+                Wall::Server {
+                    what: "an API error (opaque backend HTTP 400)".to_string(),
+                    cut_off: false,
+                    retry_at: None,
+                }
+            }
             CodexErrorDetails::InvalidRequest(_)
             | CodexErrorDetails::InvalidImageRequest()
             | CodexErrorDetails::ToolCollision(_) => Wall::Fatal {

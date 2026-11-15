@@ -14,7 +14,13 @@ pub enum Update {
         token: SnapshotToken,
         result: Result<String, String>,
     },
+    /// What an account move says while it is under way: shown only in its own open pane.
     Observation(String),
+    /// An account move's last word, one of its fixed sentences, which name no account: shown in
+    /// its own open pane as an observation, or, where that pane is gone (closed, replaced, or
+    /// another thread shown), said once in history, so a move that did not happen is never
+    /// left unsaid.
+    Outcome(String),
 }
 
 #[derive(Debug)]
@@ -44,7 +50,7 @@ impl View {
         token
     }
 
-    /// Accept a snapshot once, or let assignment progress supersede pending reads.
+    /// Accept a snapshot once, or let an account move's observation supersede pending reads.
     pub fn apply(&mut self, update: Update) -> bool {
         match update {
             Update::Snapshot { token, result } => {
@@ -71,7 +77,7 @@ impl View {
                     }
                 }
             }
-            Update::Observation(text) => {
+            Update::Observation(text) | Update::Outcome(text) => {
                 self.current = None;
                 self.snapshot = None;
                 self.text = text;

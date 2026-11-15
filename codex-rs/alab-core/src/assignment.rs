@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Coordination for one auth manager. Activity leases carry no account authority.
+//!
+//! DORMANT since 2026-11-12, when the in-process assignment request path was deleted: the
+//! intent, retirement and boundary half of [`Domain`] has no production caller. Nothing
+//! outside tests calls [`Domain::request`], [`Domain::hold_unresolved`],
+//! [`Domain::cancel_pending`], [`Domain::try_retire`], [`Domain::retire`] or
+//! [`Domain::recover_retirement`], so no [`RetirementPermit`] or [`BoundaryPermit`] is made
+//! in production, [`Intent`] and [`Selection`] travel nowhere, and a domain never leaves
+//! [`Phase::Open`]: the waits on its other phases and the dispatch gate's `Pending`
+//! deferral are inert. Kept on purpose as the only in-process rebinding (it keeps the
+//! sub-agents, shells and draft a restart ends) for the automatic rotation still to come;
+//! `alab/design/accounts-assignment.md` names it. Admission and activity
+//! ([`Domain::admit_start`] and the rest) and the manager catalog's retirement are live.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -1172,119 +1184,6 @@ impl BoundaryPermit {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReceiptStamp {
-    pub credential_generation: u64,
-    pub assignment_generation: u64,
-    pub generations: Generations,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Receipt {
-    pub operation: String,
-    pub boundary: Option<String>,
-    pub thread: String,
-    pub selection: Selection,
-    pub source: ReceiptStamp,
-    pub destination: Option<ReceiptStamp>,
-    pub acknowledged: bool,
-}
-impl Receipt {
-    pub fn valid(&self) -> bool {
-        Intent {
-            operation: self.operation.clone(),
-            thread: self.thread.clone(),
-            selection: self.selection.clone(),
-        }
-        .valid()
-            && self
-                .boundary
-                .as_ref()
-                .is_none_or(|boundary| crate::managed_auth::valid_hex(boundary, 32))
-            && self.source.credential_generation > 0
-            && self.destination.as_ref().is_none_or(|destination| {
-                destination.credential_generation > 0
-                    && destination.assignment_generation > 0
-                    && self.boundary.is_some()
-            })
-            && (!self.acknowledged || self.destination.is_some())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Progress {
-    Preparing,
-    Draining,
-    Committing,
-    Rebinding,
-    Initializing,
-    Acknowledging,
-    Applied,
-    Refused,
-    Reconciling,
-    Cancelled,
-}
-#[derive(Clone, Debug)]
-pub struct Observation {
-    pub operation: String,
-    pub progress: Progress,
-    pub target: Option<String>,
-    pub mode: Option<crate::assignment_service::Mode>,
-    pub reason: Option<crate::assignment_service::Reason>,
-}
-pub type AdmissionFuture<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Refused>> + Send + 'a>>;
-pub trait Consumer: Send + Sync {
-    fn request<'a>(&'a self, intent: Intent) -> AdmissionFuture<'a>;
-    fn observation(&self) -> Option<Observation>;
-}
-static CONSUMERS: std::sync::OnceLock<
-    Mutex<std::collections::BTreeMap<String, Weak<dyn Consumer>>>,
-> = std::sync::OnceLock::new();
-pub fn register_consumer(thread: &str, consumer: &Arc<dyn Consumer>) {
-    if let Ok(mut consumers) = CONSUMERS.get_or_init(Default::default).lock() {
-        consumers.retain(|_, consumer| consumer.strong_count() != 0);
-        consumers.insert(thread.into(), Arc::downgrade(consumer));
-    }
-}
-/// Capture at the explicit user action, so a later same-thread replacement cannot retarget it.
-pub fn consumer(thread: &str) -> Option<Arc<dyn Consumer>> {
-    CONSUMERS.get()?.lock().ok()?.get(thread)?.upgrade()
-}
-
-/// Owned SDK actor/native source admission. A transport-only target preview is not this proof.
-/// Implementations retain the native source-work lease and the sealed local manager catalog;
-/// every credential load/rebind must participate before an implementation may be installed.
-pub trait ProcessAdmission: Send + Sync {
-    fn validate(&self) -> Result<(), Refused>;
-}
-pub type ProcessFuture<'a> = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Box<dyn ProcessAdmission>, Refused>> + Send + 'a>,
->;
-pub trait ProcessHost: Send + Sync {
-    /// Validate every registered manager's target policy while preventing uncensused source loads.
-    fn admit<'a>(&'a self, target: &'a crate::assignment_service::Target) -> ProcessFuture<'a>;
-}
-static PROCESS_HOST: std::sync::OnceLock<Arc<dyn ProcessHost>> = std::sync::OnceLock::new();
-pub fn install_process_host(host: Arc<dyn ProcessHost>) {
-    let _ = PROCESS_HOST.set(host);
-}
-/// Whether [`admit_process`] can ever succeed here. A request that will need it is refused
-/// before admission closes while this is false.
-pub fn process_host_installed() -> bool {
-    PROCESS_HOST.get().is_some()
-}
-pub async fn admit_process(
-    target: &crate::assignment_service::Target,
-) -> Result<Box<dyn ProcessAdmission>, Refused> {
-    let admission = PROCESS_HOST
-        .get()
-        .ok_or(Refused::Unavailable)?
-        .admit(target)
-        .await?;
-    admission.validate()?;
-    Ok(admission)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1604,43 +1503,6 @@ mod tests {
         };
         boundary.abort(completion).unwrap();
         assert_eq!(other.phase(), Phase::Open);
-    }
-
-    #[test]
-    fn assignment_record_is_inert_and_prevents_stale_startup_reseeding() {
-        let shared = crate::session::Shared::new();
-        let intent = intent();
-        let receipt = Receipt {
-            operation: intent.operation,
-            thread: intent.thread,
-            selection: intent.selection,
-            boundary: None,
-            source: ReceiptStamp {
-                credential_generation: 14,
-                assignment_generation: 0,
-                generations: Generations {
-                    auth: 0,
-                    owner: 0,
-                    source: 0,
-                    login: 0,
-                },
-            },
-            destination: None,
-            acknowledged: false,
-        };
-        assert!(shared.set_assignment_receipt(Some(receipt)));
-        assert_eq!(shared.unrest(), Some(crate::session::Unrest::Acting));
-        assert_eq!(
-            shared.native_work(),
-            (false, None, false),
-            "account selection does not forge an owed model turn"
-        );
-        assert!(!shared.has_record_writer());
-        assert!(shared.set_assignment_receipt(None));
-        assert!(!shared.seed_before_native_work(|| panic!(
-            "a stale record cannot resurrect the cleared intent"
-        )));
-        assert!(shared.assignment_receipt().is_none());
     }
 
     #[test]

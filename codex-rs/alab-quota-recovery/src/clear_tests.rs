@@ -18,6 +18,136 @@ const USAGE: &str = "/api/codex/usage";
 const CREDITS: &str = "/api/codex/rate-limit-reset-credits";
 const CONSUME: &str = "/api/codex/rate-limit-reset-credits/consume";
 
+/// A reactive retry can be permitted before usage falls below the prophylactic
+/// threshold. That permission must not immediately spend the next earned credit.
+#[tokio::test]
+async fn reactive_restoration_cannot_chain_preflight_credits_before_clear_usage() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    fn weekly(used: i32, allowed: bool) -> serde_json::Value {
+        let mut body = usage(used, allowed);
+        let window = &mut body["rate_limit"]["primary_window"];
+        window["limit_window_seconds"] = 604800.into();
+        window["reset_at"] = (chrono::Utc::now().timestamp() + 12 * 3600).into();
+        window["reset_after_seconds"] = 43200.into();
+        body
+    }
+
+    let fixture = Fixture::new().await;
+    let consumed = Arc::new(AtomicUsize::new(0));
+    let listed = Arc::clone(&consumed);
+    Mock::given(method("GET"))
+        .and(path(CREDITS))
+        .respond_with(move |_: &wiremock::Request| {
+            let credits: Vec<_> = ["A", "B"]
+                .into_iter()
+                .skip(listed.load(Ordering::SeqCst))
+                .map(|id| {
+                    serde_json::json!({"id":id,"reset_type":"codex_rate_limits",
+                    "status":"available","granted_at":"2026-01-01T00:00:00Z",
+                    "expires_at":"2030-01-01T00:00:00Z"})
+                })
+                .collect();
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "available_count":credits.len(),"credits":credits
+            }))
+        })
+        .with_priority(1)
+        .expect(2)
+        .mount(&fixture.server)
+        .await;
+    let applied = Arc::clone(&consumed);
+    let body = Arc::clone(&fixture.body);
+    Mock::given(method("POST"))
+        .and(path(CONSUME))
+        .respond_with(move |_: &wiremock::Request| {
+            let first = applied.fetch_add(1, Ordering::SeqCst) == 0;
+            *body.lock().unwrap() = weekly(if first { 96 } else { 0 }, true);
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"code":"reset","windows_reset":2}))
+        })
+        .with_priority(1)
+        .expect(2)
+        .mount(&fixture.server)
+        .await;
+    fixture.serve(weekly(100, false));
+    let state = fixture.turn().await;
+    let config = Settings {
+        home: fixture.home.path().to_owned(),
+        base: fixture.server.uri(),
+        factory: Fixture::factory(),
+    };
+    assert_eq!(
+        recover(
+            &fixture.manager,
+            &config,
+            &state.owner.clone().unwrap(),
+            "reactive-turn",
+            Purpose::Recover,
+        )
+        .await,
+        Recovery::Restored
+    );
+    assert_eq!(consumed.load(Ordering::SeqCst), 1);
+    fixture.preflight(&state, None).await;
+    assert_eq!(
+        consumed.load(Ordering::SeqCst),
+        1,
+        "96% is not a clear witness"
+    );
+    // The fence is durable, not a property of this turn's in-memory clearance.
+    let resumed = fixture.turn().await;
+    fixture.preflight(&resumed, None).await;
+    assert_eq!(consumed.load(Ordering::SeqCst), 1);
+    let mut foreign = weekly(94, true);
+    foreign["account_id"] = "another-account".into();
+    fixture.serve(foreign);
+    fixture.preflight(&resumed, None).await;
+    let mut foreign_user = weekly(94, true);
+    foreign_user["user_id"] = "another-user".into();
+    fixture.serve(foreign_user);
+    fixture.preflight(&resumed, None).await;
+    fixture.serve(weekly(94, false));
+    fixture.preflight(&resumed, None).await;
+    let mut denied = weekly(94, true);
+    denied["spend_control"] = serde_json::json!({"reached":true});
+    fixture.serve(denied);
+    fixture.preflight(&resumed, None).await;
+    fixture.serve(weekly(99, true));
+    fixture.preflight(&resumed, None).await;
+    assert_eq!(
+        consumed.load(Ordering::SeqCst),
+        1,
+        "only permitted matching clear usage counts"
+    );
+    fixture.serve(weekly(94, true));
+    fixture.preflight(&resumed, None).await;
+    fixture.serve(weekly(99, true));
+    let after_clear = fixture.turn().await;
+    fixture.preflight(&after_clear, None).await;
+    assert_eq!(
+        consumed.load(Ordering::SeqCst),
+        2,
+        "fresh depletion after clearance may redeem B"
+    );
+    let credits: Vec<_> = fixture
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path() == CONSUME)
+        .map(|request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body).unwrap()["credit_id"].clone()
+        })
+        .collect();
+    assert_eq!(
+        credits,
+        vec![serde_json::json!("A"), serde_json::json!("B")]
+    );
+}
+
 /// What a model response reports: one window of one limit family.
 fn response(limit_id: Option<&str>, used: f64, minutes: Option<i64>) -> RateLimitSnapshot {
     let mut snapshot: RateLimitSnapshot = serde_json::from_value(serde_json::json!({
@@ -350,4 +480,277 @@ async fn pressure_and_recovery_never_reuse_a_reading() {
     fixture.preflight(&state, None).await;
     assert_eq!(fixture.reads().await, reads + 1);
     assert!(state.clear().is_some());
+}
+
+fn policy_usage(used: i32, minutes: i64, remaining: i64, allowed: bool) -> serde_json::Value {
+    let mut body = usage(used, allowed);
+    let window = &mut body["rate_limit"]["primary_window"];
+    window["limit_window_seconds"] = (minutes * 60).into();
+    window["reset_at"] = (chrono::Utc::now().timestamp() + remaining).into();
+    window["reset_after_seconds"] = remaining.into();
+    body
+}
+
+async fn offer_credit(fixture: &Fixture, expected_lists: usize) {
+    Mock::given(method("GET"))
+        .and(path(CREDITS))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "available_count":1,"credits":[{
+                "id":"A","reset_type":"codex_rate_limits","status":"available",
+                "granted_at":"2026-01-01T00:00:00Z","expires_at":"2030-01-01T00:00:00Z"
+            }]
+        })))
+        .with_priority(1)
+        .expect(expected_lists as u64)
+        .mount(&fixture.server)
+        .await;
+}
+
+async fn serve_redemption(fixture: &Fixture) {
+    let body = Arc::clone(&fixture.body);
+    Mock::given(method("POST"))
+        .and(path(CONSUME))
+        .respond_with(move |_: &wiremock::Request| {
+            *body.lock().unwrap() = usage(0, true);
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"code":"reset","windows_reset":2}))
+        })
+        .with_priority(1)
+        .expect(1)
+        .mount(&fixture.server)
+        .await;
+}
+
+/// Exercise the actual HTTP client and both automatic entry paths with a credit
+/// available. A policy failure must prevent the POST, rather than relying on an
+/// empty credit list or a backend refusal to save the credit.
+#[tokio::test]
+async fn automatic_http_redemption_requires_both_policy_conditions_on_one_window() {
+    for minutes in [300, 10080] {
+        for purpose in [Purpose::Preflight, Purpose::Recover] {
+            for (used, remaining, eligible) in [
+                (95, 3600, false),
+                (98, 3600, false),
+                (99, 3600, true),
+                (100, 3600, true),
+                (99, 24 * 3600, true),
+                (100, 25 * 3600, false),
+                (100, -3600, false),
+            ] {
+                let fixture = Fixture::new().await;
+                offer_credit(&fixture, usize::from(eligible)).await;
+                if eligible {
+                    serve_redemption(&fixture).await;
+                }
+                fixture.serve(policy_usage(
+                    used,
+                    minutes,
+                    remaining,
+                    purpose == Purpose::Preflight,
+                ));
+                let state = fixture.turn().await;
+                if purpose == Purpose::Preflight {
+                    fixture.preflight(&state, None).await;
+                } else {
+                    let config = Settings {
+                        home: fixture.home.path().to_owned(),
+                        base: fixture.server.uri(),
+                        factory: Fixture::factory(),
+                    };
+                    recover(
+                        &fixture.manager,
+                        &config,
+                        state.owner.as_ref().unwrap(),
+                        "reactive-turn",
+                        purpose,
+                    )
+                    .await;
+                }
+                let requests = fixture.server.received_requests().await.unwrap();
+                let posts = requests
+                    .iter()
+                    .filter(|request| request.url.path() == CONSUME)
+                    .count();
+                assert_eq!(
+                    posts,
+                    usize::from(eligible),
+                    "minutes={minutes}, preflight={}, used={used}, remaining={remaining}",
+                    purpose == Purpose::Preflight,
+                );
+            }
+        }
+    }
+
+    for purpose in [Purpose::Preflight, Purpose::Recover] {
+        let fixture = Fixture::new().await;
+        offer_credit(&fixture, 0).await;
+        let mut mixed = policy_usage(100, 10080, 25 * 3600, purpose == Purpose::Preflight);
+        mixed["rate_limit"]["secondary_window"] =
+            policy_usage(98, 300, 3600, true)["rate_limit"]["primary_window"].clone();
+        fixture.serve(mixed);
+        let state = fixture.turn().await;
+        let config = Settings {
+            home: fixture.home.path().to_owned(),
+            base: fixture.server.uri(),
+            factory: Fixture::factory(),
+        };
+        recover(
+            &fixture.manager,
+            &config,
+            state.owner.as_ref().unwrap(),
+            "mixed-window-turn",
+            purpose,
+        )
+        .await;
+        assert!(
+            fixture
+                .server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.url.path() != CONSUME),
+            "usage and time from different windows cannot authorize a reset",
+        );
+    }
+}
+
+/// A durable ambiguous request retains its key, but that custody is never
+/// permission to send another consumption request outside the current policy.
+#[tokio::test]
+async fn pending_redemption_rechecks_policy_before_reusing_its_key() {
+    for purpose in [Purpose::Preflight, Purpose::Recover] {
+        let fixture = Fixture::new().await;
+        offer_credit(&fixture, 0).await;
+        let account = digest(&format!("{}\0account\0user", fixture.server.uri()));
+        let dir = fixture
+            .home
+            .path()
+            .join(format!("weekly-reset-{account}.d"));
+        private_dir(&dir).unwrap();
+        let mut ledger = Ledger::default();
+        let op = begin(
+            &dir,
+            &account,
+            &mut ledger,
+            chrono::Utc::now().timestamp() + 3600,
+            "A",
+        )
+        .unwrap();
+        ledger.current.as_mut().unwrap().outcome = Outcome::AwaitingAck;
+        save(&dir.join("state.json"), &ledger).unwrap();
+        let state = fixture.turn().await;
+        let config = Settings {
+            home: fixture.home.path().to_owned(),
+            base: fixture.server.uri(),
+            factory: Fixture::factory(),
+        };
+        for (used, remaining) in [(98, 3600), (100, 25 * 3600)] {
+            fixture.serve(policy_usage(
+                used,
+                10080,
+                remaining,
+                purpose == Purpose::Preflight,
+            ));
+            recover(
+                &fixture.manager,
+                &config,
+                state.owner.as_ref().unwrap(),
+                "pending-turn",
+                purpose,
+            )
+            .await;
+            let retained = load::<Ledger>(&dir.join("state.json"))
+                .unwrap()
+                .unwrap()
+                .current
+                .unwrap();
+            assert_eq!(retained.key, op.key);
+            assert!(retained.outcome == Outcome::AwaitingAck);
+        }
+        assert!(
+            fixture
+                .server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.url.path() != CONSUME),
+        );
+        serve_redemption(&fixture).await;
+        fixture.serve(policy_usage(99, 10080, 3600, purpose == Purpose::Preflight));
+        recover(
+            &fixture.manager,
+            &config,
+            state.owner.as_ref().unwrap(),
+            "pending-turn",
+            purpose,
+        )
+        .await;
+        let requests = fixture.server.received_requests().await.unwrap();
+        let posts = requests
+            .iter()
+            .filter(|request| request.url.path() == CONSUME)
+            .collect::<Vec<_>>();
+        assert_eq!(posts.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&posts[0].body).unwrap();
+        assert_eq!(body["redeem_request_id"], op.key);
+        assert_eq!(body["credit_id"], "A");
+    }
+}
+
+#[tokio::test]
+async fn a_credit_list_wait_cannot_redeem_after_the_natural_refresh() {
+    let fixture = Fixture::new().await;
+    Mock::given(method("GET"))
+        .and(path(USAGE))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(policy_usage(100, 10080, 2, false))
+        })
+        .with_priority(1)
+        .expect(1)
+        .mount(&fixture.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(CREDITS))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({
+                    "available_count":1,"credits":[{
+                        "id":"A","reset_type":"codex_rate_limits","status":"available",
+                        "granted_at":"2026-01-01T00:00:00Z","expires_at":"2030-01-01T00:00:00Z"
+                    }]
+                }))
+                .set_delay(Duration::from_secs(3)),
+        )
+        .with_priority(1)
+        .expect(1)
+        .mount(&fixture.server)
+        .await;
+    let state = fixture.turn().await;
+    let config = Settings {
+        home: fixture.home.path().to_owned(),
+        base: fixture.server.uri(),
+        factory: Fixture::factory(),
+    };
+    assert_eq!(
+        recover(
+            &fixture.manager,
+            &config,
+            state.owner.as_ref().unwrap(),
+            "slow-credit-list-turn",
+            Purpose::Recover,
+        )
+        .await,
+        Recovery::Wait,
+    );
+    assert!(
+        fixture
+            .server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.url.path() != CONSUME),
+    );
 }

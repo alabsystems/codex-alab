@@ -528,7 +528,7 @@ fn a_due_usage_resume_respects_native_goal_ownership_before_its_initial_read() {
 /// compaction turn; resumed only while it stands as that wall left it (`same_wall_goal`).
 /// NEGATIVE CONTROLS: a goal blocked before the turn, a goal tool's turn (the model blocks a
 /// goal at a person's request), a person's stop while the turn ran, an aborted turn, a usage
-/// limit's, a lost login's, a policy's and a fatal wall's stops, and a turn with no wall bind
+/// limit's, a lost login's and a fatal wall's stops, and a turn with no wall bind
 /// nothing; a paused, replaced, edited or spent goal, or one a person stopped since, is no
 /// longer the bound one.
 #[test]
@@ -574,6 +574,7 @@ fn a_goal_a_turn_error_blocked_at_a_retried_wall_is_that_walls_stop() {
             what: "max_output_tokens".to_string(),
         },
         Wall::Context { auto_compact: true },
+        Wall::Policy,
     ];
     for wall in &retried {
         assert_eq!(
@@ -618,7 +619,6 @@ fn a_goal_a_turn_error_blocked_at_a_retried_wall_is_that_walls_stop() {
         },
         Wall::Entitlement,
         Wall::Login,
-        Wall::Policy,
         Wall::Fatal {
             why: "an invalid request".to_string(),
         },
@@ -901,6 +901,263 @@ fn a_wall_goals_resume_is_booked_as_the_walls_own_try() {
         })
         .await
         .expect("wall goal booking hang detector");
+    });
+}
+
+/// A cybersecurity refusal blocks the goal, not the goal's independent future: the same goal is
+/// active again, and its native continuation carries the original objective and the existing
+/// instruction to abandon the refused action. The one-continuation boundary is already spent.
+#[test]
+fn a_policy_wall_resumes_its_goal_with_the_policy_boundary() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            use codex_state::ThreadGoalStatus;
+            let h = Harness::new_with_goals(Some(Arc::new(GoalService::new()))).await;
+            h.fake.set_policy_key("upgrade", "false");
+            upgrade_handoff_tests::wait_for_supervisor(|| {
+                h.autopilot
+                    .sup
+                    .policy()
+                    .is_some_and(|policy| !policy.upgrade)
+            })
+            .await;
+            h.immediate_point().await;
+            h.hold_model_response().await;
+            let db = h.test.codex.state_db().expect("goal database");
+            let active = db
+                .thread_goals()
+                .replace_thread_goal(
+                    h.rt.id,
+                    "finish the original task",
+                    ThreadGoalStatus::Active,
+                    None,
+                )
+                .await
+                .expect("the active goal");
+            db.thread_goals()
+                .update_thread_goal(
+                    h.rt.id,
+                    codex_state::GoalUpdate {
+                        objective: None,
+                        status: Some(ThreadGoalStatus::Blocked),
+                        token_budget: None,
+                        expected_goal_id: Some(active.goal_id.clone()),
+                    },
+                )
+                .await
+                .expect("the policy refusal's stop")
+                .expect("the same goal");
+            *lock(&h.rt.wall_goal) = Some(wall_goal_of(h.shared, &active));
+            let at = clock() - Duration::from_secs(3600);
+            h.rt.with_state(|state| {
+                state.observe_turn_end(
+                    TurnEnd {
+                        at,
+                        by_autopilot: true,
+                        by_person: false,
+                        text: None,
+                        earlier: None,
+                        questions: false,
+                        worked: Duration::from_secs(600),
+                        wall: Some(Wall::Policy),
+                        aborted: false,
+                        ran_tools: false,
+                        restored: false,
+                    },
+                    &h.autopilot.timing,
+                )
+            });
+            Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
+
+            let resumed = db
+                .thread_goals()
+                .get_thread_goal(h.rt.id)
+                .await
+                .expect("read the resumed goal")
+                .expect("the goal remains");
+            assert_eq!(resumed.goal_id, active.goal_id);
+            assert_eq!(resumed.status, ThreadGoalStatus::Active);
+            let state = h.rt.state();
+            assert!(state.policy_continued);
+            assert_eq!(state.last_rule, Some(words::RULE_POLICY_CONTINUE));
+            assert!(
+                h.fake
+                    .acts()
+                    .iter()
+                    .any(|act| act == words::RULE_POLICY_CONTINUE),
+                "{:?}",
+                h.fake.acts()
+            );
+            let requests = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if let Some(requests) = h._server.received_requests().await
+                        && !requests.is_empty()
+                    {
+                        break requests;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the native continuation request");
+            let continuation = requests
+                .last()
+                .expect("a request")
+                .body_json::<serde_json::Value>()
+                .expect("continuation JSON")
+                .to_string();
+            assert!(
+                continuation.contains("abandon the refused action"),
+                "policy exclusion missing from native goal continuation: {continuation}"
+            );
+            assert!(
+                continuation.contains("finish the original task"),
+                "original objective missing from native goal continuation: {continuation}"
+            );
+            h.test
+                .codex
+                .shutdown_and_wait()
+                .await
+                .expect("native shutdown");
+        })
+        .await
+        .expect("policy goal resume hang detector");
+    });
+}
+
+/// A policy continuation whose first native admission is declined remains the goal runtime's
+/// custody: the ordinary idle retry carries its exclusion. A replacement goal revokes that
+/// custody instead of inheriting a refusal from the old task.
+#[test]
+fn a_policy_wall_survives_generic_goal_admission_retries_but_not_a_goal_change() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            use codex_protocol::config_types::CollaborationMode;
+            use codex_protocol::config_types::ModeKind;
+            use codex_protocol::config_types::Settings;
+            use codex_protocol::protocol::ThreadSettingsOverrides;
+            use codex_state::ThreadGoalStatus;
+
+            for replacement in [false, true] {
+                let goals = Arc::new(GoalService::new());
+                let h = Harness::new_with_goals(Some(Arc::clone(&goals))).await;
+                h.hold_model_response().await;
+                let db = h.test.codex.state_db().expect("goal database");
+                db.thread_goals()
+                    .replace_thread_goal(
+                        h.rt.id,
+                        "finish the original task",
+                        ThreadGoalStatus::Blocked,
+                        None,
+                    )
+                    .await
+                    .expect("the policy-blocked goal");
+                let outcome = goals
+                    .set_thread_goal(
+                        &db,
+                        GoalSetRequest {
+                            thread_id: h.rt.id,
+                            objective: GoalObjectiveUpdate::Keep,
+                            status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                            token_budget: GoalTokenBudgetUpdate::Keep,
+                            max_goal_token_budget: None,
+                        },
+                        async { Ok(()) },
+                    )
+                    .await
+                    .expect("reactivate the policy-blocked goal");
+                let mode = |mode| ThreadSettingsOverrides {
+                    collaboration_mode: Some(CollaborationMode {
+                        mode,
+                        settings: Settings {
+                            model: h.test.session_configured.model.clone(),
+                            reasoning_effort: None,
+                            developer_instructions: None,
+                        },
+                    }),
+                    ..Default::default()
+                };
+                core_test_support::submit_thread_settings(&h.test.codex, mode(ModeKind::Plan))
+                    .await
+                    .expect("decline the first automatic admission in Plan mode");
+                outcome
+                    .apply_runtime_effects_with_policy(
+                        &goals,
+                        Some(words::POLICY_CONTINUE.to_string()),
+                    )
+                    .await;
+                assert!(
+                    h._server
+                        .received_requests()
+                        .await
+                        .unwrap_or_default()
+                        .is_empty(),
+                    "Plan mode declines the policy continuation before a provider request"
+                );
+
+                let outcome = if replacement {
+                    goals
+                        .set_thread_goal(
+                            &db,
+                            GoalSetRequest {
+                                thread_id: h.rt.id,
+                                objective: GoalObjectiveUpdate::Set("the replacement task"),
+                                status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                                token_budget: GoalTokenBudgetUpdate::Keep,
+                                max_goal_token_budget: None,
+                            },
+                            async { Ok(()) },
+                        )
+                        .await
+                        .expect("replace the goal before the generic retry")
+                } else {
+                    outcome
+                };
+                core_test_support::submit_thread_settings(&h.test.codex, mode(ModeKind::Default))
+                    .await
+                    .expect("permit the generic idle retry");
+                outcome.apply_runtime_effects(&goals).await;
+
+                let requests = tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        if let Some(requests) = h._server.received_requests().await
+                            && !requests.is_empty()
+                        {
+                            break requests;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .expect("the generic native goal retry");
+                let continuation = requests
+                    .last()
+                    .expect("a request")
+                    .body_json::<serde_json::Value>()
+                    .expect("continuation JSON")
+                    .to_string();
+                assert_eq!(
+                    continuation.contains("abandon the refused action"),
+                    !replacement,
+                    "replacement={replacement}: policy custody was wrong: {continuation}"
+                );
+                assert!(
+                    continuation.contains(if replacement {
+                        "the replacement task"
+                    } else {
+                        "finish the original task"
+                    }),
+                    "replacement={replacement}: wrong objective: {continuation}"
+                );
+                h.test
+                    .codex
+                    .shutdown_and_wait()
+                    .await
+                    .expect("native shutdown");
+            }
+        })
+        .await
+        .expect("generic policy admission retry hang detector");
     });
 }
 

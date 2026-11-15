@@ -16,7 +16,7 @@ use crate::analytics::GoalAnalytics;
 use crate::analytics::GoalEventAttribution;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
-use crate::steering::continuation_request;
+use crate::steering::alab_policy_resume;
 use crate::steering::objective_updated_steering_item;
 use crate::tool::protocol_goal_from_state;
 use tokio::sync::Semaphore;
@@ -54,6 +54,7 @@ struct GoalRuntimeInner {
     alab_auth_deferred: AtomicBool, // ALAB(renewal): pending original-turn recovery owns idle continuation.
     alab_auth_transient: std::sync::Mutex<(u64, bool)>, // ALAB(renewal): token-owned live-only recovery latch.
     alab_recovery: Arc<codex_alab_core::goal_recovery::GoalAdmissionRecovery>, // ALAB(goal-recovery): one recovery owner per runtime
+    alab_policy_continuation: std::sync::Mutex<Option<String>>, // ALAB(policy-resume): admission retries retain the refusal exclusion.
     alab_upgrade: Arc<codex_alab_core::upgrade_barrier::State>, // ALAB(upgrade): goal writers revoke preparation before they mutate state.
     thread_id: ThreadId,
     state_dbs: Arc<codex_state::StateRuntime>,
@@ -113,6 +114,7 @@ impl GoalRuntimeHandle {
                 alab_auth_deferred: AtomicBool::new(false), // ALAB(renewal): only an explicit pending receipt defers continuation.
                 alab_auth_transient: std::sync::Mutex::new((0, false)), // ALAB(renewal): no transient latch survives process recreation.
                 alab_recovery: Arc::default(), // ALAB(goal-recovery): initially no admission failure is owed
+                alab_policy_continuation: std::sync::Mutex::new(None), // ALAB(policy-resume): no exclusion is pending before recovery.
                 alab_upgrade: Arc::default(), // ALAB(upgrade): no process transfer is initially prepared.
                 thread_id,
                 state_dbs,
@@ -132,6 +134,9 @@ impl GoalRuntimeHandle {
 
     pub(crate) fn set_enabled(&self, enabled: bool) {
         self.alab_startup_configuration_changing(enabled); // ALAB(upgrade): a changed goal policy revokes destination activation.
+        if !enabled {
+            self.alab_clear_policy_continuation(); // ALAB(policy-resume): disabled execution cannot retain a recovery exclusion.
+        }
         self.inner.enabled.store(enabled, Ordering::Relaxed);
         self.alab_goal_configuration_changed(); // ALAB(upgrade): a configuration change revokes a prepared goal handoff.
     }
@@ -177,6 +182,7 @@ impl GoalRuntimeHandle {
     pub async fn prepare_external_goal_mutation(&self) -> Result<(), String> {
         self.alab_cancel_auth_recovery().await?; // ALAB(renewal): explicit goal changes supersede the deferred original turn.
         self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): an external mutation retires the prior goal's recheck
+        self.alab_clear_policy_continuation(); // ALAB(policy-resume): a new goal mutation revokes the old refusal's recovery custody.
         if !self.is_enabled() {
             return Ok(());
         }
@@ -207,6 +213,17 @@ impl GoalRuntimeHandle {
         &self,
         goal: codex_state::ThreadGoal,
         previous_goal: Option<PreviousGoalSnapshot>,
+    ) -> Result<(), String> {
+        self.apply_external_goal_set_with_policy(goal, previous_goal, None)
+            .await
+    }
+
+    // ALAB(policy-resume): reactivation and its policy instruction share one native continuation.
+    pub async fn apply_external_goal_set_with_policy(
+        &self,
+        goal: codex_state::ThreadGoal,
+        previous_goal: Option<PreviousGoalSnapshot>,
+        policy: Option<String>,
     ) -> Result<(), String> {
         if !self.is_enabled() {
             return Ok(());
@@ -253,7 +270,7 @@ impl GoalRuntimeHandle {
                     let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
                     self.inject_active_turn_steering(item).await;
                 }
-                self.continue_if_idle().await?;
+                self.continue_if_idle_with_policy(policy).await?; // ALAB(policy-resume): status and policy context enter the same native continuation.
             }
             codex_state::ThreadGoalStatus::BudgetLimited => {
                 if self.inner.accounting_state.current_turn_id().is_none() {
@@ -274,6 +291,7 @@ impl GoalRuntimeHandle {
         &self,
         goal: codex_state::ThreadGoal,
     ) -> Result<(), String> {
+        self.alab_clear_policy_continuation(); // ALAB(policy-resume): clearing the goal retires its recovery exclusion.
         if !self.is_enabled() {
             return Ok(());
         }
@@ -294,6 +312,7 @@ impl GoalRuntimeHandle {
         turn_id: &str,
         reason: ActiveGoalStopReason,
     ) -> Result<(), String> {
+        self.alab_clear_policy_continuation(); // ALAB(policy-resume): a terminal turn owns the next goal sequence.
         if !self.is_enabled() {
             return Ok(());
         }
@@ -456,6 +475,15 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
+        self.continue_if_idle_with_policy(None).await
+    }
+
+    // ALAB(policy-resume): the native goal turn retains its policy instruction as application context.
+    pub(crate) async fn continue_if_idle_with_policy(
+        &self,
+        policy: Option<String>,
+    ) -> Result<(), String> {
+        self.alab_hold_policy_continuation(policy); // ALAB(policy-resume): deferrals and generic admission rechecks retain the same exclusion.
         if self.alab_idle_continuation_deferred() { return Ok(()); } // ALAB(renewal): receipt recovery and committed upgrades must not race a new goal turn.
         if !self.tools_available() {
             self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): disabled goal execution retires admission recovery
@@ -513,9 +541,10 @@ impl GoalRuntimeHandle {
             .get::<TurnStartOptions>()
             .map(|options| options.as_ref().clone())
             .unwrap_or_default();
-        let request = continuation_request(
+        let request = alab_policy_resume::continuation_request_with_policy(
             &protocol_goal_from_state(goal),
             thread.config().await.update_plan_enabled,
+            self.alab_policy_continuation(), // ALAB(policy-resume): every admission attempt carries the retained exclusion.
         );
 
         match thread
@@ -529,6 +558,7 @@ impl GoalRuntimeHandle {
                 // Turn-stop evaluation takes the same permit, so even a fast response
                 // cannot finish before this host-admitted continuation is identified.
                 self.inner.accounting_state.mark_goal_continuation(turn_id);
+                self.alab_clear_policy_continuation(); // ALAB(policy-resume): native admission ends this exclusion's custody.
                 self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): admitted work is accounted before its recovery is retired
             }
             Ok(StartIfIdleSubmission::NotSubmitted { reason }) => {

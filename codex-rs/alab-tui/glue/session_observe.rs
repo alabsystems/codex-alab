@@ -97,7 +97,7 @@ pub(super) fn observe(app: &App) {
 }
 
 /// ALAB(answer) hook, as a resume opens "Resume paused goal?" (`thread_goal_actions.rs`): why
-/// the goal stopped, so codex-alab answers the goal box by it (a blocked goal is a person's).
+/// the goal stopped, so codex-alab dismisses the box without changing status while native recovery resumes it.
 pub(super) fn goal_prompt_over(status: ThreadGoalStatus) {
     let Some(state) = codex_alab_tui::boxes::tick_shared() else {
         return;

@@ -337,6 +337,7 @@ async fn run_remote_compaction_request_v2(
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retry_state = ResponsesStreamRetryState::default();
     loop {
+        crate::responses_retry::alab_capacity_retry::preflight_compaction_weekly(sess, turn_context).await?; // ALAB(weekly-reset): recheck earned resets before every foreground compaction attempt.
         let result = match client_session
             .stream(
                 prompt,

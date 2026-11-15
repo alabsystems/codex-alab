@@ -6,6 +6,7 @@ use std::ops::Range;
 use super::*;
 use crate::app_server_session::HISTORY_ITEM_PAGE_LIMIT;
 use crate::app_server_session::thread_items_page_params;
+use crate::app_server_session::history_page::HistoryPageItem; // ALAB(history): retain the owning turn until completion boundaries are projected.
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::is_session_history_prefix_cell;
 use crate::pager_overlay::TranscriptHistoryState;
@@ -245,7 +246,7 @@ impl App {
     /// Project each terminal row on the page containing the end of its turn.
     fn project_older_history_cells(
         &mut self,
-        items: Vec<ThreadItemPayload>,
+        items: Vec<HistoryPageItem>, // ALAB(history): IDs are scoped by turn.
         turns: &[Turn],
         hidden_item_ids: &HashSet<&str>,
         thread_id: ThreadId,
@@ -253,13 +254,13 @@ impl App {
         visibility: RawReasoningVisibility,
     ) -> Vec<Arc<dyn HistoryCell>> {
         let mut cells = Vec::new();
-        for (range, turn_end) in completion::group_turn_items(&items, turns) {
+        for (group, turn_end) in completion::group_turn_items(&items, turns) { // ALAB(history): borrowed groups cannot form a reversed slice.
             // Internal prompts stay invisible, but still separate adjacent tool groups.
-            for visible in items[range].split(|item| hidden_item_ids.contains(item.id())) {
+            for visible in group.split(|item| hidden_item_ids.contains(item.payload.id())) { // ALAB(history): split the already bounded group.
                 cells.extend(thread_items_to_transcript_cells(
                     Some(thread_id),
                     cwd,
-                    visible.iter().cloned(),
+                    visible.iter().map(|item| item.payload.clone()), // ALAB(history): identity is retained through grouping.
                     visibility,
                     Some(&self.config),
                 ));

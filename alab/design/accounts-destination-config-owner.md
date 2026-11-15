@@ -144,10 +144,11 @@ the actual typed requirements; use that selection with the correct owner.
   recursively invoking the current startup bootstrap. `EmbeddedNetworkPolicy`
   fields are crate-private; it currently has no public typed B-owner constructor.
 - Connect the parent destination-resource orchestration to the draft
-  `alab_prepare_destination`, resource context and Applied proof. Existing
+  `alab_prepare_destination`, resource context and Applied proof. The
   `assignment_lifecycle.rs::SessionAction::Destination` and `prepare_session`
-  still operate on the old session resource path; their success is not evidence
-  that a separate B ConfigManager/full bundle was built or atomically published.
+  this item once named were removed on 2026-11-12 with the in-process assignment
+  request path (see accounts-assignment.md); nothing now operates on the old
+  session resource path, and no B ConfigManager/full bundle is built or published.
 - Add a narrow revocation operation that clears A's composed snapshot, invalidates
   only its effective controller and retires its EMA/account loader as appropriate.
   `revoke_mcp_ema` alone does not invalidate the network policy/snapshot.

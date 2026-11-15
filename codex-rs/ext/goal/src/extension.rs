@@ -242,6 +242,7 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
+            runtime.alab_clear_policy_continuation(); // ALAB(policy-resume): a newly admitted turn owns the next recovery sequence.
             if !runtime.is_enabled() {
                 return;
             }

@@ -2697,13 +2697,12 @@ impl ThreadState {
 
     /// `act`, a wall's try whose goal a turn error blocked (the runtime's `GoalStop::Wall`), went
     /// as that goal resumed through `GoalService` at `now`: booked as the try (taken, its answer
-    /// owed: the goal's own turn answers it and the ladder climbs), but no words were typed, so
-    /// nothing the try's words carry was given: the ack stays owed for the next act that types,
-    /// and Land's episode stands as it was (its instruction not given, no hold begun, no land act
-    /// in flight), so the instruction still comes at a later turn end. A full context's
-    /// continuation under Land types Land's words ([`Self::acted`]); booked as typed, its episode
-    /// said the instruction was given when the goal's continuation went instead (review of the
-    /// forever-cruise lane, finding 3).
+    /// owed: the goal's own turn answers it and the ladder climbs). An ordinary retry types no
+    /// words, so its ack stays owed for the next act that types and Land's episode stands as it
+    /// was. A policy continuation carries its bounded instruction in the native goal request.
+    /// A full context's continuation under Land types Land's words ([`Self::acted`]); booked as
+    /// typed, its episode said the instruction was given when the goal's continuation went
+    /// instead (review of the forever-cruise lane, finding 3).
     pub fn wall_goal_resumed(&mut self, act: &Act, now: Instant, t: &Timing) {
         let (acked, land, landing) = (self.needs.acked, self.land.clone(), self.landing);
         self.acted(act, now, t);
@@ -4321,11 +4320,15 @@ pub const QUOTA_NEED: &str = "a top-up or a plan change (this account's quota st
 /// ([`Act::ResumeLimit`]): the goal's stop is the wall's, never a person's.
 /// WHETHER `act` IS A WALL'S TRY A TURN ERROR'S GOAL STOP MAY RIDE (the runtime's
 /// `wall_goal_after`): a server's, the network's or an overlong reply's retry, the compaction a
-/// full context takes, and its continuation; never the usage window's resume or a quota's try
-/// (`UsageLimited`'s own) nor the lost login's line (the renewal's).
+/// full context takes, its continuation, and the bounded independent-work continuation after a
+/// cybersecurity refusal; never the usage window's resume or a quota's try (`UsageLimited`'s own)
+/// nor the lost login's line (the renewal's).
 pub fn wall_try(act: &Act) -> bool {
     match act {
-        Act::Type { rule, .. } => is_wall_rule(rule) && *rule != words::RULE_LIMIT_RESUME,
+        Act::Type { rule, .. } => {
+            (is_wall_rule(rule) && *rule != words::RULE_LIMIT_RESUME)
+                || *rule == words::RULE_POLICY_CONTINUE
+        }
         Act::Compact => true,
         _ => false,
     }

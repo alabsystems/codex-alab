@@ -59,6 +59,11 @@ async fn confirmed_consumption(client: &codex_alab_aterm::Client, owed: &OwedAct
 /// conversation could move to (`Snapshot::another_account_can_run`). A read
 /// only: no claim, selection or credential travels with it. A host that does
 /// not serve the pool, or does not answer for this very process, shows none.
+///
+/// Schema 2 is asked first: it names the row aterm judges this session to run
+/// on, so one able row beside it is enough. An aterm before schema 2 is asked
+/// schema 1, which names no row, so two able rows are needed there: with one
+/// spare account a walled session on such an aterm keeps waiting for its reset.
 async fn rotation_target_in_sight(client: &codex_alab_aterm::Client) -> bool {
     let Some(birth) = codex_alab_tui::identity::current()
         .ok()
@@ -67,7 +72,7 @@ async fn rotation_target_in_sight(client: &codex_alab_aterm::Client) -> bool {
         return false;
     };
     client
-        .accounts_snapshot(&birth)
+        .accounts_snapshot_for_move(&birth)
         .await
         .is_ok_and(|pool| pool.another_account_can_run())
 }

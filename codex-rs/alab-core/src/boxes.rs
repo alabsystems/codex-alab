@@ -82,7 +82,7 @@ impl BoxKind {
 pub enum GoalStop {
     /// `/goal pause`, or the model's own pause.
     Paused,
-    /// The goal says it cannot go on without a person.
+    /// A turn error or policy blocked the goal; guarded native recovery may resume it.
     Blocked,
     /// The account's usage window ran out under it.
     UsageLimited,

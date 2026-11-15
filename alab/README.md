@@ -1058,6 +1058,14 @@ What a run does, in order (`--help` says the same):
    The selector leases the signed payload and validates its execution root through
    controller settlement. Every compiler call uses its explicit native admission
    hop, including calls from pristine upstream, without rediscovering a cwd pin.
+   Before a verified controller enters the protected profile, `trust_memory.py`
+   prepares only that selected root's sibling `trustd` at Trust's fixed host
+   endpoint and holds its connection-owned lifetime lease. Kernel peer PID,
+   owner and executable file identity bind the handshake to the selected bytes.
+   The profile grants connection to that one socket, without writable access
+   to its directory or a private replacement memory budget. Targo independently
+   authenticates and leases the authority again inside the profile. Daemon
+   retirement stays with Trust; the keeper never signals it or recovers epochs.
    A one-file probe records the selected compiler's version, root and binary digest
    for cache identity. This observation must match the native selected execution
    root. It grants no authority itself; `pack-package` independently authenticates
@@ -1070,10 +1078,20 @@ What a run does, in order (`--help` says the same):
    A record a contained step wrote is only compared, as text, with the trusted `-vV` and
    sysroot: nothing named in it is run (the record is the build's own claim, so this
    catches a misconfigured toolchain, not a hostile build that forges it). Then one
-   release build: `targo --unverified build --release --locked -p
+   release build: `targo trust build --certify --release --locked -p
    codex-cli --bin codex -p codex-code-mode-host --bin codex-code-mode-host`, adding
    `-p codex-exec-server-cli --bin codex-exec-server` when the selected commit's packager
    accepts `--exec-server-bin`. Historical `--commit` targets keep their own input set.
+   `alab/certified-build.sh` adds `alab/proof-policy.toml`, requiring certify
+   and dependency inclusion, so `codex-tui` is verified even when only the CLI
+   is selected as a primary target. The helper and policy belong to the
+   controller's recorded `packager` commit, including for a historical source;
+   their presence in the requested source is not inferred. Unknown, unsupported, assumed and merely
+   runtime-checked obligations block the build. The native live compiler verdict
+   decides; saved JSON is observational and cannot substitute for that run.
+   Reports stay in a fresh private target-directory leaf. The package records
+   the source, compiler, report digest, and both built and packaged binary digests
+   in `compiler.verification`, without publishing local report paths.
    Every supported binary is supplied as a prebuilt input to that target's packager,
    so its Python never starts a second Cargo build. The build runs with
    `STABLE_GIT_COMMIT=<commit>`, the package's `CODEX_ALAB_BUILD_VERSION` and upstream
@@ -1373,8 +1391,9 @@ because its `-vV` names no commit.
   helper stamped with another commit; the package lays no `codex-resources/voice`.
 - **aarch64-apple-darwin only**, the one target Trust ships for. Other targets stay on the
   vendor lane.
-- **`targo --unverified`**: the verified lane is not realistic for a 1,294-crate closure;
-  run it on ALab's own `alab-*` crates.
+- **Certified application builds** (owner, 2026-11-12): the gate and packager
+  require `targo trust build --certify` with dependencies included. Proof
+  unavailability blocks the build; an unverified build never substitutes for it.
 
 **What aterm has for a linked build** (aterm main, 2026-10-16): a dev-linked agent program
 gets its `agents/` twin (atpkg 071ebc86e2), so `aterm pkg link codex <pkgdir> bin/codex`
@@ -1722,18 +1741,28 @@ the local-only packaging and future published-lane plans in Decisions 3 and 6.
    authority judged by acceptance. No global current or shim change is required.
    A root `rust-toolchain.toml` says `channel = "trust"` (an ALab
    path, so a sync never meets it); `codex-rs/rust-toolchain.toml` stays upstream's stock pin
-   (Decision 7). The publication engine runs no gate for a mirrored repo (orca-alab's
-   precedent: its `CHECK_CMD_DEFAULT` is inert), and the gate it admits for Rust needs a
-   verified `targo trust check|build` step that passes. Measured 2026-10-16: `targo trust
-   check -p codex-alab-core`, ALab's smallest crate (one dependency, `toml`), is
-   INCONCLUSIVE on both the strict and the advisory lane (184/184 bodies covered, 0 failed,
-   7 unknown from unsupported MIR); the policy's strict gate over the whole 1,294-crate
-   workspace also builds voice-host, which needs gstreamer. A gate that cannot pass is not a
-   gate, so `publish/config.sh` carries a presence check, labelled inert, and the evidence
-   that the snapshot builds with Trust is `check.sh` (every sync builds and runs `codex`,
-   `targo --unverified`) and `package.sh`'s release build: no proof claim. When alab-core's
-   verified check passes, the gate becomes that check plus `targo --unverified test` of the
-   `alab-*` crates and of `codex-cli --bin codex --no-run`.
+   (Decision 7). Amended by the owner, 2026-11-12 after a slice-bounds crash:
+   `check.sh` and `package.sh` require a live certified application build with
+   dependencies included. The publication engine's mirror path skips its normal
+   gate, so `publish/pre-promote` runs the exact source's native gate through
+   `qualification.py` before any public write. Qualification requires committed
+   clean inputs before and after execution. Unavailable compiler capabilities or
+   proof obligations block publication rather than selecting an unverified lane.
+   Amended on the owner's word, 2026-11-14, for the catch-up publish: no existing
+   Trust build can certify the application, so the hook's qualification step is a
+   note in `publish/pre-promote`, as 0.7.0 was published, until `trust.lock` pins
+   a Trust build that can. `check.sh` and `package.sh` still require the certified build.
+   Test execution and compiler identity probes may still use the explicitly
+   unverified lane; they confer no proof authority on the shipping application.
+   After the live certified build, the gate executes that new Codex against
+   isolated loopback reset fixtures: eligible five-hour and weekly windows,
+   usage below 99 percent, and a reset beyond 24 hours. The negative cases
+   require zero redemption POSTs. The far-reset case observes a paced second
+   usage poll, adding roughly 30 seconds. Managed Python runs isolated and loads
+   only the source smoke directory explicitly; no inherited Python path or
+   user site supplies fixture code. Scratch fake credentials and sockets stay
+   under the protected short TMPDIR, while source/binary-bound results, HTTP
+   traces and native events remain beside the private proof report.
 11. **aterm's Codex lane is retired** (owner, 2026-10-16: "retire the codex harness"; "we
    still need codex-alab to work like codex for our purposes"; aterm main
    `28e13d46ba..83bd43c206`, CONTRACT §9 step 4). A vendor `codex` gets display only (its OSC

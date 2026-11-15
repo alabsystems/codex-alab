@@ -333,13 +333,6 @@ impl NativeSourceFence {
     pub fn continues_scope(&self, previous: &NativeSourceScope) -> bool {
         self.scope().continues_scope(previous)
     }
-    pub fn receipt_stamp(&self) -> codex_alab_core::assignment::ReceiptStamp {
-        codex_alab_core::assignment::ReceiptStamp {
-            credential_generation: self.source.revision.generation,
-            assignment_generation: self.source.assignment_generation,
-            generations: binding(&self.source, self.expected).generations,
-        }
-    }
     pub fn auth_state(&self) -> AuthChangeState {
         self.expected
     }
@@ -836,6 +829,14 @@ impl AuthManager {
             .ok_or_else(managed_auth::unavailable)?;
         Ok((tokens, slot))
     }
+
+    // DORMANT since 2026-11-12: from here, alab_assignment_source_admissible,
+    // alab_native_source_fence, alab_rebind_native_source_fenced,
+    // alab_pin_current_native_source and alab_restore_unchanged_native_source, and below
+    // alab_rebind_native_source with alab_install_native_source{,_locked}, have no production
+    // caller. The deleted assignment coordinator was the only one; each takes a
+    // `BoundaryPermit`, which nothing outside tests makes (codex_alab_core::assignment's
+    // module doc says why it is kept).
 
     /// Whether an assignment could ever fence this manager's source. Advisory: it is asked
     /// before admission closes, and the fence repeats it under the refresh lock.

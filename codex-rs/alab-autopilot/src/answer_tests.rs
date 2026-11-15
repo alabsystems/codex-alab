@@ -879,13 +879,13 @@ fn goal_box(rows: &[&str], stop: Option<GoalStop>) -> OpenBox {
     }
 }
 
-/// Over a paused or a usage-limited goal the goal box gets its `Leave paused` under every
-/// word (Cruise or Land, every switch off), never `Resume goal`: left open it held every root
-/// thread's acts back, the usage window's resume included. A blocked goal, and one the TUI
-/// said nothing of, are a person's. NEGATIVE CONTROL: a goal box without the row that changes
-/// nothing is a person's too.
+/// Every stopped-goal box gets its non-resuming `Leave paused` under every word
+/// (Cruise or Land, every switch off), never `Resume goal`: left open it held every root
+/// thread's acts back, including policy recovery and the usage window's resume. The goal's
+/// status stays untouched, so a blocked goal remains blocked and a person's pause remains
+/// authoritative. NEGATIVE CONTROL: a box without the non-resuming row is still a person's.
 #[test]
-fn the_goal_box_is_left_as_it_was_by_why_the_goal_stopped() {
+fn the_goal_box_is_dismissed_without_resuming_any_stopped_goal() {
     let rows = [GOAL_RESUME, GOAL_LEAVE];
     let words = [
         policy(),
@@ -904,12 +904,14 @@ fn the_goal_box_is_left_as_it_was_by_why_the_goal_stopped() {
         },
     ];
     for (stop, stopped) in [
-        (GoalStop::Paused, "paused"),
-        (GoalStop::UsageLimited, "usage-limited"),
+        (Some(GoalStop::Paused), "paused"),
+        (Some(GoalStop::Blocked), "blocked"),
+        (Some(GoalStop::UsageLimited), "usage-limited"),
+        (None, "stopped"),
     ] {
         for policy in &words {
             assert_eq!(
-                decide_box(&goal_box(&rows, Some(stop)), policy),
+                decide_box(&goal_box(&rows, stop), policy),
                 BoxDecision::Answer {
                     answer: BoxAnswer::Goal {
                         id: "goal-1".to_string(),
@@ -922,16 +924,6 @@ fn the_goal_box_is_left_as_it_was_by_why_the_goal_stopped() {
                 }
             );
         }
-    }
-    for policy in &words {
-        assert!(
-            left(&decide_box(
-                &goal_box(&rows, Some(GoalStop::Blocked)),
-                policy
-            ))
-            .contains("the goal is blocked")
-        );
-        assert!(left(&decide_box(&goal_box(&rows, None), policy)).contains("did not say"));
     }
     assert!(
         left(&decide_box(

@@ -111,6 +111,7 @@ pub mod native_source_use;
 pub mod native_target;
 pub mod quota;
 pub mod renewal;
+pub mod request_error;
 pub mod runtime_upgrade;
 pub mod session;
 pub mod upgrade_barrier;

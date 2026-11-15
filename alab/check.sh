@@ -348,7 +348,13 @@ ${upstream_base:0:9} in ${pristine}" >&2
   echo "alab/check.sh: tippy finds nothing in ALab's code ($(verdict .set_aside) diagnostics in upstream's set aside)" >&2
 fi
 
-alab_build_command "${cargo}" --unverified run --quiet --locked -p codex-cli --bin codex -- --version || passed $? 2
+proof_root="$(mktemp -d "${own_target}/alab-certified.XXXXXX")" || exit 1
+alab_build_command "${repo_root}/alab/certified-build.sh" "${proof_root}/report" \
+  "$(git rev-parse HEAD)" --locked -p codex-cli --bin codex || passed $? 2
+alab_build_command "${own_target}/debug/codex" --version || passed $? 2
+alab_build_command "${ALAB_PYTHON}" -I -B -S "${repo_root}/alab/check_runtime.py" \
+  --codex "${own_target}/debug/codex" --source "$(git rev-parse HEAD)" \
+  --scratch "${scratch}/reset-runtime" --output "${proof_root}/runtime" || passed $? 1
 if [[ ${#alab_packages[@]} -gt 0 ]]; then
   alab_build_command "${cargo}" --unverified test --locked --no-fail-fast "${alab_packages[@]}" || passed $? 1
 fi
@@ -437,7 +443,7 @@ check_selected() {
   if [[ -d "${ALAB_FEATURE_BUNDLE}" ]]; then
     feature_reads=(--read "${ALAB_FEATURE_BUNDLE}")
   fi
-  alab_contained --pristine "${pristine}" --read "${ATPKG_PROJECT_FRONT}" \
+  alab_verified_contained --pristine "${pristine}" --read "${ATPKG_PROJECT_FRONT}" \
     --read "${ATPKG_PROJECT_EXECUTION}" ${feature_reads[@]+"${feature_reads[@]}"} "${build_target}" "${pristine_target}" -- \
     /bin/bash -c '. "$1"; shift; check_main "$@"' alab-check "${repo_root}/alab/check.sh" || return $?
   if [[ "$(uname -s)" == Darwin && -f "${repo_root}/codex-rs/alab-release/Cargo.toml" ]]; then

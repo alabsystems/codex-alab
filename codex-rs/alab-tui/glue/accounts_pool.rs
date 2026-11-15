@@ -1,7 +1,9 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! Native subscription metadata stays in a view-owned buffer, outside chat history.
+//! Native subscription metadata stays in a view-owned buffer, outside chat history. Only an
+//! account move's last word, a fixed sentence that names no account, is said in history, and
+//! only where its pane is gone ([`ChatWidget::alab_accounts_ready`]).
 
 use super::ChatWidget;
 use super::DetailsView;
@@ -20,7 +22,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
 
-const VIEW_ID: &str = "alab-accounts";
+pub(super) const VIEW_ID: &str = "alab-accounts";
 
 /// One sentence for the pane and for a refused `/accounts use|auto`.
 #[cfg(unix)]
@@ -51,12 +53,38 @@ fn spawn_snapshot(
 fn describe(snapshot: &codex_alab_aterm::accounts::Snapshot, clock_format: ClockFormat) -> String {
     let date_time_format = format!("{} %Z", clock_format.date_time_format());
     let mut lines = vec!["Subscription accounts · cached native observations".to_owned()];
-    lines.push(if snapshot.assignment.account_id.is_some() {
-        "Current account is marked below.".into()
-    } else {
-        "Current session account: unavailable".into()
-    });
-    lines.push("Session selection mode: unavailable".into());
+    let label_of = |id: &String| {
+        snapshot
+            .accounts
+            .iter()
+            .find(|row| &row.id == id)
+            .map(|row| row.label.as_str())
+    };
+    match &snapshot.pool {
+        // Schema 1: aterm names no row as this session's and offers no move.
+        None => {
+            lines.push(if snapshot.assignment.account_id.is_some() {
+                "Current account is marked below.".into()
+            } else {
+                "Current session account: unavailable".into()
+            });
+            lines.push("Session selection mode: unavailable".into());
+        }
+        // Schema 2: the row aterm judges from the login this session was launched with.
+        Some(pool) => {
+            lines.push(
+                match snapshot.assignment.account_id.as_ref().and_then(label_of) {
+                    Some(label) => format!("Session account (by its launch login): {label}"),
+                    None => "Session account: unavailable".into(),
+                },
+            );
+            lines.push(match pool.choice_id.as_ref().and_then(label_of) {
+                Some(label) if pool.pinned => format!("Pool's choice: {label} · pinned"),
+                Some(label) => format!("Pool's choice: {label}"),
+                None => "Pool's choice: none".into(),
+            });
+        }
+    }
     if snapshot.accounts.is_empty() {
         lines.push("\nNo accounts are configured in this aterm pool.".into());
     }
@@ -116,7 +144,19 @@ fn describe(snapshot: &codex_alab_aterm::accounts::Snapshot, clock_format: Clock
                 .unwrap_or_else(|| "unavailable".into())
         ));
     }
-    lines.push(format!("\n{CHANGES_UNAVAILABLE}"));
+    lines.push(if snapshot.pool.is_some() && snapshot.capabilities.select {
+        format!(
+            "\n/accounts use <label> restarts this session on that account{}. The conversation \
+             resumes there if the account still serves; otherwise on the current one.",
+            if snapshot.capabilities.auto {
+                "; /accounts auto, on the pool's choice"
+            } else {
+                ""
+            }
+        )
+    } else {
+        format!("\n{CHANGES_UNAVAILABLE}")
+    });
     lines.join("\n")
 }
 
@@ -239,7 +279,7 @@ impl ChatWidget {
                         .and_then(|identity| codex_alab_tui::identity::proc_start_utc(&identity));
                     match birth {
                         Some(birth) => client
-                            .accounts_snapshot(&birth)
+                            .accounts_snapshot_for_move(&birth)
                             .await
                             .map(|snapshot| describe(&snapshot, clock_format)),
                         None => Err(codex_alab_aterm::Error::BadRequest(
@@ -258,25 +298,33 @@ impl ChatWidget {
         let _ = spawn_snapshot(weak, thread_id, tx, fetch);
     }
 
+    /// `text` for the pane `view` of `thread_id`, shown only while that very pane is open on
+    /// that thread. An account move's last word ([`Update::Outcome`]) is said in history
+    /// instead where its pane is gone: the person may close it while aterm weighs the move,
+    /// and the key that closes it can itself refuse the move.
     pub(crate) fn alab_accounts_ready(
         &mut self,
         view: Weak<Mutex<View>>,
         thread_id: Option<ThreadId>,
         text: Update,
     ) {
-        if self.thread_id() != thread_id
-            || self
+        let shown = (self.thread_id() == thread_id
+            && self
                 .bottom_pane
                 .selected_index_for_present_view(VIEW_ID)
-                .is_none()
-        {
-            return;
-        }
-        if let Some(view) = view.upgrade()
-            && let Ok(mut current) = view.lock()
-            && current.apply(text)
-        {
-            self.request_redraw();
+                .is_some())
+        .then(|| view.upgrade())
+        .flatten();
+        match (shown, text) {
+            (Some(view), text) => {
+                if let Ok(mut current) = view.lock()
+                    && current.apply(text)
+                {
+                    self.request_redraw();
+                }
+            }
+            (None, Update::Outcome(text)) => self.add_info_message(text, /*hint*/ None),
+            (None, Update::Snapshot { .. } | Update::Observation(_)) => {}
         }
     }
 }
@@ -436,10 +484,8 @@ mod tests {
                 epoch: "epoch".into(),
             },
             revision: "b".repeat(64),
-            assignment: Assignment {
-                account_id: None,
-                mode: Mode::Unknown,
-            },
+            assignment: Assignment { account_id: None },
+            pool: None,
             accounts: vec![Account {
                 id: "opaque".into(),
                 label: "Spare subscription".into(),
@@ -473,6 +519,84 @@ mod tests {
             crate::render::renderable::Renderable::desired_height(&paragraph, 20)
                 > crate::render::renderable::Renderable::desired_height(&paragraph, 80)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accounts_schema_two_names_the_sessions_row_the_pools_choice_and_the_commands() {
+        use codex_alab_aterm::accounts::*;
+        let row = |id: &str, label: &str| Account {
+            id: id.into(),
+            label: label.into(),
+            masked_email: None,
+            condition: Condition::Usable,
+            enrolled: true,
+            held: false,
+            eligible: id != "main-id",
+            quota: Quota {
+                stale: true,
+                observed_at: None,
+                five_hour_used_percent: None,
+                five_hour_reset_at: None,
+                weekly_used_percent: None,
+                weekly_reset_at: None,
+            },
+        };
+        let mut snapshot = Snapshot {
+            schema: 2,
+            observed_at: 1_800_000_000,
+            request: "a".repeat(32),
+            session: Session {
+                sid: "s-a".into(),
+                process_pid: 1,
+                process_birth: "birth".into(),
+                epoch: "epoch".into(),
+            },
+            revision: "b".repeat(64),
+            assignment: Assignment {
+                account_id: Some("main-id".into()),
+            },
+            pool: Some(Pool {
+                choice_id: Some("work-id".into()),
+                pinned: true,
+                rotation: Rotation::Wall,
+            }),
+            accounts: vec![row("main-id", "main"), row("work-id", "work")],
+            capabilities: Capabilities {
+                add: false,
+                select: true,
+                auto: true,
+            },
+        };
+        let text = describe(&snapshot, ClockFormat::TwentyFourHour);
+        assert!(
+            text.contains("Session account (by its launch login): main"),
+            "{text}"
+        );
+        assert!(text.contains("Pool's choice: work · pinned"), "{text}");
+        assert!(text.contains("\nmain · current session"), "{text}");
+        assert!(
+            text.contains("/accounts use <label> restarts this session"),
+            "{text}"
+        );
+        assert!(
+            text.contains("/accounts auto, on the pool's choice"),
+            "{text}"
+        );
+        assert!(!text.contains(CHANGES_UNAVAILABLE));
+
+        snapshot.capabilities.auto = false;
+        let text = describe(&snapshot, ClockFormat::TwentyFourHour);
+        assert!(text.contains("/accounts use <label>") && !text.contains("/accounts auto"));
+        snapshot.capabilities.select = false;
+        snapshot.pool.as_mut().unwrap().pinned = false;
+        snapshot.pool.as_mut().unwrap().choice_id = None;
+        snapshot.assignment.account_id = None;
+        let text = describe(&snapshot, ClockFormat::TwentyFourHour);
+        assert!(text.ends_with(CHANGES_UNAVAILABLE), "{text}");
+        assert!(text.contains("Session account: unavailable"));
+        assert!(text.contains("Pool's choice: none"));
+        assert!(!text.contains("/accounts use"));
     }
 
     #[cfg(unix)]

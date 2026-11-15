@@ -65,8 +65,8 @@ fn birth() -> String {
         .unwrap_or_else(|| panic!("this process has no readable birth"))
 }
 
-/// The fake aterm shows this process a pool of `rows`, naming `own` as its session's row
-/// (a real aterm names none yet).
+/// The fake aterm shows this process a pool of `rows`, naming `own` as its session's row in
+/// a schema 2 snapshot (schema 1 names none).
 fn show_pool(h: &Harness, own: Option<&str>, rows: &[serde_json::Value]) {
     h.fake
         .set_account_pool(Some((&birth(), own, serde_json::json!(rows))));
@@ -149,13 +149,24 @@ async fn ready(h: &Harness, handoff: &WallHandoff, what: &str) {
     ready_at(h, handoff, week(), what).await;
 }
 
-/// Wait (a hang detector) until the handoff says rotation would follow `wall`.
+/// Wait (a hang detector) until the handoff says rotation would follow `wall`. A hang says
+/// how many answers it read and the slowest, so a slow host is told from a refusing one.
 async fn ready_at(h: &Harness, handoff: &WallHandoff, wall: SpentWall, what: &str) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    while !settled_at(h, handoff, wall).await {
+    let started = tokio::time::Instant::now();
+    let deadline = started + Duration::from_secs(60);
+    let (mut answers, mut slowest) = (0_u32, Duration::ZERO);
+    loop {
+        let asked = tokio::time::Instant::now();
+        let ready = settled_at(h, handoff, wall).await;
+        answers += 1;
+        slowest = slowest.max(asked.elapsed());
+        if ready {
+            return;
+        }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "never ready: {what}: {:#?}",
+            "never ready: {what}: {answers} answers in {:?}, the slowest {slowest:?}: {:#?}",
+            started.elapsed(),
             h.sup.journal()
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -229,6 +240,18 @@ async fn a_started_turn_carries_a_wall_handoff_that_follows_rotation_policy() {
     );
     show_pool(&h, Some("a"), &[row("a", "limited"), row("b", "unseen")]);
     ready(&h, &handoff, "one able account beside the session's own").await;
+    // An aterm before schema 2 names no row: the one spare may be the session's own, so the
+    // same pool hands off nothing there, and asking schema 2 again restores it.
+    h.fake.answer_account_schema_two(false);
+    assert!(
+        !settled(&h, &handoff).await,
+        "one spare account on an aterm that names no row hands off"
+    );
+    show_pool(&h, None, &two);
+    ready(&h, &handoff, "two able rows on an aterm before schema 2").await;
+    h.fake.answer_account_schema_two(true);
+    show_pool(&h, Some("a"), &[row("a", "limited"), row("b", "unseen")]);
+    ready(&h, &handoff, "one spare account named again by schema 2").await;
     h.fake.set_account_pool(None);
     assert!(
         !settled(&h, &handoff).await,

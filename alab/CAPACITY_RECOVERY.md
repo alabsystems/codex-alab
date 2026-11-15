@@ -224,6 +224,22 @@ repeat or rephrase the refused request, change models or accounts, or enable Day
 An eligible account's automatic Daybreak offer stays informational under the active
 harness. The person can still open its settings with `/daybreak`.
 
+When that refusal blocks an active goal, the `Resume paused goal?` view cannot hold back
+recovery: the supervisor dismisses it without changing the goal through the UI. The native
+policy continuation then resumes the same goal to `Active`. Policy is a recoverable wall for
+this binding only when the turn began with that goal active, was not aborted, called no goal
+tool, and saw no person's stop. Identity, objective, budget, status, current authority, and
+person-stop count are revalidated before mutation. The native continuation includes both the
+original objective and the policy instruction to abandon the refused action; it is not a
+generic unguarded resume. The existing one-continuation limit and second-refusal stop still
+apply.
+
+The goal runtime retains the policy instruction as live admission custody until Core accepts
+the turn. A declined admission, a transient read or start failure, and the ordinary idle
+recheck therefore carry the same exclusion instead of falling back to a generic continuation.
+Native admission, a terminal turn, disabled execution, a newer turn, or an external goal
+mutation clears that custody, so a replacement goal cannot inherit the old task's refusal.
+
 Later automatic prompts retain that exclusion. Native conversation history preserves
 the boundary and the one-continuation limit across restarts; another security refusal
 raises attention instead of starting a retry loop. A new explicit person turn starts

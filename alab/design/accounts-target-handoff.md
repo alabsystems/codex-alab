@@ -2,7 +2,8 @@
 # Native destination handoff
 
 This is the agreed interface for the destination side of account rotation. It
-does not enable SourceV1 or install ProcessHost. Activation still requires the
+does not enable SourceV1 (nor install ProcessHost, which was removed on 2026-11-12 with
+the in-process assignment request path; see accounts-assignment.md). Activation still requires the
 complete reader/resource census, retained source seal, authenticated grant
 lineage, and a real two-subscription continuation test.
 

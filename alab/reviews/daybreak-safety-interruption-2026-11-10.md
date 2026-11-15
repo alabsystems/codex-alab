@@ -4,7 +4,7 @@
 The original audit inspected working-tree source based on commit
 `9a2fb340cc34d87a501e5aa1a7d5711134d117b4`. The bounded-recovery follow-up began at
 `49f3c2ba233ba8f6891d6918309cd035b9257d30` and integrates `origin/main` through
-`908df42bb56117d4a544c717876b8e750f58d3e5` in an isolated worktree. Unrelated changes
+`05950d02ef3004d20c22e27e1db66c9b41b9ab6e` in an isolated worktree. Unrelated changes
 in other checkouts are not attributed to Daybreak or modified by this work.
 
 ## Executive conclusion
@@ -636,6 +636,11 @@ unsent drafts, queued corrections, and the app-level close/settle handshake.
 7. **Header naming is not semantics.** `x-codex-safety-buffering-enabled=false` does
    not disable event-driven UI or the faster-model fallback. This is pinned behavior,
    not a toggle users should rely on.
+8. **Pre-admission custody is live, not a new durable record.** The retry fix covers
+   declined admissions, deferrals and transient rechecks in the running goal runtime.
+   It does not claim that a process crash between goal reactivation and native turn
+   admission serializes the exclusion into the goal database. Existing native history
+   custody covers the continuation after an admitted turn starts.
 
 ### 9.3 Follow-up resolutions
 
@@ -656,6 +661,20 @@ routing/discovery caveats:
   circuit breaker, authority and budget are rechecked at execution, changed model
   identity is recognized as a new offer, and tests exercise the actual queued event
   through app dispatch and its fallback submission lifecycle.
+- A subsequent goal-restoration case exposed two related gaps. `GoalStop::Blocked` left
+  the resume modal for a person, and `wall_goal_after` excluded `Wall::Policy`, preventing
+  the native goal from resuming. The modal is now dismissed without a UI status change,
+  while the guarded native policy continuation reactivates the same goal and includes the
+  original objective plus the refuse-the-action instruction in its actual request. Explicit
+  stops, changed goals, exhausted budgets, and repeated refusals remain stop conditions.
+- The follow-up audit found that policy context was only an argument to the first native goal
+  admission. Core's intentional `NotSubmitted` result could therefore be followed by a generic
+  idle continuation with no refusal exclusion; transient read/start recovery called that same
+  generic path. The goal runtime now retains the exclusion until native admission, reuses it on
+  every recheck, and clears it on admission, terminal turns, disabled execution, newer turns,
+  and external goal mutations. A real native regression forces Plan-mode rejection before the
+  generic retry and checks both preservation for the unchanged goal and revocation for a
+  replacement goal.
 
 The earlier TUI SIGABRTs were diagnosed separately as insufficient libtest stack for
 large Core/TUI futures. Upstream already prescribes `RUST_MIN_STACK`; running with
@@ -699,6 +718,31 @@ Static document checks passed on the bounded-recovery update: balanced code fenc
 no trailing whitespace, and 42 full and crate-relative file/line citations verified
 to exist and be in range. The work remains isolated from unrelated edits in other
 checkouts.
+
+On the goal-restoration follow-up integrated with
+`05950d02ef3004d20c22e27e1db66c9b41b9ab6e`, the native policy-wall regression proved
+that the same goal becomes `Active` and the actual HTTP continuation contains both the
+original objective and the abandon-the-refused-action instruction. Decision, supervisor,
+and wall-binding regressions passed. Broader `goal_resume`, `policy_continuation`,
+`answer`, supervisor-box, goal-extension, and goal-prompt suites passed, as did all 36
+TUI safety tests and the standard `targo --unverified build -p codex-cli --bin codex`.
+The enlarged test stack remained set.
+
+The follow-up re-audit is integrated with `b6a5e9c0da9c3ed316dc13aa1d49fc91eda5b0c3`.
+Both policy-wall native regressions passed. The broader `goal_resume` run passed 14
+library tests plus its integration case; `policy_continuation` passed four library and
+three integration tests; `goal_admission` matched and passed its two cases; and all 37
+`codex-goal-extension` tests passed. As a negative control, removing only the production
+custody change made the new unchanged-goal regression fail because the generic retry
+omitted `abandon the refused action`; restoring it made the same test pass again.
+
+The protected `alab/check.sh` gate ran with the qualified producer in a fresh managed
+worktree. Its full Tippy phase completed in 9m10s and reported no finding in this delta,
+but stopped on the pre-existing `bool_assert_comparison` at
+`codex-rs/alab-tui/glue/account_move_pool_tests.rs:710`, introduced by `db610c49d5`.
+That file is outside the Daybreak delta and was not rewritten. The gate therefore did
+not reach its CLI-build or later test phases; this is explicitly not a passing-gate
+claim. The separate certified package result is recorded below after publication.
 
 On the bounded lifecycle implementation integrated with
 `4b44e195a0c8667762b9b4c1ef98ddd96c12c049`, `targo --unverified check -p codex-tui

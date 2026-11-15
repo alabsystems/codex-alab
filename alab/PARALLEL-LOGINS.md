@@ -18,6 +18,7 @@ Current source and installed-host evidence:
 | Roster and session capacity | Aterm removes fixed account, preparation, history and session-count truncation; bounded storage writes remain atomic | Count caps removed from roster, sessions, claims and activity; 40 concurrent processes and 256-claim round trips passed; storage byte budgets remain |
 | Account selection on launch | Installed `aterm harness accounts --help` describes Codex pool selection with `CODEX_AUTH_PATH` | Host supports selection; not evidence of mid-task rotation |
 | Move a running interactive task to a different account after quota exhaustion | Separate typed rotation protocol, two-identity receipts, native quota selection and original-turn continuation; real-process happy path passed | Ordinary aterm app at `e75b1aeb3f79` builds and reports rotation enabled on Apple Silicon macOS; installed deployment and final combined-build rotation qualification remain pending |
+| Move a running interactive session to another signed-in account on request | `/accounts use <label>` and `/accounts auto` ask aterm `restart account=<label>` or `account-auto`, which restarts the session on its conversation under that login (`alab/design/accounts-assignment.md`); the in-process assignment request path is removed. It is asked and carried only at the session record's rest, so a running background terminal (a dev server, a watch build) must be stopped first; nothing ends it for the person. codex-alab's client, its schema 2 snapshot reader and the TUI refusals are tested against alab-aterm's fake host only | Unqualified: aterm's side is on aterm main since `9bd84e2a0c2` (2026-11-13), and its rest check (`account-busy`) on aterm branch `s51fb4f/account-busy`; neither is in the installed aterm 0.199.0, which answers schema 2 `ERR codex-accounts invalid request` and `restart account=` `ERR bad restart argument`; codex-alab then refuses with "Account changes are unavailable on this host." No live move was run |
 | Move a running headless exec task after quota exhaustion | Native contract 3 reserves through aterm before Core suspension; four/eight shared-pool sessions, repeated moves and lost acknowledgements pass. Codex `7a6cae40a6` also retains the original managed checkout, owner and local edits across repeated handoffs | Ordinary and managed-worktree exec continuation qualified locally; ephemeral/review modes and failures after suspension remain incomplete |
 | All eligible accounts exhausted | Real-process `weekly-quota-exhausted` checks both accounts at 100%, two native prepare polls, retained original task and no native actions | Passed without a rotation charge or replayed model request |
 | Consecutive quota handoffs | Real-process `weekly-quota-chain` exhausts the source and first replacement, then continues on a third account | Passed with the same original turn, one completed plan, two native handoffs and two charges |
@@ -266,9 +267,12 @@ that says so (`alab/continuous-earned-resets.md`, the two sections dated
 2026-11-12):
 
 - The host says so with `codex_rotation_five_hour=<seconds>` in its `harness
-  policy` reply. That word is not shipped: the installed aterm 0.198.0 prints
-  `codex_rotation=1` without it (measured on this Mac, 2026-11-12), so every
-  five-hour wall still waits in its turn there, as before.
+  policy` reply. That word is not yet in a release: the installed aterm
+  0.198.0 prints `codex_rotation=1` without it (measured on this Mac,
+  2026-11-12), so every five-hour wall still waits in its turn there, as
+  before. aterm main prints it since 2365b983b6c (2026-11-12), as
+  `codex_rotation_five_hour=900`, with the handoff that leaves such a wall
+  (6380d03f686), so the next aterm release turns it on.
 - `not-needed` still releases the intent to ordinary quota recovery and
   suppresses another attempt for the same accepted turn.
 - The ask is now bounded by the wall's own reset: an unbound handoff that the
@@ -653,11 +657,28 @@ What the runs show:
   again, and then `resume` on a second operation id, refused; the run
   signalled a minute earlier went one step further, to a refused attach and
   then accepted `resume` on that second operation. Nothing in the run ends it
-  but the detector. Its cause is not determined: the package
-  predates the rotation branch and the host's provenance is unproven. It is the
-  first thing to check when `happy` runs with a package from the rotation
-  branch against a host of proven provenance: a source ended by the host must
-  be followed by an attached successor, and `resume` must stop.
+  but the detector. On 2026-11-12 a reading of aterm's source named two
+  causes. An independent check upheld both, but no run has reproduced them:
+  - The refused attaches are the fixture's. aterm-gui's renewal fixture
+    (`native_renewal_fixture.rs`, which `native_host` serves) admits a renewal
+    Attach against a source registry that it never publishes, so it refuses
+    every attach. `happy` cannot pass against a `native_host` built before
+    that is fixed.
+  - The unbounded `resume` is aterm's own. The renewal drive
+    (`drive_connection`, aterm-agent `codex_renewal.rs`) resends `resume`
+    every 100 ms until each operation's 120 s deadline. The renewal service
+    (`run_closed`, aterm-gui `codex_renewal_service.rs`) then appends one
+    continuation after another with no cap. That matches the cycle above: an
+    operation, a refused attach, the next operation.
+
+  aterm branch `s51fb4f/renewal-bounded-resume` fixes both: one `resume` per
+  phase, polled with backoff, and a renewal that ends once when its successor
+  never attaches. Its first review found a blocker in that branch: a
+  connection-scoped source registry that the app's own renewal path does not
+  set. The branch has not landed. Until it lands and `happy` passes against a
+  `native_host` built from that aterm main, `happy` is not qualified: a
+  source ended by the host must be followed by an attached successor, and
+  `resume` must stop.
 - Whether the refused attach is the old package or the unproven host is not
   determined. It was the same with and without the JWT access tokens
   (`trial-04` against `t15-happy-step7`: the signal at 122 s, two refused
@@ -696,10 +717,76 @@ What the runs show:
     in `weekly-quota-chain` only the final row is still able, which is one
     where two are required. A hang there is the pool gate, and this section
     does not rule it out.
+  - Changed on branch `alab/account-move` (2026-11-12), by reading and fake
+    host tests only: the gate now asks `codex-accounts snapshot schema=2`,
+    which names the session's own row (`assignment.account_id`), and then one
+    other able row is enough. An aterm that answers schema 2 with
+    `ERR codex-accounts invalid request` is asked schema 1 once, and the gate
+    keeps the two-row rule there. No run used it.
 
   The oracles of `weekly-quota`, `weekly-quota-exhausted` and
   `weekly-quota-chain` were left as written; none was run with a package that
   can end a walled turn.
+
+### Results of 2026-11-13: the first rotation commit, and why it stops
+
+On 2026-11-13 a package that hands a walled turn over was available: the
+signed release 0.7.0, installed by atpkg at
+`~/Library/Application Support/aterm/pkg/store/codex/2026111301` (source
+`d75c9b4719`). It contains `c7641e9bad`, `4f63d6154a`, `064060139e` and
+`4b4a67dc1d`, but not the account move (`05950d02ef`). `alab/package.sh`
+still refuses on this Mac, for the reason above.
+
+Three hosts were used, each with `--case weekly-quota`:
+- `host-main-f78a392` was built from a clean detached worktree of aterm main
+  `f78a392ed72`. It is recorded `built-from-clean-commit`: the first record
+  that qualifies a run.
+- `host-branch-7cacd8a` was built from the unlanded renewal branch head
+  `7cacd8a7083`. It is a trial.
+- `host-trial-s3` is the trial host above.
+
+Paths are under `$HOME/.aterm/.ubd/codex-rotation-2026-11-13/`.
+
+| Result | Host | Outcome |
+| --- | --- | --- |
+| `b-wq` | `host-main-f78a392` | Failed at the detector. Prepare was `ready` at 7.3 s and the commit was answered `waiting`; the ledger recorded `rotate main -> target`. The source was never ended: its record stayed `idle` with no exit until teardown (`signal:1`). No native action reached the host. `status` answered `waiting` until it was `retired` at 130.7 s, and 56 later prepares answered `waiting` |
+| `r-wq` | `host-branch-7cacd8a` | Failed the same way |
+| `o-wq` | `host-trial-s3` | Failed the same way |
+
+This is the first time a rotation reached a commit in these smokes. In every
+earlier `weekly-quota` run the package could not hand the turn over.
+
+The cause was found by reading the source and the three runs' artifacts. An
+independent refuter upheld it. It is in production code on both sides, so the
+real app would stop the same way:
+
+- codex-alab's Autopilot starts every follow tick with `ready_for_admission()`.
+  That ends in `client.reconfirm()`, a same-holder `meta set supervisor`.
+  - It does so after the commit as well: the first reconfirm came about 10 to
+    20 ms after the commit's reply.
+  - It does so although `renewal_follow.rs` already notes that a second
+    readiness call after Ready would mutate the claim it sealed.
+- aterm's `claim_supervisor_with` calls `set_supervisor` on a renewal, and
+  `set_supervisor` raises `supervisor_revision` every time.
+- The sealed rotation is bound to the revision at its prepare.
+  - aterm's codex-renewal commit worker replays that prepare before it
+    signals the source.
+  - The replay is refused once the revision has moved
+    (`capture_native_authority`, `Seal::admits`).
+  - The worker retried about 700 times until its 120 s deadline and never
+    signalled.
+- The earlier `happy` runs did signal their source because their package
+  reconfirmed rarely. The revision did not move between commit and signal.
+
+The fix is in progress on two branches:
+- aterm `s51fb4f/claim-renew-keeps-seal`: a same-holder renewal that changes
+  nothing no longer moves the revision.
+- codex-alab `alab/rotation-no-reconfirm`: no reconfirm while a committed
+  receipt is pending.
+
+No rotation case is qualified until both have landed and the cases pass
+against a `built-from-clean-commit` host. Diagnosis:
+`<evidence>/rotation-commit-diagnosis.json`.
 
 ### Not run
 

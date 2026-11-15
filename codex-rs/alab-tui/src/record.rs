@@ -143,12 +143,6 @@ pub enum Autopilot {
 #[serde(rename_all = "camelCase")]
 pub struct Record {
     pub v: u32,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "crate::assignment_record::read"
-    )]
-    pub assignment: Option<crate::assignment_record::Receipt>,
     pub pid: u32,
     pub proc_start: Option<String>,
     pub identity: Option<Identity>,

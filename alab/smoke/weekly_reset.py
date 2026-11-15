@@ -12,6 +12,7 @@ import datetime
 import hashlib
 import http.server
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -21,6 +22,14 @@ import subprocess
 import sys
 import threading
 import time
+
+# The protected runtime probe starts this mode with Python isolation enabled.
+# It must exec its child before importing adjacent fixture modules, which are
+# deliberately unavailable on the isolated module search path.
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--exec-wrapper":
+    with Path(sys.argv[2]).open("x") as pidfile:
+        pidfile.write(str(os.getpid()))
+    os.execv(sys.argv[3], sys.argv[3:])
 
 import provider_fixture
 
@@ -40,9 +49,12 @@ DEADLINE_OUTAGE_CASES = ("usage-outage-deadline", "credit-list-outage-deadline")
 PROPAGATION_CASES = ("propagating-reset", "lost-ack-propagation")
 TWO_CREDITS = ("stale-allowance-credit", *PROPAGATION_CASES, "repeated-same-cycle", "stale-credit-ledger", "selected-no-credit")
 TWO_TOOLS = ("shared-credit", "repeated-same-cycle", "stale-credit-ledger", "unused-pending")
-PREFLIGHT_CASES = ("preflight-five-hour", "preflight-weekly")
+PREFLIGHT_CASES = ("preflight-five-hour", "preflight-weekly", "preflight-weekly-24h")
+POLICY_PREFLIGHT_CASES = ("preflight-below-99", "preflight-beyond-24h", "preflight-mixed-windows")
+POLICY_BLOCKED_CASES = (*POLICY_PREFLIGHT_CASES, "recovery-below-99", "recovery-beyond-24h")
+POLICY_POLL_CASES = ("preflight-beyond-24h", "preflight-mixed-windows", "recovery-beyond-24h")
 SUCCESS_CASES = ("spent-retry-deadline", *DEADLINE_OUTAGE_CASES, "stale-allowance-credit", *OUTAGE_CASES, "shared-credit", "natural-reset", "committed-ack", "stale-reset-credit", *PROPAGATION_CASES, "near-reset", "late-credit", "recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit", *PREFLIGHT_CASES)
-CASE_NAMES = (*SUCCESS_CASES, "stale-credit-ledger", "stale-restored", "identity-mismatch", "no-credit", "unrelated-provider")
+CASE_NAMES = (*SUCCESS_CASES, *POLICY_BLOCKED_CASES, "stale-credit-ledger", "stale-restored", "identity-mismatch", "no-credit", "unrelated-provider")
 
 def require(condition, message):
     if not condition:
@@ -97,6 +109,7 @@ def run(executable, args, root, env, label, *, interact=None):
     with (root / (label + "-stdout.jsonl")).open("xb") as stdout, \
             (root / (label + "-stderr.txt")).open("xb") as stderr:
         child, pending, cleaning = None, None, False
+        interaction_error = None
         handlers = {}
 
         def cancel(signum, _frame):
@@ -121,7 +134,13 @@ def run(executable, args, root, env, label, *, interact=None):
             if pending is not None:
                 raise SystemExit(128 + pending)
             if interact:
-                interact(child, stdout)
+                try:
+                    interact(child, stdout)
+                except BaseException as error:
+                    # The interaction callback interrupts its leased native PID
+                    # even when an oracle fails. Let both guardians finish and
+                    # record the real exit before propagating that failure.
+                    interaction_error = error
                 trailing, _ = child.communicate()
                 stdout.write(trailing)
                 code = child.returncode
@@ -157,6 +176,11 @@ def run(executable, args, root, env, label, *, interact=None):
     require(type(raw) is int and -signal.NSIG < raw < 256,
             "missing or invalid raw command status")
     require(code == (raw if raw >= 0 else 128 - raw), "guardian exit disagrees with raw command status")
+    if interaction_error is not None:
+        write_json(root / (label + "-interaction-failure.json"), {
+            "error": f"{type(interaction_error).__name__}: {interaction_error}",
+            "guardianExit": code, "rawReturncode": raw, "guardianTimedOut": False})
+        raise interaction_error
     return raw
 
 def sse(events):
@@ -182,7 +206,9 @@ def jwt():
 class Mock:
     def __init__(self, name):
         self.name = name
-        reset_delay = 90 if name == "natural-reset" else 4 * 60 if name == "near-reset" else 24 * 3600
+        reset_delay = (90 if name == "natural-reset" else 4 * 60 if name == "near-reset"
+                       else 25 * 3600 if name in ("preflight-beyond-24h", "recovery-beyond-24h", "preflight-mixed-windows")
+                       else 24 * 3600 if name == "preflight-weekly-24h" else 13 * 3600)
         self.reset = int(time.time()) + reset_delay
         self.credit = name not in ("no-credit", "late-credit", "natural-reset")
         self.consumed = name == "unused-pending"
@@ -202,7 +228,7 @@ class Mock:
         self.stale_allowance_reads = 0
 
     def usage(self):
-        preflight = self.name in PREFLIGHT_CASES
+        preflight = self.name in PREFLIGHT_CASES or (self.name in POLICY_PREFLIGHT_CASES and len(self.models) < 2)
         healthy = self.consumed or (not preflight and len(self.models) < 2)
         if len(self.models) >= 2:
             self.wall_usage_reads += 1
@@ -231,9 +257,13 @@ class Mock:
         return {"account_id": "other-account" if self.name == "identity-mismatch" else ACCOUNT,
                 "user_id": USER, "plan_type": "pro",
                 "rate_limit": {"allowed": healthy or preflight, "limit_reached": not (healthy or preflight),
-                    "primary_window": {"used_percent": 95 if self.name == "preflight-five-hour" and not healthy else 0, "limit_window_seconds": 18000,
+                    "primary_window": {"used_percent": (99 if self.name == "preflight-five-hour" and not healthy
+                                                       else 95 if self.name == "preflight-below-99"
+                                                       else 98 if self.name == "preflight-mixed-windows" else 0), "limit_window_seconds": 18000,
                         "reset_after_seconds": 3600, "reset_at": int(time.time()) + 3600},
-                    "secondary_window": {"used_percent": 0 if healthy or self.name == "preflight-five-hour" else (95 if preflight else 100),
+                    "secondary_window": {"used_percent": (0 if healthy or self.name in ("preflight-five-hour", "preflight-below-99")
+                                                         else 98 if self.name == "recovery-below-99"
+                                                         else 99 if preflight else 100),
                         "limit_window_seconds": 604800,
                         "reset_after_seconds": reset - int(time.time()), "reset_at": reset}},
                 "rate_limit_reset_credits": {"available_count": available}}
@@ -357,6 +387,18 @@ class Mock:
                                                 if credit["id"] not in self.spent + self.declined]
                         value["available_count"] = len(value["credits"])
             elif method == "POST" and path == "/backend-api/wham/rate-limit-reset-credits/consume":
+                latest = next((request["response"] for request in reversed(self.requests[:-1])
+                               if request["path"].endswith("/usage") and "rate_limit" in request.get("response", {})), None)
+                now = int(time.time())
+                record["serverUnix"] = now
+                require(latest is not None and latest["account_id"] == ACCOUNT and latest["user_id"] == USER
+                        and any(isinstance(window.get("used_percent"), (int, float))
+                                and math.isfinite(window["used_percent"]) and window["used_percent"] >= 99
+                                and window.get("limit_window_seconds") in (18000, 604800)
+                                and isinstance(window.get("reset_at"), int)
+                                and 0 < window["reset_at"] - now <= 24 * 3600
+                                for window in (latest["rate_limit"]["primary_window"], latest["rate_limit"]["secondary_window"])),
+                        "redemption policy requires >=99% and <=24h on the same current window")
                 if self.name == "pending-old-cycle" and body.get("credit_id") == "previous-earned-credit":
                     require(body.get("redeem_request_id") == self.old_key,
                             "pending redemption did not retain the original key")
@@ -476,56 +518,61 @@ def case(executable, output, name):
 
     def cancel_after_check(child, stdout):
         nonlocal cancelled
-        # A request appearing in the server log does not prove its response
-        # reached recovery. A second paced poll witnesses a completed wait loop.
-        retained = name in ("no-credit", "stale-credit-ledger", "stale-restored")
+        try:
+            # A request appearing in the server log does not prove its response
+            # reached recovery. A second paced poll witnesses a completed wait loop.
+            retained = name in ("no-credit", "stale-credit-ledger", "stale-restored", *POLICY_POLL_CASES)
 
-        def retained_wait():
-            if not retained:
-                return False
+            def retained_wait():
+                if not retained:
+                    return False
+                with mock.lock:
+                    expected_models, expected_consumes = {"stale-restored": (3, 1),
+                        "stale-credit-ledger": (5, 2)}.get(name, (2, 0))
+                    if (not mock.checked.is_set() or len(mock.models) != expected_models
+                            or sum(request["path"].endswith("/consume") for request in mock.requests)
+                            != expected_consumes):
+                        return False
+                    last_model = max(request["at"] for request in mock.requests
+                                     if request["path"] == "/v1/responses")
+                    endpoint = "/usage" if name == "stale-restored" or name in POLICY_POLL_CASES else "/rate-limit-reset-credits"
+                    polls = [request for request in mock.requests
+                             if request["path"].endswith(endpoint)
+                             and request["at"] > last_model]
+                    return len(polls) >= 2 and polls[-1]["at"] - polls[0]["at"] >= 29
+
+            deadline = time.monotonic() + 60
+            buffer = b""
+            while not (retained_wait() if retained else b"Waiting for account quota" in buffer):
+                remaining = deadline - time.monotonic()
+                require(remaining > 0, "retained recovery did not make a paced second poll" if retained
+                        else "native quota wait notification missing")
+                ready, _, _ = select.select([child.stdout], [], [], min(remaining, 1))
+                if ready:
+                    data = os.read(child.stdout.fileno(), 65536)
+                    require(bool(data), "process exited before native quota wait")
+                    stdout.write(data)
+                    stdout.flush()
+                    buffer += data
+                    require(len(buffer) < 1024 * 1024, "oversized quota notification")
             with mock.lock:
+                require(mock.checked.is_set() or name == "unrelated-provider",
+                        "native wait skipped fresh weekly usage check")
                 expected_models, expected_consumes = {"stale-restored": (3, 1),
                     "stale-credit-ledger": (5, 2)}.get(name, (2, 0))
-                if (not mock.checked.is_set() or len(mock.models) != expected_models
-                        or sum(request["path"].endswith("/consume") for request in mock.requests)
-                        != expected_consumes):
-                    return False
-                last_model = max(request["at"] for request in mock.requests
-                                 if request["path"] == "/v1/responses")
-                endpoint = "/usage" if name == "stale-restored" else "/rate-limit-reset-credits"
-                polls = [request for request in mock.requests
-                         if request["path"].endswith(endpoint)
-                         and request["at"] > last_model]
-                return len(polls) >= 2 and polls[-1]["at"] - polls[0]["at"] >= 29
-
-        deadline = time.monotonic() + 60
-        buffer = b""
-        while not (retained_wait() if retained else b"Waiting for account quota" in buffer):
-            remaining = deadline - time.monotonic()
-            require(remaining > 0, "retained recovery did not make a paced second poll" if retained
-                    else "native quota wait notification missing")
-            ready, _, _ = select.select([child.stdout], [], [], min(remaining, 1))
-            if ready:
-                data = os.read(child.stdout.fileno(), 65536)
-                require(bool(data), "process exited before native quota wait")
-                stdout.write(data)
-                stdout.flush()
-                buffer += data
-                require(len(buffer) < 1024 * 1024, "oversized quota notification")
-        with mock.lock:
-            require(mock.checked.is_set() or name == "unrelated-provider",
-                    "native wait skipped fresh weekly usage check")
-            expected_models, expected_consumes = {"stale-restored": (3, 1),
-                "stale-credit-ledger": (5, 2)}.get(name, (2, 0))
-            require(len(mock.models) == expected_models,
-                    "unexpected sampling before native quota wait")
-            require(sum(request["path"].endswith("/consume") for request in mock.requests)
-                    == expected_consumes, "unexpected consume before native wait")
-        cancelled = child.poll() is None
-        if cancelled:
-            # The guardian retains/reaps this exact native PID; signal Codex so
-            # both guardian layers can retain its handled failure status.
-            os.kill(int((root / "native.pid").read_text()), signal.SIGINT)
+                require(len(mock.models) == expected_models,
+                        "unexpected sampling before native quota wait")
+                require(sum(request["path"].endswith("/consume") for request in mock.requests)
+                        == expected_consumes, "unexpected consume before native wait")
+        finally:
+            cancelled = child.poll() is None
+            if cancelled:
+                # The guardian retains/reaps this exact native PID; signal Codex so
+                # both guardian layers can retain its handled failure status.
+                try:
+                    os.kill(int((root / "native.pid").read_text()), signal.SIGINT)
+                except (FileNotFoundError, ProcessLookupError):
+                    pass
 
     try:
         configure(root, server.server_port, openai_auth=name != "unrelated-provider")
@@ -556,7 +603,7 @@ def case(executable, output, name):
         command_executable = executable
         if observed:
             command_executable = Path(sys.executable)
-            arguments = [str(Path(__file__).resolve()), "--exec-wrapper", str(root / "native.pid"),
+            arguments = ["-I", "-B", str(Path(__file__).resolve()), "--exec-wrapper", str(root / "native.pid"),
                          str(executable), *arguments]
         code = run(command_executable, arguments, root, env, "exec",
                    interact=cancel_after_check if observed else None)
@@ -658,18 +705,25 @@ def case(executable, output, name):
                         and request["at"] < retried["at"] for request in peer_usage),
                     "shared retry did not verify fresh restored allowance")
         if name == "natural-reset":
+            wall = next(request for request in mock.requests if "quotaResetUnix" in request)
+            retry = [request for request in mock.requests if request["path"] == "/v1/responses"][-1]
             usage = [request for request in mock.requests
                      if request["path"].endswith("/usage")
-                     and request["at"] > next(request["at"] for request in mock.requests
-                                              if "quotaResetUnix" in request)]
+                     and wall["at"] < request["at"] < retry["at"]]
             lists = [request for request in mock.requests
                      if request["path"].endswith("/rate-limit-reset-credits")]
-            require(len(usage) == 2 and usage[1]["at"] - usage[0]["at"] >= 29,
+            # Recovery observes restoration on its paced poll. The sampling
+            # boundary then performs its own fresh healthy preflight.
+            require(len(usage) >= 2 and usage[1]["at"] - usage[0]["at"] >= 29,
                     "natural reset did not retain a paced usage poll")
             require(usage[0]["response"]["rate_limit"]["allowed"] is False
-                    and usage[1]["response"]["rate_limit"]["allowed"] is True,
+                    and all(request["response"]["rate_limit"]["allowed"] is True
+                            and request["response"]["rate_limit"]["limit_reached"] is False
+                            and request["response"]["rate_limit"]["secondary_window"]["reset_at"]
+                            > wall["quotaResetUnix"] for request in usage[1:]),
                     "fixture did not restore the exhausted allowance")
-            require(len(lists) == 1 and lists[0]["response"]["available_count"] == 0,
+            require(len(lists) == 1 and lists[0]["response"]["available_count"] == 0
+                    and usage[0]["at"] <= lists[0]["at"] < usage[1]["at"],
                     "natural reset fixture offered or queried another credit")
             require(not mock.spent and not mock.consumed,
                     "natural reset was mistaken for a credit redemption")
@@ -804,6 +858,26 @@ def case(executable, output, name):
         else:
             require(not consumes and not mock.consumed, "ineligible credit consumed")
             require(len(mock.models) == 2, "ineligible wall retried before reset")
+            if name in POLICY_BLOCKED_CASES:
+                require(mock.credit and not mock.spent, "policy case did not retain its available earned credit")
+                outputs = [item for item in mock.models[-1]["input"]
+                           if item.get("type") == "function_call_output"]
+                require(len(outputs) == 1 and outputs[0].get("call_id") == CALL_ID
+                        and "Plan updated" in str(outputs[0].get("output")),
+                        "policy refusal lost the completed plan output from model input")
+                plans = [event for event in events if event.get("item", {}).get("type") == "todo_list"]
+                require([event["type"] for event in plans] == ["item.started", "item.completed"]
+                        and plans[-1]["item"]["items"] == [{"text": PLAN, "completed": True}],
+                        "policy refusal lost or repeated completed plan work")
+                denied = [request["response"] for request in mock.requests
+                          if request["path"].endswith("/usage")
+                          and request.get("response", {}).get("rate_limit", {}).get("allowed") is False]
+                require(denied, "policy case did not exercise reactive recovery")
+                if name in POLICY_PREFLIGHT_CASES:
+                    first_model = next(request["at"] for request in mock.requests if request["path"] == "/v1/responses")
+                    require(any(request["path"].endswith("/usage") and request["at"] < first_model
+                                and request["response"]["rate_limit"]["allowed"] is True
+                                for request in mock.requests), "policy case skipped the preflight boundary")
         require(code != 0 and "turn.completed" not in types, "ineligible case reported success")
     result = {"case": name, "passed": True, "exit": code, "cancelled": cancelled,
               "guardianTimedOut": guardian["timed_out"], "rawReturncode": guardian["returncode"],
@@ -813,10 +887,6 @@ def case(executable, output, name):
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "--exec-wrapper":
-        with Path(sys.argv[2]).open("x") as pidfile:
-            pidfile.write(str(os.getpid()))
-        os.execv(sys.argv[3], sys.argv[3:])
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--codex", type=Path)

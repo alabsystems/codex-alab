@@ -482,8 +482,9 @@ pub(crate) fn policy_continued(items: &[RolloutItem]) -> bool {
     attempted
 }
 
-/// Restore only attention or revocation here, after no authenticated Recovery could restore
-/// the point with its original deadlines and native identity. A PERSON'S ESC THE RECORD CARRIES
+/// Restore definitive refusals, the exact legacy opaque 400, or revocation here, after no
+/// authenticated Recovery could restore the point with its original deadlines and native
+/// identity. Other failures still need that detailed recovery record. A PERSON'S ESC THE RECORD CARRIES
 /// FOR THE TURN THE HISTORY'S ABORT ENDED ([`ThreadState::esc_seed`]; the forever-persist lane,
 /// item a) makes that abort the person's: stood at whatever the source (never a signal
 /// teardown's, which the record would not name), held from the Esc as the process before held
@@ -533,8 +534,10 @@ pub(crate) fn restore_terminal(
             else {
                 return;
             };
-            let wall = recorded_wall(&history, error)
-                .filter(|wall| matches!(wall, Wall::Fatal { .. } | Wall::Login | Wall::Policy));
+            let wall = recorded_wall(&history, error).filter(|wall| {
+                matches!(wall, Wall::Fatal { .. } | Wall::Login | Wall::Policy)
+                    || recorded_opaque_bad_request(error)
+            });
             let Some(wall) = wall else { return };
             (Some(wall), false)
         }
@@ -570,6 +573,13 @@ fn recorded_wall(history: &NativeHistory<'_>, error: &ErrorEvent) -> Option<Wall
         .codex_error_info
         .as_ref()
         .unwrap_or(&CodexErrorInfo::Other);
+    if recorded_opaque_bad_request(error) {
+        return crate::extension::classify(
+            info,
+            &CodexErrorDetails::InvalidRequest(error.message.clone()),
+            false,
+        );
+    }
     if *info == CodexErrorInfo::CyberPolicy && (!history.saw_regular_input || history.compacting) {
         return Some(Wall::Fatal {
             why: "a cybersecurity policy refused context compaction or its operation cannot be proven; automatic work cannot replay that history".into(),
@@ -588,6 +598,11 @@ fn recorded_wall(history: &NativeHistory<'_>, error: &ErrorEvent) -> Option<Wall
         &CodexErrorDetails::Stream("recorded terminal refusal".into()),
         false,
     )
+}
+
+fn recorded_opaque_bad_request(error: &ErrorEvent) -> bool {
+    error.codex_error_info == Some(CodexErrorInfo::Other)
+        && codex_alab_core::request_error::opaque_bad_request(&error.message)
 }
 
 /// THE HISTORY'S LAST TURN END, STOOD AT AGAIN where a vanilla spell hid it from this memory

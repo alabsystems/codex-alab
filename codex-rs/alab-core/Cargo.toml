@@ -23,6 +23,8 @@ test-support = ["dep:zstd"]
 [dependencies]
 arc-swap = "=1.9.0"
 rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 toml = { workspace = true }
 tracing = { workspace = true }

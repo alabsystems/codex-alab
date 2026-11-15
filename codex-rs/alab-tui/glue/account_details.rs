@@ -29,8 +29,8 @@ mod accounts_pool;
 #[path = "enrollment_pool.rs"]
 mod enrollment_pool;
 
-#[path = "assignment_pool.rs"]
-mod assignment_pool;
+#[path = "account_move_pool.rs"]
+mod account_move_pool;
 
 const VIEW_ID: &str = "alab-account";
 

@@ -295,10 +295,6 @@ pub(super) fn publication(session: &Session) -> Option<Activity> {
         .ok()
 }
 
-type ActionFuture<'a> = std::pin::Pin<
-    Box<dyn Future<Output = Result<(), codex_alab_core::assignment::Refused>> + Send + 'a>,
->;
-
 type ActionResult = Result<(), codex_alab_core::assignment::Refused>;
 type ActionReply = tokio::sync::oneshot::Sender<ActionResult>;
 enum SessionAction {
@@ -325,27 +321,6 @@ enum SessionAction {
         permit: Arc<dyn codex_alab_core::assignment::RetirementProof>,
         reply: ActionReply,
     },
-    Destination {
-        boundary: Arc<codex_alab_core::assignment::BoundaryPermit>,
-        reply: ActionReply,
-    },
-    Resume {
-        reply: ActionReply,
-    },
-}
-
-/// Global participants contain channels and exact permits, never Session's recursive graph.
-trait SessionActions: Send + Sync {
-    fn retire<'a>(
-        &'a self,
-        domain: &'a Arc<codex_alab_core::assignment::Domain>,
-        retirement: &'a Arc<dyn codex_alab_core::assignment::RetirementProof>,
-    ) -> ActionFuture<'a>;
-    fn prepare_destination<'a>(
-        &'a self,
-        boundary: &'a Arc<codex_alab_core::assignment::BoundaryPermit>,
-    ) -> ActionFuture<'a>;
-    fn resume(&self) -> ActionFuture<'_>;
 }
 
 struct ActionSender {
@@ -502,49 +477,6 @@ impl crate::alab_destination_config::SessionParticipant for ActionSender {
         })
     }
 }
-impl SessionActions for ActionSender {
-    fn retire<'a>(
-        &'a self,
-        domain: &'a Arc<codex_alab_core::assignment::Domain>,
-        retirement: &'a Arc<dyn codex_alab_core::assignment::RetirementProof>,
-    ) -> ActionFuture<'a> {
-        Box::pin(async move {
-            let (reply, result) = tokio::sync::oneshot::channel();
-            self.send(
-                SessionAction::Retire {
-                    domain: Arc::clone(domain),
-                    permit: Arc::clone(retirement),
-                    reply,
-                },
-                result,
-            )
-            .await
-        })
-    }
-    fn prepare_destination<'a>(
-        &'a self,
-        boundary: &'a Arc<codex_alab_core::assignment::BoundaryPermit>,
-    ) -> ActionFuture<'a> {
-        Box::pin(async move {
-            let (reply, result) = tokio::sync::oneshot::channel();
-            self.send(
-                SessionAction::Destination {
-                    boundary: Arc::clone(boundary),
-                    reply,
-                },
-                result,
-            )
-            .await
-        })
-    }
-    fn resume(&self) -> ActionFuture<'_> {
-        Box::pin(async move {
-            let (reply, result) = tokio::sync::oneshot::channel();
-            self.send(SessionAction::Resume { reply }, result).await
-        })
-    }
-}
-
 /// Pinned once by submission_loop and polled beside normal submissions. Cancelling a select
 /// arm must never discard an accepted action, so callers must retain this future across turns.
 pub(super) async fn serve_actions(session: &Arc<Session>) {
@@ -616,15 +548,6 @@ pub(super) async fn serve_actions(session: &Arc<Session>) {
                 drop(permit);
                 drop(domain);
                 let _ = reply.send(result);
-            }
-            SessionAction::Destination { boundary, reply } => {
-                let result = Box::pin(prepare_session(session, &boundary)).await;
-                drop(boundary);
-                let _ = reply.send(result);
-            }
-            SessionAction::Resume { reply } => {
-                Box::pin(session.maybe_start_turn_for_pending_work()).await;
-                let _ = reply.send(Ok(()));
             }
         }
     }
@@ -699,74 +622,6 @@ async fn retire_session(
         .alab_retire_account_transport();
     Ok(())
 }
-async fn prepare_session(
-    session: &Arc<Session>,
-    boundary: &codex_alab_core::assignment::BoundaryPermit,
-) -> ActionResult {
-    use codex_alab_core::assignment::Refused;
-    let binding = boundary.bound()?;
-    boundary
-        .destination(&binding, async {
-            let manager = capture_factory_manager(&session.services.auth_manager)
-                .map_err(|_| Refused::Unavailable)?;
-            if !boundary.protects(
-                &manager.alab_assignment_domain(),
-                boundary.operation(),
-                boundary.native_intent(),
-            ) {
-                return Err(Refused::WrongDomain);
-            }
-            if session
-                .services
-                .models_manager
-                .auth_manager()
-                .is_some_and(|catalog_manager| !std::ptr::eq(catalog_manager, manager.as_ref()))
-            {
-                return Err(Refused::WrongDomain);
-            }
-            let state = *manager.auth_change_state_receiver().borrow();
-            if state.generation != binding.generations.auth
-                || state.owner_generation != binding.generations.owner
-                || state.source_generation != binding.generations.source
-                || state.login_generation != binding.generations.login
-            {
-                return Err(Refused::Busy);
-            }
-            session.mark_mcp_runtime_dirty(
-                crate::thread_manager::McpRefreshReason::RuntimeAuthChanged,
-            );
-            session.refresh_mcp_if_dirty().await;
-            if !session
-                .services
-                .mcp_runtime
-                .current_auth_matches(manager.auth_cached().as_ref())
-            {
-                return Err(Refused::Unavailable);
-            }
-            session
-                .services
-                .mcp_runtime
-                .latest_hard_refresh_codex_apps_tools_cache()
-                .await
-                .map_err(|_| Refused::Unavailable)?;
-            // Existing model identity admission exposes destination or safe static/empty models.
-            let _ = session.services.models_manager.get_remote_models().await;
-            if *manager.auth_change_state_receiver().borrow() != state {
-                return Err(Refused::Busy);
-            }
-            Ok(())
-        })
-        .await?
-}
-
-pub(crate) struct Cohort {
-    domain: Arc<codex_alab_core::assignment::Domain>,
-    manager: Arc<codex_login::AuthManager>,
-    coordinator: coordinator::State,
-    participants: std::sync::Mutex<Vec<std::sync::Weak<dyn SessionActions>>>,
-}
-static COHORTS: std::sync::OnceLock<std::sync::Mutex<Vec<std::sync::Weak<Cohort>>>> =
-    std::sync::OnceLock::new();
 
 pub(super) fn register(session: &Arc<Session>) {
     host_watch::register(session);
@@ -774,26 +629,6 @@ pub(super) fn register(session: &Arc<Session>) {
         .services
         .session_extension_data
         .get_or_init(configuration_jobs::Jobs::default);
-    let domain = session.services.auth_manager.alab_assignment_domain();
-    let mut cohorts = COHORTS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    cohorts.retain(|cohort| cohort.strong_count() != 0);
-    let cohort = cohorts
-        .iter()
-        .filter_map(std::sync::Weak::upgrade)
-        .find(|cohort| Arc::ptr_eq(&cohort.domain, &domain))
-        .unwrap_or_else(|| {
-            let cohort = Arc::new(Cohort {
-                domain,
-                manager: Arc::clone(&session.services.auth_manager),
-                coordinator: Default::default(),
-                participants: Default::default(),
-            });
-            cohorts.push(Arc::downgrade(&cohort));
-            cohort
-        });
     let (sender, receiver) = tokio::sync::mpsc::channel(16);
     let sender = Arc::new(ActionSender {
         sender,
@@ -815,72 +650,14 @@ pub(super) fn register(session: &Arc<Session>) {
     session
         .services
         .session_extension_data
-        .insert(Arc::new(RuntimeParticipant(sender.clone())));
-    let participant: Arc<dyn SessionActions> = sender;
+        .insert(Arc::new(RuntimeParticipant(sender)));
     session
         .services
         .session_extension_data
         .insert(Arc::new(ActionMailbox(std::sync::Mutex::new(Some(
             receiver,
         )))));
-    cohort
-        .participants
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(Arc::downgrade(&participant));
-    session.services.session_extension_data.insert(participant);
-    let consumer = coordinator::register(session.thread_id().to_string(), Arc::clone(&cohort));
-    session.services.session_extension_data.insert(consumer);
-    session.services.session_extension_data.insert(cohort);
 }
-
-impl Cohort {
-    fn participants(
-        &self,
-    ) -> Result<Vec<Arc<dyn SessionActions>>, codex_alab_core::assignment::Refused> {
-        let mut participants = self
-            .participants
-            .lock()
-            .map_err(|_| codex_alab_core::assignment::Refused::Unavailable)?;
-        participants.retain(|participant| participant.strong_count() != 0);
-        Ok(participants
-            .iter()
-            .filter_map(std::sync::Weak::upgrade)
-            .collect())
-    }
-    async fn retire(
-        &self,
-        retirement: &Arc<codex_alab_core::assignment::RetirementPermit>,
-    ) -> Result<(), codex_alab_core::assignment::Refused> {
-        if !retirement.protects(&self.domain) {
-            return Err(codex_alab_core::assignment::Refused::WrongDomain);
-        }
-        let proof: Arc<dyn codex_alab_core::assignment::RetirementProof> = retirement.clone();
-        for participant in self.participants()? {
-            participant.retire(&self.domain, &proof).await?;
-        }
-        Ok(())
-    }
-    async fn prepare_destination(
-        &self,
-        boundary: &Arc<codex_alab_core::assignment::BoundaryPermit>,
-    ) -> Result<(), codex_alab_core::assignment::Refused> {
-        let binding = boundary.bound()?;
-        for participant in self.participants()? {
-            participant.prepare_destination(boundary).await?;
-        }
-        boundary.record_resources_ready(&binding)
-    }
-    async fn resume(&self) -> Result<(), codex_alab_core::assignment::Refused> {
-        for participant in self.participants()? {
-            participant.resume().await?;
-        }
-        Ok(())
-    }
-}
-
-#[path = "assignment_coordinator.rs"]
-mod coordinator;
 
 /// Ordinary turn suspension observes only its actual use family; it is not a
 /// process/account migration and cannot close unrelated managers or factories.
@@ -971,53 +748,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assignment_cohort_drains_every_session_sharing_the_actual_manager() {
-        let (first, first_context) = super::super::tests::make_session_and_context().await;
-        let (mut second, second_context) = super::super::tests::make_session_and_context().await;
-        second.services.auth_manager = Arc::clone(&first.services.auth_manager);
-        let first = Arc::new(first);
-        let second = Arc::new(second);
-        register(&first);
-        register(&second);
-        let cohort = first
-            .services
-            .session_extension_data
-            .get::<Arc<Cohort>>()
-            .unwrap();
-        let second_cohort = second
-            .services
-            .session_extension_data
-            .get::<Arc<Cohort>>()
-            .unwrap();
-        assert!(Arc::ptr_eq(cohort.as_ref(), second_cohort.as_ref()));
-        assert_eq!(cohort.participants().unwrap().len(), 2);
-        let domain = first.services.auth_manager.alab_assignment_domain();
-        let first_work = task_activity(&first, &first_context).await.unwrap();
-        let second_work = task_activity(&second, &second_context).await.unwrap();
-        domain.request(intent(&first)).unwrap();
-        assert!(domain.try_retire(&"a".repeat(32)).is_err());
-        drop(first_work);
-        assert!(domain.try_retire(&"a".repeat(32)).is_err());
-        drop(second_work);
-        let retirement = Arc::new(domain.try_retire(&"a".repeat(32)).unwrap());
-        tokio::select! {
-            result = cohort.retire(&retirement) => result.unwrap(),
-            _ = serve_actions(&first) => panic!("first actor must remain live"),
-            _ = serve_actions(&second) => panic!("second actor must remain live"),
-        }
-        let retirement = Arc::try_unwrap(retirement).ok().unwrap();
-        assert!(retirement.freeze().is_ok());
-    }
-
-    #[tokio::test]
     async fn assignment_mailbox_retirement_stays_live_while_interrupt_is_serviced() {
         let (session, _) = super::super::tests::make_session_and_context().await;
         let session = Arc::new(session);
         register(&session);
-        let cohort = session
+        let participant = session
             .services
             .session_extension_data
-            .get::<Arc<Cohort>>()
+            .get::<Arc<RuntimeParticipant>>()
             .unwrap();
         let domain = session.services.auth_manager.alab_assignment_domain();
         let refresh = session.mcp_refresh.acquire().await.unwrap();
@@ -1025,7 +763,12 @@ mod tests {
         let retirement = Arc::new(domain.try_retire(&"a".repeat(32)).unwrap());
         {
             let actions = serve_actions(&session);
-            let retiring = cohort.retire(&retirement);
+            let proof: Arc<dyn codex_alab_core::assignment::RetirementProof> = retirement.clone();
+            let retiring = codex_alab_core::manager_catalog::Participant::retire(
+                &*participant.0,
+                &domain,
+                proof,
+            );
             tokio::pin!(actions, retiring);
             tokio::select! {
                 biased;

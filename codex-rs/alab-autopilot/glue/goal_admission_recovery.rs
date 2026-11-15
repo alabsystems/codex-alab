@@ -11,6 +11,32 @@ use std::sync::Arc;
 mod start;
 
 impl GoalRuntimeHandle {
+    pub(crate) fn alab_hold_policy_continuation(&self, policy: Option<String>) {
+        if let Some(policy) = policy {
+            *self
+                .inner
+                .alab_policy_continuation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(policy);
+        }
+    }
+
+    pub(crate) fn alab_policy_continuation(&self) -> Option<String> {
+        self.inner
+            .alab_policy_continuation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn alab_clear_policy_continuation(&self) {
+        self.inner
+            .alab_policy_continuation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
     pub(crate) fn alab_recheck_failed_read(&self, transient: bool) {
         if transient {
             self.alab_recheck_goal_admission();

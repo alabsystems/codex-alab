@@ -163,7 +163,9 @@ than being joined while waiting on that closed gate. Existing parent work that
 may create a derived source use must join the reservation before final sealing.
 No timeout manufactures a quiescence receipt or permits release.
 
-The SDK `ProcessHost` must consequently have two stages: reserve the catalog/native
+The SDK `ProcessHost` (removed on 2026-11-12 with the in-process assignment request
+path, see accounts-assignment.md; what follows is the design it was held to) must
+consequently have two stages: reserve the catalog/native
 operation before retiring local work, then asynchronously seal after all affected
 manager domains and direct-reader uses drain. Its initial validation proves a live
 reservation, not a completed freeze. The retained actor holds both stages through

@@ -300,6 +300,7 @@ async fn run_compact_task_inner_impl(
     // request tracking) survives retries within this compact turn.
     let mut client_session = sess.services.model_client.new_session();
     let compaction_response = loop {
+        crate::responses_retry::alab_capacity_retry::preflight_compaction_weekly(&sess, &turn_context).await?; // ALAB(weekly-reset): recheck earned resets before every foreground compaction attempt.
         // Clone is required because of the loop
         let mut turn_input = history
             .clone()

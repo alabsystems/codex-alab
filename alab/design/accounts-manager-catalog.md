@@ -8,8 +8,10 @@ retains every manager Domain and session resource mailbox associated with it.
 
 This catalog is local exclusion and lifetime evidence. It is not a native SourceSeal,
 a prepared target, a provider grant, or permission to install another account. The
-production native ProcessHost and SourceV1 marker remain disabled until the native
-continuations and all reader roles are joined and qualified.
+production native ProcessHost this paragraph named was removed on 2026-11-12 with the
+in-process assignment request path (see accounts-assignment.md), so there is no gate left
+to enable; the SourceV1 marker stays disabled until the native continuations and all
+reader roles are joined and qualified.
 
 ## Ownership
 
@@ -102,7 +104,9 @@ concrete destination owner for header export; an owned refresh action is a separ
 operation and grants no raw-header permission. Only an explicitly captured,
 nonactivated legacy snapshot retains legacy introspection behavior.
 
-These reader roles do not install ProcessHost or advertise SourceV1. Remaining
+These reader roles do not advertise SourceV1 (the ProcessHost they did not install was
+removed on 2026-11-12 with the in-process assignment request path; see
+accounts-assignment.md). Remaining
 joins include direct-reader credential-policy snapshots without manager counters,
 non-native/unmanaged low-level reader coverage, extending and retaining the actual
 migration census, target-authorized B factory/source-epoch propagation and all

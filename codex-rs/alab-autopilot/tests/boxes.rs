@@ -416,10 +416,10 @@ async fn the_goal_box_over_a_usage_limited_goal_is_left_as_it_was_and_raises_not
     );
 }
 
-/// NEGATIVE CONTROL: over a blocked goal the goal box is a person's: nothing is posted, and
-/// keyed attention says why.
+/// A policy-blocked goal's resume prompt cannot hold back its native recovery: the supervisor
+/// posts the non-resuming dismissal, which records no task act and raises no human-attention entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_goal_box_over_a_blocked_goal_is_left_to_a_person() {
+async fn the_goal_box_over_a_blocked_goal_is_dismissed_without_an_act_or_attention() {
     let h = harness(Mode::Current, &[]).await;
     assert!(
         h.fake
@@ -428,18 +428,27 @@ async fn the_goal_box_over_a_blocked_goal_is_left_to_a_person() {
     );
     popup_open(&h);
     h.shared.report_box(goal_box(GoalStop::Blocked));
-    assert!(
-        h.fake
-            .wait_for(|f| f
-                .attention()
-                .values()
-                .any(|v| v.starts_with("goal: left to a person (the goal is blocked")))
-            .await,
-        "{:?} {:?}",
-        h.fake.attention(),
-        h.sup.journal()
+    wait_until("the answer is posted", || h.shared.box_answer_pending()).await;
+    assert_eq!(
+        take(&h, "goal-1"),
+        BoxAnswer::Goal {
+            id: "goal-1".to_string(),
+            row: 1,
+        }
     );
-    assert!(!h.shared.box_answer_pending());
+    wait_until("noted", || {
+        h.sup
+            .journal()
+            .iter()
+            .any(|line| line.contains("act goal-leave@v1"))
+    })
+    .await;
+    assert!(h.fake.attention().is_empty(), "{:?}", h.fake.attention());
+    assert!(
+        !h.fake.acts().iter().any(|a| a == "goal-leave@v1"),
+        "no act of the task: {:?}",
+        h.fake.acts()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

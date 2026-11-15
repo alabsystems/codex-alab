@@ -647,17 +647,9 @@ fn plan(id: &str, rows: &[(String, Option<String>)], policy: &Policy) -> BoxDeci
 fn goal(id: &str, rows: &[String], stop: Option<GoalStop>) -> BoxDecision {
     let stopped = match stop {
         Some(GoalStop::Paused) => "paused",
+        Some(GoalStop::Blocked) => "blocked",
         Some(GoalStop::UsageLimited) => "usage-limited",
-        Some(GoalStop::Blocked) => {
-            return BoxDecision::Leave(
-                "the goal is blocked; a person decides how it goes on".to_string(),
-            );
-        }
-        None => {
-            return BoxDecision::Leave(
-                "the TUI did not say why the goal stopped; a person decides".to_string(),
-            );
-        }
+        None => "stopped",
     };
     let Some(row) = rows.iter().position(|label| label == GOAL_LEAVE) else {
         return BoxDecision::Leave(format!("the goal box has no `{GOAL_LEAVE}`"));

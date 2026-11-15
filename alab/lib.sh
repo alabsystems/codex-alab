@@ -742,9 +742,16 @@ alab_contain_profile() {
     done
     echo ')'
   fi
-  # No Unix socket but its own and DNS's: not the SSH agent's, nor aterm's.
+  # Own scratch and DNS; verified controllers may additionally connect only to
+  # the fixed native memory endpoint their outside keeper already authenticated.
   echo '(deny network-outbound (remote unix-socket))'
   echo "(allow network-outbound (remote unix-socket (subpath $(alab_sb "${scratch}"))) (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))"
+  if [[ -n "${ALAB_TRUSTD_SOCKET:-}" ]]; then
+    local trust_socket
+    trust_socket="$("${ALAB_PYTHON:-/usr/bin/python3}" -I -B -S \
+      "${alab_library_root}/alab/trust_memory.py" --validate-profile-socket "${ALAB_TRUSTD_SOCKET}")" || return 1
+    echo "(allow network-outbound (remote unix-socket (path-literal $(alab_sb "${trust_socket}"))))"
+  fi
   # The keychain, the clipboard, Launch Services and Apple events; launchctl, open, osascript.
   echo '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd.xpc")'
   echo '  (global-name "com.apple.pasteboard.1") (global-name "com.apple.coreservices.launchservicesd"))'
@@ -808,8 +815,8 @@ alab_contained_ps() {
 # PATH's tools, the private cargo home (not its credentials), the .cargo/config.toml of the
 # directories above it and git's config; read
 # preferences, the keychain or the clipboard; open apps, send Apple events or run launchctl;
-# connect to a Unix socket but its
-# own (not the SSH agent's, nor aterm's); or write anywhere but the <writable-dir>s (the
+# connect to a Unix socket but its own or the outside keeper's exact native
+# memory authority; or write anywhere but the <writable-dir>s (the
 # target dirs: so no source, .git, .cargo or rust-toolchain file that git or cargo reads
 # outside the sandbox), its scratch dir and the private cargo home (alab_cargo_home: its
 # CARGO_HOME and TARGO_HOME), never ~/.cargo or ~/.trust/cache, whose caches the owner's own
@@ -824,6 +831,12 @@ alab_contained_ps() {
 # outside it. ALab-written commands (alab/*.sh) may run in it: they need no write to git.
 # ALAB_CONTAIN=0 runs <command> uncontained, with the caller's own cargo home, and so does a
 # system without sandbox-exec (Linux: it says so).
+alab_verified_contained() {
+  "${ALAB_PYTHON:-/usr/bin/python3}" -I -B -S "${alab_library_root}/alab/trust_memory.py" -- \
+    /bin/bash -c '. "$1"; shift; alab_contained "$@"' alab-memory-profile \
+    "${alab_library_root}/alab/lib.sh" "$@"
+}
+
 alab_contained() {
   local reads=() dirs=() scratch profile rc=0 v cargo_home own account_home home_root
   local command_path="${PATH}" tools

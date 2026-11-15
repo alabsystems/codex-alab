@@ -69,3 +69,9 @@ version = "0.7.0"
 baseline = "0.168.0"
 baseline_commit = "9480ec100c3edee9fc69172e8e80a4730444094d"
 date = "2026-11-13"
+
+[[release]]
+version = "0.8.0"
+baseline = "0.169.0"
+baseline_commit = "d32063f96c2dff1dc96af839b3952abb6acfeda4"
+date = "2026-11-13"

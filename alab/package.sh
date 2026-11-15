@@ -71,7 +71,7 @@
 #      before any compiler-keyed cache. Explicit compiler overrides refuse.
 #      An observational probe must match that selected execution root; contained
 #      probes in codex-rs and the cache must record the same compiler;
-#      then a release build of codex and codex-code-mode-host (targo --unverified, the
+#      then a certified release build including every compiler-capable dependency (the
 #      lockfile locked, STABLE_GIT_COMMIT=<rev>, CODEX_ALAB_BUILD_VERSION the client version,
 #      CODEX_ALAB_PRODUCT_VERSION the version), with upstream's pinned rusty_v8 archives
 #      (scripts/codex_package/v8.py, verified against third_party/v8/*_release_manifests.sha256,
@@ -1224,6 +1224,9 @@ package_contained() {
   # The selected wrapper belongs to the caller, outside the packaged source tree.
   alab_contained --read "${ATPKG_PROJECT_FRONT}" --read "${compiler_root}" --read "${cargo}" "$@"
 }
+package_verified_contained() {
+  alab_verified_contained --read "${ATPKG_PROJECT_FRONT}" --read "${compiler_root}" --read "${cargo}" "$@"
+}
 alab_say "compiler ${compiler_id}: $(sed -n 's/.*"rustc": "\([^"]*\)".*/\1/p' "${cfacts}/trusted.json"), \
 $(sed -n 's/.*"sysroot": "\([^"]*\)".*/\1/p' "${cfacts}/trusted.json") (${cargo_said}: ${cargo})"
 package_record_native_compiler "${python}" "${cfacts}/trusted.json" "${ATPKG_PROJECT_EXECUTION}" \
@@ -1255,13 +1258,16 @@ v8_trusted="${wt}/third_party/v8/rusty_v8_${v8_version//./_}_release_manifests.s
 alab_say "rusty_v8 ${v8_version}: $(basename "${v8_archive}") verified against $(basename "${v8_trusted}")"
 
 need_disk "${CARGO_TARGET_DIR}"
+proof_root="$(mktemp -d "${CARGO_TARGET_DIR}/alab-certified.XXXXXX")" \
+  || alab_die "cannot allocate a fresh private proof report root"
 alab_say "building ${package_first_party[*]} (release) at ${sha9}"
-(cd "${wt}/codex-rs" && package_contained --read "${v8_cache}" "${CARGO_TARGET_DIR}" -- /usr/bin/env \
+(cd "${wt}/codex-rs" && package_verified_contained --read "${v8_cache}" "${CARGO_TARGET_DIR}" -- /usr/bin/env \
   STABLE_GIT_COMMIT="${commit}" CODEX_ALAB_BUILD_VERSION="${client_version}" \
   CODEX_ALAB_PRODUCT_VERSION="${version}" \
   CODEX_ALAB_UPSTREAM_VERSION="${base_tag}" CODEX_ALAB_UPSTREAM_COMMIT="${upstream_at}" \
   RUSTY_V8_ARCHIVE="${v8_archive}" RUSTY_V8_SRC_BINDING_PATH="${v8_binding}" \
-  "${cargo}" --unverified build --release --locked "${package_cargo_args[@]}") \
+  "${repo_root}/alab/certified-build.sh" "${proof_root}/report" \
+  "${commit}" --release --locked "${package_cargo_args[@]}") \
   || alab_die "the release build failed (above)"
 same_compiler "${CARGO_TARGET_DIR}" "the release build" || alab_die "refusing the release build (above)"
 
@@ -1343,6 +1349,14 @@ sys.exit(main())' --target "${target_triple}" --variant codex --package-version 
 # and directories, and a setuid, setgid, sticky, group- or world-writable one.
 scratch_dir staged "${pkg_root}/.${version}.staged.XXXXXX"
 package_copy_out "${partial}" "${staged}"
+# Bind both compiler outputs and the stripped package inputs to this live
+# certified build. Retain the path-bearing report privately, never in a release.
+proof_binary_args=()
+for binary in "${package_first_party[@]}"; do proof_binary_args+=(--binary "${binary}"); done
+"${python}" -I "${repo_root}/alab/proof_build.py" --compiler "${cfacts}/trusted.json" \
+  --report "${proof_root}/report/report.json" --source "${commit}" \
+  --target "${CARGO_TARGET_DIR}" --package "${staged}" "${proof_binary_args[@]}" \
+  || alab_die "cannot bind the live certified build to its package outputs"
 # LICENSE and NOTICE (Apache-2.0) from the commit's own objects, as regular files.
 for f in LICENSE NOTICE; do
   [[ "$(git -C "${repo_root}" ls-tree "${commit}" -- "${f}" | awk '{ print $1, $2 }')" == "100644 blob" ]] \

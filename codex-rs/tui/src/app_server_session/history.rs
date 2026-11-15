@@ -4,6 +4,7 @@ use codex_app_server_protocol::ThreadItem;
 use std::collections::HashSet;
 
 use super::AppServerSession;
+use super::history_page::HistoryPageItem; // ALAB(history): item identities are scoped to turns.
 use crate::history_cell::HistoryRenderMode;
 use crate::legacy_core::config::Config;
 use crate::local_settings::LocalSettings;
@@ -243,7 +244,7 @@ impl AppServerSession {
         cursor: &str,
         page: ThreadItemsListResponse,
         turns: &mut Vec<Turn>,
-    ) -> Result<Vec<ThreadItemPayload>> {
+    ) -> Result<Vec<HistoryPageItem>> { // ALAB(history): preserve turn ownership through pagination.
         if !self.is_older_history_page_pending(thread_id, cursor) {
             return Ok(Vec::new());
         }
@@ -304,7 +305,7 @@ impl AppServerSession {
         page: ThreadItemsListResponse,
         state: &mut ThreadHistoryPagination,
         turns: &mut Vec<Turn>,
-    ) -> Result<Vec<ThreadItemPayload>> {
+    ) -> Result<Vec<HistoryPageItem>> { // ALAB(history): preserve turn ownership through pagination.
         state.next_item_cursor = advancing_cursor(
             state.next_item_cursor.as_deref(),
             page.next_cursor,
@@ -341,8 +342,9 @@ impl AppServerSession {
             if let Some(turn) = turns.iter_mut().find(|turn| turn.id == entry.turn_id)
                 && !turn.items.iter().any(|item| item.id() == entry.item.id())
             {
+                let turn_id = entry.turn_id.clone(); // ALAB(history): do not discard the scoped item identity.
                 let item = ThreadItem::try_from(entry)?;
-                items.push(item.payload.clone());
+                items.push(HistoryPageItem { turn_id, payload: item.payload.clone() }); // ALAB(history): project with the owning turn.
                 turn.items.insert(/*index*/ 0, item);
                 turn.items_view = TurnItemsView::Summary;
             }
@@ -453,7 +455,7 @@ impl AppServerSession {
                 rendered_rows = rendered_history_rows(
                     thread_id,
                     thread,
-                    items,
+                    items.into_iter().map(|item| item.payload).collect(), // ALAB(history): only row estimation discards turn ownership.
                     config,
                     local_settings,
                     width,

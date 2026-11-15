@@ -1088,8 +1088,6 @@ pub struct Shared {
     carry_on_owed: AtomicBool,
     carried_on: AtomicU32,
     owed_act: Mutex<Option<OwedAct>>,
-    assignment: Mutex<Option<crate::assignment::Receipt>>,
-    assignment_touched: AtomicBool,
     needs_off: AtomicU64,
     workdirs: Mutex<BTreeMap<String, PathBuf>>,
     /// Each thread's [`ProbeScope`] ([`Self::set_probe_scope`]).
@@ -1359,8 +1357,6 @@ impl Shared {
             carry_on_owed: AtomicBool::new(false),
             carried_on: AtomicU32::new(0),
             owed_act: Mutex::new(None),
-            assignment: Mutex::new(None),
-            assignment_touched: AtomicBool::new(false),
             needs_off: AtomicU64::new(0),
             workdirs: Mutex::new(BTreeMap::new()),
             probe_scopes: Mutex::new(BTreeMap::new()),
@@ -2440,60 +2436,6 @@ impl Shared {
         }
     }
 
-    pub fn assignment_receipt(&self) -> Option<crate::assignment::Receipt> {
-        lock(&self.assignment).clone()
-    }
-    pub fn seed_assignment_receipt(&self, receipt: Option<crate::assignment::Receipt>) {
-        if receipt.as_ref().is_some_and(|receipt| !receipt.valid()) {
-            return;
-        }
-        let mut slot = lock(&self.assignment);
-        if slot.is_none() {
-            *slot = receipt;
-        }
-    }
-    pub fn set_assignment_receipt(&self, receipt: Option<crate::assignment::Receipt>) -> bool {
-        if receipt.as_ref().is_some_and(|receipt| !receipt.valid()) {
-            return false;
-        }
-        let mut upgrade = lock(&self.upgrade_generation);
-        self.assignment_touched.store(true, Ordering::SeqCst);
-        let mut slot = lock(&self.assignment);
-        if slot.as_ref().is_some_and(|existing| {
-            !existing.acknowledged
-                && receipt
-                    .as_ref()
-                    .is_some_and(|next| existing.operation != next.operation)
-        }) {
-            return false;
-        }
-        if *slot != receipt {
-            *slot = receipt;
-            *upgrade = upgrade.wrapping_add(1);
-            drop(slot);
-            self.mark_changed();
-        }
-        true
-    }
-    pub fn clear_assignment_receipt(&self, operation: &str) -> bool {
-        let mut upgrade = lock(&self.upgrade_generation);
-        let mut slot = lock(&self.assignment);
-        if slot
-            .as_ref()
-            .is_none_or(|receipt| receipt.operation != operation)
-        {
-            return false;
-        }
-        *slot = None;
-        *upgrade = upgrade.wrapping_add(1);
-        drop(slot);
-        self.mark_changed();
-        true
-    }
-    pub fn has_record_writer(&self) -> bool {
-        self.flush.get().is_some()
-    }
-
     pub fn owed_act(&self) -> Option<OwedAct> {
         self.owed_act
             .lock()
@@ -2883,9 +2825,6 @@ impl Shared {
     /// The closure uses only bookkeeping setters under this boundary.
     pub fn seed_before_native_work(&self, seed: impl FnOnce()) -> bool {
         let _generation = lock(&self.upgrade_generation);
-        if self.assignment_touched.load(Ordering::SeqCst) {
-            return false;
-        }
         let turns = lock(&self.turns);
         if !turns.latest.is_empty() || !turns.stopped_threads.is_empty() || !turns.ended.is_empty()
         {
@@ -3243,11 +3182,7 @@ impl Shared {
     pub fn unrest(&self) -> Option<Unrest> {
         if self.turn_running() {
             Some(Unrest::TurnRunning)
-        } else if self.acting()
-            || self
-                .assignment_receipt()
-                .is_some_and(|receipt| !receipt.acknowledged)
-        {
+        } else if self.acting() {
             Some(Unrest::Acting)
         } else if self.box_answer_pending() {
             Some(Unrest::BoxAnswer)

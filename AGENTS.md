@@ -79,9 +79,12 @@ conflicts about once a quarter. Upstream lands about 44 commits a day.
   channel, with its updater maintained. Ordinary upgrades use `aterm pkg update codex`.
 
 ## Toolchain and gate
-- Build with the Trust toolchain, in your own worktree (each `target/` is 12 to 15 GB):
-  `targo --unverified build -p codex-cli --bin codex` in `codex-rs/`, which is what the
-  gate builds. A bare workspace build also builds voice-host, which needs gstreamer and
+- Build the application with the source-selected Trust compiler through `alab/check.sh`
+  or `alab/package.sh`, in your own worktree (each `target/` is 12 to 15 GB). Both require
+  a live `targo trust build --certify` with dependencies included; unsupported, unknown
+  or merely runtime-checked bounds never count as proof. The unverified lane is for
+  test execution and identity probes, not shipping application builds. A bare workspace
+  build also builds voice-host, which needs gstreamer and
   fails on this Mac. `codex-rs/rust-toolchain.toml` pins stock Rust for rustup's proxies;
   targo runs Trust regardless (`aterm help rust`).
 - `alab/check.sh` is the gate a sync must pass. Its executable entry uses a qualified
@@ -94,7 +97,8 @@ conflicts about once a quarter. Upstream lands about 44 commits a day.
   - each newly integrated upstream commit has a valid committed intake decision against
     `origin/main`; hook-baseline and hook-loss exceptions do not bypass review admission;
   - no `ALAB` hook in an upstream file went missing;
-  - the codex binary builds from the committed lockfile and runs;
+  - the codex binary and its compiler-capable dependencies pass a live certified build
+    from the committed lockfile, and the binary runs;
   - every `codex-rs/alab-*` crate passes its tests;
   - `targo tippy` finds no warning or error in ALab's code (the `alab-*` crates, the glue
     upstream crates compile, the sources `alab/` carries, and each upstream line with an

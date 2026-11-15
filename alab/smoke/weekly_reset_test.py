@@ -4,7 +4,9 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -102,6 +104,64 @@ class DeadlineOutageFixtureTests(unittest.TestCase):
                     self.assertEqual(late.reply("GET", "/backend-api/wham/" + endpoint, {})[0], 503)
                 self.assertFalse(late.consumed)
                 self.assertFalse(late.spent)
+
+
+class RedemptionPolicyFixtureTests(unittest.TestCase):
+    def test_positive_preflights_offer_99_percent_within_24_hours(self):
+        for name in weekly_reset.PREFLIGHT_CASES:
+            with self.subTest(case=name), patch.object(weekly_reset.time, "time", return_value=1000):
+                mock = weekly_reset.Mock(name)
+                self.assertEqual(mock.reply("GET", "/backend-api/wham/usage", None)[0], 200)
+                self.assertEqual(mock.reply("POST", "/backend-api/wham/rate-limit-reset-credits/consume",
+                                           {"redeem_request_id": "a" * 64,
+                                            "credit_id": "earned-weekly-credit"})[0], 200)
+                self.assertTrue(mock.consumed)
+                windows = mock.requests[0]["response"]["rate_limit"]
+                self.assertTrue(any(window["used_percent"] == 99 for window in
+                                    (windows["primary_window"], windows["secondary_window"])))
+                if name == "preflight-weekly-24h":
+                    self.assertEqual(windows["secondary_window"]["reset_at"] - 1000, 86400)
+
+    def test_negative_cases_keep_a_credit_and_refuse_consumption(self):
+        for name in weekly_reset.POLICY_BLOCKED_CASES:
+            for models in (0, 2):
+                with self.subTest(case=name, models=models), \
+                        patch.object(weekly_reset.time, "time", return_value=1000):
+                    mock = weekly_reset.Mock(name)
+                    mock.models = [{} for _ in range(models)]
+                    self.assertTrue(mock.credit)
+                    self.assertEqual(mock.reply("GET", "/backend-api/wham/usage", None)[0], 200)
+                    if name == "preflight-below-99":
+                        self.assertEqual(mock.requests[0]["response"]["rate_limit"]["primary_window"]["used_percent"], 95)
+                    with self.assertRaisesRegex(RuntimeError, "redemption policy"):
+                        mock.reply("POST", "/backend-api/wham/rate-limit-reset-credits/consume",
+                                   {"redeem_request_id": "a" * 64,
+                                    "credit_id": "earned-weekly-credit"})
+                    self.assertFalse(mock.consumed)
+                    self.assertFalse(mock.spent)
+
+
+class IsolatedExecWrapperTests(unittest.TestCase):
+    def test_isolated_wrapper_execs_exact_arguments_and_records_its_native_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pidfile = root / "native.pid"
+            program = ("import json, os, sys; "
+                       "print(json.dumps({'pid':os.getpid(), 'argv':sys.argv, "
+                       "'isolated':sys.flags.isolated, 'noBytecode':sys.dont_write_bytecode})); "
+                       "sys.exit(7)")
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", str(Path(weekly_reset.__file__).resolve()),
+                 "--exec-wrapper", str(pidfile), sys.executable, "-I", "-B", "-c", program,
+                 "one argument", "literal-$()"],
+                cwd=root, env={"PATH": os.defpath}, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 7, result.stderr)
+            executed = json.loads(result.stdout)
+            self.assertEqual(executed["pid"], int(pidfile.read_text()))
+            self.assertEqual(executed["argv"], ["-c", "one argument", "literal-$()"])
+            self.assertEqual(executed["isolated"], 1)
+            self.assertTrue(executed["noBytecode"])
 
 
 if __name__ == "__main__":

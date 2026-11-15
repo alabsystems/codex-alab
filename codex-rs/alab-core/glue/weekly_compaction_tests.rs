@@ -1,7 +1,7 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! Real foreground compaction requests, authenticated usage reads and earned-reset POST.
+//! Real sampling and foreground-compaction retries, usage reads and earned-reset POST.
 
 use super::*;
 use pretty_assertions::assert_eq;
@@ -52,6 +52,7 @@ fn run_private_child(child: &str, mode: &str, marker: &str) {
         .env_clear()
         .env(CHILD, mode)
         .env("HOME", root.path())
+        .env("CODEX_HOME", root.path())
         .env("TMPDIR", root.path())
         .env("PATH", "/usr/bin:/bin")
         .env("RUST_MIN_STACK", "16777216")
@@ -85,28 +86,40 @@ async fn weekly_compaction_child() {
         return;
     }
     codex_alab_core::activate();
-    for (remote, preflight) in [(false, false), (true, false), (false, true), (true, true)] {
+    for (remote, preflight, retry, sampling) in [
+        (false, false, false, false),
+        (true, false, false, false),
+        (false, true, false, false),
+        (true, true, false, false),
+        (false, false, true, false),
+        (true, false, true, false),
+        (false, false, true, true),
+    ] {
         let server = responses::start_mock_server().await;
         let home = tempfile::tempdir().unwrap();
         let restored = Arc::new(AtomicBool::new(false));
         let observed = Arc::clone(&restored);
         let usage_reads = Arc::new(AtomicUsize::new(0));
-        let reset = chrono::Utc::now().timestamp() + 13 * 3600;
+        let horizon = 13 * 3600;
+        let reset = chrono::Utc::now().timestamp() + horizon;
         Mock::given(method("GET"))
             .and(path("/api/codex/usage"))
             .respond_with(move |_: &wiremock::Request| {
                 // Reactive cases exhaust quota after a healthy preflight. Proactive
                 // cases begin under pressure and must redeem before the model request.
                 let first_read = usage_reads.fetch_add(1, Ordering::SeqCst) == 0;
+                if retry && first_read {
+                    return ResponseTemplate::new(503);
+                }
                 let healthy = (!preflight && first_read) || observed.load(Ordering::SeqCst);
                 ResponseTemplate::new(200).set_body_json(json!({
                     "account_id":"account","user_id":"user","plan_type":"plus",
-                    "rate_limit":{"allowed":healthy,"limit_reached":!healthy,
-                        "secondary_window":{"used_percent":if healthy {0}else{100},
-                            "limit_window_seconds":604800,"reset_at":reset,"reset_after_seconds":46800}}
+                    "rate_limit":{"allowed":healthy || retry,"limit_reached":!healthy && !retry,
+                        "secondary_window":{"used_percent":if healthy {0}else if retry {99}else{100},
+                            "limit_window_seconds":604800,"reset_at":reset,"reset_after_seconds":horizon}}
                 }))
             })
-            .expect(if preflight { 2 } else { 3 })
+            .expect(if preflight { 2 } else if retry { 3 } else { 4 })
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -136,6 +149,8 @@ async fn weekly_compaction_child() {
         let mut provider = built_in_model_providers(None)["openai"].clone();
         provider.base_url = Some(format!("{}/v1", server.uri()));
         provider.supports_websockets = false;
+        provider.request_max_retries = Some(0);
+        provider.stream_max_retries = Some(1);
         let base = server.uri();
         let (session, turn, events) = make_session_and_context_with_auth_config_home_and_rx(
             auth,
@@ -184,7 +199,11 @@ async fn weekly_compaction_child() {
             responses::ev_assistant_message("summary", "retained summary")
         };
         let mut replies = Vec::new();
-        if !preflight {
+        if retry {
+            replies.push(ResponseTemplate::new(500).set_body_json(json!({"error":{
+                "message":"Fixture transport failed before completion"
+            }})));
+        } else if !preflight {
             replies.push(ResponseTemplate::new(429).set_body_json(json!({"error":{
                 "type":"usage_limit_reached","message":"Fixture weekly quota exhausted","resets_at":reset
             }})));
@@ -199,7 +218,25 @@ async fn weekly_compaction_child() {
         );
         let requests = responses::mount_response_sequence(&server, replies).await;
         let compact = async {
-            if remote {
+            if sampling {
+                crate::session::turn::run_turn(
+                    Arc::clone(&session),
+                    Arc::clone(&turn),
+                    vec![crate::session::input_queue::TurnInput::UserInput {
+                        content: vec![UserInput::Text {
+                            text: "keep this exact compaction input".into(),
+                            text_elements: Vec::new(),
+                        }],
+                        client_id: None,
+                        metadata: Default::default(),
+                    }],
+                    &mut crate::session::turn::McpStartupRequirements::default(),
+                    None,
+                    CancellationToken::new(),
+                )
+                .await
+                .map(|_| ())
+            } else if remote {
                 crate::compact_remote_v2::run_remote_compact_task(Arc::clone(&session), step, world)
                     .await
             } else {
@@ -215,7 +252,7 @@ async fn weekly_compaction_child() {
                 .await
             }
         };
-        let result = tokio::time::timeout(Duration::from_secs(15), compact).await;
+        let result = tokio::time::timeout(Duration::from_secs(60), compact).await;
         if result.is_err() {
             let paths = server
                 .received_requests()
@@ -252,6 +289,27 @@ async fn weekly_compaction_child() {
             );
         }
         assert!(restored.load(Ordering::SeqCst));
+        if retry {
+            let requests = server.received_requests().await.unwrap();
+            let model_indices = requests
+                .iter()
+                .enumerate()
+                .filter(|(_, request)| request.url.path() == "/v1/responses")
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let consume = requests
+                .iter()
+                .position(|request| {
+                    request.url.path() == "/api/codex/rate-limit-reset-credits/consume"
+                })
+                .unwrap();
+            assert_eq!(model_indices.len(), 2);
+            assert!(
+                model_indices[0] < consume && consume < model_indices[1],
+                "the earned reset must precede the retried request"
+            );
+            assert!((1..=24 * 3600).contains(&(reset - chrono::Utc::now().timestamp())));
+        }
         assert!(
             turn.extension_data
                 .get::<codex_alab_quota_recovery::State>()

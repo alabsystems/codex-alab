@@ -282,6 +282,150 @@ async fn weekly_wall_without_credit_yields_to_a_ready_account_handoff() {
     );
 }
 
+/// A credit can exist without permission to spend it. The ordinary wall must
+/// still reach account handoff when the natural refresh is more than a day away.
+#[tokio::test]
+async fn a_weekly_wall_outside_the_redemption_horizon_still_reaches_handoff() {
+    let fixture = Fixture::new().await;
+    let reset = chrono::Utc::now().timestamp() + 25 * 3600;
+    Mock::given(method("GET"))
+        .and(path(USAGE))
+        .respond_with(usage(true, false, reset))
+        .expect(1)
+        .mount(&fixture.server)
+        .await;
+    forbid_reset_spending(&fixture).await;
+    let (handoff, asked) = host(true);
+    let recovered = tokio::time::timeout(
+        Duration::from_secs(60),
+        fixture.wait(Duration::from_secs(3600), Some(reset), Some(&handoff)),
+    )
+    .await
+    .expect("redemption policy kept the weekly wall from a ready account handoff");
+    assert!(!recovered, "handoff preserves the original usage error");
+    assert_eq!(
+        asked.walls(),
+        [SpentWall {
+            window: SpentWindow::Week,
+            resets_at: reset,
+        }],
+    );
+    assert_eq!(fixture.posts().await, 0);
+}
+
+/// Polling must survive the policy refusal, with or without an available host.
+/// The next usage response restores allowance without consuming any credit.
+#[tokio::test]
+async fn a_wall_outside_the_redemption_horizon_keeps_polling_until_restored() {
+    for with_host in [false, true] {
+        let fixture = Fixture::new().await;
+        let reset = chrono::Utc::now().timestamp() + 25 * 3600;
+        let reads = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&reads);
+        Mock::given(method("GET"))
+            .and(path(USAGE))
+            .respond_with(move |_: &wiremock::Request| {
+                usage(true, observed.fetch_add(1, Ordering::SeqCst) != 0, reset)
+            })
+            .expect(2)
+            .mount(&fixture.server)
+            .await;
+        forbid_reset_spending(&fixture).await;
+        let (handoff, asked) = host(false);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(60),
+                fixture.wait(Duration::ZERO, Some(reset), with_host.then_some(&handoff)),
+            )
+            .await
+            .expect("policy-ineligible wall stopped observing restored allowance"),
+            "policy refusal must keep the original request polling, host={with_host}",
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert_eq!(asked.count(), usize::from(with_host));
+        assert_eq!(fixture.posts().await, 0);
+    }
+}
+
+/// An uncertain or committed reset keeps its custody while policy forbids a
+/// further POST. A ready account must not steal its request before restoration.
+#[tokio::test]
+async fn reset_custody_outside_the_redemption_horizon_neither_spends_nor_yields() {
+    for (name, outcome) in [
+        ("pending", Outcome::Pending),
+        ("awaiting ack", Outcome::AwaitingAck),
+        ("restored pending", Outcome::RestoredPending),
+        ("consumed", Outcome::Consumed),
+    ] {
+        let fixture = Fixture::new().await;
+        let reset = chrono::Utc::now().timestamp() + 25 * 3600;
+        let reads = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&reads);
+        Mock::given(method("GET"))
+            .and(path(USAGE))
+            .respond_with(move |_: &wiremock::Request| {
+                usage(true, observed.fetch_add(1, Ordering::SeqCst) != 0, reset)
+            })
+            .expect(2)
+            .mount(&fixture.server)
+            .await;
+        forbid_reset_spending(&fixture).await;
+        let account = digest(&format!("{}\0account\0user", fixture.server.uri()));
+        let dir = fixture
+            .config
+            .home
+            .join(format!("weekly-reset-{account}.d"));
+        private_dir(&dir).unwrap();
+        let mut ledger = Ledger::default();
+        let operation = begin(&dir, &account, &mut ledger, hour_ahead(), "A").unwrap();
+        ledger.current.as_mut().unwrap().outcome = outcome;
+        save(&dir.join("state.json"), &ledger).unwrap();
+        if outcome == Outcome::Consumed {
+            let mut credit = credit_at(&dir, "A").unwrap();
+            credit.consumed = true;
+            save(&credit_path(&dir, "A"), &credit).unwrap();
+        }
+        let (handoff, asked) = host(true);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(60),
+                fixture.wait(Duration::ZERO, Some(reset), Some(&handoff)),
+            )
+            .await
+            .expect("reset custody stopped observing restored allowance"),
+            "the held request must observe restoration, custody={name}",
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 2, "{name}");
+        assert_eq!(asked.count(), 0, "custody={name}");
+        assert_eq!(fixture.posts().await, 0, "custody={name}");
+        let retained = load::<Ledger>(&dir.join("state.json"))
+            .unwrap()
+            .unwrap()
+            .current
+            .unwrap();
+        assert_eq!(retained.key, operation.key, "custody={name}");
+        let credit = credit_at(&dir, "A").unwrap();
+        assert_eq!(credit.consumed, outcome == Outcome::Consumed, "{name}");
+    }
+}
+
+/// Offer an available credit so a missing eligibility gate cannot pass merely
+/// because the backend had no credit to spend. Neither endpoint may be called.
+async fn forbid_reset_spending(fixture: &Fixture) {
+    Mock::given(method("GET"))
+        .and(path(CREDITS))
+        .respond_with(credits(&["available"]))
+        .expect(0)
+        .mount(&fixture.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(CONSUME))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&fixture.server)
+        .await;
+}
+
 #[tokio::test]
 async fn an_available_credit_is_redeemed_before_any_handoff_is_considered() {
     let fixture = Fixture::new().await;

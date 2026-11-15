@@ -1,0 +1,8 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+# Requirements, not an activation channel: only the authenticated verified lane
+# may satisfy these, including every compiler-capable dependency of the app.
+# Cargo combines matching cfg tables with platform flags; build.rustflags could
+# instead be shadowed by a target table and silently lose dependency inclusion.
+[target.'cfg(all())']
+rustflags = ["-Ztrust-verify=on", "-Ztrust-policy=certify", "-Ztrust-verify-include-dependencies=yes"]

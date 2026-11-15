@@ -5,7 +5,7 @@
 //! `App` resuming a thread whose goal stopped opens "Resume paused goal?"
 //! (`maybe_prompt_resume_paused_goal_after_resume`), and its hook tells codex-alab's shared
 //! state why before the view opens, so the box the view reports carries it; the autopilot
-//! leaves a blocked goal's box to a person by it.
+//! dismisses the box without changing goal status while native recovery resumes the goal.
 
 use crate::app::tests::make_test_app_with_channels;
 use codex_alab_tui::boxes;

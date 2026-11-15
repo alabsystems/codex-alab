@@ -15,8 +15,13 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const PREFLIGHT_USED_PERCENT: f64 = 95.0;
-/// How long one point of headroom below the redemption threshold excuses the
+/// Every automatic redemption, including an uncertain operation's retry, needs
+/// one ordinary window to satisfy both limits in the same fresh usage read.
+const REDEMPTION_USED_PERCENT: f64 = 99.0;
+const REDEMPTION_MAX_WAIT_SECONDS: i64 = 24 * 60 * 60;
+/// Stop reusing healthy reads before the redemption threshold is reachable.
+const PREFLIGHT_CLEAR_USED_PERCENT: f64 = 95.0;
+/// How long one point of headroom below the conservative read threshold excuses the
 /// next authoritative read. A reused reading can miss the threshold only if
 /// the whole account burns faster than `1 / PREFLIGHT_SECONDS_PER_POINT`
 /// points a second after it was taken (alab/QUOTA-RECOVERY.md).
@@ -30,25 +35,10 @@ enum Purpose {
     Preflight,
 }
 
-fn preflight_cycle(
+fn redemption_cycle(
     read: &RateLimitsWithResetCredits,
     owner: &(String, String, u64),
     now: i64,
-) -> Option<i64> {
-    let threshold = if read.ordinary_usage_allowed == Some(false) {
-        100.0
-    } else {
-        PREFLIGHT_USED_PERCENT
-    };
-    pressure_cycle(read, owner, now, threshold, 5 * 60)
-}
-
-fn pressure_cycle(
-    read: &RateLimitsWithResetCredits,
-    owner: &(String, String, u64),
-    now: i64,
-    threshold: f64,
-    minimum_wait: i64,
 ) -> Option<i64> {
     if !matches(read, owner) || explicit_denial(read) || read.ordinary_usage_allowed.is_none() {
         return None;
@@ -58,13 +48,16 @@ fn pressure_cycle(
         .filter(|s| s.limit_id.as_deref().is_none_or(|id| id == "codex"))
         .flat_map(|s| [s.primary.as_ref(), s.secondary.as_ref()])
         .flatten()
-        .filter(|w| w.used_percent.is_finite() && w.used_percent >= threshold)
+        .filter(|w| w.used_percent.is_finite() && w.used_percent >= REDEMPTION_USED_PERCENT)
         .filter_map(|w| {
             if !matches!(w.window_minutes, Some(300 | 10080)) {
                 return None;
             }
             let reset = w.resets_at?;
-            (reset.saturating_sub(now) >= minimum_wait).then_some(reset)
+            let remaining = reset.checked_sub(now)?;
+            (1..=REDEMPTION_MAX_WAIT_SECONDS)
+                .contains(&remaining)
+                .then_some(reset)
         })
         .max()
 }
@@ -73,7 +66,7 @@ fn permitted_after_preflight(
     read: &RateLimitsWithResetCredits,
     owner: &(String, String, u64),
 ) -> bool {
-    usage_below(read, owner, PREFLIGHT_USED_PERCENT)
+    usage_below(read, owner, PREFLIGHT_CLEAR_USED_PERCENT)
 }
 
 fn usage_below(
@@ -131,7 +124,7 @@ impl Clear {
         let Some(age) = now.checked_sub(self.read_at).filter(|age| *age >= 0) else {
             return false;
         };
-        let good_for = ((PREFLIGHT_USED_PERCENT - used) * PREFLIGHT_SECONDS_PER_POINT)
+        let good_for = ((PREFLIGHT_CLEAR_USED_PERCENT - used) * PREFLIGHT_SECONDS_PER_POINT)
             .min(PREFLIGHT_CLEAR_MAX_SECONDS);
         (age as f64) < good_for && elapsed.as_secs_f64() < good_for
     }
@@ -212,7 +205,7 @@ fn eligible(
     if read.ordinary_usage_allowed != Some(false) {
         return None;
     }
-    pressure_cycle(read, owner, now, 100.0, 1)
+    redemption_cycle(read, owner, now)
 }
 
 /// A lagging reset timestamp can justify another read, never a redemption.
@@ -373,6 +366,10 @@ struct Operation {
     key: String,
     generation: u64,
     outcome: Outcome,
+    /// Fresh permitted usage below the preflight threshold, cleared before POST.
+    /// A reactive retry's weaker restoration witness cannot grant this right.
+    #[serde(default)]
+    preflight_cleared: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Ledger {
@@ -389,16 +386,23 @@ impl Default for Ledger {
         }
     }
 }
-fn remember_restoration(path: &Path, ledger: &mut Ledger) -> Option<()> {
-    let Some(op) = ledger
-        .current
-        .as_mut()
-        .filter(|op| op.outcome.pending() && op.outcome != Outcome::RestoredPending)
-    else {
+fn remember_restoration(path: &Path, ledger: &mut Ledger, preflight_clear: bool) -> Option<()> {
+    let Some(op) = ledger.current.as_mut() else {
         return Some(());
     };
-    op.outcome = Outcome::RestoredPending;
-    save(path, ledger)
+    let reconcile = op.outcome.pending() && op.outcome != Outcome::RestoredPending;
+    let cleared = preflight_clear && !op.preflight_cleared;
+    if reconcile {
+        op.outcome = Outcome::RestoredPending;
+    }
+    if cleared {
+        op.preflight_cleared = true;
+    }
+    if reconcile || cleared {
+        save(path, ledger)
+    } else {
+        Some(())
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -417,9 +421,9 @@ enum Recovery {
     /// One of the account's own windows is spent (`wall`), nothing is in
     /// redemption custody and no earned credit can be redeemed now. Polling is
     /// one answer; a host that would leave that wall for another account is
-    /// the other. `conclusive` only when this attempt read the credit list and
-    /// it offered nothing: an unread list, or one whose credit the backend
-    /// just refused, may hide a credit.
+    /// the other. `conclusive` when the current policy forbids redemption, or
+    /// this attempt read a credit list that offered nothing: an unread list,
+    /// or one whose credit the backend just refused, may hide a credit.
     NoCredit {
         wall: SpentWall,
         conclusive: bool,
@@ -475,7 +479,8 @@ async fn wait_for_reset(
             Ok(Recovery::NoCredit { wall, conclusive })
                 if (conclusive || inconclusive >= 2) && offerable(wall, reset_at) =>
             {
-                // The earned reset was tried first and has nothing to redeem.
+                // No reset may be redeemed now: the policy forbids it, or the
+                // earned-credit check has nothing eligible to redeem.
                 // `recover` has returned, so neither the account resource nor
                 // the custody lock is held while the host is asked. Ending
                 // here returns the original usage error to the turn; a host
@@ -707,7 +712,14 @@ async fn recover_with(
         Purpose::Preflight => permitted_after_preflight(&read, owner),
         Purpose::Recover => restored(&read, owner),
     };
-    if allowed && remember_restoration(&state_path, &mut ledger).is_none() {
+    if allowed
+        && remember_restoration(
+            &state_path,
+            &mut ledger,
+            permitted_after_preflight(&read, owner),
+        )
+        .is_none()
+    {
         return Recovery::Stop;
     }
     if purpose == Purpose::Preflight && allowed {
@@ -745,7 +757,8 @@ async fn recover_with(
         if purpose == Purpose::Preflight
             && ledger.current.as_ref().is_some_and(|op| {
                 op.outcome == Outcome::Consumed
-                    && credit_at(&dir, &op.credit).is_none_or(|credit| !credit.retry_released)
+                    && (!op.preflight_cleared
+                        || credit_at(&dir, &op.credit).is_none_or(|credit| !credit.retry_released))
             })
         {
             return Recovery::Stop;
@@ -753,14 +766,34 @@ async fn recover_with(
         let now = chrono::Utc::now().timestamp();
         let cycle = match purpose {
             Purpose::Recover => eligible(&read, owner, now),
-            Purpose::Preflight => preflight_cycle(&read, owner, now),
+            Purpose::Preflight => redemption_cycle(&read, owner, now),
         };
         let Some(cycle) = cycle else {
-            return if purpose == Purpose::Recover && stale_exhaustion(&read, owner, now) {
-                Recovery::Wait
-            } else {
-                Recovery::Stop
-            };
+            if purpose == Purpose::Recover {
+                if stale_exhaustion(&read, owner, now) {
+                    return Recovery::Wait;
+                }
+                if let Some(wall) = spent_wall(&read, owner, now) {
+                    // Policy can forbid spending a credit without invalidating
+                    // an ordinary quota wall. Keep polling or offer the host
+                    // that wall, unless an unresolved operation holds custody.
+                    let held = ledger.current.as_ref().is_some_and(|op| {
+                        op.outcome.pending()
+                            || (op.outcome == Outcome::Consumed
+                                && credit_at(&dir, &op.credit)
+                                    .is_none_or(|credit| !credit.retry_released))
+                    });
+                    return if held {
+                        Recovery::Wait
+                    } else {
+                        Recovery::NoCredit {
+                            wall,
+                            conclusive: true,
+                        }
+                    };
+                }
+            }
+            return Recovery::Stop;
         };
         // A successful POST whose new usage has not propagated must not burn
         // another credit on the next poll, even if its reset timestamp advanced.
@@ -818,19 +851,25 @@ async fn recover_with(
         }
         let previously_usable = op.outcome == Outcome::RestoredPending
             || (op.outcome == Outcome::Pending && op.cycle != cycle);
-        if op.outcome != Outcome::AwaitingAck {
+        if op.outcome != Outcome::AwaitingAck || op.preflight_cleared {
             // A lost ACK after this attempt must not be mistaken for historical
             // reconciliation on a later process or a changed reset timestamp.
             let Some(current_op) = ledger.current.as_mut() else {
                 return Recovery::Stop;
             };
             current_op.outcome = Outcome::AwaitingAck;
+            current_op.preflight_cleared = false;
             if save(&state_path, &ledger).is_none() {
                 return Recovery::Stop;
             }
         }
         if !current() {
             return Recovery::Stop;
+        }
+        // Listing credits and persisting custody can cross the natural reset.
+        // A window that qualified before that wait cannot authorize a POST now.
+        if redemption_cycle(&read, owner, chrono::Utc::now().timestamp()) != Some(cycle) {
+            return Recovery::Wait;
         }
         tried.insert(op.credit.clone());
         let reply = client
@@ -881,7 +920,13 @@ async fn recover_with(
             Purpose::Preflight => permitted_after_preflight(&fresh, owner),
         };
         if restored {
-            if remember_restoration(&state_path, &mut ledger).is_none() {
+            if remember_restoration(
+                &state_path,
+                &mut ledger,
+                permitted_after_preflight(&fresh, owner),
+            )
+            .is_none()
+            {
                 return Recovery::Stop;
             }
             return release(&dir, Some(&op.credit), turn_id);
@@ -944,6 +989,7 @@ fn begin(
         key: operation_key(account, cycle, id, generation),
         generation,
         outcome: Outcome::AwaitingAck,
+        preflight_cleared: false,
     };
     ledger.next_generation = next;
     ledger.current = Some(op.clone());
@@ -1198,7 +1244,7 @@ mod tests {
             eligible(&reading(100.0, 10080, 1001), &owner, 1000),
             Some(1001)
         );
-        for read in [reading(100.0, 10080, 1000), reading(99.9, 10080, 1300)] {
+        for read in [reading(100.0, 10080, 1000), reading(98.9, 10080, 1300)] {
             assert_eq!(eligible(&read, &owner, 1000), None);
         }
         let mut read = reading(100.0, 10080, 1300);
@@ -1287,23 +1333,35 @@ mod tests {
     }
 
     #[test]
-    fn preflight_preserves_headroom_in_both_subscription_windows() {
+    fn automatic_redemption_requires_99_percent_and_a_reset_within_24_hours() {
         let owner = ("account".into(), "user".into(), 1);
-        for (minutes, horizon) in [(300, 300), (10080, 300)] {
-            let mut read = reading(95.0, minutes, 1000 + horizon);
-            read.ordinary_usage_allowed = Some(true);
-            assert_eq!(preflight_cycle(&read, &owner, 1000), Some(1000 + horizon));
-            assert!(!permitted_after_preflight(&read, &owner));
-            read.rate_limits[0].secondary.as_mut().unwrap().used_percent = 94.9;
-            assert_eq!(preflight_cycle(&read, &owner, 1000), None);
-            assert!(permitted_after_preflight(&read, &owner));
-            read.rate_limits[0].secondary.as_mut().unwrap().used_percent = 100.0;
-            read.ordinary_usage_allowed = Some(false);
-            assert_eq!(eligible(&read, &owner, 1000), Some(1000 + horizon));
-            read.rate_limits[0].secondary.as_mut().unwrap().resets_at = Some(999 + horizon);
-            assert_eq!(preflight_cycle(&read, &owner, 1000), None);
-            read.ordinary_usage_allowed = None;
-            assert_eq!(preflight_cycle(&read, &owner, 1000), None);
+        for minutes in [300, 10080] {
+            for (used, remaining, expected) in [
+                (f64::from_bits(99.0_f64.to_bits() - 1), 3600, false),
+                (99.0, 1, true),
+                (99.0, 24 * 3600, true),
+                (100.0, 24 * 3600, true),
+                (99.0, 24 * 3600 + 1, false),
+                (100.0, 7 * 24 * 3600, false),
+                (100.0, 0, false),
+                (100.0, -1, false),
+            ] {
+                let mut read = reading(used, minutes, 1000 + remaining);
+                let expected = expected.then_some(1000 + remaining);
+                assert_eq!(eligible(&read, &owner, 1000), expected);
+                for permission in [Some(false), Some(true)] {
+                    read.ordinary_usage_allowed = permission;
+                    assert_eq!(redemption_cycle(&read, &owner, 1000), expected);
+                }
+                read.ordinary_usage_allowed = None;
+                assert_eq!(redemption_cycle(&read, &owner, 1000), None);
+            }
+            for used in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                let mut read = reading(100.0, minutes, 4600);
+                read.rate_limits[0].secondary.as_mut().unwrap().used_percent = used;
+                assert_eq!(eligible(&read, &owner, 1000), None);
+                assert_eq!(redemption_cycle(&read, &owner, 1000), None);
+            }
         }
     }
 
@@ -1327,7 +1385,7 @@ mod tests {
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "account_id":"account", "user_id":"user", "plan_type":"plus",
                     "rate_limit":{"allowed":true, "limit_reached":false,
-                        "primary_window":{"used_percent":if read_redeemed.load(Ordering::SeqCst) {0}else{95},
+                        "primary_window":{"used_percent":if read_redeemed.load(Ordering::SeqCst) {0}else{99},
                         "limit_window_seconds":18000,"reset_at":reset,"reset_after_seconds":3600}}
                 }))
             }).expect(3).mount(&server).await;

@@ -727,6 +727,14 @@ struct State {
     /// What `codex-accounts snapshot` answers ([`FakeAterm::set_account_pool`]); `None`: an
     /// aterm that does not know the verb.
     account_pool: Option<FakePool>,
+    /// What a schema 2 snapshot says a move may ask ([`FakeAterm::set_account_moves`]).
+    account_moves: FakeAccountMoves,
+    /// Whether `codex-accounts snapshot schema=2` is answered
+    /// ([`FakeAterm::answer_account_schema_two`]); `false` plays an aterm before schema 2.
+    account_schema_two: bool,
+    /// Whether `restart` takes `account=<label>` and `account-auto`
+    /// ([`FakeAterm::answer_account_moves`]); `false` plays an aterm before them.
+    account_moves_verb: bool,
     /// This session's task record's state (`working`, `done`, `stalled`, `exited`), as
     /// `@self task` answers it; `None` answers `OK task -` (no record).
     task: Option<String>,
@@ -775,24 +783,84 @@ struct FakePool {
     accounts: serde_json::Value,
 }
 
+/// What a fake aterm's schema 2 snapshot says of moving its session
+/// ([`FakeAterm::set_account_moves`]): the pool's choice (a row id), its pin and rotation
+/// word, and the two capabilities, as aterm's `codex_accounts_control` reports them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FakeAccountMoves {
+    /// `pool.choice_id`.
+    pub choice: Option<String>,
+    /// `pool.pinned`.
+    pub pinned: bool,
+    /// `pool.rotation`: `off`, `wall` or `early`.
+    pub rotation: String,
+    /// `capabilities.select`.
+    pub select: bool,
+    /// `capabilities.auto`.
+    pub auto: bool,
+}
+
+impl Default for FakeAccountMoves {
+    /// A pool that offers no move, unpinned, rotating at a wall.
+    fn default() -> Self {
+        Self {
+            choice: None,
+            pinned: false,
+            rotation: "wall".to_string(),
+            select: false,
+            auto: false,
+        }
+    }
+}
+
 impl FakePool {
-    /// aterm's `codex-accounts` snapshot (`snapshot_in`), bound to `request` and to the peer
-    /// that asked: it carries no credential and grants no selection.
-    fn snapshot(&self, sid: &str, request: &str, peer_pid: Option<u32>) -> serde_json::Value {
+    /// aterm's `codex-accounts` snapshot of `schema` (`snapshot_in`), bound to `request` and
+    /// to the peer that asked: it carries no credential. Schema 1 says what it said before
+    /// schema 2 existed: no row is the session's, none is eligible and no capability is
+    /// offered. Schema 2 carries the rows as set, `own` as the session's row and `moves`.
+    fn snapshot(
+        &self,
+        schema: u8,
+        moves: &FakeAccountMoves,
+        sid: &str,
+        request: &str,
+        peer_pid: Option<u32>,
+    ) -> serde_json::Value {
+        let session = serde_json::json!({
+            "sid": sid,
+            "process_pid": peer_pid.unwrap_or_else(std::process::id),
+            "process_birth": self.birth,
+            "epoch": "fake-host-epoch",
+        });
+        if schema == 1 {
+            let mut accounts = self.accounts.clone();
+            if let Some(rows) = accounts.as_array_mut() {
+                for row in rows {
+                    row["eligible"] = serde_json::Value::Bool(false);
+                }
+            }
+            return serde_json::json!({
+                "schema": 1,
+                "observed_at": 1_800_000_000,
+                "request": request,
+                "session": session,
+                "revision": "0".repeat(64),
+                "assignment": {"account_id": null, "mode": "unknown"},
+                "accounts": accounts,
+                "capabilities": {"add": false, "select": false, "auto": false},
+            });
+        }
         serde_json::json!({
-            "schema": 1,
+            "schema": 2,
             "observed_at": 1_800_000_000,
             "request": request,
-            "session": {
-                "sid": sid,
-                "process_pid": peer_pid.unwrap_or_else(std::process::id),
-                "process_birth": self.birth,
-                "epoch": "fake-host-epoch",
-            },
+            "session": session,
             "revision": "0".repeat(64),
-            "assignment": {"account_id": self.own, "mode": "unknown"},
+            "assignment": {"account_id": self.own},
+            "pool": {"choice_id": moves.choice, "pinned": moves.pinned,
+                "rotation": moves.rotation},
             "accounts": self.accounts,
-            "capabilities": {"add": false, "select": false, "auto": false},
+            "capabilities": {"add": false, "select": moves.select, "auto": moves.auto},
         })
     }
 }
@@ -1040,17 +1108,23 @@ impl State {
             "messages" => self.messages(tail),
             "inbox" => self.inbox(tail),
             "codex-accounts" if self.account_pool.is_some() => {
-                match (
-                    &self.account_pool,
-                    tail.strip_prefix("snapshot schema=1 request="),
-                ) {
-                    (Some(pool), Some(request)) => format!(
+                let asked = tail
+                    .strip_prefix("snapshot schema=1 request=")
+                    .map(|request| (1, request))
+                    .or_else(|| {
+                        tail.strip_prefix("snapshot schema=2 request=")
+                            .filter(|_| self.account_schema_two)
+                            .map(|request| (2, request))
+                    });
+                match (&self.account_pool, asked) {
+                    (Some(pool), Some((schema, request))) => format!(
                         "OK codex-accounts {}\n",
-                        pool.snapshot(&self.sid, request, peer_pid)
+                        pool.snapshot(schema, &self.account_moves, &self.sid, request, peer_pid)
                     ),
                     _ => "ERR codex-accounts invalid request\n".to_string(),
                 }
             }
+            "restart" => self.restart(tail, peer_pid),
             "sessions" => format!("OK 1\n{} program=codex\n", self.sid),
             "task" if tail.trim().is_empty() => match &self.task {
                 Some(state) => format!(
@@ -1061,6 +1135,29 @@ impl State {
             },
             _ => "ERR unknown verb (try: help)\n".to_string(),
         }
+    }
+
+    /// `restart [pid=<n>] [account=<label> | account-auto]`, answered as aterm's
+    /// `restart_act` answers a carried restart, and nothing more: the fake stamps nothing and
+    /// signals nothing. An aterm before the account words (the default) refuses the first one
+    /// as a bad argument, as its parser does.
+    fn restart(&self, tail: &str, peer_pid: Option<u32>) -> String {
+        let mut pid = peer_pid.unwrap_or_else(std::process::id);
+        let mut account = String::new();
+        for word in tail.split_ascii_whitespace() {
+            let named = word == "account-auto" || word.starts_with("account=");
+            if named && !self.account_moves_verb {
+                return format!("ERR bad restart argument: {word}\n");
+            }
+            if let Some(n) = word.strip_prefix("pid=").and_then(|n| n.parse().ok()) {
+                pid = n;
+            } else if named && account.is_empty() {
+                account = format!(" {word}");
+            } else {
+                return format!("ERR bad restart argument: {word}\n");
+            }
+        }
+        format!("OK restarting pid {pid} cause=asked{account}\n")
     }
 
     /// `inbox [--peek] [--meta]`, `inbox get <id>`, `inbox seen <id> [<verdict>]`, as
@@ -2097,6 +2194,9 @@ impl FakeAterm {
             reply_sequences: BTreeMap::new(),
             reply_always: BTreeMap::new(),
             account_pool: None,
+            account_moves: FakeAccountMoves::default(),
+            account_schema_two: true,
+            account_moves_verb: false,
             task: None,
             next_later: 0,
             panes: Vec::new(),
@@ -2607,15 +2707,34 @@ impl FakeAterm {
     }
 
     /// Answer `codex-accounts snapshot` from this pool, as the session hosting the process
-    /// whose kernel birth is `birth`: `own` is the row aterm names as that session's (a real
-    /// one names none yet) and `accounts` the rows, as the wire carries them. `None` restores
-    /// an aterm that does not know the verb.
+    /// whose kernel birth is `birth`: `own` is the row a schema 2 snapshot names as that
+    /// session's (schema 1 names none, as aterm's does) and `accounts` the rows, as the wire
+    /// carries them. `None` restores an aterm that does not know the verb.
     pub fn set_account_pool(&self, pool: Option<(&str, Option<&str>, serde_json::Value)>) {
         lock(&self.state).account_pool = pool.map(|(birth, own, accounts)| FakePool {
             birth: birth.to_string(),
             own: own.map(str::to_string),
             accounts,
         });
+    }
+
+    /// What a schema 2 snapshot says of moving this session (the pool's choice, pin,
+    /// rotation and capabilities); the default offers none.
+    pub fn set_account_moves(&self, moves: FakeAccountMoves) {
+        lock(&self.state).account_moves = moves;
+    }
+
+    /// Whether `codex-accounts snapshot schema=2` is answered (the default). `false` plays an
+    /// aterm before schema 2, which answers it `ERR codex-accounts invalid request` and
+    /// answers schema 1 as before.
+    pub fn answer_account_schema_two(&self, answered: bool) {
+        lock(&self.state).account_schema_two = answered;
+    }
+
+    /// Whether `restart` takes `account=<label>` and `account-auto`. `false` (the default)
+    /// plays an aterm before them, which answers `ERR bad restart argument: <word>`.
+    pub fn answer_account_moves(&self, answered: bool) {
+        lock(&self.state).account_moves_verb = answered;
     }
 
     /// Dismiss `key`'s digest entry as the owner does: the key is then quiet. Answers whether

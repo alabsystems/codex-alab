@@ -23,15 +23,16 @@
 //! - [`events`]: `subscribe @self events` and the claim watch.
 //! - [`context`]: `/ide`'s terminal context (`panes`, `blocks`, `blocktext`, `selection`).
 //! - [`mail`]: this session's inbox for a typed `Inbox:` line, its receipt and report.
+//! - [`account_move`]: `restart account=`, moving this session to another signed-in account.
 //! - `fake` (tests, or the `test-support` feature): an in-process aterm.
 //!
 //! Unix only: aterm's control socket is AF_UNIX, and on any other target this crate is
 //! empty (there, codex-alab never finds an aterm).
 #![cfg(unix)]
 
+pub mod account_move;
 pub mod account_recovery;
 pub mod accounts;
-pub mod assignment;
 mod client;
 mod runtime_claim;
 pub mod conn;

@@ -144,8 +144,8 @@ async fn resume_places_interruption_before_searches_split_across_pages() {
     canceled.items.push(search("canceled"));
     audit.items.insert(/*index*/ 0, search("older"));
     let page = vec![
-        canceled.items[0].payload.clone(),
-        audit.items[0].payload.clone(),
+        HistoryPageItem { turn_id: canceled.id.clone(), payload: canceled.items[0].payload.clone() }, // ALAB(history): preserve owning turns in projected pages.
+        HistoryPageItem { turn_id: audit.id.clone(), payload: audit.items[0].payload.clone() }, // ALAB(history): preserve owning turns in projected pages.
     ];
     let cwd = app.config.cwd.clone();
     let older = app.project_older_history_cells(
@@ -219,8 +219,7 @@ async fn hidden_last_item_keeps_turn_groups_and_completion_boundaries() {
         assert_eq!(hidden, HashSet::from(["hidden"]));
         let items = turns
             .iter()
-            .flat_map(Turn::item_payloads)
-            .cloned()
+            .flat_map(|turn| turn.item_payloads().map(|payload| HistoryPageItem { turn_id: turn.id.clone(), payload: payload.clone() })) // ALAB(history): preserve owning turns in projected pages.
             .collect::<Vec<_>>();
 
         let cells = app.project_older_history_cells(

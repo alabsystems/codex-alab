@@ -34,6 +34,10 @@ SPEC = importlib.util.spec_from_file_location("versions", ROOT / "alab" / "versi
 VERSIONS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERSIONS)
 HEADER = "# codex-alab's version ledger (test copy)\n"
+# publish/pre-promote ran alab/qualification.py from 18a4e8404b until 2026-11-14. The cases
+# that hold that step are skipped, not deleted: they return with the step.
+CERTIFIED_HOOK_NOTE = ("publish/pre-promote's certified gate is a note until trust.lock pins "
+                       "a Trust build that can certify the application")
 
 
 class Scratch(unittest.TestCase):
@@ -112,8 +116,13 @@ class Scratch(unittest.TestCase):
         """ALab's tooling, VERSION, alab/client-version and (unless None) the ledger, committed
         and (with `land`) pushed as origin's main, this clone's origin/main moving with it."""
         (self.alab / "alab").mkdir(exist_ok=True)
-        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py", "versions.py"):
+        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py", "versions.py",
+                     "qualification.py", "source_content.py", "upstream_intake.py"):
             shutil.copy2(ROOT / "alab" / name, self.alab / "alab" / name)
+        # Version tests stop at the real hook's separate native proof boundary.
+        proof_gate = self.alab / "alab" / "check.sh"
+        proof_gate.write_text('#!/bin/sh\nprintf native-proof-gate > .git/proof-gate-called\nexit "${FIXTURE_PROOF_STATUS:-0}"\n')
+        proof_gate.chmod(0o755)
         (self.alab / "VERSION").write_text(version + "\n")
         (self.alab / "alab" / "client-version").write_text(client + "\n")
         path = self.alab / "alab" / "versions.toml"
@@ -412,6 +421,10 @@ class LedgerReleaseTests(Scratch):
         process = self.hook(PUB_SOURCE_COMMIT=source, PUB_VERSION="0.1.0")
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertIn("0.1.0+codex.0.164.0", process.stdout)
+        # The hook's certified gate is a note until trust.lock pins a Trust build that can
+        # certify the application (publish/pre-promote, 2026-11-14): it must claim no proof.
+        self.assertFalse((self.alab / ".git/proof-gate-called").exists())
+        self.assertNotIn("live certified gate passed", process.stdout)
         # The engine must release the commit's own VERSION, never the client line.
         process = self.hook(PUB_SOURCE_COMMIT=source, PUB_VERSION="0.165.0")
         self.assertNotEqual(process.returncode, 0, process.stdout)
@@ -559,6 +572,33 @@ class ReleaseRecordTests(Scratch):
         self.git(self.alab, "checkout", "-q", "--detach", source)
         process = self.hook(PUB_SOURCE_COMMIT=source, PUB_VERSION="0.1.0")
         self.assertEqual(process.returncode, 0, process.stderr)
+
+    @unittest.skip(CERTIFIED_HOOK_NOTE)
+    def test_pre_promote_cannot_prove_modified_inputs_for_an_unmodified_release_source(self):
+        self.on(self.u3, "main-on-u3")
+        program = self.alab / "program.rs"
+        program.write_text("committed program\n")
+        source, _ = self.layer(ledger=HEADER + self.row("0.1.0", "0.164.0"))
+        # The ordinary version guard's real index must not hide a substitution
+        # from the qualification observer's fresh source comparison.
+        self.git(self.alab, "update-index", "--assume-unchanged", "program.rs")
+        program.write_text("a different program\n")
+        process = self.hook(PUB_SOURCE_COMMIT=source, PUB_VERSION="0.1.0")
+        self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
+        self.assertIn("requires a committed clean candidate", process.stderr)
+        self.assertFalse((self.alab / ".git/proof-gate-called").exists())
+
+    @unittest.skip(CERTIFIED_HOOK_NOTE)
+    def test_pre_promote_cannot_substitute_another_commit_with_the_same_gate(self):
+        self.on(self.u3, "main-on-u3")
+        source, _ = self.layer(ledger=HEADER + self.row("0.1.0", "0.164.0"))
+        (self.alab / "other-source.rs").write_text("a different program\n")
+        self.git(self.alab, "add", "other-source.rs")
+        self.commit(self.alab, "another program", "2026-10-23T15:00:00+0000")
+        process = self.hook(PUB_SOURCE_COMMIT=source, PUB_VERSION="0.1.0")
+        self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
+        self.assertIn("requires HEAD at the exact source commit", process.stderr)
+        self.assertFalse((self.alab / ".git/proof-gate-called").exists())
 
     def test_pre_promote_reads_the_release_repository_the_engine_names(self):
         released, row = self.release_0_1_0()

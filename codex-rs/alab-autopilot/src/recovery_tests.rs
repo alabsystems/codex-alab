@@ -30,6 +30,165 @@ const EPOCH: u64 = 1_800_000_000_000;
 const MINUTE: u64 = 60_000;
 const FAILED: &str = "the-native-failed-turn";
 
+#[test]
+fn native_turn_retries_opaque_http_400_but_not_a_specific_refusal() {
+    core_test_support::test_codex::run_test_with_large_stack("opaque request recovery", || async {
+        use core_test_support::responses;
+        use core_test_support::test_codex::test_codex;
+        use wiremock::ResponseTemplate;
+
+        codex_alab_core::activate();
+        for (body, recover) in [
+            (json!({"detail":"Bad Request"}), true),
+            (
+                json!({"error":{"code":"invalid_request","message":"Invalid tool schema"}}),
+                false,
+            ),
+        ] {
+            let server = responses::start_mock_server().await;
+            let mut replies = vec![ResponseTemplate::new(400).set_body_json(body)];
+            if recover {
+                replies.push(
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string(responses::sse(vec![
+                            responses::ev_response_created("recovered"),
+                            responses::ev_assistant_message("answer", "RECOVERED"),
+                            responses::ev_completed("recovered"),
+                        ])),
+                );
+            }
+            let requests = responses::mount_response_sequence(&server, replies).await;
+            let mut builder = test_codex().with_config(|config| {
+                config.model_provider.request_max_retries = Some(0);
+                config.model_provider.stream_max_retries = Some(2);
+            });
+            let test = builder.build(&server).await?;
+            test.codex
+                .start_or_steer_turn(codex_core::TurnInputRequest::user_input(vec![
+                    codex_protocol::user_input::UserInput::Text {
+                        text: "Return RECOVERED.".into(),
+                        text_elements: Vec::new(),
+                    },
+                ]))
+                .await?;
+            let end = core_test_support::wait_for_event(&test.codex, |event| {
+                matches!(event, EventMsg::TurnComplete(_))
+            })
+            .await;
+            let EventMsg::TurnComplete(completed) = end else {
+                unreachable!()
+            };
+            assert_eq!(completed.error.is_none(), recover, "{completed:?}");
+            assert_eq!(requests.requests().len(), if recover { 2 } else { 1 });
+            if recover {
+                assert_eq!(completed.last_agent_message.as_deref(), Some("RECOVERED"));
+            }
+            test.codex.shutdown_and_wait().await?;
+        }
+        Ok(())
+    })
+    .expect("native request recovery");
+}
+
+#[test]
+fn opaque_bad_requests_keep_retrying_instead_of_hitting_the_cutoff_hold() {
+    let error = CodexErr::Stream(format!(
+        "{}{}",
+        codex_alab_core::request_error::OPAQUE_BAD_REQUEST_PREFIX,
+        r#"{"detail":"Bad Request"}"#,
+    ));
+    let wall = crate::extension::classify(&error.to_codex_protocol_error(), error.details(), false)
+        .unwrap();
+    assert!(matches!(wall, Wall::Server { cut_off: false, .. }));
+    let timing = Timing::default();
+    let mut now = Instant::now();
+    let mut state = state();
+    for _ in 0..8 {
+        state.observe_turn_end(
+            TurnEnd {
+                at: now,
+                by_autopilot: true,
+                by_person: false,
+                text: None,
+                earlier: None,
+                questions: false,
+                worked: Duration::ZERO,
+                wall: Some(wall.clone()),
+                aborted: false,
+                ran_tools: false,
+                restored: false,
+            },
+            &timing,
+        );
+        let retry = decide(&state, &policy(), &timing, now, Duration::ZERO);
+        assert!(
+            matches!(
+                retry.act,
+                Act::Type {
+                    rule: crate::words::RULE_API_RETRY,
+                    ..
+                }
+            ),
+            "{retry:?}"
+        );
+        let due = retry.not_before.unwrap();
+        assert!(due > now);
+        state.acted(&retry.act, due, &timing);
+        now = due + Duration::from_secs(1);
+    }
+}
+
+#[test]
+fn recorded_opaque_bad_request_resumes_with_pacing_and_current_policy() {
+    let now = Instant::now();
+    let items = [
+        event(json!({
+            "type":"task_started", "turn_id":FAILED,
+            "turn_attribution":{"turn_id":FAILED,"turn_trigger":"user"},
+            "model_context_window":258400,"collaboration_mode_kind":"default"
+        })),
+        event(json!({"type":"user_message","message":"Finish the task.",
+            "images":null,"local_images":[],"text_elements":[]})),
+        event(json!({"type":"task_complete","turn_id":FAILED,
+            "last_agent_message":null,
+            "error":{"message":r#"{"detail":"Bad Request"}"#,"codex_error_info":"other"}})),
+    ];
+    let timing = Timing::default();
+    for mode in [Mode::Cruise, Mode::Land] {
+        for relaunched in [false, true] {
+            let mut restored = ThreadState::default();
+            assert!(crate::extension::resume_into(
+                &mut restored,
+                &items,
+                relaunched,
+                None,
+                0,
+                now,
+            ));
+            let mut policy = policy();
+            policy.autopilot = mode;
+            let retry = decide(&restored, &policy, &timing, now, Duration::ZERO);
+            assert!(
+                matches!(
+                    retry.act,
+                    Act::Type {
+                        rule: crate::words::RULE_API_RETRY,
+                        ..
+                    }
+                ),
+                "{retry:?}"
+            );
+            assert!(retry.not_before.is_some_and(|at| at > now));
+            policy.retry_api_errors = false;
+            assert!(matches!(
+                decide(&restored, &policy, &timing, now, Duration::ZERO).act,
+                Act::Attention { .. }
+            ));
+        }
+    }
+}
+
 fn policy() -> Policy {
     Policy {
         continue_on: true,
@@ -836,6 +995,20 @@ fn native_capacity_and_processing_errors_keep_their_recorded_server_classificati
     let policy = policy();
     for (details, expected_info, provider_deadline) in [
         (CodexErrorDetails::Timeout, CodexErrorInfo::Other, None),
+        (
+            CodexErrorDetails::InvalidRequest(r#"{"detail":"Bad Request"}"#.into()),
+            CodexErrorInfo::Other,
+            None,
+        ),
+        (
+            CodexErrorDetails::Stream(format!(
+                "{}{}",
+                codex_alab_core::request_error::OPAQUE_BAD_REQUEST_PREFIX,
+                r#"{"detail":"Bad Request"}"#,
+            )),
+            CodexErrorInfo::Other,
+            None,
+        ),
         (
             CodexErrorDetails::RequestTimeout,
             CodexErrorInfo::Other,

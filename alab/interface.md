@@ -171,9 +171,16 @@ its own credentials.
 Inside aterm, `/accounts` shows aterm's account pool read-only (label, masked
 email, enrolled or not, 5-hour and weekly usage) and `/accounts add [label]`
 starts or follows aterm's enrollment of a label aterm already has configured.
-Neither changes the account a running session uses. `/accounts use <label>` and
-`/accounts auto` are accepted by the parser, but moving a running session to
-another account is not a shipped capability (`alab/design/accounts-assignment.md`).
+Neither changes the account a running session uses. `/accounts use <label>` moves
+the running session to another signed-in account, and `/accounts auto` to the
+account a new launch would start on, by asking aterm to restart the session there:
+the conversation resumes in a new process under the other login. It is asked only
+at rest, so a running turn, queued input, a draft, a background terminal or a box
+waiting for its answer refuses it with nothing sent; anything else held only in
+memory (sub-agents at rest among it) ends with the old process.
+It needs Autopilot on and an aterm that carries `restart account=`; on any other
+aterm it answers "Account changes are unavailable on this host." and nothing
+restarts (`alab/design/accounts-assignment.md`).
 
 To keep a separate work login while sharing `$CODEX_HOME`'s configuration,
 skills, rules and session history, point `CODEX_AUTH_PATH` at an absolute
