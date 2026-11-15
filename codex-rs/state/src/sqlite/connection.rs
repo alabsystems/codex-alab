@@ -12,6 +12,8 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::SqlitePoolOptions;
 
+#[path = "../../../alab-core/glue/sqlite_transaction_recovery.rs"] mod alab_transaction_recovery; // ALAB(storage): discard connections whose failed rollback stranded SQLx transaction depth.
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum JournalModePolicy {
     InitializeWal,
@@ -29,6 +31,7 @@ pub(super) async fn connect_once(
     let pool_options =
         SqlitePoolOptions::new()
             .max_connections(5)
+            .after_release(|connection, _| Box::pin(alab_transaction_recovery::reusable(connection))) // ALAB(storage): a failed write must not poison the next borrower.
             .after_connect(move |connection, _metadata| {
                 let init_error_tx = init_error_tx.clone();
                 Box::pin(async move {

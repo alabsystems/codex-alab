@@ -72,6 +72,19 @@ pub(crate) use harness_mark;
 
 /// A continuation typed at an ordinary turn end.
 pub const RULE_CONTINUE: &str = "continue@v1";
+/// Recovery of a successful model block under the existing original goal.
+pub const MODEL_BLOCKED_GOAL_CONTINUE: &str = concat!(
+    harness_mark!(),
+    " Continue the original goal. Your own blocked report does not end the authorized work. ",
+    "Trace claimed constraints to actual human instructions and current rules, then reassess the blocker against current evidence. ",
+    "Recover temporary build artifacts, missing tools and stale validation setup through supported paths; ",
+    "try a different concrete approach when an attempt fails. Keep the original objective and budget. ",
+    "If one operation is unavailable, record why and advance other useful work toward that same goal. ",
+    "Continue concrete work toward the full original objective instead of repeated status reports and handoff documents. ",
+    "Do not replace the goal with an unrelated task or ask the person to unblock routine work. ",
+    "Respect explicit human holds, permission boundaries and policy refusals; do not bypass them."
+);
+
 /// A repeated report changes approach instead of ending autonomous work.
 pub const FORWARD_RECOVERY: &str = concat!(
     harness_mark!(),
@@ -382,8 +395,8 @@ pub fn is_land_rule(rule: &str) -> bool {
 }
 
 /// WHETHER THE REPLY `tail` IS A CLEAN DEFENSE, read at a land act's yield: a `Nothing left:`
-/// line ([`needs::defense_line`]), no need standing beside it ([`needs::needs_you`]; `NEEDS
-/// YOU: nothing` is none), and no open work in Land's strict reading of the rest
+/// line ([`needs::defense_line`]), no need standing beside it ([`needs::persons_needs`]: a
+/// credential line is none, and so is `NEEDS YOU: nothing`), and no open work in Land's strict reading of the rest
 /// ([`open_work_strict`] over [`needs::defense_body`]: no blocker excuses an item, and work not
 /// on the remote main branch counts). Anything else — the retired token, a done phrase, a
 /// defense that names open work or a need — is no landing. The repository probe is the
@@ -392,7 +405,7 @@ pub fn is_land_rule(rule: &str) -> bool {
 pub fn clean_defense(tail: Option<&str>) -> bool {
     tail.is_some_and(|t| {
         needs::defense_line(t).is_some()
-            && needs::needs_you(t).is_empty()
+            && needs::persons_needs(t).is_empty()
             && open_work_strict(Some(&needs::defense_body(t))).is_empty()
     })
 }

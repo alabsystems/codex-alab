@@ -291,9 +291,9 @@ fn a_need_however_headed_holds_the_landing() {
     let defense = "Nothing left: all on origin/main.";
     assert!(clean_defense(Some(defense)));
     for reply in [
-        "Nothing left: all on origin/main.\nNEEDS YOU — the Apple signing key to notarize the release.",
-        "NEEDS YOU - publish the crate (needs the crates.io token).\nNothing left: everything else is on origin/main.",
-        "Nothing left: all on origin/main.\nNEEDS YOU (owner): the Apple signing key.",
+        "Nothing left: all on origin/main.\nNEEDS YOU — the Apple signing permission to publish the release.",
+        "NEEDS YOU - publish the crate (needs the crates.io grant).\nNothing left: everything else is on origin/main.",
+        "Nothing left: all on origin/main.\nNEEDS YOU (owner): the Apple signing permission.",
         "Nothing left: all on origin/main.\nNEEDS YOU: nothing, but the tag needs your key.",
     ] {
         assert!(!clean_defense(Some(reply)), "{reply:?}");

@@ -1377,7 +1377,10 @@ reset plus grace plus this session's jitter when `resume_limits` and
 
 What this does not bound, each as before:
 
-- A wall whose 429 names no reset: there is no moment to lapse at.
+- A wall whose 429 names no reset: there is no moment to lapse at. (Since
+  2026-11-14 a turn the host's yes ended takes the usage read's reset
+  whatever its 429 named, so this is left to a usage wall no yes ended:
+  "Offer a five-hour wall on its usage read alone" below.)
 - An intent carried across a process restart. A usage wall is not restored
   from the rollout, so the new process holds the intent with no reset on
   record. (Corrected after review: an unbound intent now carries its wall
@@ -1387,7 +1390,9 @@ What this does not bound, each as before:
   named, which for a spent week is normally the weekly reset, when a
   `not-needed` would have resumed the session anyway. (Corrected after review:
   the 429 may name another reset. See "The lapse comes at the 429's reset"
-  below.)
+  below. Closed on 2026-11-14 for a turn the host's yes ended: its wall
+  takes the usage read's reset, the week's own for a spent week; "Offer a
+  five-hour wall on its usage read alone" below.)
 - The earlier `return true` paths of `follow_renewal` (goal reconciliation,
   unreadable history, a refused admission readiness, a failed write-through)
   and a goal-witness retirement that keeps failing. They sit before or after
@@ -1515,6 +1520,13 @@ its bound on asking the host, and its resume.
 A spent week keeps the weekly yield's behaviour whatever the 429 named,
 including an unbounded ask when it names no reset.
 
+(Both guards, `offerable` and `RESET_AGREEMENT`, were removed on 2026-11-14,
+together with their reason and the tests below that required them: a turn
+the host's yes ended now stands at the usage read's wall and reset, so the
+read's wall is offered whatever the 429 named, and a spent week's ask is
+bounded by the read's reset too. See "Offer a five-hour wall on its usage read
+alone" below.)
+
 Which wall is named (`spent_wall`, replacing `weekly_exhausted`): the week is
 judged first, as the host judges it, and a spent five-hour window is named only
 where no weekly window is in the way: every weekly window the read carries
@@ -1559,7 +1571,10 @@ Not determined: which reset the live backend's 429 names when a five-hour
 window is spent, and whether it equals the usage read's five-hour `reset_at`
 within 60 seconds. If it does not, the agreement guard keeps every five-hour
 wall polling and this yield never happens on a real account. The 429 also
-carries `limit_window_minutes`, which this change does not use.
+carries `limit_window_minutes`, which this change does not use. (Since
+2026-11-14 no guard depends on it: the wall is offered on the usage read
+alone. Which reset a live 429 names is still not determined; the journal
+records it beside the read's at each turn a yes ended.)
 
 Departures from the reviewed design. The 429 agreement is two-sided (the design
 refused only a later 429 reset); the reason is the second guard above. A spent
@@ -1641,7 +1656,9 @@ left when it is asked for. `leaves_wall` takes the moment it is asked;
 60 seconds now cover only the turn's end and the host's own read. `offerable`
 compares two moments (the 429's reset and the window's), reads no clock, and
 its minute is exact; its test no longer allows two seconds of slack per side.
-The relative figure is gone, not kept beside the new one.
+The relative figure is gone, not kept beside the new one. (`offerable` and its
+table were removed on 2026-11-14: "Offer a five-hour wall on its usage read
+alone" below.)
 
 Not changed: 60 seconds remains a judgment, and the delay between the answer
 and the host's read is still not measured.
@@ -1821,6 +1838,9 @@ What this leaves, each by reading the code and not run:
   `on_thread_start` clear the thread's recovery; `set_owed_act` refuses to
   erase the renewal), so the ask is again unbounded until a turn starts.
 - A wall whose 429 names no reset is still asked about without limit.
+  (Since 2026-11-14, only a usage wall no yes ended: a turn the host's yes
+  ended carries the usage read's reset, "Offer a five-hour wall on its usage
+  read alone" below.)
 - At a relaunch aterm typed, a record that carries a recovery is restored from
   it (`Relaunch::Recovery`) before an owed act or a carry-on is considered.
   That is existing order; a session killed while it asked for a handoff now
@@ -1895,7 +1915,11 @@ Autopilot's point would close it; that means passing it from the quota
 recovery's yield through the turn's end to the wall's classification, which
 is a larger change than the defect. `rotation_ask_lapsed`'s doc and
 `alab/design/accounts.md` now say which reset is meant. How often a spent
-week's 429 names another reset was not measured.
+week's 429 names another reset was not measured. (Closed on 2026-11-14,
+"Offer a five-hour wall on its usage read alone" below: the turn's handoff
+keeps the wall its yes was given for, and the ended turn's usage wall takes
+that read's reset, so a spent week's ask lapses, and its resume comes, at the
+week's own reset. A usage wall no yes ended still carries the 429's reset.)
 
 Correction to the above, found reading the landed diff. As first committed
 (`af72b0435c`), binding cleared whatever recovery the thread had on record,
@@ -2153,3 +2177,146 @@ Not run: `alab/check.sh`, any native smoke, any `targo trust` lane, a relaunch
 by a real aterm, a live upgrade attempted while a handoff is asked for,
 `codex-alab-tui`'s tests (the crate is untouched), anything against an aterm
 that prints `codex_rotation_five_hour`, anything against the live backend.
+
+## Offer a five-hour wall on its usage read alone (2026-11-14)
+
+Gap 6 of the audit of 2026-11-14 (`alab/PARALLEL-LOGINS.md`, "Known gaps"). The
+two guards in `offerable` (the five-hour section above) kept a creditless
+five-hour wall in its turn whenever the 429 named no reset, or one more than 60
+seconds from the usage read's: the request polled for up to five hours beside
+an account the host would have moved the session to. Which reset a live 429
+names at a five-hour wall was never determined (that section's "Not
+determined"), so on a real account the five-hour yield may never have
+happened. The guards existed because what follows an ended turn ran on the
+429's reset; this change removes that reason rather than the guard alone.
+
+Decision. Quota recovery offers the usage read's wall whatever the 429 named;
+`offerable` and `RESET_AGREEMENT` are deleted from
+`alab-quota-recovery/src/unix.rs`. The turn's handoff, installed in
+`on_turn_start` (`alab-autopilot/src/extension.rs`), keeps the wall it answered
+yes for in the turn's facts (`TrackData::handoff_wall`), set in the same poll
+the yes is returned in, so the request that ends on that yes always finds it.
+`on_turn_error` then builds the turn's `Wall::Usage` from it
+(`handed_off_wall`, through the same `usage_wall` that `classify` now uses for a
+429) in place of the 429's. The point, the bound on asking the host
+(`rotation_ask_lapsed`: an unbound ask lapses at that reset plus the 60-second
+reset grace), the asked wall carried across a restart (`capture_asked_wall`
+reads the point's wall), and the wall's own resume after a `not-needed` or a
+lapse all run on the moment the host judged. The journal records both
+moments: `<thread>: the turn ended on the host's yes; its usage wall resets at
+the usage read's <epoch s> (the 429 named <epoch s> | the 429 named no reset)`.
+That line is where a live 429's reset will first be seen beside the read's.
+
+Departures from the narrowest fix, which was to use the read's reset only when
+the 429 names none or disagrees by more than a minute. The read's wall is used
+for every yes, week and five-hour alike, whether or not the 429 agrees. The yes
+was given for that moment, so it is the one source; keeping the 429's when the
+two agree within a minute would keep a 60-second constant for no behaviour.
+The same line closes the weekly cost stated above ("The lapse comes at the
+429's reset"): a spent week whose 429 named a five-hour reset lapsed at that
+reset and resumed into a week still spent, and a spent week whose 429 named no
+reset was asked about without limit. The record lives on the turn's own store,
+not on the thread keyed by a turn id: it is turn-scoped by construction and
+goes with the turn.
+
+What stays as it was:
+
+- The 429's reset still bounds the walled request's own wait and the probe
+  (`tokio::time::timeout(until_reset(reset), ...)`). A 429 that names an
+  earlier reset ends the request then, with no yes given, and that turn's wall
+  is the 429's.
+- A five-hour wall the host declines keeps its request polling until a yes, a
+  restored allowance or the 429's own reset; with no reset named, until one of
+  the first two. That is the turn's poll for a late credit, as before.
+- A usage wall no yes ended keeps the 429's reset, or none: a request whose
+  429's reset had already passed when it arrived (it ends before any read), a
+  provider or a turn quota recovery does not serve, exec (`HeadlessExec` never
+  consults the handoff), and a point a restart rebuilt from history alone,
+  whose recorded error names no reset. `follow_renewal`'s ask at such a wall
+  with no reset is still unbounded.
+
+Coverage. `alab-quota-recovery/src/handoff_tests.rs`:
+`a_creditless_five_hour_wall_is_offered_with_the_reads_reset_whatever_the_429_named`
+(the 429's reset at the window's own, 50 and 61 seconds either side, two
+minutes and 23 hours later, half an hour earlier, and none: each asks the host
+once with the read's reset and ends the request on a yes),
+`a_declined_five_hour_wall_keeps_polling_whatever_the_429_named` (none, 23
+hours later, half an hour earlier), and
+`a_spent_week_whose_429_names_no_reset_is_offered_with_the_reads_reset`. The
+three tests that required a five-hour wall with no reset, a later one or an
+earlier one to keep polling, and `offerable`'s table, are deleted with the
+guard they proved. `alab-autopilot/src/renewal_follow_handoff_tests.rs`:
+`a_five_hour_turn_a_yes_ended_resumes_at_the_reads_reset_whatever_the_429_named`
+starts a turn against the fake aterm (rotation, a two-row pool,
+`codex_rotation_five_hour=900`), answers the turn's handoff yes for a five-hour
+wall two hours off, ends the turn on a 429 that names none, 23 hours later,
+half an hour earlier or 30 seconds later, and requires the point's reset and
+label to be the read's and the decision with the ask released to be
+`ResumeLimit` at that reset plus the grace; the control is a later turn that
+ends on a 429 with no reset and no yes, whose point names none. The lapse is
+`rotation_ask_lapsed` over that same point wall, whose own table is in
+`renewal_follow.rs`; a lapse through the fake host was not run.
+
+On the unchanged tree the new quota-recovery tests failed (a 429 61 seconds
+off "kept the request"; a declined wall with no reset was asked 0 times, not
+1) and the Autopilot test failed ("the 429 named None: the wall the host was
+asked about names no reset").
+
+The smoke case `five-hour-wall-far-unnamed` in `alab/smoke/renewal_follow.py`
+serves the far five-hour wall with no `resets_at` in the 429's body
+(`provider_fixture.refusal(names_reset=False)`) and requires the same handover
+proof as `five-hour-wall-far`. Its fixture tests ran
+(`alab/smoke/renewal_follow_test.py`); the case itself was not run, and it is
+not in `renewal_matrix.CASES`.
+
+Mutations, each restored after its run (sha256 compared): the agreement guard
+put back into `wait_for_reset` fails both new five-hour quota-recovery tests
+("whose 429 named Some(61) kept the request from a host that would leave it";
+the declined wall asked 0 times, not 1), while the spent-week test passes, as
+the guard always offered a week; the kept wall left unused in `on_turn_error`
+fails the Autopilot test ("the 429 named None: the wall the host was asked
+about names no reset").
+
+Run with the Trust toolchain in the unverified lane, from `codex-rs/`, with
+`RUST_MIN_STACK=8388608`: `targo --unverified test -p
+codex-alab-quota-recovery` (65 pass), `-p codex-alab-core` (283 pass), `-p
+codex-alab-autopilot --no-fail-fast` (lib 966 pass, 4 ignored; the eleven
+integration binaries 237 pass), `python3.14 -B -m unittest renewal_follow_test`
+in `alab/smoke` (80 pass), and `targo tippy -p codex-alab-quota-recovery -p
+codex-alab-core -p codex-alab-autopilot --all-targets` (nothing in ALab's
+files; eight diagnostics in upstream files this change does not touch, none on
+an `ALAB` line). Not run: `alab/check.sh`, `alab/package.sh`, any native smoke
+(the new case included), any `targo trust` lane, anything against a real aterm
+or the live backend.
+
+### The week half is pinned (review, 2026-11-14)
+
+A review found that no test held the week half of the decision: with the kept
+wall used in `on_turn_error` for five-hour walls only
+(`answered.filter(|read| read.window == SpentWindow::FiveHour)` in place of
+`answered`), every `renewal_follow` test in the Autopilot's library still
+passed. The five-hour test's body is now one helper,
+`a_yes_ended_turn_stands_at_the_reads_wall`, run for each 429 by
+`a_five_hour_turn_a_yes_ended_resumes_at_the_reads_reset_whatever_the_429_named`
+(unchanged in what it asks) and by
+`a_week_turn_a_yes_ended_resumes_at_the_weeks_reset_whatever_the_429_named`:
+a spent week three days from its reset, answered yes, its turn ended on a 429
+that names a five-hour window's reset two hours from now, and on one that names
+none. Each requires the point's reset and label to be the read's week reset
+and the evaluator's decision to be `ResumeLimit` at that reset plus the grace,
+with no hold, and the next turn, which no yes ended, to stand at its 429's word
+alone.
+
+Mutation, restored after its run (sha256 compared): the reviewer's filter
+fails the week test on both 429s ("Week: the 429 named Some(-252000) from the
+window's reset: the wall resets 252000.44s from the usage read's"; with the
+five-hour reset's case left out, "Week: the 429 named None: the wall the host
+was asked about names no reset"), while the five-hour test passes.
+
+Run with the Trust toolchain in the unverified lane, from `codex-rs/`, with
+`RUST_MIN_STACK=8388608`: `targo --unverified test -p codex-alab-autopilot
+--no-fail-fast` (lib 967 pass, 4 ignored; the eleven integration binaries 237
+pass), `-p codex-alab-quota-recovery --no-fail-fast` (65 pass), and `targo
+tippy -p codex-alab-autopilot --all-targets` (nothing in ALab's files; twelve
+diagnostics in upstream files this change does not touch). Not run:
+`alab/check.sh`, `alab/package.sh`, any native smoke, any `targo trust` lane.

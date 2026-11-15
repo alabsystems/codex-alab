@@ -6948,3 +6948,7 @@ mod tests {
         assert_eq!(info.model_context_window, Some(258_400));
     }
 }
+
+#[path = "../../alab-core/glue/goal_runtime_wire.rs"]
+mod alab_goal_runtime_wire; // ALAB(storage-status): typed passive runtime metadata, separate from durable goals.
+pub use alab_goal_runtime_wire::{AlabGoalPersistencePhase, AlabGoalRuntimeUpdatedNotification, AlabGoalRuntimeSnapshot, AlabGoalRuntimeDelivery}; // ALAB(storage-status)

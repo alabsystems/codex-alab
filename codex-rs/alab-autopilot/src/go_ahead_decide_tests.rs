@@ -397,9 +397,8 @@ fn an_irreversible_ask_is_never_answered_with_the_go_ahead() {
     ));
 }
 
-/// EVERY PARK ROW AT A CRUISE TURN END (aterm's review 2 and 3): each gets the owner's standing
-/// go-ahead, except the rows [`IRREVERSIBLE_PARKS`] names, whose prose is an irreversible ask
-/// and keeps `REVERSIBLE_ANSWER`, as written and as each wrap of [`DRAWN`] breaks its lines.
+/// Every park gets its go-ahead, its stored-precondition resolution first, or the existing
+/// reversible answer for [`IRREVERSIBLE_PARKS`], including every rendered wrap.
 #[test]
 fn every_park_row_gets_the_go_ahead_or_the_reversible_answer() {
     use crate::go_ahead::tests::DRAWN;
@@ -428,9 +427,16 @@ fn every_park_row_gets_the_go_ahead_or_the_reversible_answer() {
             };
             let mut s = tasked(&t, now);
             s.observe_turn_end(ours(now, &drawn(&said, columns), 3 * MIN), &t);
+            let stored = s
+                .point
+                .as_ref()
+                .and_then(TurnEnd::go_ahead)
+                .is_some_and(|park| !park.credential_lines.is_empty());
             let (d, _) = until_acted(&mut s, &policy(), &t, now);
             let kept = if IRREVERSIBLE_PARKS.contains(&reply.as_str()) {
                 answers_reversibly(&d)
+            } else if stored {
+                typed(&d).is_some_and(|(rule, _)| rule == crate::credential_need::RULE_CREDENTIAL)
             } else {
                 is_go_ahead(&d)
             };
@@ -1391,7 +1397,7 @@ fn under_land_the_hold_has_no_needs_leg_for_an_answered_line() {
         "the rest of the read stands: {read:?}"
     );
     let beside = held(&format!(
-        "{INCIDENT}\nNEEDS YOU: the App Store signing credential."
+        "{INCIDENT}\nNEEDS YOU: the App Store signing permission."
     ));
     assert!(
         beside
@@ -1565,7 +1571,7 @@ fn the_turns_end_foresees_the_go_ahead_only_where_it_goes() {
     assert_eq!(s.needs.shown(), s.needs.standing, "irreversible");
     assert!(!s.needs.standing.is_empty());
     // NEGATIVE CONTROL: a person's need alone.
-    let mut s = ended("Stage 2 is in.\nNEEDS YOU: the App Store signing credential.");
+    let mut s = ended("Stage 2 is in.\nNEEDS YOU: the App Store signing permission.");
     s.go_ahead_foreseen(&p, now);
     assert_eq!(s.needs.shown(), s.needs.standing, "a person's need");
     assert!(!s.needs.standing.is_empty());

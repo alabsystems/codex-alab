@@ -16,6 +16,11 @@ pub fn opaque_bad_request_stream(message: &str) -> bool {
 /// validation detail, or additional field must retain its ordinary classification.
 /// Parsing a single-field struct rejects duplicate keys as well as extra fields.
 pub fn opaque_bad_request(message: &str) -> bool {
+    // Serde also accepts a struct's fields as a positional JSON array. The
+    // observed backend envelope is an object, so exclude that representation.
+    if !message.trim_start().starts_with('{') {
+        return false;
+    }
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Envelope {
@@ -38,6 +43,10 @@ mod tests {
         }
         for message in [
             "Bad Request",
+            r#"["Bad Request"]"#,
+            r#" ["Bad Request"] "#,
+            r#""Bad Request""#,
+            "null",
             r#"{"detail":"invalid tools"}"#,
             r#"{"error":{"message":"Bad Request","code":"invalid_prompt"}}"#,
             r#"{"detail":"Bad Request","code":"access_denied"}"#,

@@ -419,6 +419,7 @@ fn legacy_open_host_turn_binding_needs_an_exact_existing_in_flight_fact() {
         ("thread", "old", false),
     ] {
         let retry = InFlightRetry {
+            clock: crate::recovery::test_clock(0),
             thread: thread.into(),
             turn_id: turn.into(),
             not_before_ms: 99,
@@ -444,6 +445,7 @@ fn legacy_open_host_turn_binding_needs_an_exact_existing_in_flight_fact() {
             &raw(&owed(now), false),
             &history,
             Some(&InFlightRetry {
+                clock: crate::recovery::test_clock(0),
                 thread: "thread".into(),
                 turn_id: "running".into(),
                 not_before_ms: 99

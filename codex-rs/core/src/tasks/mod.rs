@@ -1061,13 +1061,14 @@ impl Session {
 
     async fn handle_task_abort(
         self: &Arc<Self>,
-        task: RunningTask,
+        mut task: RunningTask, // ALAB(goal-completion): the already-cancelled branch must join before its final lifecycle.
         reason: TurnAbortReason,
         turn_state: &Mutex<TurnState>,
         error: Option<ErrorEvent>,
     ) {
         let sub_id = task.turn_context.sub_id.clone();
         if task.cancellation_token.is_cancelled() {
+            crate::session::alab_exec_recovery_options::goal_tool_completion::settle_cancelled_task(&mut task).await; // ALAB(goal-completion): cancellation requests do not prove dispatch completion.
             self.emit_turn_abort_lifecycle(reason, task.turn_context.extension_data.as_ref())
                 .await;
             return;
@@ -1107,6 +1108,7 @@ impl Session {
         task.handle.abort();
         // Aborting schedules destruction; join before freezing the turn's timing.
         let _ = task.handle.await;
+        crate::session::alab_exec_recovery_options::goal_tool_completion::settle_turn(&task.turn_context).await; // ALAB(goal-completion): drain transferred waits before retiring the turn's original goal source.
 
         if let Err(error) = self
             .record_pending_initial_input(

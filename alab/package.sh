@@ -88,7 +88,7 @@
 #      above its cargo home) so no repo's .cargo/config.toml applies; cached in
 #      ~/.cache/codex-alab/rg-<ver>-<compiler id>, rebuilt when either changes; writable only
 #      while it is built;
-#   5. upstream's scripts/build_codex_package.py stages the package (--strip all) into a
+#   5. upstream's scripts/build_codex_package.py stages the package (--strip none) into a
 #      hidden <out>/codex/.<version>.partial.*, the only directory it can write (the rg and
 #      the binaries it reads are read-only to it). It is copied without following links
 #      into a hidden .<version>.staged.* no contained step is ever given. Symlinks, special
@@ -1342,15 +1342,17 @@ upstream_py "${package_input_reads[@]}" --read "${rg_root}" \
 from codex_package.cli import main
 sys.argv = ["build_codex_package.py"] + sys.argv[2:]
 sys.exit(main())' --target "${target_triple}" --variant codex --package-version "${version}" \
-  --package-dir "${partial}" "${package_prebuilt_args[@]}" --rg-bin "${rg_bin}" --strip all \
+  --package-dir "${partial}" "${package_prebuilt_args[@]}" --rg-bin "${rg_bin}" --strip none \
   || alab_die "scripts/build_codex_package.py failed (above)"
 # package_copy_out <from> <to>: copy the package <from> (which a contained step could write) into
 # the new, empty <to>, which none could, and remove <from> unless preserved; refuse nonregular
 # and directories, and a setuid, setgid, sticky, group- or world-writable one.
 scratch_dir staged "${pkg_root}/.${version}.staged.XXXXXX"
 package_copy_out "${partial}" "${staged}"
-# Bind both compiler outputs and the stripped package inputs to this live
-# certified build. Retain the path-bearing report privately, never in a release.
+# Require each first-party package executable to retain the compiled bytes;
+# stripping or another transformation requires its own checked correspondence.
+# Retain the path-bearing report privately, never in a release. These hashes
+# record byte equality only; native certified-artifact admission stays separate.
 proof_binary_args=()
 for binary in "${package_first_party[@]}"; do proof_binary_args+=(--binary "${binary}"); done
 "${python}" -I "${repo_root}/alab/proof_build.py" --compiler "${cfacts}/trusted.json" \

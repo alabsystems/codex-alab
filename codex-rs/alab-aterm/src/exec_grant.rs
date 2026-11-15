@@ -162,11 +162,32 @@ fn parse(line: &str) -> Result<Grant, Error> {
     })
 }
 
-pub async fn supported(client: &Client) -> bool {
-    client
-        .on_self("codex-exec-handoff info")
-        .await
-        .is_ok_and(|reply| reply.status.trim() == "OK codex-exec-handoff contract=3")
+/// Whether this aterm serves exec contract 3. An answer that says it serves no such
+/// contract is `Ok(false)` ([`crate::exec_route::not_served`]); no answer (a closed or
+/// unanswered connection, a busy aterm, or any other refusal) is an error, which says
+/// nothing about the contract.
+pub async fn supported(client: &Client) -> Result<bool, Error> {
+    served(
+        client,
+        "codex-exec-handoff info",
+        "OK codex-exec-handoff contract=3",
+    )
+    .await
+}
+
+/// Whether `probe` is answered exactly `contract`: `Ok(false)` for an answer that says this
+/// aterm serves no such contract, and an error for none, or for a refusal that does not say
+/// so (an `ERR busy` or a main-thread refusal among them).
+pub(crate) async fn served(client: &Client, probe: &str, contract: &str) -> Result<bool, Error> {
+    let reply = client.on_self(probe).await?;
+    let status = reply.status.trim();
+    if status == contract {
+        return Ok(true);
+    }
+    if crate::exec_route::not_served(status) {
+        return Ok(false);
+    }
+    Err(crate::conn::refusal(status.to_owned()))
 }
 
 pub async fn arm(

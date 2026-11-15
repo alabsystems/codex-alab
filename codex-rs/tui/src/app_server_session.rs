@@ -28,6 +28,8 @@ mod thread_list;
 pub(crate) mod user_message_submission;
 mod web_search;
 
+#[path = "../../alab-tui/glue/startup_account_read.rs"] mod alab_startup_account_read; // ALAB(workspace-routing): retry transient startup discovery timeouts without weakening routing
+
 #[cfg(test)]
 #[path = "app_server_session/collaboration_catalog_tests.rs"]
 mod collaboration_catalog_tests;
@@ -1068,6 +1070,7 @@ impl AppServerSession {
     /// Used by both `bootstrap` (to populate the initial UI) and `get_login_status`
     /// (to check auth mode without the overhead of a full bootstrap).
     pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
+        if codex_alab_core::active() { return alab_startup_account_read::read(self).await; } // ALAB(workspace-routing): a transient shared discovery deadline must not make the person relaunch
         let account_request_id = self.next_request_id();
         self.request_handle
             .request_typed(ClientRequest::GetAccount {

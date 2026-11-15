@@ -331,7 +331,17 @@ fn a_matching_earlier_assistant_exhaustion_marker_survives_restart() {
             Some(crate::owed_origin::BoundHandoff::empty()),
             0,
             now,
-            |state| crate::recovery::restore(state, &failed_items, &saved(), now, EPOCH, &timing),
+            |state| {
+                crate::recovery::restore(
+                    state,
+                    &failed_items,
+                    &saved(),
+                    Some(&crate::recovery::test_sample(EPOCH)),
+                    now,
+                    &timing,
+                )
+                .restored()
+            },
         );
         assert!(recovered_state.point.as_ref().is_some_and(|p| p.restored));
         assert_eq!(
@@ -347,6 +357,7 @@ fn a_matching_earlier_assistant_exhaustion_marker_survives_restart() {
 
 fn saved() -> Recovery {
     Recovery {
+        clock: crate::recovery::test_clock(EPOCH),
         thread: "thread".into(),
         turn_id: CURRENT.into(),
         point_at_ms: EPOCH,
@@ -389,7 +400,15 @@ fn a_late_retired_abort_preserves_the_current_failed_turn_and_recovery() {
             0,
             now,
             |state| {
-                recovered = crate::recovery::restore(state, &items, &saved(), now, EPOCH, &timing);
+                recovered = crate::recovery::restore(
+                    state,
+                    &items,
+                    &saved(),
+                    Some(&crate::recovery::test_sample(EPOCH)),
+                    now,
+                    &timing,
+                )
+                .restored();
                 recovered
             }
         ));
@@ -588,10 +607,11 @@ fn missing_unknown_or_current_abort_identity_still_revokes_recovery_and_signal_c
                     state,
                     &items,
                     &saved(),
+                    Some(&crate::recovery::test_sample(EPOCH)),
                     now,
-                    EPOCH,
                     &Timing::default(),
-                );
+                )
+                .restored();
                 recovered
             },
         );
@@ -618,6 +638,66 @@ fn a_reused_current_turn_id_is_not_retired() {
     );
 }
 
+/// An error event as core sends it (a history that keeps it).
+fn error_event() -> RolloutItem {
+    event(
+        json!({"type":"error", "message":"the provider ended this request",
+        "codex_error_info":CodexErrorInfo::UsageLimitExceeded}),
+    )
+}
+
+/// A RESUMED TURN IS SERVED ONLY BY ITS OWN CLEAN TERMINAL (the usage wall's move's completion
+/// report, `renewal_follow`'s `report_completion`). The walled attempt's own error, before the
+/// resumed start, is not the resumed turn's. NEGATIVE CONTROLS: an error at the terminal or
+/// before it, an abort, a turn still running, a later turn, a person's message after the terminal
+/// and a history that names no start of the turn are no proof.
+#[test]
+fn only_a_resumed_turns_own_clean_terminal_shows_it_served() {
+    let walled = || {
+        vec![
+            started(CURRENT),
+            regular_input(),
+            error_event(),
+            completed(CURRENT, CodexErrorInfo::UsageLimitExceeded),
+            started(CURRENT),
+        ]
+    };
+    let with = |tail: Vec<RolloutItem>| {
+        let mut items = walled();
+        items.extend(tail);
+        items
+    };
+    let served = with(vec![done(CURRENT)]);
+    assert!(
+        super::served(&served, CURRENT).is_some_and(|terminal| terminal.turn_id == CURRENT),
+        "a clean terminal after the resumed start"
+    );
+    assert!(super::served(&served, OLD).is_none(), "another turn's id");
+    for (why, items) in [
+        (
+            "an error at the terminal",
+            with(vec![completed(CURRENT, CodexErrorInfo::UsageLimitExceeded)]),
+        ),
+        (
+            "an error event before a clean terminal",
+            with(vec![error_event(), done(CURRENT)]),
+        ),
+        ("an abort", with(vec![aborted(Some(CURRENT))])),
+        ("a turn still running", walled()),
+        (
+            "a later turn",
+            with(vec![done(CURRENT), started(OLD), done(OLD)]),
+        ),
+        (
+            "a person's message after the terminal",
+            with(vec![done(CURRENT), regular_input()]),
+        ),
+        ("no start of the turn", vec![done(CURRENT)]),
+    ] {
+        assert!(super::served(&items, CURRENT).is_none(), "{why}");
+    }
+}
+
 #[test]
 fn malformed_older_ids_cannot_prove_that_an_abort_is_retired() {
     let too_long = "x".repeat(513);
@@ -631,14 +711,17 @@ fn malformed_older_ids_cannot_prove_that_an_abort_is_retired() {
         assert!(matches!(latest(&items).point, NativePoint::Aborted(_)));
         let mut state = ThreadState::default();
         state.observe_resume(true, None, false);
-        assert!(!crate::recovery::restore(
-            &mut state,
-            &items,
-            &saved(),
-            Instant::now(),
-            EPOCH,
-            &Timing::default()
-        ));
+        assert!(
+            !crate::recovery::restore(
+                &mut state,
+                &items,
+                &saved(),
+                Some(&crate::recovery::test_sample(EPOCH)),
+                Instant::now(),
+                &Timing::default()
+            )
+            .restored()
+        );
     }
 }
 

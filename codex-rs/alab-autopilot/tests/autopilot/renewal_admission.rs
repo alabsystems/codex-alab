@@ -22,6 +22,12 @@ mod renewal_repeat;
 #[path = "renewal_consume.rs"]
 mod renewal_consume;
 
+#[path = "renewal_seal.rs"]
+mod renewal_seal;
+
+#[path = "renewal_admission_retry.rs"]
+mod renewal_admission_retry;
+
 /// File-backed subscription identity for durable ChatGPT renewal intent.
 pub(super) async fn subscription_fixture(
     label: &str,
@@ -265,7 +271,7 @@ fn refused_durable_admission_preserves_input_then_recovers_the_same_native_id() 
                 let mut owed = shared.owed_act().ok_or("missing pending work")?;
                 let thread = owed.thread.clone();
                 owed.renewal.as_mut().ok_or("missing receipt")?.turn = Some(turn);
-                if !shared.publish_renewal(shared.upgrade_generation(), owed)
+                if !shared.publish_renewal(shared.admission_generation(), owed)
                     || !shared.flush_record()
                 {
                     return Err("disk unavailable".into());

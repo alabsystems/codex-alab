@@ -15,7 +15,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CASES = ["preflight-five-hour", "preflight-below-99", "preflight-weekly", "preflight-beyond-24h"]
+CASES = ["preflight-five-hour", "preflight-below-99", "preflight-weekly",
+         "preflight-beyond-24h", "preflight-weekly-24h", "preflight-weekly-25h", "preflight-elapsed-reset",
+         "prepost-recovery-restored", "prepost-recovery-shifted", "prepost-recovery-foreign",
+         "prepost-recovery-below-99", "prepost-recovery-denied", "prepost-preflight-99"]
 FIXTURE_PROBE = '''import argparse,hashlib,json,os,subprocess
 from pathlib import Path
 import provider_fixture
@@ -32,10 +35,15 @@ for name in args.case:
     directory=args.output/name
     directory.mkdir()
     subprocess.run([str(args.codex),name,str(directory/"executed.txt")],check=True)
-    positive=name in ("preflight-five-hour","preflight-weekly")
+    positive=name in ("preflight-five-hour","preflight-weekly","preflight-weekly-24h",
+                      "preflight-beyond-24h","preflight-weekly-25h",
+                      "prepost-recovery-restored",
+                      "prepost-recovery-denied","prepost-preflight-99")
+    consumes=int(positive and name!="prepost-recovery-restored")
+    models=3 if name in ("prepost-recovery-restored","prepost-recovery-denied") else 2
     (directory/"requests.json").write_text(json.dumps({"source":provider_fixture.SOURCE,"case":name}))
-    cases.append({"case":name,"passed":True,"guardianTimedOut":False,"modelRequests":2,
-                  "consumeRequests":int(positive) if mode!="bad-redemption" else 1,
+    cases.append({"case":name,"passed":True,"guardianTimedOut":False,"modelRequests":models,"postSelectionUsageReads":int(name.startswith("prepost-")),
+                  "consumeRequests":consumes if mode!="bad-redemption" else 1,
                   "exit":0 if positive else 130})
 report={"passed":mode!="failure","fullSuite":False,"requestedCases":args.case,
         "binarySha256":hashlib.sha256(args.codex.read_bytes()).hexdigest(),
@@ -46,6 +54,36 @@ if mode!="missing-report":
 if mode=="changed-binary":
     args.codex.write_text(args.codex.read_text()+"\\n# changed after execution\\n")
 raise SystemExit(23 if mode=="failure" else 0)
+'''
+
+
+FIXTURE_HISTORY = '''import argparse,hashlib,json,os,subprocess
+from pathlib import Path
+parser=argparse.ArgumentParser()
+parser.add_argument("--codex",type=Path,required=True)
+parser.add_argument("--output",type=Path,required=True)
+args=parser.parse_args()
+args.output.mkdir()
+subprocess.run([str(args.codex),"history",str(args.output/"executed.txt")],check=True)
+report={"passed":True,"sha256":hashlib.sha256(args.codex.read_bytes()).hexdigest(),
+        "turns":260,"model_requests_after_seed":260,"older_history_page_requests":3,
+        "custody":{"exit":0,"owning_reap":True,"group_absent_after_reap":True,"forced":False}}
+mode=os.environ.get("FIXTURE_MODE")
+if mode=="bad-history":
+    report["custody"]["owning_reap"]=False
+if mode=="failed-history":
+    logs=args.output/"logs"
+    logs.mkdir()
+    (logs/"codex-tui.log").write_text("retained history failure\\n")
+    for name in ("home","codex-home"):
+        private=args.output/name
+        private.mkdir()
+        (private/"auth.json").write_text("private fake-auth fixture; do not retain")
+        (private/"state.sqlite").write_text("private database fixture; do not retain")
+    (logs/"linked-auth.json").symlink_to(args.output/"codex-home/auth.json")
+    report["passed"]=False
+(args.output/"result.json").write_text(json.dumps(report))
+raise SystemExit(29 if mode=="failed-history" else 0)
 '''
 
 
@@ -61,6 +99,9 @@ class RuntimeDispatchTests(unittest.TestCase):
         (self.repo / "alab/command_guard.py").write_text("# inert dispatch fixture\n")
         (smoke / "provider_fixture.py").write_text('SOURCE="owned source fixture"\n')
         (smoke / "weekly_reset.py").write_text(FIXTURE_PROBE)
+        (smoke / "history_pagination.py").write_text(FIXTURE_HISTORY)
+        for name in ("capacity_exec.py", "quota_resume.py"):
+            (smoke / name).write_text("# inert dispatch fixture; no native ownership\n")
         self.executable = self.root / "new codex"
         self.executable.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$2"\n')
         self.executable.chmod(0o755)
@@ -98,6 +139,8 @@ class RuntimeDispatchTests(unittest.TestCase):
         self.assertEqual(result["source"], self.source)
         self.assertEqual(result["requested_cases"], CASES)
         self.assertEqual(result["binary_sha256"], hashlib.sha256(self.executable.read_bytes()).hexdigest())
+        self.assertEqual((self.output / "smoke/history/executed.txt").read_text(), "history\n")
+        self.assertIn("history_report_sha256", result)
         for name in CASES:
             self.assertEqual((self.output / "smoke" / name / "executed.txt").read_text(), name + "\n")
             self.assertEqual(json.loads((self.output / "smoke" / name / "requests.json").read_text())["source"],
@@ -111,8 +154,23 @@ class RuntimeDispatchTests(unittest.TestCase):
         self.assertEqual(result["exit"], 23)
         self.assertTrue((self.output / "smoke/result.json").is_file())
 
+    def test_failed_history_keeps_its_explicit_log_after_scratch_disposal_only(self):
+        done = self.run_smoke("failed-history")
+        self.assertEqual(done.returncode, 29, done.stdout + done.stderr)
+        result = json.loads((self.output / "result.json").read_text())
+        self.assertIs(result["passed"], False)
+        self.assertEqual(result["history_exit"], 29)
+        self.assertEqual((self.output / "smoke/history/executed.txt").read_text(), "history\n")
+        retained = self.output / "smoke/history/logs/codex-tui.log"
+        self.assertFalse(retained.is_symlink())
+        shutil.rmtree(self.scratch)
+        self.assertEqual(retained.read_text(), "retained history failure\n")
+        for private in ("home", "codex-home", "logs/linked-auth.json"):
+            self.assertFalse((self.output / "smoke/history" / private).exists())
+            self.assertFalse((self.output / "smoke/history" / private).is_symlink())
+
     def test_zero_exit_cannot_hide_missing_cases_or_a_redemption_in_a_negative_case(self):
-        for mode in ("missing-report", "missing-case", "bad-redemption", "changed-binary"):
+        for mode in ("missing-report", "missing-case", "bad-redemption", "changed-binary", "bad-history"):
             with self.subTest(mode=mode):
                 self.output = self.root / (mode + " evidence")
                 self.scratch = self.root / (mode + " scratch")

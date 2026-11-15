@@ -13,15 +13,48 @@ use codex_login::CodexAuth;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
+use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
+use tracing_subscriber::prelude::*;
 
 const CHILD_ROOT: &str = "ALAB_TRANSPORT_STATUS_CHILD_ROOT";
 const CHILD_CASE: &str = "ALAB_TRANSPORT_STATUS_CHILD_CASE";
 const COMPLETE: &str = "ALAB_TRANSPORT_STATUS_CHILD_OK";
+
+#[derive(Default)]
+struct FallbackFields(BTreeMap<String, String>);
+
+impl tracing::field::Visit for FallbackFields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.insert(field.name().into(), format!("{value:?}"));
+    }
+}
+
+#[derive(Clone, Default)]
+struct FallbackLogs(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FallbackLogs {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let target = module_path!().rsplit_once("::").unwrap().0;
+        if event.metadata().target() != target || *event.metadata().level() != tracing::Level::WARN
+        {
+            return;
+        }
+        let mut fields = FallbackFields::default();
+        event.record(&mut fields);
+        if fields.0.get("message").map(String::as_str)
+            == Some("WebSocket request is continuing over HTTPS")
+        {
+            self.0.lock().unwrap().push(fields.0);
+        }
+    }
+}
 
 fn child_name() -> std::io::Result<String> {
     let (_, module) = module_path!()
@@ -217,7 +250,10 @@ async fn immediate_size_fallback_exercise() {
             !session.services.model_client.responses_websocket_enabled(),
             "size rejection selects HTTP before exhausting ordinary retries"
         );
-        assert!(events.try_recv().is_err(), "the provider wait precedes status");
+        assert!(
+            events.try_recv().is_err(),
+            "the provider wait precedes status"
+        );
         tokio::time::advance(Duration::from_secs(9)).await;
         assert!(futures::poll!(&mut retry).is_pending());
         tokio::time::advance(Duration::from_secs(1)).await;
@@ -245,7 +281,8 @@ async fn immediate_size_fallback_exercise() {
 }
 
 async fn native_fallback_exercise() {
-    const DIAGNOSTIC: &str = "the fixture WebSocket closed before its response completed";
+    const DIAGNOSTIC: &str =
+        "private-provider-sentinel: the fixture WebSocket closed before its response completed";
     codex_alab_core::activate();
     let (session, turn, events) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("private-transport-fixture-not-a-key"),
@@ -273,6 +310,9 @@ async fn native_fallback_exercise() {
         "no sleep or provider call is needed"
     );
     let step = StepContext::for_test(turn);
+    let fallback_logs = FallbackLogs::default();
+    let subscriber = tracing_subscriber::registry().with(fallback_logs.clone());
+    let _subscriber = tracing::subscriber::set_default(subscriber);
     let recovered = handle_response_stream_error(
         &mut state,
         /*max_retries*/ 2,
@@ -320,6 +360,24 @@ async fn native_fallback_exercise() {
         ),
         "successful HTTP fallback reports a transient retry, not a persistent warning: {notice:?}"
     );
+    let records = fallback_logs.0.lock().unwrap();
+    assert_eq!(
+        records.len(),
+        1,
+        "the static fallback WARN is recorded once"
+    );
+    assert!(
+        !records[0].contains_key("diagnostic"),
+        "the local fallback WARN has no raw diagnostic field"
+    );
+    for value in records[0].values() {
+        for private in [DIAGNOSTIC, "private-provider-sentinel"] {
+            assert!(
+                !value.contains(private),
+                "local fallback log must omit provider content: {records:?}"
+            );
+        }
+    }
 }
 
 #[test]

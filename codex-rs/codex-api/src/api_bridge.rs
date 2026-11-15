@@ -218,7 +218,7 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                     {
                         CodexErr::InvalidImageRequest()
                     } else {
-                        if let Some(error) = alab_request_recovery::opaque_bad_request(&body_text) { return error; } // ALAB(recovery): an opaque backend 400 needs transport retry, not a fatal invalid request
+                        if let Some(error) = alab_request_recovery::opaque_bad_request(&body_text, headers.as_ref()) { return error; } // ALAB(recovery): an opaque backend 400 needs transport retry, not a fatal invalid request
                         CodexErr::InvalidRequest(body_text)
                     }
                 } else if status == http::StatusCode::INTERNAL_SERVER_ERROR {

@@ -47,15 +47,19 @@ class NativeRunnerTests(unittest.TestCase):
         (cls.package / "src/lib.rs").write_text((Path(__file__).parent / "fixtures/unit_context.rs").read_text())
         # The target survives independently of scratch source: no test removes a
         # newly built Mach-O if an execution proof fails or an observer times out.
-        cls.target = Path(os.environ.get("ALAB_TEST_UNIT_CONTEXT_TARGET", RUNNER.parent / "unit-context.noindex"))
+        cls.target = Path(os.environ.get("ALAB_TEST_UNIT_CONTEXT_TARGET", RUNNER.parent / "unit-context.noindex")).resolve()
+        # Own both output paths rather than inherit another target's build directory.
+        cls.build_dir = cls.target / "build.noindex"
         cls.output = cls.root / "context.json"
         cls.prefix_output = cls.root / "prefix-context.json"
         cls.environment = dict(os.environ, CARGO_TARGET_DIR=str(cls.target), CARGO_BUILD_JOBS="3",
+                               CARGO_BUILD_BUILD_DIR=str(cls.build_dir),
                                CARGO_INCREMENTAL="0", CARGO_PROFILE_DEV_DEBUG="0",
                                ALAB_CONTEXT_OUT=str(cls.output), ALAB_CONTEXT_PREFIX_OUT=str(cls.prefix_output),
                                ALAB_CONTEXT_FD="43",
                                ALAB_CONTEXT_FILE=str(cls.root / "inherited-file"),
                                ALAB_CONTEXT_VALUE="inherited ☃ value", LC_ALL="C",
+                               ALAB_UNIT_DIAGNOSTICS_DIR="/unqualified ambient diagnostic destination",
                                CARGO_BIN_EXE_context_helper="/unchanged helper path")
         if os.environ.get("ALAB_CARGO_HOME"):
             cls.environment.update(CARGO_HOME=os.environ["ALAB_CARGO_HOME"], TARGO_HOME=os.environ["ALAB_CARGO_HOME"])
@@ -84,6 +88,8 @@ class NativeRunnerTests(unittest.TestCase):
         if len(found) != 1:
             raise RuntimeError("expected one native Cargo fixture artifact")
         cls.probe = found[0]
+        if not Path(cls.probe).resolve().is_relative_to(cls.build_dir):
+            raise RuntimeError("native Cargo fixture artifact escapes its owned build directory")
 
     @classmethod
     def tearDownClass(cls):
@@ -99,15 +105,28 @@ class NativeRunnerTests(unittest.TestCase):
 
     @classmethod
     def run_cargo(cls, *arguments):
-        result = subprocess.run([*cls.cargo, *arguments], cwd=cls.root / "codex-rs", env=cls.environment,
-                                capture_output=True, preexec_fn=cls.inherited_signals, timeout=60)
-        if cls.evidence:
+        def retain(status, stdout, stderr, timeout=None):
+            if not cls.evidence:
+                return
             cls.invocations += 1
             label = f"cargo-{cls.invocations:02}"
-            (cls.evidence / (label + ".json")).write_text(json.dumps({"arguments": arguments,
-                                                                       "status": result.returncode}))
-            (cls.evidence / (label + ".stdout")).write_bytes(result.stdout)
-            (cls.evidence / (label + ".stderr")).write_bytes(result.stderr)
+            record = {"arguments": arguments, "status": status}
+            if timeout is not None:
+                record.update(outcome="timeout", timeout_seconds=timeout)
+            (cls.evidence / (label + ".json")).write_text(json.dumps(record))
+            (cls.evidence / (label + ".stdout")).write_bytes(stdout)
+            (cls.evidence / (label + ".stderr")).write_bytes(stderr)
+
+        try:
+            result = subprocess.run([*cls.cargo, *arguments], cwd=cls.root / "codex-rs", env=cls.environment,
+                                    capture_output=True, preexec_fn=cls.inherited_signals, timeout=60)
+        except subprocess.TimeoutExpired as error:
+            try:
+                retain(None, error.stdout or b"", error.stderr or b"", timeout=error.timeout)
+            except OSError as capture_error:
+                error.add_note(f"native Cargo evidence capture failed: {type(capture_error).__name__}: {capture_error}")
+            raise
+        retain(result.returncode, result.stdout, result.stderr)
         return result
 
     def prepare(self, name, plan=None):
@@ -149,9 +168,17 @@ class NativeRunnerTests(unittest.TestCase):
                                  capture_output=True, timeout=60)
         return process, result
 
-    def context(self):
+    def context(self, state=None):
         observed = json.loads(self.output.read_text())
-        self.assertEqual(observed["environment"], json.loads(self.prefix_output.read_text()))
+        environment = dict(observed["environment"])
+        prefix = json.loads(self.prefix_output.read_text())
+        if state:
+            prepared = json.loads((state / "state.json").read_text())
+            self.assertEqual(environment.pop("ALAB_UNIT_DIAGNOSTICS_DIR"),
+                             prepared["libraries"][0]["diagnostics_dirs"][0])
+            self.assertEqual(prefix.pop("ALAB_UNIT_DIAGNOSTICS_DIR"),
+                             "/unqualified ambient diagnostic destination")
+        self.assertEqual(environment, prefix)
         return observed
 
     def retain(self, name, value):
@@ -166,7 +193,7 @@ class NativeRunnerTests(unittest.TestCase):
         state = self.prepare("record")
         recorded = self.invoke(state)
         self.assertEqual(recorded.returncode, 101, recorded.stderr)
-        after = self.context()
+        after = self.context(state)
         receipt = json.loads(next(state.glob("library-*.json")).read_text())
         self.retain("native-entry", after)
         self.retain("native-receipt", receipt)
@@ -187,7 +214,7 @@ class NativeRunnerTests(unittest.TestCase):
         comparison = self.prepare("compare", plan)
         compared = self.invoke(comparison)
         self.assertEqual(compared.returncode, 101, compared.stderr)
-        compared_context = self.context()
+        compared_context = self.context(comparison)
         self.retain("compare-entry", compared_context)
         for field in ("signals", "descriptors", "cwd", "inherited_fd_offset", "inherited_fd_bytes"):
             self.assertEqual(before[field], compared_context[field], field)

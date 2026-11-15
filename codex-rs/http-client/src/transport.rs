@@ -185,7 +185,7 @@ impl HttpTransport for ReqwestTransport {
         let retry_after = RetryAfter::from_headers(&headers);
         let bytes = match response_body_limit_bytes {
             Some(max_bytes) => bounded_response_bytes(resp, max_bytes).await,
-            None => resp.bytes().await.map_err(Self::map_error),
+            None => resp.alab_buffered_bytes(url.clone(), retry_after, Self::map_error).await, // ALAB(recovery): bound buffered rejections while retaining known HTTP authority.
         };
         if !status.is_success() {
             let body = match bytes {
@@ -240,7 +240,7 @@ impl HttpTransport for ReqwestTransport {
                     // A failed diagnostic body must not hide HTTP auth or retry semantics.
                     Err(_) => None,
                 },
-                None => match resp.text().await {
+                None => match resp.alab_error_text(retry_after).await { // ALAB(recovery): bound default rejection reads while retaining HTTP status and header-time advice.
                     Err(crate::HttpError::Policy(denied)) => return Err(denied.into()),
                     body => body.ok(),
                 },

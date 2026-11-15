@@ -21,6 +21,12 @@
 //! - a person typing holds the act;
 //! - aterm's measured fact (a background call that made no progress) rides an act codex-alab
 //!   types anyway, whole or not at all, and is told once its turn started (`fact_rider`);
+//! - a second root thread's turn parked at a usage wall ends while the primary thread's
+//!   account move is live, so it does not hold the record busy against that move
+//!   (`side_wall`);
+//! - a usage wall's move whose resumed turn served reports it complete once its receipt is
+//!   consumed, and a turn that errored, ended past the canary hold or moved no pool account
+//!   reports nothing (`rotation_complete`);
 //! - an old aterm (no `harness policy`) is never claimed, and nothing is typed.
 
 use std::sync::Arc;
@@ -75,6 +81,9 @@ mod wall_acts;
 #[path = "autopilot/rotation_decline.rs"]
 mod rotation_decline;
 
+#[path = "autopilot/login_rotation.rs"]
+mod login_rotation;
+
 #[path = "autopilot/policy_continuation.rs"]
 mod policy_continuation;
 
@@ -93,6 +102,15 @@ mod renewal_admission;
 #[path = "autopilot/fact_rider.rs"]
 mod fact_rider;
 
+#[path = "autopilot/side_wall.rs"]
+mod side_wall;
+
+#[path = "autopilot/rotation_complete.rs"]
+mod rotation_complete;
+
+#[path = "autopilot/terminal_wall.rs"]
+mod terminal_wall;
+
 struct Harness {
     fake: FakeAterm,
     shared: &'static Shared,
@@ -101,7 +119,34 @@ struct Harness {
     mock: responses::ResponseMock,
     _server: wiremock::MockServer,
     thread: String,
+    /// The warnings the extensions handed the host for the person, as the app server's sink
+    /// takes them to the TUI's history.
+    warnings: Arc<Warnings>,
     _dir: tempfile::TempDir,
+}
+
+/// The host's event sink in the harness: it keeps the warnings it is handed.
+#[derive(Default)]
+struct Warnings(std::sync::Mutex<Vec<codex_extension_api::ExtensionWarning>>);
+
+impl Warnings {
+    fn said(&self) -> Vec<codex_extension_api::ExtensionWarning> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl codex_extension_api::ExtensionEventSink for Warnings {
+    fn emit(&self, _event: codex_protocol::protocol::Event) {}
+
+    fn emit_warning(&self, warning: codex_extension_api::ExtensionWarning) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(warning);
+    }
 }
 
 /// A failing test says what the supervisor did (its journal) and what the fake heard.
@@ -312,6 +357,42 @@ async fn harness_login_with_error_hook(
     goals: Option<Arc<codex_goal_extension::GoalService>>,
     error_hooks: ErrorHooks,
 ) -> Harness {
+    harness_login_on(
+        Box::leak(Box::new(Shared::new())),
+        mode,
+        replies,
+        policy,
+        status,
+        retries,
+        login,
+        timing,
+        configure,
+        goals,
+        error_hooks,
+    )
+    .await
+}
+
+/// [`harness_login_with_error_hook`] on `shared`. A test that drives one of the TUI's own hooks,
+/// which act on the process's one copy alone (`codex_alab_tui::upgrade::native_event`), runs on
+/// that copy (`codex_alab_core::session::shared()`): at most one test of this binary does.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "full harness plus an ordered native-error fixture contributor"
+)]
+async fn harness_login_on(
+    shared: &'static Shared,
+    mode: Mode,
+    replies: Vec<wiremock::ResponseTemplate>,
+    policy: &[(&str, &str)],
+    status: &[(&str, &str)],
+    retries: Option<u64>,
+    login: Option<TestLogin>,
+    timing: Timing,
+    configure: impl FnOnce(&mut Config) + Send + 'static,
+    goals: Option<Arc<codex_goal_extension::GoalService>>,
+    error_hooks: ErrorHooks,
+) -> Harness {
     codex_alab_core::activate();
     let dir = tempfile::tempdir().unwrap_or_else(|err| panic!("scratch dir: {err}"));
     let fake = FakeAterm::start(dir.path(), mode)
@@ -323,14 +404,15 @@ async fn harness_login_with_error_hook(
     for (key, raw) in status {
         fake.set_status(key, raw);
     }
-    let shared: &'static Shared = Box::leak(Box::new(Shared::new()));
     let endpoint = fake.endpoint();
     let sup = Supervisor::new(SupervisorOptions {
         shared,
         endpoint: Arc::new(move || Some(endpoint.clone())),
         client: ClientOptions::default(),
     });
-    let mut builder = ExtensionRegistryBuilder::<Config>::new();
+    let warnings = Arc::new(Warnings::default());
+    let mut builder =
+        ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(&warnings) as _);
     if let Some(hook) = error_hooks.before {
         builder.turn_lifecycle_contributor(hook);
     }
@@ -341,7 +423,7 @@ async fn harness_login_with_error_hook(
     }
     // With a goal service, the goal extension the binary installs after the autopilot.
     let late_goal = goals.as_ref().map(|_| {
-        let late = Arc::new(late_goal::LateGoal::default());
+        let late = Arc::new(late_goal::LateGoal::with_event_sink(None));
         late.register(&mut builder);
         late
     });
@@ -414,6 +496,7 @@ async fn harness_login_with_error_hook(
         mock,
         _server: server,
         thread,
+        warnings,
         _dir: dir,
     }
 }
@@ -1159,7 +1242,7 @@ fn a_persons_walled_turn_answers_no_need_in_the_resumed_history() {
         let h = harness(
             Mode::Old,
             vec![
-                reply("r1", "Stage 1 is in.\nNEEDS YOU: the prod API key"),
+                reply("r1", "Stage 1 is in.\nNEEDS YOU: the prod API grant"),
                 responses::sse_failed(
                     "refused",
                     "cyber_policy",
@@ -1194,7 +1277,7 @@ fn a_persons_walled_turn_answers_no_need_in_the_resumed_history() {
             "the wall is on the second completion"
         );
         let needs = codex_alab_autopilot::extension::history_needs(&items);
-        assert_eq!(needs.standing, ["the prod API key"]);
+        assert_eq!(needs.standing, ["the prod API grant"]);
     });
 }
 
@@ -1228,7 +1311,7 @@ fn a_compactions_turn_answers_no_need_in_the_resumed_history() {
             let h = harness_configured(
                 Mode::Old,
                 [
-                    reply("r1", "Stage 1 is in.\nNEEDS YOU: the prod API key"),
+                    reply("r1", "Stage 1 is in.\nNEEDS YOU: the prod API grant"),
                     summary,
                     reply("r3", "Stage 2 is in."),
                 ]
@@ -1297,11 +1380,11 @@ fn a_compactions_turn_answers_no_need_in_the_resumed_history() {
             assert_eq!(user_messages, 1, "v2={v2}: only the person's");
             assert_eq!(
                 rt.state().needs.standing,
-                ["the prod API key"],
+                ["the prod API grant"],
                 "v2={v2}: the live thread holds the need through the compaction"
             );
             let needs = codex_alab_autopilot::extension::history_needs(&items);
-            assert_eq!(needs.standing, ["the prod API key"], "v2={v2}");
+            assert_eq!(needs.standing, ["the prod API grant"], "v2={v2}");
             assert!(
                 codex_alab_autopilot::extension::scan_history(&items).0,
                 "v2={v2}: the person's task"
@@ -1468,7 +1551,7 @@ fn a_workers_need_goes_on_the_persons_screen_and_never_blocks() {
         let h = harness(
             Mode::Current,
             vec![
-                reply("r1", "Stage 1 is in.\nNEEDS YOU: the signing key password"),
+                reply("r1", "Stage 1 is in.\nNEEDS YOU: the signing permission"),
                 reply("r2", "Stage 2 is in."),
                 reply("r3", "Stage 3 is in."),
             ],
@@ -1484,7 +1567,7 @@ fn a_workers_need_goes_on_the_persons_screen_and_never_blocks() {
         assert!(
             h.fake
                 .wait_for(|f| f.attention().get("needs").is_some_and(
-                    |t| t == "Codex needs you: the signing key password \u{2014} carrying on"
+                    |t| t == "Codex needs you: the signing permission \u{2014} carrying on"
                 ))
                 .await,
             "{:?} {:?}",
@@ -1522,7 +1605,7 @@ fn a_workers_need_goes_on_the_persons_screen_and_never_blocks() {
         wait_until("acting", || h.autopilot.supervisor().acting()).await;
         // A person's turn answers it.
         h.test
-            .submit_turn("the credential is in the keychain")
+            .submit_turn("the permission is in the keychain")
             .await
             .expect("person's turn");
         assert!(
@@ -1534,6 +1617,83 @@ fn a_workers_need_goes_on_the_persons_screen_and_never_blocks() {
             h.autopilot.supervisor().journal()
         );
         wait_until("the person's turn ran", || h.mock.requests().len() == 3).await;
+    });
+}
+
+/// A CREDENTIAL LINE ON THE ONE PATH, end to end (owner, 2026-11-12): the worker's `NEEDS YOU:`
+/// asking for a GitHub token goes on no screen; codex-alab looks it up through `aterm` (a
+/// stand-in whose registry lacks it), files `aterm secrets need gh:dev` once, and types the
+/// `credential@v1` line saying so, recorded as that act. A later reply naming it again is
+/// filed and told no more. NEGATIVE CONTROL: the person's attention holds no need.
+#[test]
+fn a_credential_line_is_filed_once_and_told_never_a_persons_need() {
+    big_stack(|| async {
+        use std::os::unix::fs::PermissionsExt;
+        let h = harness(
+            Mode::Current,
+            vec![
+                reply("r1", "Stage 1 is in.\nNEEDS YOU: a GitHub token"),
+                reply("r2", "Stage 2 is in.\nNEEDS YOU: a GitHub token"),
+                reply("r3", "Stage 3 is in."),
+            ],
+            &[("human_grace_s", "0"), ("continue_per_hour", "2")],
+        )
+        .await;
+        let stand_in = tempfile::tempdir().expect("stand-in dir");
+        let needs = stand_in.path().join("needs");
+        let aterm = stand_in.path().join("aterm");
+        std::fs::write(
+            &aterm,
+            format!(
+                "#!/bin/sh\ncase \"$2\" in\n  ls) echo '{{\"entries\":[]}}' ;;\n  need) echo \"$3\" >> '{}' ;;\n  *) exit 2 ;;\nesac\n",
+                needs.display()
+            ),
+        )
+        .expect("stand-in aterm");
+        std::fs::set_permissions(&aterm, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        h.autopilot.resolve_credentials_through(aterm);
+        assert!(
+            h.fake
+                .wait_for(|f| f.claim().is_some_and(|c| c.proven_pid.is_some()))
+                .await
+        );
+        h.test.submit_turn("do the task").await.expect("first turn");
+        wait_until("the credential line and the continuation after it", || {
+            h.mock.requests().len() == 3 && journal_has(&h, "continue_per_hour=2 reached")
+        })
+        .await;
+        let told = h.mock.requests()[1].message_input_texts("user");
+        let told = told.last().expect("typed");
+        assert!(
+            told.starts_with(codex_alab_autopilot::credential_need::CREDENTIAL_HEAD),
+            "{told}"
+        );
+        assert!(
+            told.contains("codex-alab filed `aterm secrets need gh:dev`."),
+            "{told}"
+        );
+        assert!(
+            told.ends_with(codex_alab_autopilot::credential_need::CREDENTIAL_TAIL),
+            "{told}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&needs).expect("filed"),
+            "gh:dev\n",
+            "filed once"
+        );
+        let next = h.mock.requests()[2].message_input_texts("user");
+        assert_eq!(next.last().map(String::as_str), Some("keep going"));
+        assert_eq!(
+            h.fake
+                .acts()
+                .iter()
+                .filter(|a| a.as_str() == codex_alab_autopilot::credential_need::RULE_CREDENTIAL)
+                .count(),
+            1,
+            "{:?}",
+            h.fake.acts()
+        );
+        assert!(!h.fake.attention().contains_key("needs"));
     });
 }
 
@@ -2154,14 +2314,14 @@ fn a_mail_turns_end_is_receipted_and_reported_to_the_sender() {
         );
         let (id, off) = h
             .fake
-            .deliver("s-lead@n-lab", "task", "agent", "Run the tests.");
+            .deliver("t00000000ab@n-lab", "task", "agent", "Run the tests.");
         let text = format!(
             "# Mail from aterm (task @{off})\n…\n## My request for Codex:\nInbox: task @{off}"
         );
         h.shared.expect_mail_turn(codex_alab_core::mail::MailTurn {
             id,
             off,
-            from: "s-lead@n-lab".to_string(),
+            from: "t00000000ab@n-lab".to_string(),
             kind: "task".to_string(),
             text: text.clone(),
         });
@@ -2174,7 +2334,7 @@ fn a_mail_turns_end_is_receipted_and_reported_to_the_sender() {
         assert_eq!(h.fake.receipts(), vec![(id, "handled".to_string())]);
         let post = &h.fake.posts()[0];
         // A session sender is answered as `@s-…`: the only form aterm's bridge routes.
-        assert!(post.options.contains(&"to=@s-lead@n-lab".to_string()));
+        assert!(post.options.contains(&"to=@t00000000ab@n-lab".to_string()));
         assert!(post.routed, "{:?}", post.options);
         assert!(post.options.contains(&format!("re={off}")));
         assert!(

@@ -373,9 +373,294 @@ where
     Ok(value.as_u64().and_then(|n| u32::try_from(n).ok()))
 }
 
+/// Optional boot-clock coordinates for pacing, never authority to resume work.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecoveryClock {
+    pub boot_id: String,
+    pub continuous_ns: u64,
+    pub epoch_ms: u64,
+}
+
+fn read_recovery_clock<'de, D>(deserializer: D) -> Result<Option<RecoveryClock>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    ClockField::deserialize(deserializer).map(|clock| clock.0)
+}
+
+// Inspect timing keys while Value consumes the original serde stream. RawValue
+// reparsing would reset depth and skip numeric and Unicode validation.
+struct ClockField(Option<RecoveryClock>);
+
+impl<'de> Deserialize<'de> for ClockField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let clock = deserializer.deserialize_any(ClockedJsonVisitor(JsonScope::Clock))?;
+        if clock.invalid_clock {
+            return Ok(Self(None));
+        }
+        Ok(Self(
+            serde_json::from_value::<RecoveryClock>(clock.value)
+                .ok()
+                .filter(|clock| {
+                    codex_alab_core::recovery_clock::Anchor::from(clock.clone()).valid()
+                }),
+        ))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum JsonScope {
+    Wait,
+    Clock,
+}
+
+struct ClockedJson {
+    value: serde_json::Value,
+    invalid_clock: bool,
+}
+
+impl ClockedJson {
+    fn plain(value: serde_json::Value) -> Self {
+        Self {
+            value,
+            invalid_clock: false,
+        }
+    }
+}
+
+struct ClockAudit {
+    scope: JsonScope,
+    first_key: bool,
+    seen: u8,
+    invalid_clock: bool,
+}
+
+impl ClockAudit {
+    fn observe(&mut self, key: &str) {
+        let first_key = self.first_key;
+        self.first_key = false;
+        if first_key
+            && matches!(self.scope, JsonScope::Wait)
+            && key == "$serde_json::private::RawValue"
+        {
+            // Value expands this first-key encoding before its clock members can be audited.
+            // Preserve the decoded wait, but unsupported timing encodings supply no clock.
+            self.invalid_clock = true;
+        }
+        let bit = match (self.scope, key) {
+            (JsonScope::Wait, "clock") | (JsonScope::Clock, "bootId") => 1,
+            (JsonScope::Wait, _) => return,
+            (JsonScope::Clock, "continuousNs") => 2,
+            (JsonScope::Clock, "epochMs") => 4,
+            (JsonScope::Clock, _) => {
+                self.invalid_clock = true;
+                return;
+            }
+        };
+        self.invalid_clock |= self.seen & bit != 0;
+        self.seen |= bit;
+    }
+}
+
+struct ClockedMapAccess<'a, A> {
+    inner: A,
+    audit: &'a mut ClockAudit,
+    clock_value: bool,
+}
+
+impl<'de, A> serde::de::MapAccess<'de> for ClockedMapAccess<'_, A>
+where
+    A: serde::de::MapAccess<'de>,
+{
+    type Error = A::Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: serde::de::DeserializeSeed<'de>,
+    {
+        let Some(key) = self.inner.next_key::<String>()? else {
+            return Ok(None);
+        };
+        self.audit.observe(&key);
+        self.clock_value = matches!(self.audit.scope, JsonScope::Wait) && key == "clock";
+        seed.deserialize(serde::de::value::StringDeserializer::<A::Error>::new(key))
+            .map(Some)
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: serde::de::DeserializeSeed<'de>,
+    {
+        if self.clock_value {
+            self.clock_value = false;
+            let clock = self.inner.next_value::<ClockField>()?;
+            let value =
+                serde_json::to_value(clock.0).map_err(<A::Error as serde::de::Error>::custom)?;
+            seed.deserialize(value)
+                .map_err(<A::Error as serde::de::Error>::custom)
+        } else {
+            self.inner.next_value_seed(seed)
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        self.inner.size_hint()
+    }
+}
+
+struct ClockedJsonVisitor(JsonScope);
+
+impl<'de> serde::de::Visitor<'de> for ClockedJsonVisitor {
+    type Value = ClockedJson;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("any valid JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(ClockedJson::plain(serde_json::Value::Bool(value)))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(ClockedJson::plain(serde_json::Value::Number(value.into())))
+    }
+
+    fn visit_i128<E>(self, value: i128) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let deserializer = serde::de::value::I128Deserializer::<E>::new(value);
+        serde_json::Number::deserialize(deserializer)
+            .map(|number| ClockedJson::plain(serde_json::Value::Number(number)))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(ClockedJson::plain(serde_json::Value::Number(value.into())))
+    }
+
+    fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let deserializer = serde::de::value::U128Deserializer::<E>::new(value);
+        serde_json::Number::deserialize(deserializer)
+            .map(|number| ClockedJson::plain(serde_json::Value::Number(number)))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+        Ok(ClockedJson::plain(
+            serde_json::Number::from_f64(value)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number),
+        ))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_string(value.to_owned())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(ClockedJson::plain(serde_json::Value::String(value)))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(ClockedJson::plain(serde_json::Value::Null))
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(ClockedJson::plain(serde_json::Value::Null))
+    }
+
+    fn visit_seq<A>(self, sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        serde_json::Value::deserialize(serde::de::value::SeqAccessDeserializer::new(sequence))
+            .map(ClockedJson::plain)
+    }
+
+    fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut audit = ClockAudit {
+            scope: self.0,
+            first_key: true,
+            seen: 0,
+            invalid_clock: false,
+        };
+        // Keep Value's private first-key behavior and the caller's live parser budget.
+        let value = serde_json::Value::deserialize(serde::de::value::MapAccessDeserializer::new(
+            ClockedMapAccess {
+                inner: map,
+                audit: &mut audit,
+                clock_value: false,
+            },
+        ))?;
+        Ok(ClockedJson {
+            value,
+            invalid_clock: audit.invalid_clock,
+        })
+    }
+}
+
+fn read_clocked_wait<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let mut wait = deserializer.deserialize_any(ClockedJsonVisitor(JsonScope::Wait))?;
+    if wait.invalid_clock
+        && let serde_json::Value::Object(fields) = &mut wait.value
+    {
+        // Ambiguous timing loses only its clock, never the known wait.
+        fields.insert("clock".to_string(), serde_json::Value::Null);
+    }
+    Ok(serde_json::from_value(wait.value).ok())
+}
+
+impl From<codex_alab_core::recovery_clock::Anchor> for RecoveryClock {
+    fn from(clock: codex_alab_core::recovery_clock::Anchor) -> Self {
+        Self {
+            boot_id: clock.boot_id,
+            continuous_ns: clock.continuous_ns,
+            epoch_ms: clock.epoch_ms,
+        }
+    }
+}
+
+impl From<RecoveryClock> for codex_alab_core::recovery_clock::Anchor {
+    fn from(clock: RecoveryClock) -> Self {
+        Self {
+            boot_id: clock.boot_id,
+            continuous_ns: clock.continuous_ns,
+            epoch_ms: clock.epoch_ms,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InFlightRetry {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_recovery_clock"
+    )]
+    pub clock: Option<RecoveryClock>,
     pub thread: String,
     pub turn_id: String,
     pub not_before: u64,
@@ -385,21 +670,21 @@ fn read_in_flight_retry<'de, D>(deserializer: D) -> Result<Option<InFlightRetry>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(serde_json::from_value::<InFlightRetry>(value)
-        .ok()
-        .filter(|retry| {
+    Ok(
+        read_clocked_wait::<D, InFlightRetry>(deserializer)?.filter(|retry| {
             !retry.thread.trim().is_empty()
                 && retry.thread.len() <= 512
                 && !retry.turn_id.trim().is_empty()
                 && retry.turn_id.len() <= 512
                 && retry.not_before != 0
-        }))
+        }),
+    )
 }
 
 impl From<codex_alab_core::session::InFlightRetry> for InFlightRetry {
     fn from(retry: codex_alab_core::session::InFlightRetry) -> Self {
         Self {
+            clock: retry.clock.map(Into::into),
             thread: retry.thread,
             turn_id: retry.turn_id,
             not_before: retry.not_before_ms,
@@ -410,6 +695,7 @@ impl From<codex_alab_core::session::InFlightRetry> for InFlightRetry {
 impl From<InFlightRetry> for codex_alab_core::session::InFlightRetry {
     fn from(retry: InFlightRetry) -> Self {
         Self {
+            clock: retry.clock.map(Into::into),
             thread: retry.thread,
             turn_id: retry.turn_id,
             not_before_ms: retry.not_before,
@@ -422,6 +708,12 @@ impl From<InFlightRetry> for codex_alab_core::session::InFlightRetry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Recovery {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_recovery_clock"
+    )]
+    pub clock: Option<RecoveryClock>,
     pub thread: String,
     pub turn_id: String,
     pub point_at: u64,
@@ -557,18 +849,18 @@ fn read_recovery<'de, D>(deserializer: D) -> Result<Option<Recovery>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(serde_json::from_value::<Recovery>(value)
-        .ok()
-        .and_then(|mut recovery| {
+    Ok(
+        read_clocked_wait::<D, Recovery>(deserializer)?.and_then(|mut recovery| {
             recovery.bound_details();
             recovery.valid().then_some(recovery)
-        }))
+        }),
+    )
 }
 
 impl From<codex_alab_core::session::Recovery> for Recovery {
     fn from(recovery: codex_alab_core::session::Recovery) -> Self {
         let mut stored = Self {
+            clock: recovery.clock.map(Into::into),
             thread: recovery.thread,
             turn_id: recovery.turn_id,
             point_at: recovery.point_at_ms,
@@ -627,6 +919,7 @@ impl From<codex_alab_core::session::Recovery> for Recovery {
 impl From<Recovery> for codex_alab_core::session::Recovery {
     fn from(recovery: Recovery) -> Self {
         Self {
+            clock: recovery.clock.map(Into::into),
             thread: recovery.thread,
             turn_id: recovery.turn_id,
             point_at_ms: recovery.point_at,
@@ -748,6 +1041,13 @@ pub struct Pace {
         deserialize_with = "read_wall_goal"
     )]
     pub wall_goal: Option<WallGoal>,
+    /// A model's successful block is distinct from a provider wall's stop.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_wall_goal"
+    )]
+    pub model_blocked_goal: Option<WallGoal>,
 }
 
 /// [`Pace::esc`] as written, or none for a form this reader does not know, or one that names no
@@ -981,6 +1281,12 @@ impl From<codex_alab_core::session::Pace> for Pace {
                 budget: goal.token_budget,
                 turn: goal.turn,
             }),
+            model_blocked_goal: pace.model_blocked_goal.map(|goal| WallGoal {
+                id: goal.goal_id,
+                objective: goal.objective,
+                budget: goal.token_budget,
+                turn: goal.turn,
+            }),
         }
     }
 }
@@ -1066,6 +1372,15 @@ impl From<Pace> for codex_alab_core::session::Pace {
                     turn: goal.turn,
                     person_stops: 0,
                 }),
+            model_blocked_goal: pace.model_blocked_goal.map(|goal| {
+                codex_alab_core::session::WallGoal {
+                    goal_id: goal.id,
+                    objective: goal.objective,
+                    token_budget: goal.budget,
+                    turn: goal.turn,
+                    person_stops: 0,
+                }
+            }),
         }
     }
 }
@@ -1124,13 +1439,20 @@ pub struct Owed {
 }
 
 impl Owed {
+    /// The account handoff the act carries, with its purpose: `renewal` is the same account's,
+    /// and `rotation` a move to another account, whose purpose its `rule` names
+    /// ([`codex_alab_core::account_handoff::Purpose::of_rotation_rule`]). A `rotation` under
+    /// any other rule, or both fields, carries none.
     pub(crate) fn handoff(
         &self,
     ) -> Option<(&AccountHandoff, codex_alab_core::account_handoff::Purpose)> {
         use codex_alab_core::account_handoff::Purpose;
         match (&self.renewal, &self.rotation) {
             (Some(value), None) => Some((value, Purpose::Login)),
-            (None, Some(value)) => Some((value, Purpose::WeeklyQuota)),
+            (None, Some(value)) => Some((
+                value,
+                self.rule.as_deref().and_then(Purpose::of_rotation_rule)?,
+            )),
             _ => None,
         }
     }
@@ -1276,12 +1598,15 @@ where
             .as_ref()
             .is_none_or(|origin| !origin.turn_id.trim().is_empty() && origin.turn_id.len() <= 512)
             && {
-                use codex_alab_core::account_handoff::Purpose;
+                // A `rotation` is told apart by its rule: under any rule but a move's the act is
+                // dropped, as an image before `login-rotate@v1` drops one it reads as a quota's.
                 let handoff = match (&owed.renewal, &owed.rotation) {
                     (Some(_), Some(_)) => return false,
-                    (Some(value), None) => Some((value, Purpose::Login)),
-                    (None, Some(value)) => Some((value, Purpose::WeeklyQuota)),
                     (None, None) => None,
+                    _ => match owed.handoff() {
+                        Some(handoff) => Some(handoff),
+                        None => return false,
+                    },
                 };
                 handoff.is_none_or(|(value, purpose)| {
                     owed.rule.as_deref() == Some(purpose.rule())
@@ -1350,6 +1675,69 @@ mod account_handoff_wire_tests {
         assert_eq!(restored.owed.map(Into::into), Some(expected));
     }
 
+    /// A LOST LOGIN'S MOVE IS KEPT UNDER `rotation`, TOLD APART BY ITS RULE: it round-trips with
+    /// its destination as `login-rotate@v1`, and the weekly-quota handoff's wire is unchanged
+    /// (`rotation` under `usage-rotate@v1`). A `rotation` under any other rule (an older or newer
+    /// image's, or the same account's renewal rule) is dropped whole, so no image types on an act
+    /// it cannot place; so is a record that carries both fields.
+    #[test]
+    fn a_login_rotation_round_trips_under_rotation_by_its_rule() {
+        let mut moved = quota();
+        let handoff = moved.renewal.as_mut().unwrap();
+        handoff.purpose = Purpose::LoginRotation;
+        moved.rule = Some(Purpose::LoginRotation.rule().into());
+        moved.text = Some("Continue the original task.".into());
+        let wire = serde_json::to_value(Owed::from(moved.clone())).unwrap();
+        assert!(wire.get("renewal").is_none());
+        assert_eq!(wire["rule"], "login-rotate@v1");
+        assert_eq!(wire["rotation"]["destination"]["account"], "c".repeat(64));
+        assert!(
+            wire["rotation"].get("purpose").is_none(),
+            "the rule names it"
+        );
+        let restored: Carry = serde_json::from_value(serde_json::json!({"owed":wire})).unwrap();
+        let restored = restored.owed.map(codex_alab_core::session::OwedAct::from);
+        assert_eq!(restored.as_ref(), Some(&moved));
+        assert_eq!(
+            restored
+                .and_then(|owed| owed.renewal)
+                .map(|handoff| handoff.purpose),
+            Some(Purpose::LoginRotation)
+        );
+
+        let quota_wire = serde_json::to_value(Owed::from(quota())).unwrap();
+        assert_eq!(quota_wire["rule"], "usage-rotate@v1");
+        assert_eq!(
+            quota_wire["rotation"], wire["rotation"],
+            "the same handoff wire"
+        );
+
+        for rule in ["login-back@v1", "login-rotate@v2", "continue@v1"] {
+            let mut other = wire.clone();
+            other["rule"] = serde_json::json!(rule);
+            let restored: Carry =
+                serde_json::from_value(serde_json::json!({"owed":other})).unwrap();
+            assert!(restored.owed.is_none(), "{rule}");
+        }
+        let mut unruled = wire.clone();
+        unruled.as_object_mut().unwrap().remove("rule");
+        let restored: Carry = serde_json::from_value(serde_json::json!({"owed":unruled})).unwrap();
+        assert!(restored.owed.is_none(), "no rule");
+        let mut both = wire;
+        both["renewal"] = both["rotation"].clone();
+        let restored: Carry = serde_json::from_value(serde_json::json!({"owed":both})).unwrap();
+        assert!(restored.owed.is_none(), "both fields");
+        // The same account's renewal is never kept under `rotation`.
+        let mut renewal = quota();
+        let handoff = renewal.renewal.as_mut().unwrap();
+        handoff.purpose = Purpose::Login;
+        handoff.destination = None;
+        renewal.rule = Some(Purpose::Login.rule().into());
+        let renewal_wire = serde_json::to_value(Owed::from(renewal)).unwrap();
+        assert!(renewal_wire.get("rotation").is_none());
+        assert!(renewal_wire.get("renewal").is_some());
+    }
+
     #[test]
     fn ambiguous_same_account_and_wrong_turn_rotation_records_are_refused() {
         for case in 0..3 {
@@ -1396,11 +1784,7 @@ impl From<NativeOrigin> for codex_alab_core::session::NativeOrigin {
 impl From<codex_alab_core::session::OwedAct> for Owed {
     fn from(owed: codex_alab_core::session::OwedAct) -> Self {
         let (renewal, rotation) = match owed.renewal {
-            Some(handoff)
-                if handoff.purpose == codex_alab_core::account_handoff::Purpose::WeeklyQuota =>
-            {
-                (None, Some(handoff.into()))
-            }
+            Some(handoff) if handoff.purpose.moves_account() => (None, Some(handoff.into())),
             handoff => (handoff.map(Into::into), None),
         };
         Owed {
@@ -1425,7 +1809,11 @@ impl From<Owed> for codex_alab_core::session::OwedAct {
         use codex_alab_core::account_handoff::Purpose;
         let handoff = match (owed.renewal, owed.rotation) {
             (Some(value), None) => Some(value.into_core(Purpose::Login)),
-            (None, Some(value)) => Some(value.into_core(Purpose::WeeklyQuota)),
+            (None, Some(value)) => owed
+                .rule
+                .as_deref()
+                .and_then(Purpose::of_rotation_rule)
+                .map(|purpose| value.into_core(purpose)),
             _ => None,
         };
         codex_alab_core::session::OwedAct {

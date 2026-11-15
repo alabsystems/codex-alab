@@ -997,7 +997,7 @@ pub(super) async fn handle_thread_listener_command(
                 .await;
         }
         ThreadListenerCommand::EmitThreadGoalSnapshot { state_db } => {
-            send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db).await;
+            crate::extensions::alab_goal_status::before_goal_read(outgoing, conversation.and_then(|conversation| conversation.thread_extension_data().get::<codex_goal_extension::GoalRuntimeHandle>()).and_then(|runtime| runtime.alab_runtime_status_snapshot()), send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db)).await; // ALAB(storage-status): an ordered listener never queues its own status behind a DB await.
         }
         ThreadListenerCommand::ResolveServerRequest {
             request_id,
@@ -1283,8 +1283,9 @@ pub(super) async fn handle_pending_thread_resume_request(
     }
     if pending.emit_thread_goal_update {
         if let Some(state_db) = pending.thread_goal_state_db {
-            send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db).await;
+            crate::extensions::alab_goal_status::before_goal_read(outgoing, conversation.thread_extension_data().get::<codex_goal_extension::GoalRuntimeHandle>().and_then(|runtime| runtime.alab_runtime_status_snapshot()), send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db)).await; // ALAB(storage-status): deliver native snapshot inline before this listener polls its DB read.
         } else {
+            if let Some(update) = conversation.thread_extension_data().get::<codex_goal_extension::GoalRuntimeHandle>().and_then(|runtime| runtime.alab_runtime_status_snapshot()) { crate::extensions::alab_goal_status::send(outgoing, update).await; } // ALAB(storage-status): absent DB access cannot hide a live native hold.
             tracing::warn!(
                 thread_id = %conversation_id,
                 "state db unavailable when reading thread goal for running thread resume"

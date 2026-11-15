@@ -28,20 +28,33 @@ fn a_cyber_policy_refusal_has_its_own_bounded_independent_work_wall() {
 }
 
 #[test]
-fn other_usage_policy_refusals_remain_terminal_with_their_own_cause() {
+fn other_usage_policy_refusals_use_the_same_bounded_independent_work_wall() {
     for error in [
         CodexErrorInfo::BioPolicy,
         CodexErrorInfo::MisalignmentPolicyViolation,
     ] {
-        let Some(Wall::Fatal { why }) = classify(
-            &error,
-            &CodexErrorDetails::Stream("provider refusal".into()),
-            true,
-        ) else {
-            panic!("{error:?} must remain a fatal wall");
-        };
-        assert!(why.contains("usage policy"), "{error:?}: {why}");
-        assert!(!why.contains("cyberPolicy"), "{error:?}: {why}");
+        assert_eq!(
+            classify(
+                &error,
+                &CodexErrorDetails::Stream("provider refusal".into()),
+                true,
+            ),
+            Some(Wall::Policy),
+            "{error:?}"
+        );
+    }
+    for error in [CodexErrorInfo::InvalidPrompt, CodexErrorInfo::BadRequest] {
+        assert!(
+            matches!(
+                classify(
+                    &error,
+                    &CodexErrorDetails::Stream("invalid request".into()),
+                    true,
+                ),
+                Some(Wall::Fatal { .. })
+            ),
+            "{error:?} must not retry an invalid request"
+        );
     }
 }
 

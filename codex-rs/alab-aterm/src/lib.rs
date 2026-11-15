@@ -24,6 +24,7 @@
 //! - [`context`]: `/ide`'s terminal context (`panes`, `blocks`, `blocktext`, `selection`).
 //! - [`mail`]: this session's inbox for a typed `Inbox:` line, its receipt and report.
 //! - [`account_move`]: `restart account=`, moving this session to another signed-in account.
+//! - [`secrets`]: this Mac's secrets registry and need ledger, through `aterm secrets`.
 //! - `fake` (tests, or the `test-support` feature): an in-process aterm.
 //!
 //! Unix only: aterm's control socket is AF_UNIX, and on any other target this crate is
@@ -41,6 +42,7 @@ pub mod enrollment;
 pub mod events;
 pub mod exec_capsule;
 pub mod exec_grant;
+pub mod exec_route;
 mod exec_selection;
 pub mod facts;
 pub mod locate;
@@ -50,6 +52,7 @@ pub mod native_source;
 pub mod policy;
 pub mod renewal;
 pub mod rotation;
+pub mod secrets;
 pub mod source_member;
 pub mod status;
 pub mod wire;

@@ -35,3 +35,6 @@ pub use responses_websocket_probe::ResponsesWebsocketProbe;
 pub use responses_websocket_probe::ResponsesWebsocketProbeError;
 pub use responses_websocket_probe::ResponsesWebsocketProbeFailureStage;
 pub use search::SearchClient;
+
+#[path = "../../../alab-core/glue/api_request_diagnostics.rs"]
+mod alab_request_diagnostics; // ALAB(recovery): local metadata diagnostics are independent of payload tracing.

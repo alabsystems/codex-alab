@@ -302,3 +302,158 @@ fn stat_rejects_symlinks_and_directories() {
         assert_eq!(stat(&link), None);
     }
 }
+
+/// A ChatGPT login whose refresh codex sent to a mock token authority that answered `status`
+/// with `body` once: the manager after codex's own refusal, the home it reads, and the
+/// authority (kept alive).
+async fn refused_by(
+    status: u16,
+    body: serde_json::Value,
+) -> (
+    std::sync::Arc<codex_login::AuthManager>,
+    tempfile::TempDir,
+    wiremock::MockServer,
+) {
+    assert!(
+        std::env::var_os(codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR).is_none(),
+        "CODEX_REFRESH_TOKEN_URL_OVERRIDE is set: the refresh would go past the mock authority"
+    );
+    let authority = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/oauth/token"))
+        .respond_with(wiremock::ResponseTemplate::new(status).set_body_json(body))
+        .expect(1)
+        .mount(&authority)
+        .await;
+    let home = home();
+    chatgpt(
+        home.path(),
+        "user-a",
+        "account-a",
+        "refresh-refused",
+        Some(&authority.uri()),
+    );
+    let manager = manager(home.path()).await;
+    assert!(
+        manager.refresh_token_from_authority().await.is_err(),
+        "the authority refuses the refresh"
+    );
+    (manager, home, authority)
+}
+
+/// The vetoes kept under `home`, by file name.
+fn kept_files(home: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(home.join("alab").join("login-refusals"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// ONLY AN EXPIRED TOKEN LEAVES THE MOVE OPEN (the lost-login move): the token authority's
+/// refusal, as codex classifies it, decides whether codex-alab's own reading vetoes moving the
+/// session to another account, and whether that veto is kept for the refused token so a
+/// process after a restart still has it. `refresh_token_expired` vetoes nothing and keeps no
+/// file; `refresh_token_invalidated`, `refresh_token_reused` and a 400 `invalid_grant` each veto
+/// and keep one. No file holds the refresh token.
+#[tokio::test]
+async fn only_an_expired_refresh_token_leaves_the_move_open() {
+    use codex_protocol::auth::RefreshTokenFailedReason as Reason;
+    let code = |code: &str| serde_json::json!({"error": {"code": code}});
+    for (status, body, reason) in [
+        (401, code("refresh_token_expired"), Reason::Expired),
+        (401, code("refresh_token_invalidated"), Reason::Revoked),
+        (401, code("refresh_token_reused"), Reason::Exhausted),
+        (
+            400,
+            serde_json::json!({"error": "invalid_grant"}),
+            Reason::Other,
+        ),
+        (401, code("account_deactivated"), Reason::Other),
+    ] {
+        let (manager, home, _authority) = refused_by(status, body).await;
+        assert_eq!(super::refusal_held(&manager), Some(reason), "{reason:?}");
+        let expired = reason == Reason::Expired;
+        assert_eq!(
+            super::keep_refusal(&manager, reason),
+            !expired,
+            "{reason:?}"
+        );
+        assert_eq!(kept_files(home.path()).len(), usize::from(!expired));
+        let kept = super::refusal_kept(&manager);
+        assert_eq!(kept, (!expired).then_some(reason), "{reason:?}");
+        assert_eq!(
+            super::refusal_vetoes_move(Some(reason), super::refusal_held(&manager), kept),
+            !expired,
+            "{reason:?}"
+        );
+        // A restart: no turn error in this process, only the kept veto.
+        let restarted = super::fixtures::manager(home.path(), AuthCredentialsStoreMode::File).await;
+        assert_eq!(super::refusal_held(&restarted), None, "a fresh process");
+        assert_eq!(
+            super::refusal_vetoes_move(None, None, super::refusal_kept(&restarted)),
+            !expired,
+            "{reason:?} after a restart"
+        );
+        for name in kept_files(home.path()) {
+            let content = std::fs::read_to_string(
+                home.path().join("alab").join("login-refusals").join(&name),
+            )
+            .unwrap_or_else(|err| panic!("{err}"));
+            assert!(!content.contains("refresh-refused") && !name.contains("refresh-refused"));
+        }
+        // The login renewed (another refresh token) is not vetoed by the old token's refusal.
+        chatgpt(home.path(), "user-a", "account-a", "refresh-renewed", None);
+        restarted.reload().await;
+        assert_eq!(super::refusal_kept(&restarted), None, "{reason:?}");
+    }
+}
+
+/// NOTHING KNOWN VETOES NOTHING, AND A VETO IS KEPT ONLY FOR THE REFUSAL CODEX HOLDS: with no
+/// refusal recorded there is no veto and none is kept; a turn reason that is not the one codex
+/// holds for the cached login keeps nothing (the cached login is not the refused one).
+#[tokio::test]
+async fn no_refusal_vetoes_nothing_and_only_the_held_refusal_is_kept() {
+    use codex_protocol::auth::RefreshTokenFailedReason as Reason;
+    let home = home();
+    chatgpt(home.path(), "user-a", "account-a", "refresh-1", None);
+    let manager = manager(home.path()).await;
+    assert_eq!(super::refusal_held(&manager), None);
+    assert_eq!(super::refusal_kept(&manager), None);
+    assert!(!super::refusal_vetoes_move(None, None, None));
+    assert!(
+        !super::keep_refusal(&manager, Reason::Revoked),
+        "codex holds no refusal"
+    );
+    assert!(kept_files(home.path()).is_empty());
+
+    let (manager, home, _authority) = refused_by(
+        401,
+        serde_json::json!({"error": {"code": "refresh_token_expired"}}),
+    )
+    .await;
+    assert!(
+        !super::keep_refusal(&manager, Reason::Revoked),
+        "not the refusal codex holds"
+    );
+    assert!(kept_files(home.path()).is_empty());
+    // Any one reason that is not `Expired` vetoes, wherever it was read.
+    for reason in [Reason::Revoked, Reason::Exhausted, Reason::Other] {
+        assert!(super::refusal_vetoes_move(Some(reason), None, None));
+        assert!(super::refusal_vetoes_move(None, Some(reason), None));
+        assert!(super::refusal_vetoes_move(None, None, Some(reason)));
+        assert!(super::refusal_vetoes_move(
+            Some(Reason::Expired),
+            Some(Reason::Expired),
+            Some(reason)
+        ));
+    }
+    assert!(!super::refusal_vetoes_move(
+        Some(Reason::Expired),
+        Some(Reason::Expired),
+        None
+    ));
+}

@@ -86,6 +86,8 @@ pub enum CodexErrorInfo {
     /// The workspace's inference hook explicitly denied this request.
     InferenceHookDenied,
     CyberPolicy,
+    // ALAB(policy-recovery): wire name only; core BioPolicy converts to Other, as upstream tests.
+    BioPolicy,
     MisalignmentPolicyViolation,
     TooManyDenials,
     HttpConnectionFailed {

@@ -5,6 +5,16 @@
 use std::io;
 use std::io::Read;
 
+#[cfg(unix)]
+#[path = "fixture_diagnostics.rs"]
+mod fixture_diagnostics;
+#[cfg(unix)]
+pub use fixture_diagnostics::DIAGNOSTIC_MANIFEST_FILE;
+#[cfg(unix)]
+pub use fixture_diagnostics::DiagnosticProducerState;
+#[cfg(unix)]
+pub use fixture_diagnostics::export_fixture_diagnostics;
+
 /// A headerless fixture capture holds a JSON body or a standard complete zstd frame.
 /// Decode every request independently; never carry a stream's history into another.
 pub fn recorded_request_body(body: &[u8], limit: usize) -> io::Result<Vec<u8>> {

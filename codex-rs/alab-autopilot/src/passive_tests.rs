@@ -68,6 +68,9 @@ mod needs_set_tests;
 #[path = "login_watch_tests.rs"]
 mod login_watch_tests;
 
+#[path = "login_refusal_turn_tests.rs"]
+mod login_refusal_turn_tests;
+
 #[path = "fact_read_tests.rs"]
 mod fact_read_tests;
 
@@ -190,6 +193,7 @@ async fn started_timed_with_config(
         client,
     });
     let autopilot = Autopilot::new(Arc::clone(&sup), None, None, timing, |_| true);
+    autopilot.set_retry_clock(crate::recovery::test_clock_read());
     let id = ThreadId::new();
     let key = id.to_string();
     let store = ExtensionData::new(key.clone());
@@ -532,11 +536,12 @@ async fn a_point_left_to_a_person_is_raised_again_when_acting_resumes() {
     // evaluation is cancelled, an in-flight publication must settle before a
     // new native turn starts; otherwise the delayed write labels running work
     // as left to the person.
-    for (cancel, other_root, other_registry) in [
-        (false, false, false),
-        (true, false, false),
-        (true, true, false),
-        (true, true, true),
+    for (cancel, other_root, other_registry, expire) in [
+        (false, false, false, false),
+        (true, false, false, false),
+        (true, true, false, false),
+        (true, true, true, false),
+        (true, false, false, true),
     ] {
         use crate::decide::Mode as Word;
         use codex_extension_api::TurnLifecycleContributor;
@@ -547,11 +552,27 @@ async fn a_point_left_to_a_person_is_raised_again_when_acting_resumes() {
         // The test owns the evaluation rather than racing the initial claim's
         // automatic look, so aborting it really cancels the publishing caller. The exchange
         // opens a Land session: Cruise leaves none to the person (gap 32).
-        let h =
-            started_with_claim_watch(&[], |fake, _| fake.set_status("autopilot", "land"), false)
-                .await;
+        let h = started_with(
+            &[],
+            |fake, _| fake.set_status("autopilot", "land"),
+            false,
+            ClientOptions {
+                // The barrier decides when publication completes. Keep the
+                // client's deadline from winning the cancellation race on a busy host.
+                timeout: Duration::from_secs(60),
+                ..ClientOptions::default()
+            },
+        )
+        .await;
         wait_until("the claim is proven and acted under", || h.sup.acting()).await;
-        word(&h, "land").await;
+        // The session opened in Land, and nothing moves its policy from here on: a policy
+        // re-read landing inside the evaluation below would have it decide again on a timer,
+        // and the request at the barrier would then be that second evaluation's while the
+        // one this test holds had already returned.
+        assert_eq!(
+            h.sup.policy().map(|policy| policy.autopilot),
+            Some(Word::Land)
+        );
         h.rt.with_state(|state| {
             let end = TurnEnd {
                 worked: Duration::ZERO,
@@ -574,7 +595,21 @@ async fn a_point_left_to_a_person_is_raised_again_when_acting_resumes() {
                 .await,
             "the actual metadata request reached the barrier"
         );
+        // The request at the barrier is this test's own evaluation's: it is still waiting,
+        // and no other evaluation of the thread has run.
+        assert!(
+            publication.as_ref().is_some_and(|task| !task.is_finished()) && h.rt.evaluations() == 1,
+            "the gated request is not the test's own evaluation ({} ran): {:#?}",
+            h.rt.evaluations(),
+            h.sup.journal()
+        );
         if cancel {
+            if expire {
+                // Exercise expiry without letting the client's longer deadline
+                // replace the server's lease decision.
+                tokio::time::sleep(codex_alab_aterm::CALL_TIMEOUT + Duration::from_millis(100))
+                    .await;
+            }
             let publication = publication.take().expect("evaluation task");
             publication.abort();
             assert!(
@@ -635,9 +670,19 @@ async fn a_point_left_to_a_person_is_raised_again_when_acting_resumes() {
                 .expect("evaluation hang detector")
                 .expect("evaluation task");
         }
-        assert_eq!(h.fake.acts(), vec![crate::words::RULE_LEFT.to_string()]);
+        let expired = h.sup.journal().iter().any(|line| {
+            line.contains("act left-to-person@v1 not recorded:")
+                && line.contains("ERR expired harness_act")
+        });
+        assert!(!expire || expired, "the delayed lease must expire");
+        let expected = if expired {
+            Vec::new()
+        } else {
+            vec![crate::words::RULE_LEFT.to_string()]
+        };
+        assert_eq!(h.fake.acts(), expected, "{:?}", h.sup.journal());
         Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
-        assert_eq!(h.fake.acts(), vec![crate::words::RULE_LEFT.to_string()]);
+        assert_eq!(h.fake.acts(), expected);
     }
 }
 
@@ -1687,14 +1732,24 @@ fn needs_up(h: &Harness) -> Option<String> {
 }
 
 /// Read the session's word as `word` (`status autopilot=`), the policy moved so it is read.
+///
+/// Returns only once the policy this call moved is the one stored: the answer text it set is
+/// there. The word alone is no proof of that, since a session already under `word` reads it
+/// before the re-read lands, and a caller that went on would race its own policy change.
+///
+/// On a harness that watches claims the move also has the watcher look again, and this does
+/// not wait for that look: a test whose looks must all be its own builds without the watch.
 async fn word(h: &Harness, word: &str) {
     use crate::decide::Mode as Word;
     let want = Word::of_word(word).unwrap_or(Word::Cruise);
+    // The fake escapes what it is given, so the policy stores this text as written here.
+    let text = format!("Pick%20one%20{word}.");
     h.fake.set_status("autopilot", word);
-    h.fake
-        .set_policy_key("answer_text", &format!("Pick%20one%20{word}."));
+    h.fake.set_policy_key("answer_text", &text);
     wait_until("the policy reads the word", || {
-        h.sup.policy().is_some_and(|p| p.autopilot == want)
+        h.sup
+            .policy()
+            .is_some_and(|p| p.autopilot == want && p.answer_text.as_deref() == Some(text.as_str()))
     })
     .await;
 }
@@ -2232,7 +2287,7 @@ async fn an_off_ends_the_needs_the_thread_held() {
         &h,
         "t2",
         true,
-        "Stage 2 is in.\nNEEDS YOU: the signing key password",
+        "Stage 2 is in.\nNEEDS YOU: the signing permission",
     )
     .await;
     wait_until("the need is shown", || needs_up(&h).is_some()).await;
@@ -2256,7 +2311,7 @@ async fn an_off_ends_the_needs_the_thread_held() {
         &h,
         "t4",
         true,
-        "Stage 4 is in.\nNEEDS YOU: the signing key password",
+        "Stage 4 is in.\nNEEDS YOU: the signing permission",
     )
     .await;
     wait_until("named again, it is shown", || needs_up(&h).is_some()).await;
@@ -2276,7 +2331,7 @@ async fn a_need_named_while_released_is_raised_at_the_claim() {
         &h,
         "t2",
         true,
-        "Stage 2 is in.\nNEEDS YOU: the signing key password",
+        "Stage 2 is in.\nNEEDS YOU: the signing permission",
     )
     .await;
     assert_ne!(h.sup.needs_key(), 0, "wanted");
@@ -2286,7 +2341,7 @@ async fn a_need_named_while_released_is_raised_at_the_claim() {
     wait_until("raised at the claim", || needs_up(&h).is_some()).await;
     assert_eq!(
         needs_up(&h).as_deref(),
-        Some("Codex needs you: the signing key password — carrying on")
+        Some("Codex needs you: the signing permission — carrying on")
     );
 }
 
@@ -2300,7 +2355,7 @@ async fn the_exit_takes_the_needs_down() {
         &h,
         "t1",
         false,
-        "Started.\nNEEDS YOU: the signing key password",
+        "Started.\nNEEDS YOU: the signing permission",
     )
     .await;
     wait_until("the need is shown", || needs_up(&h).is_some()).await;
@@ -2361,7 +2416,7 @@ async fn the_exit_takes_down_a_need_whose_set_was_still_in_flight() {
         &h,
         "t1",
         false,
-        "Started.\nNEEDS YOU: the signing key password",
+        "Started.\nNEEDS YOU: the signing permission",
     )
     .await;
     wait_until("the need's set is in flight", || {
@@ -2384,7 +2439,7 @@ async fn the_exit_takes_down_a_need_whose_set_was_still_in_flight() {
 
 /// The entry a process before this one left up: it crashed, or was killed, so its exit
 /// never took its needs down.
-const LEFT_ENTRY: &str = "Codex needs you: the signing key password \u{2014} carrying on";
+const LEFT_ENTRY: &str = "Codex needs you: the signing permission \u{2014} carrying on";
 
 /// A real clear can apply while its acknowledgement is lost. A same-text
 /// report arriving during that clear must be shown under the next proven claim,
@@ -2395,7 +2450,7 @@ async fn a_same_text_need_is_reconciled_after_an_applied_clear_loses_its_reply()
     const CLAIM: &str = "meta set supervisor";
     for lose_reply in [false, true] {
         let h = harness(&[]).await;
-        let standing = vec!["the deploy token".to_string()];
+        let standing = vec!["the deploy approval".to_string()];
         h.sup.needs(&standing, 7).await;
         let expected = needs_up(&h).expect("initial need is actually on the server");
         assert_eq!(h.sup.needs_shown(), Some(expected.clone()));
@@ -2482,12 +2537,12 @@ async fn a_needs_entry_left_before_the_claim_comes_down() {
     // NEGATIVE CONTROL: a need standing at the claim replaces the entry.
     let h = started(&[], |fake, sup| {
         left(fake);
-        assert!(sup.want_needs(&["the deploy token".to_string()], 7));
+        assert!(sup.want_needs(&["the deploy approval".to_string()], 7));
     })
     .await;
     wait_until("acting", || h.sup.acting()).await;
     wait_until("its own need replaces the entry", || {
-        needs_up(&h).as_deref() == Some("Codex needs you: the deploy token \u{2014} carrying on")
+        needs_up(&h).as_deref() == Some("Codex needs you: the deploy approval \u{2014} carrying on")
     })
     .await;
     assert_eq!(noted(&h, "CLEARED needs"), 0, "{:?}", h.sup.journal());
@@ -2544,7 +2599,7 @@ async fn a_side_threads_needs_never_reach_the_person() {
         now_ms(),
     );
     assert!(h.shared.is_registered(&side_key) && !h.shared.is_root_thread(&side_key));
-    let words = "Sub-task done.\nNEEDS YOU: the signing key password";
+    let words = "Sub-task done.\nNEEDS YOU: the signing permission";
     turn_on(&h, &side, "s1", false, "Look into it.").await;
     turn_on(&h, &side, "s2", true, words).await;
     assert_eq!(
@@ -2613,10 +2668,10 @@ async fn its_own_need_stands_beside_every_other_and_is_never_hidden() {
         &h,
         "t2",
         true,
-        "Stage 2 is in.\nNEEDS YOU: the signing key password",
+        "Stage 2 is in.\nNEEDS YOU: the signing permission",
     )
     .await;
-    let worker = "Codex needs you: the signing key password \u{2014} carrying on";
+    let worker = "Codex needs you: the signing permission \u{2014} carrying on";
     wait_until("the worker's need stands alone", || {
         needs_up(&h).as_deref() == Some(worker) && shown(&h).is_none()
     })
@@ -2660,7 +2715,7 @@ async fn its_own_need_stands_beside_every_other_and_is_never_hidden() {
     // Neither the need the Off took down nor the one raised while passive comes back with
     // it (RED with the Off keeping its own needs, or with a passive raise stored).
     h.sup
-        .needs(&["the signing key password".to_string()], 7)
+        .needs(&["the signing permission".to_string()], 7)
         .await;
     wait_until("the worker's need after the On", || needs_up(&h).is_some()).await;
     assert_eq!(
@@ -2676,7 +2731,10 @@ async fn its_own_need_stands_beside_every_other_and_is_never_hidden() {
 /// CONTROL: the same point with no exec under way raises its attention.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_look_once_the_upgrade_exec_began_acts_on_nothing() {
-    let h = harness(&[("questions", "ask")]).await;
+    // Every look is this test's own: a claim watcher's look at the claim's taking, never waited
+    // for, would fence the same point a second time.
+    let h = started_with_claim_watch(&[("questions", "ask")], |_, _| {}, false).await;
+    wait_until("the claim is proven and acted under", || h.sup.acting()).await;
     point(&h, ended(Some("Should I rename the module?"), None));
     h.autopilot.set_upgrade_requested(true);
     Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
@@ -3145,13 +3203,13 @@ async fn a_landed_tasks_own_wake_is_judged_over_the_repository_it_began_over() {
         &h,
         "w3",
         || {},
-        &["NEEDS YOU: the signing key password", quiet],
+        &["NEEDS YOU: the signing permission", quiet],
     )
     .await;
     Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
     let s = h.rt.state();
     assert!(!s.landed, "{:?}", h.sup.journal());
-    assert_eq!(s.needs.standing, ["the signing key password"]);
+    assert_eq!(s.needs.standing, ["the signing permission"]);
 }
 
 /// THE UPGRADE WAITS FOR A LANDING'S JUDGEMENT (aterm main e0da8d68df's Off and back, a
@@ -3217,7 +3275,13 @@ async fn the_upgrade_waits_for_a_landings_judgement() {
 /// probe settles the judgement at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_off_that_begins_while_the_landings_probe_runs_settles_nothing() {
-    let h = harness(&[]).await;
+    // Every look is this test's own: each `after_probe` hook must run in the probe of the
+    // evaluation the test then reads. A claim watcher looks on its own when the claim is taken
+    // and again at each `word()`'s policy move, and neither the harness nor `word()` waits for
+    // those looks: one that reads the thread judging takes the hook, or settles the judgement,
+    // before the test's own evaluation runs.
+    let h = started_with_claim_watch(&[], |_, _| {}, false).await;
+    wait_until("the claim is proven and acted under", || h.sup.acting()).await;
     word(&h, "land").await;
     let judging = |h: &Harness| {
         landed_here(h);
@@ -3237,7 +3301,9 @@ async fn an_off_that_begins_while_the_landings_probe_runs_settles_nothing() {
         "{:?}",
         h.sup.journal()
     );
-    assert!(h.rt.state().judging());
+    // The probe that met the Off was this test's evaluation's: no other look has run.
+    assert_eq!(h.rt.evaluations(), 1, "{:?}", h.sup.journal());
+    assert!(h.rt.state().judging(), "{:?}", h.sup.journal());
     assert!(h.rt.undecided());
     // The next look parks it again and judges it.
     Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
@@ -3329,6 +3395,8 @@ async fn an_off_that_begins_while_the_landings_probe_runs_settles_nothing() {
         "a turn accepted during the probe must not let the stale probe settle judging"
     );
     assert_eq!(noted(&h, "a new point came during the probe"), 2);
+    // Each hook above ran in the probe of the test's own evaluation: its seven looks were all.
+    assert_eq!(h.rt.evaluations(), 7, "{:?}", h.sup.journal());
 }
 
 /// A HOLD'S LIFT MET MID-CHECK (parity review P1): an act's `status` read met `hold=1` while
@@ -3363,7 +3431,16 @@ fn a_hold_lift_met_mid_check_is_looked_at_again_at_once() {
 /// within the hang detector. NEGATIVE CONTROL: no thread looks again while the hold stands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hold_only_status_showed_is_looked_past_at_its_lift() {
-    let h = harness(&[]).await;
+    // The lift's look is the claim watcher's, but the first look is this test's own: the watch
+    // starts once the claim's taking moved it, so the look that taking asks never runs (begun
+    // with the claim, never waited for, it met the same hold a second time).
+    let h = started_with_claim_watch(&[], |_, _| {}, false).await;
+    wait_until("the claim is proven and acted under", || h.sup.acting()).await;
+    wait_until("the claim's taking moved the claims watch", || {
+        *h.sup.claims().borrow() > 0
+    })
+    .await;
+    h.autopilot.watch_claims();
     h.sup.set_recheck(Duration::from_secs(3600));
     point(&h, ended(Some("Stage 1 is in; stage 2 is next."), None));
     assert!(
@@ -3622,7 +3699,10 @@ async fn a_due_usage_resume_waits_for_the_api_and_for_the_host_to_settle() {
     use crate::netwatch::Waiter;
     use codex_alab_core::wake::Reading;
     use codex_alab_core::wake::Wake;
-    let h = harness(&[("limit_wait", "true")]).await;
+    // Every look is this test's or the measure's own: a claim watcher's look at the claim's
+    // taking, never waited for, would decide the same point a second time.
+    let h = started_with_claim_watch(&[("limit_wait", "true")], |_, _| {}, false).await;
+    wait_until("the claim is proven and acted under", || h.sup.acting()).await;
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|listener| listener.local_addr())
         .unwrap_or_else(|err| panic!("a loopback port: {err}"))
@@ -3756,7 +3836,16 @@ async fn aterms_probe_api_off_measures_nothing_and_the_walls_keep_the_ladder() {
     use crate::netwatch::Route;
     use crate::netwatch::Waiter;
     use codex_alab_core::wake::Reading;
-    let h = harness(&[("probe_api", "false"), ("limit_wait", "true")]).await;
+    // Every look is this test's or the measure's own: a claim watcher's look at the claim's
+    // taking, or at the switch's policy moves, never waited for, would decide the same point a
+    // second time.
+    let h = started_with_claim_watch(
+        &[("probe_api", "false"), ("limit_wait", "true")],
+        |_, _| {},
+        false,
+    )
+    .await;
+    wait_until("the claim is proven and acted under", || h.sup.acting()).await;
     assert!(
         h.sup.policy().is_some_and(|p| !p.probe_api),
         "the switch is read off"

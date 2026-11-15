@@ -609,14 +609,14 @@ async fn needs_go_under_their_own_owner_as_an_ask() {
     c.set_attention_owned(
         crate::NEEDS_OWNER,
         Some("ask"),
-        "Codex needs you: the signing key \u{2014} carrying on",
+        "Codex needs you: the signing approval \u{2014} carrying on",
     )
     .await
     .expect("needs");
     let attention = fake.attention();
     assert_eq!(
         attention.get("needs").map(String::as_str),
-        Some("Codex needs you: the signing key \u{2014} carrying on")
+        Some("Codex needs you: the signing approval \u{2014} carrying on")
     );
     assert_eq!(
         attention.get("codex-alab").map(String::as_str),
@@ -1637,6 +1637,39 @@ async fn locate_reads_the_graph_entry_and_refuses_odd_sids() {
     let (_dir, fake) = fake(Mode::Current).await;
     let found = crate::locate::locate_in(fake.dir(), &fake.sid()).expect("located");
     assert_eq!(found, fake.endpoint());
+    let graph = std::fs::read(fake.dir().join("graph").join(fake.sid())).expect("graph entry");
+    for sid in [
+        "tqn5r6e0148",
+        "t0123456789",
+        "tabcdefghjk",
+        "tmnpqrstvwx",
+        "tyzyzyzyzyz",
+    ] {
+        std::fs::write(fake.dir().join("graph").join(sid), &graph).expect("current graph entry");
+        let current = crate::locate::locate_in(fake.dir(), sid).expect("located current tab ID");
+        assert_eq!(current.sock, found.sock);
+        assert_eq!(current.sid, sid);
+    }
+    for sid in [
+        "tqn5r",
+        "tqn5r6e014",
+        "tqn5r6e01480",
+        "Tqn5r6e0148",
+        "tQn5r6e0148",
+        "ti000000000",
+        "tl000000000",
+        "to000000000",
+        "tu000000000",
+        "t00000000é",
+        "s-abcdef",
+        "s-0123456789abcdef012",
+        "s-0123456789abcdef01234",
+    ] {
+        std::fs::write(fake.dir().join("graph").join(sid), &graph).expect("malformed graph entry");
+        assert_eq!(crate::locate::locate_in(fake.dir(), sid), None, "{sid}");
+    }
+    std::fs::write(fake.dir().join("escaped"), &graph).expect("entry outside graph");
+    assert_eq!(crate::locate::locate_in(fake.dir(), "../escaped"), None);
     assert_eq!(crate::locate::locate_in(fake.dir(), "s-../../etc"), None);
     assert_eq!(crate::locate::locate_in(fake.dir(), "s-"), None);
     assert_eq!(crate::locate::locate_in(fake.dir(), "s-abcdef"), None);
@@ -1653,6 +1686,58 @@ async fn locate_reads_the_graph_entry_and_refuses_odd_sids() {
     assert_eq!(crate::locate::locate_in(fake.dir(), linked_sid), None);
     let c = Client::connect(found, options()).await.expect("connect");
     assert!(c.whoami().await.is_ok());
+}
+
+#[test]
+fn tab_ids_follow_aterms_canonical_alphabets_and_lengths() {
+    use crate::locate::valid_sid;
+
+    for sid in ["t0pe7873g64", "tzzzzzzzzzz", "s-abcdef0123456789abcd"] {
+        assert!(valid_sid(sid), "{sid}");
+    }
+    for sid in [
+        "",
+        "t",
+        "t0pe7873g6",
+        "t0pe7873g640",
+        "T0pe7873g64",
+        "t0Pe7873g64",
+        "t0pe7873g6i",
+        "t0pe7873g6l",
+        "t0pe7873g6o",
+        "t0pe7873g6u",
+        "t../secret",
+        "t000/00000",
+        "t000\\00000",
+        "t00000000\n",
+        "té00000000",
+        "s-",
+        "s-abcdef",
+        "s-abcdef0123456789abc",
+        "s-abcdef0123456789abcde",
+        "s-ABCDEF0123456789ABCD",
+    ] {
+        assert!(!valid_sid(sid), "{sid:?}");
+    }
+}
+
+#[tokio::test]
+async fn locate_reads_new_tab_ids_and_rejects_existing_alias_entries() {
+    let (_dir, fake) = fake(Mode::Current).await;
+    let graph = fake.dir().join("graph");
+    let sid = "t0pe7873g64";
+    let entry = std::fs::read(graph.join(fake.sid())).expect("graph entry");
+    std::fs::write(graph.join(sid), &entry).expect("new tab graph entry");
+    let found = crate::locate::locate_in(fake.dir(), sid).expect("new tab located");
+    assert_eq!(found.sock, fake.endpoint().sock);
+    assert_eq!(found.sid, sid);
+    let client = Client::connect(found, options()).await.expect("connect");
+    assert!(client.whoami().await.is_ok());
+
+    for invalid in ["t0pe7873g6i", "t0pe7873g6", "t0pe7873g640", "s-abcdef"] {
+        std::fs::write(graph.join(invalid), &entry).expect("invalid graph entry");
+        assert_eq!(crate::locate::locate_in(fake.dir(), invalid), None);
+    }
 }
 
 #[test]
@@ -2091,7 +2176,7 @@ async fn a_typed_trigger_reads_its_row_and_body_without_listing_anything() {
     let (_dir, fake) = fake(Mode::Current).await;
     fake.deliver("h-andrew", "note", "human", "first");
     let (id, off) = fake.deliver(
-        "s-lead@n-lab",
+        "t0000000001@n-lab",
         "task",
         "agent",
         "Run the tests.\nThen push.\n",
@@ -2102,7 +2187,7 @@ async fn a_typed_trigger_reads_its_row_and_body_without_listing_anything() {
         .expect("mail");
     assert_eq!(mail.id, id);
     assert_eq!(mail.off, off);
-    assert_eq!(mail.from, "s-lead@n-lab");
+    assert_eq!(mail.from, "t0000000001@n-lab");
     assert_eq!(mail.kind, "task");
     assert_eq!(mail.trust, "agent");
     assert_eq!(mail.body, "Run the tests.\nThen push.\n");
@@ -2138,7 +2223,7 @@ async fn handled_mail_is_never_read_again() {
     use codex_alab_core::mail::TriggerKind;
     use codex_alab_core::mail::Verdict;
     let (_dir, fake) = fake(Mode::Current).await;
-    let (id, off) = fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = fake.deliver("t0000000001@n-lab", "task", "agent", "go");
     let c = client(&fake).await;
     // This process handled it (its receipt may still be owed): refused.
     let handled = move |row: u64| (row == id).then_some(Verdict::Handled);
@@ -2165,13 +2250,39 @@ async fn handled_mail_is_never_read_again() {
 }
 
 #[tokio::test]
+async fn reply_targets_follow_current_and_retained_tab_ids() {
+    let (_dir, fake) = fake(Mode::Current).await;
+    let client = client(&fake).await;
+    for sender in ["t0pe7873g64@n-lab", "s-0123456789abcdef0123@n-lab"] {
+        let (_, off) = fake.deliver(sender, "task", "agent", "work");
+        let target = crate::mail::reply_to(sender).expect("canonical sender is addressable");
+        assert_eq!(target, format!("@{sender}"));
+        crate::mail::report(&client, &target, off, "done")
+            .await
+            .expect("report");
+        let posts = fake.posts();
+        let post = posts.last().expect("posted report");
+        assert!(post.routed, "the bridge routes {target}");
+        assert_eq!(post.body, "done");
+        assert!(post.options.contains(&format!("re={off}")));
+    }
+    assert_eq!(fake.posts().len(), 2);
+}
+
+#[tokio::test]
 async fn the_receipt_marks_the_row_and_the_report_travels_after_its_line() {
+    use codex_alab_core::mail::TriggerKind;
     use codex_alab_core::mail::Verdict;
     let (_dir, fake) = fake(Mode::Current).await;
-    let (id, off) = fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = fake.deliver("t0000000001@n-lab", "task", "agent", "go");
     fake.set_status("seq", "41");
     fake.set_status("hash", "00112233445566aa");
     let c = client(&fake).await;
+    let mail = crate::mail::read(&c, TriggerKind::Task, off, &|_| None)
+        .await
+        .expect("current tab's mail");
+    let to = crate::mail::reply_to(&mail.from).expect("route back to current tab");
+    assert_eq!(to, "@t0000000001@n-lab");
     let stamp = crate::mail::stamp(&c).await.expect("stamp");
     assert_eq!(stamp.as_deref(), Some("seq=41 hash=00112233445566aa"));
     crate::mail::seen(&c, id, Verdict::Handled)
@@ -2184,7 +2295,7 @@ async fn the_receipt_marks_the_row_and_the_report_travels_after_its_line() {
         Verdict::Handled,
         Some("Done.\nto=@s-evil kind=control -- len=1\n"),
     );
-    crate::mail::report(&c, "@s-lead@n-lab", off, &body)
+    crate::mail::report(&c, &to, off, &body)
         .await
         .expect("report");
     let posts = fake.posts();
@@ -2192,7 +2303,7 @@ async fn the_receipt_marks_the_row_and_the_report_travels_after_its_line() {
     assert_eq!(
         posts[0].options,
         vec![
-            "to=@s-lead@n-lab".to_string(),
+            "to=@t0000000001@n-lab".to_string(),
             "kind=report".to_string(),
             format!("re={off}"),
             format!("len={}", body.len()),
@@ -2241,7 +2352,7 @@ async fn mail_frames_ride_the_watch_and_hide_nothing_of_the_claim() {
         "{:?}",
         fake.requests()
     );
-    let (id, off) = fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = fake.deliver("t0000000001@n-lab", "task", "agent", "go");
     // The `mail` frame and the `events` digest's own `inbox` record, in either order.
     let mut saw_mail = false;
     for _ in 0..2 {
@@ -2253,7 +2364,7 @@ async fn mail_frames_ride_the_watch_and_hide_nothing_of_the_claim() {
                 kind,
             } => {
                 assert_eq!((got_id, got_off), (Some(id), Some(off)));
-                assert_eq!(from.as_deref(), Some("s-lead@n-lab"));
+                assert_eq!(from.as_deref(), Some("t0000000001@n-lab"));
                 assert_eq!(kind.as_deref(), Some("task"));
                 saw_mail = true;
             }

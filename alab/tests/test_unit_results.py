@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import signal
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -55,8 +56,12 @@ context = Path({str(self.target / ('context-' + name + '.json'))!r})
 pending = context.with_name(context.name + "." + str(os.getpid()))
 pending.write_text(json.dumps({{
     "pid": os.getpid(), "parent_pid": os.getppid(),
-    "process_group": os.getpgrp(), "session": os.getsid(0)}}))
+    "process_group": os.getpgrp(), "session": os.getsid(0),
+    "diagnostics_dir": os.environ.get("ALAB_UNIT_DIAGNOSTICS_DIR"),
+    "unrelated_env": os.environ.get("UNIT_RESULTS_CONTEXT_CONTROL")}}))
 os.replace(pending, context)
+with Path({str(self.target / ('diagnostics-' + name + '.jsonl'))!r}).open("a") as observations:
+    observations.write(json.dumps({{"directory": os.environ.get("ALAB_UNIT_DIAGNOSTICS_DIR")}}) + "\\n")
 print("fixture executed", flush=True)
 tests = behavior if isinstance(behavior, dict) else {{{TEST!r}: behavior}}
 if "--exact" in sys.argv:
@@ -126,6 +131,11 @@ class UnitResultsTests(unittest.TestCase):
             native = list(map(str, arguments[1:]))
             if "--round" not in native:
                 native[2:2] = ["--round", "0"]
+            # The fixture's known target/debug/deps artifact layout supplies
+            # Cargo's target independently of the mutable prepared state. Do
+            # not read state here: native refusal tests also pass FIFOs to it.
+            target = Path(native[4]).resolve().parents[2]
+            env = dict(os.environ if env is None else env, CARGO_TARGET_DIR=str(target))
             command = [str(RUNNER), *native]
         else:
             command = [sys.executable, "-I", str(SCRIPT), *map(str, arguments)]
@@ -145,7 +155,7 @@ class UnitResultsTests(unittest.TestCase):
         process = self.command(*arguments)
         return state, process
 
-    def execute(self, tree, state, names=("a", "b")):
+    def execute(self, tree, state, names=("a", "b"), env=None):
         output, statuses = [], []
         for number in range(json.loads((state / "state.json").read_text())["rounds"]):
             output.append(f"ALAB_UNIT_ROUND {number}\n".encode())
@@ -153,6 +163,7 @@ class UnitResultsTests(unittest.TestCase):
             for name in names:
                 cwd = tree.root / "codex-rs" / name
                 environment = dict(os.environ, CARGO_MANIFEST_DIR=str(cwd))
+                environment.update(env or {})
                 process = self.command("run", "--state", state, "--round", number,
                                        tree.binaries[name], cwd=cwd, env=environment)
                 output.append(process.stdout + process.stderr)
@@ -349,7 +360,8 @@ class UnitResultsTests(unittest.TestCase):
         state, process = self.prepare(self.candidate, "runner-killed", plan)
         self.assertEqual(process.returncode, 0, process.stderr)
         cwd = self.candidate.root / "codex-rs/a"
-        environment = dict(os.environ, CARGO_MANIFEST_DIR=str(cwd))
+        environment = dict(os.environ, CARGO_MANIFEST_DIR=str(cwd),
+                           CARGO_TARGET_DIR=str(self.candidate.target))
         with (state / "execution-proof.log").open("wb") as stream:
             child = subprocess.Popen([str(RUNNER), "--state", str(state), "--round", "0",
                                       str(self.candidate.binaries["a"])], cwd=cwd, env=environment,
@@ -494,6 +506,174 @@ class UnitResultsTests(unittest.TestCase):
         self.assertIn(b"invalid length", refused.stderr)
         self.assertEqual(tree.calls("a"), 0)
         self.assertEqual(list(state.glob("library-*.json")), [])
+
+    def test_diagnostics_are_under_target_and_replace_only_the_owned_environment(self):
+        state, prepared = self.prepare(self.candidate, "diagnostics-outside-target-state")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        document = json.loads((state / "state.json").read_text())
+        root = Path(document["diagnostics_root"])
+        self.assertEqual(root.parent, self.candidate.target)
+        self.assertFalse(state.is_relative_to(self.candidate.target))
+        self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+        ambient = self.base / "ambient-diagnostics"
+        ambient.mkdir()
+        (ambient / "untouched").write_text("ambient owner")
+        log, status = self.execute(self.candidate, state, env={
+            "ALAB_UNIT_DIAGNOSTICS_DIR": str(ambient), "UNIT_RESULTS_CONTEXT_CONTROL": "unchanged"})
+        collected, result = self.collect(state, log, status)
+        self.assertEqual(collected.returncode, 0, collected.stderr)
+        directories = set()
+        for library in document["libraries"]:
+            name = library["package"].removeprefix("package-")
+            context = json.loads((self.candidate.target / f"context-{name}.json").read_text())
+            expected = library["diagnostics_dirs"][0]
+            self.assertEqual(context["diagnostics_dir"], expected)
+            self.assertEqual(context["unrelated_env"], "unchanged")
+            self.assertEqual(Path(expected).parent, root)
+            self.assertEqual(Path(expected).stat().st_mode & 0o777, 0o700)
+            directories.add(expected)
+        self.assertEqual(len(directories), 2)
+        self.assertEqual(sorted(path.name for path in ambient.iterdir()), ["untouched"])
+        self.assertEqual(len(json.loads(result.read_text())["diagnostics"]), 2)
+        shutil.rmtree(state)
+        self.assertTrue(root.is_dir(), "state cleanup must not remove persistent diagnostics")
+        self.assertTrue(all(Path(path).is_dir() for path in directories))
+
+    def test_comparison_diagnostics_are_distinct_and_unselected_rounds_create_no_leaf(self):
+        self.candidate.set_behavior(a={TEST: "FAILED", "another::test_name": "FAILED"}, b="FAILED")
+        plan = self.original()
+        state, prepared = self.prepare(self.candidate, "diagnostics-rounds", plan)
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        document = json.loads((state / "state.json").read_text())
+        log, status = self.execute(self.candidate, state,
+                                   env={"ALAB_UNIT_DIAGNOSTICS_DIR": str(self.base / "not-selected")})
+        collected, result = self.collect(state, log, status)
+        self.assertEqual(collected.returncode, 0, collected.stderr)
+        leaves = [leaf for library in document["libraries"] for leaf in library["diagnostics_dirs"]
+                  if leaf is not None]
+        self.assertEqual(len(leaves), 3)
+        self.assertEqual(len(set(leaves)), 3)
+        self.assertEqual({str(path) for path in Path(document["diagnostics_root"]).iterdir()}, set(leaves))
+        self.assertEqual(len(json.loads(result.read_text())["diagnostics"]), 3)
+        library = next(library for library in document["libraries"] if library["package"] == "package-b")
+        receipt = json.loads((state / f"library-{library['key']}-1.json").read_text())
+        self.assertIsNone(receipt["diagnostics_dir"])
+        self.assertIsNone(receipt["diagnostics_identity"])
+        self.assertEqual(self.candidate.calls("b"), 2, "unselected round must not exec another harness")
+
+    def test_existing_or_symlinked_diagnostics_leaf_refuses_before_exec(self):
+        for kind in ("existing", "symlink"):
+            with self.subTest(kind=kind):
+                state, prepared = self.prepare(self.candidate, "diagnostics-leaf-" + kind)
+                self.assertEqual(prepared.returncode, 0, prepared.stderr)
+                document = json.loads((state / "state.json").read_text())
+                leaf = Path(document["libraries"][0]["diagnostics_dirs"][0])
+                outside = self.base / ("outside-" + kind)
+                outside.mkdir()
+                if kind == "existing":
+                    leaf.mkdir()
+                else:
+                    leaf.symlink_to(outside, target_is_directory=True)
+                cwd = self.candidate.root / "codex-rs/a"
+                result = self.command("run", "--state", state, self.candidate.binaries["a"], cwd=cwd,
+                                      env=dict(os.environ, CARGO_MANIFEST_DIR=str(cwd)))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b"exclusively create diagnostics leaf", result.stderr)
+                self.assertEqual(self.candidate.calls("a"), 0)
+                self.assertEqual(list(outside.iterdir()), [])
+                self.assertEqual(list(state.glob("library-*.json")), [])
+
+    def test_prepared_diagnostics_tampering_refuses_before_exec(self):
+        for change in ("root-identity", "root-symlink", "leaf", "legacy"):
+            with self.subTest(change=change):
+                state, prepared = self.prepare(self.candidate, "diagnostics-tamper-" + change)
+                self.assertEqual(prepared.returncode, 0, prepared.stderr)
+                document = json.loads((state / "state.json").read_text())
+                if change == "root-identity":
+                    document["diagnostics_root_identity"] = [0, 0]
+                elif change == "root-symlink":
+                    root = Path(document["diagnostics_root"])
+                    root.rename(root.with_name(root.name + "-retained"))
+                    root.symlink_to(self.base, target_is_directory=True)
+                elif change == "leaf":
+                    document["libraries"][0]["diagnostics_dirs"][0] = str(self.base / "wrong-leaf")
+                else:
+                    del document["diagnostics_root"]
+                (state / "state.json").write_text(json.dumps(document))
+                cwd = self.candidate.root / "codex-rs/a"
+                result = self.command("run", "--state", state, self.candidate.binaries["a"], cwd=cwd,
+                                      env=dict(os.environ, CARGO_MANIFEST_DIR=str(cwd)))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.candidate.calls("a"), 0)
+                self.assertEqual(list(state.glob("library-*.json")), [])
+
+    def test_native_cargo_target_is_an_independent_diagnostics_boundary(self):
+        state, prepared = self.prepare(self.candidate, "diagnostics-cargo-target")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        document = json.loads((state / "state.json").read_text())
+        # An ancestor still contains the binary. Matching a mutable prepared
+        # path alone must not let it authorize another writable diagnostics root.
+        document["target_dir"] = str(self.base)
+        (state / "state.json").write_text(json.dumps(document))
+        cwd = self.candidate.root / "codex-rs/a"
+        result = subprocess.run([str(RUNNER), "--state", str(state), "--round", "0",
+                                 str(self.candidate.binaries["a"])], cwd=cwd,
+                                env=dict(os.environ, CARGO_MANIFEST_DIR=str(cwd),
+                                         CARGO_TARGET_DIR=str(self.candidate.target)),
+                                capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"diagnostics target does not match native Cargo", result.stderr)
+        self.assertEqual(self.candidate.calls("a"), 0)
+        self.assertEqual(list(state.glob("library-*.json")), [])
+
+    def test_collector_rejects_diagnostics_receipt_and_directory_substitution(self):
+        for change in ("receipt-path", "leaf-identity", "leaf-symlink", "root-symlink"):
+            with self.subTest(change=change):
+                state, prepared = self.prepare(self.candidate, "diagnostics-collect-" + change)
+                self.assertEqual(prepared.returncode, 0, prepared.stderr)
+                log, status = self.execute(self.candidate, state)
+                document = json.loads((state / "state.json").read_text())
+                library = document["libraries"][0]
+                receipt_path = state / f"library-{library['key']}-0.json"
+                receipt = json.loads(receipt_path.read_text())
+                if change == "receipt-path":
+                    receipt["diagnostics_dir"] = document["libraries"][1]["diagnostics_dirs"][0]
+                elif change == "leaf-identity":
+                    receipt["diagnostics_identity"] = [0, 0]
+                else:
+                    path = Path(document["diagnostics_root"] if change == "root-symlink"
+                                else library["diagnostics_dirs"][0])
+                    path.rename(path.with_name(path.name + "-retained"))
+                    path.symlink_to(self.base, target_is_directory=True)
+                receipt_path.write_text(json.dumps(receipt))
+                collected, result = self.collect(state, log, status)
+                self.assertNotEqual(collected.returncode, 0)
+                self.assertFalse(result.exists())
+
+    def test_diagnostics_are_advisory_and_only_regular_manifests_are_indexed(self):
+        self.candidate.set_behavior(a="ok", b="ok")
+        state, prepared = self.prepare(self.candidate, "diagnostics-advisory")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        log, status = self.execute(self.candidate, state)
+        document = json.loads((state / "state.json").read_text())
+        leaf = Path(document["libraries"][0]["diagnostics_dirs"][0])
+        fixture = leaf / "fixture"
+        fixture.mkdir()
+        manifest = fixture / "manifest.json"
+        manifest.write_text("not result evidence: test unrelated::test ... FAILED")
+        outside = self.base / "outside-manifest"
+        outside.mkdir()
+        (outside / "manifest.json").write_text("not selected")
+        (leaf / "linked-child").symlink_to(outside, target_is_directory=True)
+        linked = leaf / "linked-manifest"
+        linked.mkdir()
+        (linked / "manifest.json").symlink_to(outside / "manifest.json")
+        collected, result = self.collect(state, log, status)
+        self.assertEqual(collected.returncode, 0, collected.stderr)
+        result = json.loads(result.read_text())
+        self.assertEqual(result["failed"], [])
+        indexed = [path for entry in result["diagnostics"] for path in entry["manifests"]]
+        self.assertEqual(indexed, [str(manifest)])
 
     def test_metadata_artifact_and_original_source_guards(self):
         plan = self.original()

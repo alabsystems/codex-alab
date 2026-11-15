@@ -166,6 +166,22 @@ pub fn asleep_total() -> Option<Duration> {
     }
 }
 
+/// Nanoseconds since this boot, including host sleep, independent of wall-clock steps.
+pub(crate) fn continuous_ns() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        clock_ns(libc::CLOCK_MONOTONIC_RAW)
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        clock_ns(libc::CLOCK_BOOTTIME)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+    {
+        None
+    }
+}
+
 /// How long the host has been awake since its last wake, where the kernel records that wake:
 /// on macOS `kern.wake_abs_time` is the awake clock (`mach_absolute_time`, which
 /// `CLOCK_UPTIME_RAW` and `Instant` count in nanoseconds) at the last wake, dark wakes

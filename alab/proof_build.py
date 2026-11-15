@@ -48,8 +48,11 @@ def record(compiler, report, source, target, package, binaries):
     for binary in binaries:
         if not re.fullmatch(r"[A-Za-z0-9_-]+", binary):
             raise ValueError("invalid shipping binary name")
-        outputs[binary] = {"built_sha256": digest(target / "release" / binary),
-                           "packaged_sha256": digest(package / "bin" / binary)}
+        built = digest(target / "release" / binary)
+        packaged = digest(package / "bin" / binary)
+        if packaged != built:
+            raise ValueError(f"packaged {binary} differs from the compiled executable")
+        outputs[binary] = {"built_sha256": built, "packaged_sha256": packaged}
     document["verification"] = {
         "source": source,
         "lane": "certify",

@@ -56,6 +56,8 @@ async fn misalignment_continuation_requires_current_review_and_submits_once() ->
     ] {
         let (mut app, mut rx, _) = make_test_app_with_channels().await;
         app.chat_widget
+            .set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ true);
+        app.chat_widget
             .set_feature_enabled(Feature::CliDaybreak, rollout_enabled);
         app.chat_widget
             .set_feature_enabled(Feature::ApiKeyCyberAccessPrograms, !has_chatgpt_account);
@@ -142,7 +144,7 @@ async fn misalignment_continuation_requires_current_review_and_submits_once() ->
             AppEvent::ReviewMisalignment(Arc::clone(&review)),
         )
         .await?;
-        let Some(Overlay::Static(overlay)) = app.overlay.as_mut() else {
+        let Some(Overlay::MisalignmentReview(overlay)) = app.overlay.as_mut() else {
             panic!("findings overlay")
         };
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(
@@ -271,5 +273,23 @@ async fn misalignment_continuation_requires_current_review_and_submits_once() ->
         server.shutdown().await?;
         proxy.await??;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn opting_out_closes_misalignment_review_overlay() -> Result<()> {
+    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    let mut server = start_config_write_test_app_server(&app).await?;
+    app.overlay = Some(Overlay::new_misalignment_review_with_lines(
+        vec![Line::from("findings")],
+        "What we detected".to_string(),
+        app.keymap.pager.clone(),
+    ));
+
+    app.update_feature_flags(&mut server, vec![(Feature::MisalignmentReview, false)])
+        .await;
+
+    assert!(app.overlay.is_none());
+    server.shutdown().await?;
     Ok(())
 }

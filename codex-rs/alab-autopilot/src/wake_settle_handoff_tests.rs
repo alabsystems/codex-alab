@@ -262,11 +262,7 @@ async fn accepted_upgrade_preserves_wake_settle() {
                 .codex
                 .rollout_path()
                 .expect("real persisted rollout");
-            old.test
-                .codex
-                .shutdown_and_wait()
-                .await
-                .expect("old native stopped");
+            old.shutdown_and_export().await.expect("old native stopped");
 
             let mut dir = tempfile::tempdir().expect("fresh private supervisor world");
             dir.disable_cleanup(true);

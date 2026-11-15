@@ -100,4 +100,40 @@ mod tests {
         shared.person_goal_set(lone, true);
         assert_eq!(shared.pace(lone), None);
     }
+
+    #[test]
+    fn a_persons_stop_revokes_a_models_block_in_memory_and_in_future_records() {
+        let shared = Shared::new();
+        let thread = "model-blocked-thread";
+        let binding = |person_stops| WallGoal {
+            goal_id: "goal-1".into(),
+            objective: "finish the original task".into(),
+            token_budget: None,
+            turn: "turn-1".into(),
+            person_stops,
+        };
+        let pace = |person_stops| Pace {
+            model_blocked_goal: Some(binding(person_stops)),
+            ..Pace::default()
+        };
+        shared.set_pace(thread, pace(0));
+        assert_eq!(shared.pace(thread), Some(pace(0)));
+        shared.person_goal_set(thread, false);
+        assert_eq!(shared.pace(thread), Some(pace(0)));
+        shared.person_goal_set("other-thread", true);
+        assert_eq!(shared.pace(thread), Some(pace(0)));
+        shared.person_goal_set(thread, true);
+        assert!(shared.pace(thread).is_none());
+        shared.set_pace(thread, pace(0));
+        assert!(
+            shared.pace(thread).is_none(),
+            "an older binding cannot be written back"
+        );
+        shared.set_pace(thread, pace(1));
+        assert_eq!(
+            shared.pace(thread),
+            Some(pace(1)),
+            "fresh work after the stop may bind again"
+        );
+    }
 }

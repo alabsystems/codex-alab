@@ -128,6 +128,12 @@ impl ChatWidget {
             );
         }
         let enabled = self.config.features.enabled(feature);
+        if feature == Feature::MisalignmentReview {
+            self.on_misalignment_review_feature_changed(enabled); // ALAB(misalignment-review): release live review UI on opt-out.
+        }
+        if feature == Feature::SafetyRecourse {
+            safety_recourse::on_feature_changed(self, enabled); // ALAB(safety-recourse): release live recovery UI on opt-out.
+        }
         if matches!(
             feature,
             Feature::CliDaybreak | Feature::ApiKeyCyberAccessPrograms

@@ -93,14 +93,20 @@ pub mod boxes;
 pub mod capacity;
 pub mod compaction;
 pub mod context_host;
+pub mod exec_wall;
+pub mod execution;
 pub mod goal_clock;
+pub mod goal_persistence;
 pub mod goal_recovery;
 pub mod goal_stops;
 pub mod home;
+pub mod log_health;
 pub mod mail;
 pub mod managed_auth;
 pub mod manager_catalog;
 pub mod manager_source_epoch;
+pub mod model_goal_invocation;
+pub mod model_goal_stops;
 pub mod native_preload;
 pub mod native_reader_retirement;
 pub mod native_source;
@@ -110,7 +116,9 @@ pub mod native_source_retirement;
 pub mod native_source_use;
 pub mod native_target;
 pub mod quota;
+pub mod recovery_clock;
 pub mod renewal;
+pub mod retained_future;
 pub mod request_error;
 pub mod runtime_upgrade;
 pub mod session;
@@ -119,13 +127,15 @@ pub mod upgrade_completion;
 pub mod upgrade_startup_hold;
 pub mod version;
 pub mod wake;
+pub mod wall_kind;
+pub mod workspace_routing;
 
 const ALAB_DEFAULTS: &str = include_str!("../defaults.toml");
 const UPSTREAM_DEFAULTS: &str = include_str!("../../config/defaults.toml");
 /// ALab's defaults that hold only inside aterm, merged over [`ALAB_DEFAULTS`] there.
 pub const ATERM_DEFAULTS: &str = include_str!("../aterm-defaults.toml");
 
-/// The compiled packaged-defaults layer, exactly as the config loader selects it.
+/// The compiled packaged-defaults layer without a selected built-in profile.
 /// This diagnostic reads no user, project, managed or cloud configuration and does
 /// not resolve authentication. Its only process inputs are [`active`] and [`inside_aterm`].
 pub fn compiled_packaged_defaults() -> &'static str {
@@ -147,6 +157,20 @@ pub fn packaged_defaults(upstream: &'static str) -> &'static str {
         .get_or_init(|| alab_defaults(upstream, inside_aterm()))
         .as_deref()
         .unwrap_or(upstream)
+}
+
+/// ALab's built-in Profile V2 defaults, beneath the user's selected profile file.
+pub fn selected_packaged_profile(profile: &str) -> Option<toml::Table> {
+    if active() {
+        packaged_profile_defaults(profile)
+    } else {
+        None
+    }
+}
+
+fn packaged_profile_defaults(profile: &str) -> Option<toml::Table> {
+    let defaults: toml::Table = toml::from_str(ALAB_DEFAULTS).ok()?;
+    defaults.get("profiles")?.get(profile)?.as_table().cloned()
 }
 
 /// `[tui] alab_progress`: codex-alab's OSC 9;4 progress bar inside aterm
@@ -295,6 +319,8 @@ pub fn turn_git_metadata() -> bool {
     !active()
 }
 
+#[cfg(test)]
+mod kimi_tests;
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod session_tests;

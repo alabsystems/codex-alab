@@ -218,9 +218,9 @@ async fn during_boxed<F: Future>(waiting: Option<Waiting>, screen: Pin<Box<F>>) 
 }
 
 /// The model-migration `prompt` (`ALAB(startup-wait)` in `tui/src/app/startup_prompts.rs`):
-/// a forced move off `from` (a model OpenAI no longer offers) waits for a person, so it raises
-/// the attention ([`during`]); an optional one runs alone (codex-alab skips those anyway:
-/// `ALAB(no-upsell)`).
+/// enhanced mode accepts a forced move before reaching this screen (`ALAB(execution)`). In
+/// vanilla mode it waits for a person and raises the attention ([`during`]); an optional one
+/// runs alone (codex-alab skips those anyway: `ALAB(no-upsell)`).
 pub fn migration<F: Future>(
     forced: bool,
     from: &str,

@@ -191,6 +191,7 @@ where
                     .await
                 {
                     tracing::warn!("failed to stop goal after interrupted empty turns: {err}");
+                    if codex_alab_core::active() { return; } // ALAB(storage): keep the interrupted turn and its unflushed usage after failed persistence.
                 }
                 accounting.finish_turn(&turn_id);
             }
@@ -252,6 +253,7 @@ where
                 return;
             };
             runtime.alab_auth_turn_started(); // ALAB(renewal): native admission now owns the original work.
+            if matches!(input.collaboration_mode.mode, codex_protocol::config_types::ModeKind::Plan) { runtime.alab_prepare_plan_accounting().await; } // ALAB(storage): preserve pre-Plan usage before native Plan mode stops its accounting clock.
 
             let accounting = runtime.accounting_state();
             let Ok(_turn_start_permit) = accounting.turn_start_permit().await else {
@@ -286,6 +288,7 @@ where
             else {
                 return;
             };
+            if !accounting.alab_goal_association_allowed(goal.as_ref().map(|goal| goal.goal_id.as_str())) { return; } // ALAB(storage): raw replacement cannot reset a failed original goal's unacknowledged shared usage.
             if codex_alab_core::active() { input.turn_store.insert(codex_alab_core::renewal::GoalAtTurnStart { goal_id: goal.as_ref().filter(|goal| matches!(goal.status, codex_state::ThreadGoalStatus::Active | codex_state::ThreadGoalStatus::BudgetLimited)).map(|goal| goal.goal_id.clone()) }); } // ALAB(renewal): retain original association even if this turn later completes its goal.
             if let Some(goal) = goal
                 && matches!(
@@ -326,6 +329,7 @@ where
             }
 
             let turn_id = input.turn_store.level_id();
+            let _alab_finished = runtime.accounting_state().alab_finished_turn(turn_id); // ALAB(storage): failed final accounting retains usage, not live-turn ownership.
             if let Some(expected_goal_id) =
                 runtime.accounting_state().execution_failure_goal(turn_id)
                 && let Err(err) = runtime
@@ -393,6 +397,7 @@ where
             }
 
             let turn_id = input.turn_store.level_id();
+            let _alab_finished = runtime.accounting_state().alab_finished_turn(turn_id); // ALAB(storage): aborted Core work cannot leave an orphan current-turn marker.
             input.thread_store.remove::<TurnStartOptions>();
             if input.reason != codex_protocol::protocol::TurnAbortReason::Interrupted {
                 runtime.accounting_state().reset_empty_responses();
@@ -430,6 +435,31 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
+
+            if matches!(
+                input.error,
+                CodexErrorInfo::CyberPolicy
+                    | CodexErrorInfo::BioPolicy
+                    | CodexErrorInfo::MisalignmentPolicyViolation
+            ) && codex_alab_core::active() {
+                // ALAB(policy-recovery): a refused turn never blocks the goal's ordinary continuation.
+                if let Err(err) = runtime
+                    .account_active_goal_progress(
+                        input.turn_id,
+                        &format!("{}:policy-refusal-progress", input.turn_id),
+                        codex_state::GoalAccountingMode::ActiveOnly,
+                        BudgetLimitedGoalDisposition::ClearActive,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        "failed to account active goal progress after Daybreak refusal: {err}"
+                    );
+                    return; // ALAB(storage): preserve refused-turn usage until its failed write is accounted.
+                }
+                runtime.accounting_state().finish_turn(input.turn_id);
+                return;
+            }
 
             let reason = match input.error {
                 ref error if codex_alab_core::active() && GoalRuntimeHandle::alab_is_auth_wall(error) => GoalRuntimeHandle::alab_auth_stop_reason(input.turn_store), // ALAB(renewal): typed auth failure plus original turn association.
@@ -610,6 +640,7 @@ where
         tools
             .into_iter()
             .map(|mut tool| {
+                tool.alab_runtime = Some(runtime.as_ref().clone()); // ALAB(storage): actual goal tools and native mutations serialize on the same permit.
                 tool.execution_allowed = runtime.tools_available();
                 Arc::new(tool) as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>
             })

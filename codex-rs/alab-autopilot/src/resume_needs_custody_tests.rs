@@ -13,7 +13,7 @@ use codex_alab_core::session::RecoveryWall;
 use core_test_support::responses;
 use std::io::Write;
 
-const HANG: Duration = Duration::from_secs(60);
+const HANG: Duration = super::upgrade_handoff_tests::NATIVE_HANG;
 
 enum DuringRoute {
     Current,
@@ -25,6 +25,8 @@ async fn check_resume_needs(boundary: DuringRoute, old_needs: bool) {
     let replace = matches!(boundary, DuringRoute::Replace);
     let off = matches!(boundary, DuringRoute::Off);
     let h = Harness::new().await;
+    h.autopilot
+        .set_retry_clock(crate::recovery::test_clock_read());
     h.immediate_point().await;
     responses::mount_sse_once(
         &h._server,
@@ -97,6 +99,7 @@ async fn check_resume_needs(boundary: DuringRoute, old_needs: bool) {
     assert!(h.shared.set_inherited(Inherited {
         session_id: Some(h.rt.key.clone()),
         recovery: Some(Recovery {
+            clock: crate::recovery::test_clock(0),
             thread: h.rt.key.clone(),
             turn_id: "walled".into(),
             point_at_ms: now_ms() - 60_000,

@@ -141,45 +141,83 @@ impl Drop for DestinationAllocation {
     fn drop(&mut self) {
         // The runtime and owned native cleanup actor are still available during
         // constructor cancellation. An observer dropping never means Closed.
-        if let Some(allocation) = self.allocation.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        if let Some(allocation) = self
+            .allocation
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             crate::native_target::retire_unused(allocation);
         }
     }
 }
-pub(crate) fn destination_scope<F: Future>(allocation: Allocation, constructor: F) -> impl Future<Output = crate::native_target::Constructed<F::Output>> {
+pub(crate) fn destination_scope<F: Future>(
+    allocation: Allocation,
+    constructor: F,
+) -> impl Future<Output = crate::native_target::Constructed<F::Output>> {
     // Create the owner BEFORE returning a future: even cancellation before its
     // first poll must retain/release the exact accepted target OPEN.
     let allocation = Arc::new(DestinationAllocation {
-        member: allocation.member.clone(), operation: allocation.operation.clone(),
-        allocation: std::sync::Mutex::new(Some(allocation)), observer: OnceLock::new(), rejected: OnceLock::new(),
+        member: allocation.member.clone(),
+        operation: allocation.operation.clone(),
+        allocation: std::sync::Mutex::new(Some(allocation)),
+        observer: OnceLock::new(),
+        rejected: OnceLock::new(),
     });
     async move {
         let output = DESTINATION.scope(allocation.clone(), constructor).await;
         // Recover only ownership metadata from poison; allocate_manager itself
         // refused that poisoned admission, so this cannot authorize a load.
-        if let Some(unused) = allocation.allocation.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            let _ = allocation.rejected.set(crate::native_target::retire_unused(unused));
+        if let Some(unused) = allocation
+            .allocation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = allocation
+                .rejected
+                .set(crate::native_target::retire_unused(unused));
         }
-        crate::native_target::Constructed { value: output, receipt: crate::native_target::ConstructionReceipt {
-            operation: allocation.operation.clone(), member: Some(allocation.member.id().into()),
-            retirement: allocation.observer.get().cloned(), unloaded_cleanup: allocation.rejected.get().cloned(),
-        } }
+        crate::native_target::Constructed {
+            value: output,
+            receipt: crate::native_target::ConstructionReceipt {
+                operation: allocation.operation.clone(),
+                member: Some(allocation.member.id().into()),
+                retirement: allocation.observer.get().cloned(),
+                unloaded_cleanup: allocation.rejected.get().cloned(),
+            },
+        }
     }
 }
-pub(crate) fn destination_unused(allocation: &Allocation, receipt: crate::native_target::OpenCleanup) {
+pub(crate) fn destination_unused(
+    allocation: &Allocation,
+    receipt: crate::native_target::OpenCleanup,
+) {
     let _ = DESTINATION.try_with(|owner| {
-        if owner.operation == allocation.operation && Arc::ptr_eq(&owner.member, &allocation.member) && owner.observer.get().is_none() {
+        if owner.operation == allocation.operation
+            && Arc::ptr_eq(&owner.member, &allocation.member)
+            && owner.observer.get().is_none()
+        {
             let _ = owner.rejected.set(receipt);
         }
     });
 }
-pub(crate) fn destination_member_created(member: &crate::native_source_lifetime::Lifetime) -> io::Result<()> {
-    DESTINATION.try_with(|owner| {
-        if owner.operation != member.constructor_operation() || !Arc::ptr_eq(&owner.member, member.member_handle()) {
-            return Err(unavailable());
-        }
-        owner.observer.set(member.retirement_observer()).map_err(|_| unavailable())
-    }).unwrap_or(Ok(()))
+pub(crate) fn destination_member_created(
+    member: &crate::native_source_lifetime::Lifetime,
+) -> io::Result<()> {
+    DESTINATION
+        .try_with(|owner| {
+            if owner.operation != member.constructor_operation()
+                || !Arc::ptr_eq(&owner.member, member.member_handle())
+            {
+                return Err(unavailable());
+            }
+            owner
+                .observer
+                .set(member.retirement_observer())
+                .map_err(|_| unavailable())
+        })
+        .unwrap_or(Ok(()))
 }
 
 pub fn requested() -> bool {
@@ -290,7 +328,11 @@ pub async fn enter() -> io::Result<()> {
 /// they do not inherit another manager's source, policy, or AuthChangeState counters.
 pub async fn allocate_manager() -> io::Result<Option<Allocation>> {
     if let Ok(allocation) = DESTINATION.try_with(|owner| {
-        owner.allocation.lock().map_err(|_| unavailable()).and_then(|mut allocation| allocation.take().ok_or_else(unavailable))
+        owner
+            .allocation
+            .lock()
+            .map_err(|_| unavailable())
+            .and_then(|mut allocation| allocation.take().ok_or_else(unavailable))
     }) {
         // A target scope can be consumed once. A second manager needs a real
         // separate native destination/derived constructor, never startup A.

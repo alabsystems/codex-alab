@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FAKE_CARGO = """#!/bin/sh
 '''exec' {python} -I "$0" "$@"
 ' '''
-import json, os, shlex, shutil, subprocess, sys
+import json, os, shlex, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 if Path(__file__).parent.name == "deps":
@@ -135,7 +135,7 @@ def helper_record(name, output, workspace=here):
             "profile": {{"test": False}}, "executable": str(output),
             "filenames": [str(output)], "fresh": True}}
 
-def write_helper(output, name, label=None):
+def write_helper(output, name, label=None, application=False):
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.is_symlink():
         output.unlink()
@@ -144,9 +144,10 @@ def write_helper(output, name, label=None):
     startup = ""
     if name == "codex":
         startup = ('if [ "$1" = --version ]; then\\n' +
-                   ("exit 17\\n" if mode.get("cli_failure") == side else
+                   ("exit 17\\n" if mode.get("application_failure" if application else "cli_failure") == side else
                     "touch " + shlex.quote(str(output) + ".ready") + "\\n") + "fi\\n")
-    log = "printf '%s\\n' " + shlex.quote(side + ":" + (label or name)) + " >> " + shlex.quote(str(fake / "helper-invocations")) + "\\n"
+    log_name = "application-invocations" if application else "helper-invocations"
+    log = "printf '%s\\n' " + shlex.quote(side + ":" + (label or name)) + " >> " + shlex.quote(str(fake / log_name)) + "\\n"
     output.write_text("#!/bin/sh\\n" + log + startup + "printf '%s\\n' '" + name + "'\\n")
     output.chmod(0o755)
 
@@ -206,12 +207,22 @@ elif args[:1] == ["metadata"]:
     print(json.dumps(document))
 elif "tippy" in args:
     require_v8()
+    effective_target.mkdir(parents=True, exist_ok=True)
     lines = fake / (side + ".jsonl")
     sys.stdout.write(lines.read_text().replace("@TREE@", tree) if lines.exists() else "")
     code = fake / (side + ".rc")
     sys.exit(int(code.read_text()) if code.exists() else 0)
-elif "run" in args:
-    print("codex-cli 0.0.0")
+elif args[:2] == ["trust", "build"]:
+    assert "--certify" in args and "--locked" in args
+    assert args[-4:] == ["-p", "codex-cli", "--bin", "codex"]
+    assert Path(args[args.index("--config") + 1]) == here.parent / "alab/proof-policy.toml"
+    if mode.get("certified_failure") == side:
+        sys.exit(101)
+    report = Path(args[args.index("--report-dir") + 1])
+    report.mkdir()
+    if not mode.get("missing_certified_report"):
+        (report / "report.json").write_text('{{"fixture":"observation, not proof"}}')
+    write_helper(effective_target / "debug/codex", "codex", application=True)
 elif "build" in args:
     if mode.get("build_failure") == side:
         sys.exit(101)
@@ -228,10 +239,15 @@ elif "build" in args:
         authoritative = Path(os.environ["ALAB_FAKE_LIBRARY_MANIFEST"]).parent
         output = effective_target / "native runner output/alab-unit-runner"
         output.parent.mkdir(parents=True, exist_ok=True)
-        if output.is_symlink():
-            output.unlink()
-        shutil.copy2(os.environ["ALAB_FAKE_UNIT_RUNNER"], output)
-        output.chmod(0o755)
+        # Do not rewrite a native image that the OS may still have cached.
+        with tempfile.NamedTemporaryFile(dir=output.parent, prefix=output.name + ".", delete=False) as staging:
+            temporary = Path(staging.name)
+        try:
+            shutil.copy2(os.environ["ALAB_FAKE_UNIT_RUNNER"], temporary)
+            temporary.chmod(0o755)
+            os.replace(temporary, output)
+        finally:
+            temporary.unlink(missing_ok=True)
         artifact_mode = mode.get("runner_artifacts") if side == mode.get("runner_side", side) else None
         record = helper_record("alab-unit-runner", output, authoritative)
         if artifact_mode == "missing":
@@ -354,6 +370,9 @@ elif "test" in args:
         if mode and any(name in selected_packages for name in ("codex-core", "codex-app-server")):
             require_v8()
             names += ["test_stdio_server", "codex-code-mode-host"]
+        elif mode and "codex-alab-autopilot" in selected_packages:
+            require_v8()
+            names += ["codex-code-mode-host"]
         if mode and "codex-mcp" in selected_packages:
             names += ["codex"]
             ready = (target / "native helper output/codex.ready").is_file()
@@ -369,6 +388,7 @@ elif "test" in args:
         test = "native::behavior" if ready else "native::uses_helpers"
         failed = not ready or mode.get(side) == "fail"
         owner = ("codex-core" if "codex-core" in selected_packages else
+                 "codex-alab-autopilot" if "codex-alab-autopilot" in selected_packages else
                  "codex-mcp" if "codex-mcp" in selected_packages else None)
         runner = []
         for index, argument in enumerate(args):
@@ -408,6 +428,13 @@ elif "test" in args:
             print("     Running unittests src/lib.rs (" + str(executable) + ")", flush=True)
             result = subprocess.run([*runner, str(executable), *libtest_args],
                                     cwd=manifest.parent, env=environment, check=False)
+            if result.returncode:
+                print("native runner child returncode=" + str(result.returncode) + " package=" + package,
+                      file=sys.stderr, flush=True)
+            with (fake / "runner-returncodes.jsonl").open("a") as observations:
+                observations.write(json.dumps({{"returncode": result.returncode, "runner": runner,
+                                               "library": str(executable), "cwd": str(manifest.parent),
+                                               "libtest_args": libtest_args}}) + "\\n")
             if result.returncode:
                 print("error: test failed, to rerun pass `-p " + package + " --lib`", file=sys.stderr)
             any_failed = any_failed or result.returncode != 0
@@ -500,6 +527,9 @@ class CheckLintStepTests(unittest.TestCase):
         cargo = self.fake / "targo"
         cargo.write_text(FAKE_CARGO.format(python=shlex.quote(sys.executable)))
         cargo.chmod(0o755)
+        front = self.fake / "native-dispatch-fixture"
+        front.write_text('#!/bin/sh\n[ "$1" = __build_admit ] || exit 99\nshift\nexec "$@"\n')
+        front.chmod(0o755)
         self.environment = {key: value for key, value in os.environ.items()
                             if not key.startswith(("ALAB_", "CARGO_", "GIT_"))}
         cargo_home = scratch / "cargo-home"
@@ -510,6 +540,9 @@ class CheckLintStepTests(unittest.TestCase):
                                 ALAB_FAKE_UNIT_RUNNER=str(RUNNER),
                                 ALAB_FAKE_LIBRARY_MANIFEST=str(self.repo / "codex-rs/Cargo.toml"),
                                 ALAB_PYTHON=sys.executable,
+                                ATPKG_PROJECT_FRONT=str(front), ATPKG_PROJECT_TARGO=str(cargo),
+                                ATPKG_PROJECT_TRUSTC='/usr/bin/true', ATPKG_PROJECT_TRUSTDOC='/usr/bin/true',
+                                ATPKG_PROJECT_PAYLOAD=str(self.fake), ATPKG_PROJECT_EXECUTION=str(self.fake),
                                 GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
                                 GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
                                 GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
@@ -534,6 +567,7 @@ class CheckLintStepTests(unittest.TestCase):
             "check.sh", "lib.sh", "lint.jq", "retention.py", "unit-tests.sh", "unit_results.py",
             "command_guard.py", "upstream_gate.py", "upstream_intake.py", "features.toml", "native_helpers.py",
             "pristine_state.py", "qualification.py", "source_content.py",
+            "certified-build.sh", "project-targo.sh", "proof-policy.toml",
         ):
             self.write(self.repo / "alab" / name, (ROOT / "alab" / name).read_text())
         # The shared resolver's own tests validate upstream code and pinned hashes.
@@ -541,6 +575,19 @@ class CheckLintStepTests(unittest.TestCase):
         # delivers its validated pair to the helper-build child in both trees.
         self.write(self.repo / "alab/v8.py", FAKE_V8)
         (self.repo / "alab/check.sh").chmod(0o755)
+        (self.repo / "alab/certified-build.sh").chmod(0o755)
+        (self.repo / "alab/project-targo.sh").chmod(0o755)
+        # Runtime scenarios have their own real-binary suite. This fixture only
+        # observes dispatch/order; it never certifies or runs an application.
+        self.write(self.repo / "alab/check_runtime.py", '''import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+root = Path(os.environ["ALAB_FAKE_CARGO_DIR"])
+with (root / "runtime-invocations.jsonl").open("a") as log:
+    log.write(json.dumps(args) + "\\n")
+mode = json.loads((root / "unit-mode.json").read_text()) if (root / "unit-mode.json").exists() else {}
+raise SystemExit(mode.get("runtime_failure", 0))
+''')
         self.write(rs / "alab-core/Cargo.toml",
                    '[package]\nname = "codex-alab-core"\nversion = "0.0.0"\n')
         self.write(rs / "alab-core/src/lib.rs", "pub fn alab() {}\n")
@@ -619,7 +666,7 @@ class CheckLintStepTests(unittest.TestCase):
         self.assertEqual(self.compiler_calls("pristine"), [])
         calls = self.compiler_calls("ours")
         lint = next(index for index, call in enumerate(calls) if " tippy " in call)
-        cli = next(index for index, call in enumerate(calls) if " run " in call)
+        cli = next(index for index, call in enumerate(calls) if " trust build --certify " in call)
         alab = next(index for index, call in enumerate(calls)
                     if " test " in call and "--lib" not in call)
         units = next(index for index, call in enumerate(calls)
@@ -627,6 +674,26 @@ class CheckLintStepTests(unittest.TestCase):
         self.assertLess(lint, cli)
         self.assertLess(cli, alab)
         self.assertLess(alab, units)
+        runtime = [json.loads(line) for line in
+                   (self.fake / "runtime-invocations.jsonl").read_text().splitlines()]
+        self.assertEqual(len(runtime), 1)
+        self.assertEqual(runtime[0][runtime[0].index("--codex") + 1],
+                         str(self.repo / "codex-rs/target/debug/codex"))
+
+    def test_application_proof_and_runtime_failures_stop_before_unit_checks(self):
+        for mode, status in (({"certified_failure": "ours"}, 2),
+                             ({"missing_certified_report": True}, 2),
+                             ({"application_failure": "ours"}, 2),
+                             ({"runtime_failure": 37}, 1)):
+            with self.subTest(mode=mode):
+                (self.fake / "unit-mode.json").write_text(json.dumps(mode))
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, status, stderr)
+                calls = self.calls("ours")
+                self.assertTrue(any(" trust build --certify " in call for call in calls))
+                self.assertFalse(any(" test " in call for call in calls), calls)
+                self.assertEqual(self.helper_invocations("ours"), [])
 
     def test_both_full_locked_graphs_resolve_before_the_first_compiler(self):
         code, stderr = self.check(CLEAN)
@@ -890,6 +957,50 @@ class CheckLintStepTests(unittest.TestCase):
         self.assert_prepared("ours")
         self.assertEqual(self.compiler_calls("pristine"), [])
 
+    def test_standalone_autopilot_record_mode_authenticates_only_its_host(self):
+        self.write(self.repo / "codex-rs/alab-autopilot/Cargo.toml",
+                   '[package]\nname = "codex-alab-autopilot"\nversion = "0.0.0"\n')
+        self.write(self.repo / "codex-rs/alab-autopilot/src/lib.rs", "pub fn alab() {}\n")
+        self.unit_mode(ours="ok", pristine="ok")
+        target = self.repo / "codex-rs/target"
+        target.mkdir(parents=True)
+        state = self.fake / "autopilot-record"
+        body = '''set -euo pipefail
+. "$1/alab/lib.sh"
+. "$1/alab/unit-tests.sh"
+cargo="$ALAB_CARGO"
+packages=(-p codex-alab-autopilot)
+unit_tests "$1" "$2" --config 'paths = []' --record-results "$3" --exact native::behavior --test-threads=1
+'''
+        result = subprocess.run(["/bin/bash", "-c", body, "autopilot-unit-fixture",
+                                 str(self.repo), str(target), str(state)], cwd=self.repo,
+                                env=self.environment, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        artifacts = [json.loads(line) for line in (state / "helper-native.jsonl").read_text().splitlines()]
+        self.assertEqual([row["target"]["name"] for row in artifacts], ["codex-code-mode-host"])
+        self.assertTrue((state / "metadata.json").is_file())
+        self.assertTrue((state / "runner-metadata.json").is_file())
+        children = self.unit_children("ours")
+        self.assertEqual(len(children), 2, children)
+        for child in children:
+            args = child["args"]
+            self.assertEqual([args[at + 1] for at, value in enumerate(args) if value == "-p"],
+                             ["codex-alab-autopilot"])
+            self.assertIn("paths = []", args)
+            for alias in ("codex-code-mode-host", "codex_code_mode_host"):
+                self.assertEqual(child["helpers"]["CARGO_BIN_EXE_" + alias],
+                                 str(target / "native helper output/codex-code-mode-host"))
+        builds = [call for call in self.calls("ours") if " build " in call]
+        self.assertEqual(len(builds), 2, builds)
+        host_build = next(call for call in builds if "--bin codex-code-mode-host" in call)
+        self.assertIn("paths = []", host_build)
+        self.assertNotIn("test_stdio_server", host_build)
+        self.assertNotIn("codex-cli", host_build)
+        self.assertTrue(any("--bin alab-unit-runner" in call for call in builds))
+        self.assertFalse((target / "native helper output/test_stdio_server").exists())
+        self.assertFalse((target / "native helper output/codex").exists())
+        self.assertEqual((state / "round-0.status").read_text(), "0\n")
+
     def test_mcp_cli_is_built_in_each_compared_tree(self):
         self.write(self.repo / "codex-rs/core/src/lib.rs", "pub fn upstream() {}\n")
         self.write(self.repo / "codex-rs/codex-mcp/src/lib.rs",
@@ -972,7 +1083,8 @@ class CheckLintStepTests(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         children = self.unit_children("ours")
         self.assertTrue(children)
-        self.assertFalse(any(" build " in call and "--bin alab-unit-runner" not in call
+        self.assertFalse(any(" build " in call and " trust build --certify " not in call
+                             and "--bin alab-unit-runner" not in call
                              for call in self.calls("ours")))
         for child in children:
             for key, filename in (("RUSTY_V8_ARCHIVE", "archive"),
@@ -1240,7 +1352,7 @@ Path(args[args.index("--out") + 1]).write_text(json.dumps({{
         return [line for line in path.read_text().splitlines() if line.startswith(side + ":")] if path.exists() else []
 
     def clear_helper_observations(self):
-        for name in ("calls", "environments.jsonl", "helper-invocations"):
+        for name in ("calls", "environments.jsonl", "helper-invocations", "runner-returncodes.jsonl"):
             (self.fake / name).unlink(missing_ok=True)
 
     def hook_mcp(self):
@@ -1343,7 +1455,8 @@ Path(args[args.index("--out") + 1]).write_text(json.dumps({{
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
         code, stderr = self.check(CLEAN)
         self.assertEqual(code, 0, stderr)
-        self.assertFalse(any(" build " in call and "--bin alab-unit-runner" not in call
+        self.assertFalse(any(" build " in call and " trust build --certify " not in call
+                             and "--bin alab-unit-runner" not in call
                              for call in self.calls("ours")))
 
     def test_a_hooked_build_script_that_fails_gates_beside_a_target_upstream_breaks_too(self):

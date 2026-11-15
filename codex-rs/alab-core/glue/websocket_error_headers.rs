@@ -1,12 +1,14 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! Preserve explicit WebSocket status independently of envelope metadata.
+//! Preserve explicit WebSocket status and safe error correlation metadata.
 
 use super::ApiError;
 use super::WrappedWebsocketErrorEvent;
+use super::alab_request_diagnostics::correlation;
 use crate::responses_headers::json_headers_to_http_headers;
 use codex_http_client::RetryAfter;
+use http::HeaderMap;
 use http::StatusCode;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -17,6 +19,53 @@ use serde_json::Value;
 use serde_json::value::RawValue;
 use std::collections::BTreeMap;
 use std::fmt;
+
+/// Keep outer metadata intact and fill only missing, validated correlation IDs
+/// from the already parsed error. Nested auth/recovery headers never propagate.
+pub(super) fn http_headers(
+    outer: Option<&Map<String, Value>>,
+    nested: Option<&Value>,
+) -> Option<HeaderMap> {
+    let mut headers = outer.map(json_headers_to_http_headers);
+    if !codex_alab_core::active() {
+        return headers;
+    }
+    let Some(nested) = nested.and_then(Value::as_object) else {
+        return headers;
+    };
+    // Use the existing converter's value types and case-collision ordering.
+    let nested = json_headers_to_http_headers(nested);
+    copy_correlation(
+        &mut headers,
+        &nested,
+        &["x-request-id", "x-oai-request-id"],
+        "x-request-id",
+    );
+    copy_correlation(&mut headers, &nested, &["cf-ray"], "cf-ray");
+    headers
+}
+
+fn copy_correlation(
+    headers: &mut Option<HeaderMap>,
+    nested: &HeaderMap,
+    names: &[&'static str],
+    canonical: &'static str,
+) {
+    if names
+        .iter()
+        .any(|name| correlation(headers.as_ref(), name).is_some())
+    {
+        return;
+    }
+    if let Some(value) = names.iter().find_map(|name| {
+        correlation(Some(nested), name)?;
+        nested.get(*name).cloned()
+    }) {
+        headers
+            .get_or_insert_with(HeaderMap::new)
+            .insert(canonical, value);
+    }
+}
 
 /// Keep the ordinary typed parse first. Only its failure can require a second
 /// parse, so normal response deltas do not pay for envelope normalization.

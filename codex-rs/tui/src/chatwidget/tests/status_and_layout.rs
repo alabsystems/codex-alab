@@ -149,6 +149,7 @@ async fn daybreak_refusal_offers_enable_for_the_next_turn() {
     )
     .await;
     chat.set_feature_enabled(Feature::CliDaybreak, /*enabled*/ true);
+    chat.set_feature_enabled(Feature::SafetyRecourse, /*enabled*/ true);
     let thread_id = ThreadId::new();
     chat.thread_id = Some(thread_id);
     let mut model = crate::test_support::TEST_MODEL_PRESETS[0].clone();
@@ -348,6 +349,15 @@ async fn daybreak_refusal_offers_enable_for_the_next_turn() {
     chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![daybreak]));
     chat.set_model("gpt-5.6-sol");
     chat.daybreak_enabled = false;
+    chat.on_cyber_policy_error();
+    assert!(!chat.bottom_pane.no_modal_or_popup_active());
+    chat.set_feature_enabled(Feature::SafetyRecourse, /*enabled*/ false);
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::SettingsSelectionClosed))
+    );
+
     chat.set_parent_owned_thread();
     handle_error(
         &mut chat,
@@ -364,6 +374,103 @@ async fn daybreak_refusal_offers_enable_for_the_next_turn() {
             render_bottom_popup(&chat, /*width*/ 80)
         ))
     );
+}
+
+#[tokio::test]
+async fn safety_recourse_is_informational_by_default() {
+    let (mut chat, mut events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    assert!(!chat.config.features.enabled(Feature::SafetyRecourse));
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    handle_turn_started(&mut chat, "recourse");
+    chat.queue_user_message(UserMessage::from("continue with other work"));
+    safety_recourse::on_metadata(
+        &mut chat,
+        codex_app_server_protocol::TurnModerationMetadataNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "recourse".into(),
+            metadata: json!({"safety_recourse": {
+                "schema_version": 1, "domain": "cyber", "source": "user_request",
+                "source_message": {"id":"1", "kind":"ordinary_message", "role":"user"},
+                "topic": "unauthorized_account_or_system_access",
+                "suggestions": [
+                    {"label": "Recover an account", "prompt_text": "Help me recover my account safely."},
+                    {"label": "Protect a system", "prompt_text": "Explain system protection."},
+                    {"label": "Understand risks", "prompt_text": "Explain account security risks."}
+                ]
+            }}),
+        },
+    );
+    let error = AppServerTurnError {
+        message: "blocked".into(),
+        codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+        misalignment: None,
+        additional_details: None,
+    };
+
+    let pending = chat.safety_recourse.take();
+    assert!(safety_recourse::render_failure(&mut chat, pending, &error));
+
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    assert!(chat.bottom_pane.composer_input_enabled());
+    assert!(chat.queued_user_message_texts().is_empty());
+    assert!(ops.try_recv().is_ok(), "queued work should be submitted");
+    let rendered = drain_insert_history(&mut events)
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(rendered.contains("account security and recovery"));
+    assert!(rendered.contains("Suggested rewrites (not submitted)"));
+    assert!(rendered.contains("Recover an account: Help me recover my account safely."));
+}
+
+#[tokio::test]
+async fn safety_recourse_opt_out_dismisses_rewrite_prompt_and_releases_queue() {
+    let (mut chat, mut events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::SafetyRecourse, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    handle_turn_started(&mut chat, "recourse");
+    safety_recourse::on_metadata(
+        &mut chat,
+        codex_app_server_protocol::TurnModerationMetadataNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "recourse".into(),
+            metadata: json!({"safety_recourse": {
+                "schema_version": 1, "domain": "cyber", "source": "user_request",
+                "source_message": {"id":"1", "kind":"ordinary_message", "role":"user"},
+                "topic": "unauthorized_account_or_system_access",
+                "suggestions": [
+                    {"label": "Recover an account", "prompt_text": "Help me recover my account safely."},
+                    {"label": "Protect a system", "prompt_text": "Explain system protection."},
+                    {"label": "Understand risks", "prompt_text": "Explain account security risks."}
+                ]
+            }}),
+        },
+    );
+    let error = AppServerTurnError {
+        message: "blocked".into(),
+        codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+        misalignment: None,
+        additional_details: None,
+    };
+    let pending = chat.safety_recourse.take();
+    assert!(safety_recourse::render_failure(&mut chat, pending, &error));
+    assert!(!chat.bottom_pane.no_modal_or_popup_active());
+    assert!(chat.input_queue.suppress_queue_autosend);
+
+    chat.set_feature_enabled(Feature::SafetyRecourse, /*enabled*/ false);
+
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::SettingsSelectionClosed))
+    );
+    chat.set_queue_autosend_suppressed(/*suppressed*/ false);
+    assert!(chat.queue_user_message(UserMessage::from("continue with other work")));
+    assert!(ops.try_recv().is_ok(), "queued work should be submitted");
 }
 
 #[tokio::test]

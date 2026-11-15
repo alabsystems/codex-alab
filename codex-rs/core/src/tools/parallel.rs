@@ -3,6 +3,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use codex_alab_core::model_goal_invocation::ScopeFuture as _; // ALAB(goal-calls): native completion retains its dispatch identity across cancellation.
+
 use tokio::sync::RwLock;
 use tokio::task::JoinError;
 use tokio_util::either::Either;
@@ -166,6 +168,10 @@ impl ToolCallRuntime {
         cancellation_token: CancellationToken,
         call_state: Arc<ToolCallState>,
     ) -> impl std::future::Future<Output = Result<AnyToolResult, FunctionCallError>> {
+        let (alab_completion, cancellation_token) = match crate::session::alab_exec_recovery_options::goal_tool_completion::prepare(&self.session, &step_context.turn, &call.tool_name, cancellation_token) { // ALAB(goal-completion): register native goal ownership before an eager dispatch can outlive its waiter.
+            Ok(prepared) => prepared,
+            Err(error) => return Either::Left(std::future::ready(Err(error))),
+        };
         if let Err(err) =
             call_state
                 .invocation
@@ -173,6 +179,7 @@ impl ToolCallRuntime {
         {
             return Either::Left(std::future::ready(Err(err)));
         }
+        let alab_invocation = codex_alab_core::model_goal_invocation::Invocation::new(); // ALAB(goal-calls): provider call IDs do not identify an actual dispatch.
         let message_admission =
             super::user_messaging::admit_code_mode_send(&self.session, &source, &call.tool_name);
         self.session
@@ -362,7 +369,8 @@ impl ToolCallRuntime {
                 }
                 result
             }
-            .instrument(dispatch_span.clone().or_current()),
+            .instrument(dispatch_span.clone().or_current())
+            .with_model_goal_invocation(alab_invocation.clone()), // ALAB(goal-calls): native mutations and normal completion share this invocation.
         ));
 
         let completion = async move {
@@ -405,6 +413,7 @@ impl ToolCallRuntime {
                                     &call.tool_name,
                                     abort_source.clone(),
                                 )
+                                .with_model_goal_invocation(alab_invocation.clone()) // ALAB(goal-calls): the outer abort consumes only its own committed mutation.
                                 .await;
                                 Ok(response)
                             }
@@ -427,6 +436,7 @@ impl ToolCallRuntime {
                     &call.tool_name,
                     abort_source,
                 )
+                .with_model_goal_invocation(alab_invocation) // ALAB(goal-calls): cancellation before normal completion keeps the original identity.
                 .await;
                 // ALAB(exec-transfer): retain the actual reason when a handoff stops an in-flight tool.
                 result = Ok(crate::session::alab_exec_recovery_options::transfer::attribute_abort(&abort_turn, Self::aborted_response(
@@ -445,7 +455,7 @@ impl ToolCallRuntime {
             result
         }
         .instrument(dispatch_span.or_current());
-        Either::Right(completion)
+        Either::Right(alab_completion.retain(completion)) // ALAB(goal-completion): forced sampling teardown transfers the existing abort/join/notify future intact.
     }
 }
 

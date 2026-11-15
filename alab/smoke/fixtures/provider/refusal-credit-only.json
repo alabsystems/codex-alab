@@ -1,0 +1,17 @@
+{
+  "body": {
+    "error": {
+      "message": "Fixture credits spent",
+      "plan_type": "self_serve_business_usage_based",
+      "type": "usage_limit_reached"
+    }
+  },
+  "headers": {
+    "x-codex-active-limit": "codex",
+    "x-codex-credits-balance": "0",
+    "x-codex-credits-has-credits": "false",
+    "x-codex-credits-unlimited": "false",
+    "x-codex-rate-limit-reached-type": "rate_limit_reached"
+  },
+  "status": 429
+}

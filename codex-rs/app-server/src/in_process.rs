@@ -121,6 +121,7 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::ProcessExited(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadQueueChanged(_)
+            | ServerNotification::AlabGoalRuntimeUpdated(_) // ALAB(storage-status): dropped Ready must not leave a stale Held observation.
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ThreadAttachmentUpdated(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)

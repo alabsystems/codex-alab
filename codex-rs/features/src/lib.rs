@@ -110,6 +110,12 @@ pub enum Feature {
     DaybreakProgramPropagation,
     /// Restrict CLI resume of attributed local threads to their creator.
     CliResumeAccountCheck,
+    // ALAB(misalignment-review): Make reviewing and continuing paused chats opt-in.
+    /// Allow interactive review and continuation for misalignment policy findings.
+    MisalignmentReview,
+    // ALAB(safety-recourse): Keep policy-recovery actions informational unless opted in.
+    /// Allow interactive safety-policy recovery prompts.
+    SafetyRecourse,
     /// Removed no-op; use `tui.fullscreen_transcript` instead.
     TranscriptV2,
     // Stable.
@@ -1591,6 +1597,20 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "api_key_cyber_access_programs",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    // ALAB(misalignment-review): Review and continuation stay disabled unless explicitly enabled.
+    FeatureSpec {
+        id: Feature::MisalignmentReview,
+        key: "misalignment_review",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    // ALAB(safety-recourse): Interactive policy-recovery prompts stay disabled unless explicitly enabled.
+    FeatureSpec {
+        id: Feature::SafetyRecourse,
+        key: "safety_recourse",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::DaybreakProgramPropagation,

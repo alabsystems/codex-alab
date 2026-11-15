@@ -154,7 +154,9 @@ pub(crate) fn app_server_extension_event_sink(
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
 ) -> Arc<dyn ExtensionEventSink> {
+    let alab_goal_status = crate::extensions::alab_goal_status::Transport::new(&outgoing); // ALAB(storage-status): one ordered weak transport per server sink.
     Arc::new(AppServerExtensionEventSink {
+        alab_goal_status, // ALAB(storage-status)
         outgoing,
         thread_state_manager,
     })
@@ -183,6 +185,7 @@ pub(crate) async fn send_thread_warning(
 }
 
 struct AppServerExtensionEventSink {
+    alab_goal_status: crate::extensions::alab_goal_status::Transport, // ALAB(storage-status): passive observer queue.
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
 }
@@ -191,6 +194,8 @@ const MAX_EXTENSION_WARNING_BYTES: usize = 256;
 const EXTENSION_WARNING_SUBSCRIBER_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl ExtensionEventSink for AppServerExtensionEventSink {
+    fn alab_goal_runtime_inline_snapshot(&self, update: codex_protocol::protocol::AlabGoalRuntimeUpdatedNotification) -> Option<codex_protocol::protocol::AlabGoalRuntimeSnapshot> { self.alab_goal_status.inline(update) } // ALAB(storage-status): called under exact native publication custody.
+    fn alab_goal_runtime_updated(&self, update: codex_protocol::protocol::AlabGoalRuntimeUpdatedNotification) { self.alab_goal_status.publish(update); } // ALAB(storage-status): native metadata never needs a database snapshot.
     fn emit(&self, event: Event) {
         match event.msg {
             EventMsg::ThreadQueueChanged(queue_event) => {
@@ -632,3 +637,6 @@ mod tests {
         }
     }
 }
+
+#[path = "../../alab-autopilot/glue/goal_status_transport.rs"]
+pub(crate) mod alab_goal_status; // ALAB(storage-status): passive bounded observations use normal native output independently of goal DB listeners.

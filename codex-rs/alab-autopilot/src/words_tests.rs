@@ -46,7 +46,7 @@ fn a_defense_and_a_done_phrase_beside_a_need_are_done_claims() {
     for yes in [
         "Nothing left: it is all merged and pushed.",
         "Merged.\nNothing left: every item is on origin/main.",
-        "All done, nothing left to do.\nNEEDS YOU: the signing key password",
+        "All done, nothing left to do.\nNEEDS YOU: the signing permission",
     ] {
         assert!(says_done(Some(yes)), "{yes:?}");
     }
@@ -109,7 +109,7 @@ fn a_clean_defense_is_a_defense_with_nothing_open_and_no_need() {
         ),
         ("Nothing left: the fix is parked on a branch.", &["parked"]),
         (
-            "Nothing left: merged and pushed.\nNEEDS YOU: the signing key password",
+            "Nothing left: merged and pushed.\nNEEDS YOU: the signing permission",
             &[],
         ),
     ] {

@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 import capacity_exec as probe
+import package_standing
 import provider_fixture
 from renewal_follow import bearer_generation, fake_auth, fixture_tls, request_kind
 
@@ -154,6 +155,9 @@ def main():
     processes, handles, auth_hashes, thread_ids = [], [], {}, []
     executable_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
     report = {"passed": False, "source": build["source"], "version": manifest["version"],
+              # What the package's own record is worth: a trial package qualifies nothing,
+              # whatever `passed` says of the run.
+              "package": package_standing.summary(build),
               "accountCount": args.count, "sharedConversationStorage": env["CODEX_HOME"],
               "executableSha256": executable_hash}
     try:

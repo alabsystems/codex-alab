@@ -92,7 +92,7 @@ async fn told(h: &Harness, id: &str, needs: &[&str]) {
 
 /// Three needs, the first past the entry's [`crate::supervisor::NEED_CELLS`] (93 cells).
 const THREE: [&str; 3] = [
-    "the release credential for alabsystems, from the vault on this Mac or one minted for this cut",
+    "the release permission for alabsystems, from the vault on this Mac or one minted for this cut",
     "a decision: ship 0.5 now or wait for the reader",
     "50% more of the API budget \u{2014} or a plan change",
 ];
@@ -114,7 +114,7 @@ async fn a_reports_needs_reach_aterm_whole_and_in_order() {
     let shown = entry(&h).unwrap_or_else(|| panic!("an entry"));
     assert_eq!(
         shown,
-        "Codex needs you: the release credential for alabsystems, from the vault on this\u{2026} \
+        "Codex needs you: the release permission for alabsystems, from the vault on this\u{2026} \
          (+2 more) \u{2014} carrying on"
     );
     assert_eq!(
@@ -150,23 +150,13 @@ async fn a_replacing_report_replaces_them() {
             .filter(|r| r.contains(" meta set attention owner=needs "))
             .count()
     };
-    told(
-        &h,
-        "t2",
-        &["the signing key password", "a reviewer for #42"],
-    )
-    .await;
+    told(&h, "t2", &["the signing permission", "a reviewer for #42"]).await;
     assert_eq!(
         entry(&h).as_deref(),
-        Some("Codex needs you: the signing key password (+1 more) \u{2014} carrying on")
+        Some("Codex needs you: the signing permission (+1 more) \u{2014} carrying on")
     );
     let written = entries(&h);
-    told(
-        &h,
-        "t3",
-        &["the signing key password", "a reviewer for #43"],
-    )
-    .await;
+    told(&h, "t3", &["the signing permission", "a reviewer for #43"]).await;
     // NEGATIVE CONTROL: the entry's words did not move.
     assert_eq!(entries(&h), written, "{:?}", h.fake.requests());
     assert_eq!(needs_sets(&h), 3, "{:?}", h.fake.requests());
@@ -196,7 +186,7 @@ async fn nothing_and_a_persons_turn_take_the_set_down() {
     assert_eq!(entry(&h), None);
     assert_eq!(needs_unsets(&h), 2);
     told(&h, "t4", &THREE).await;
-    turn(&h, "t5", false, "I rotated the credential myself.").await;
+    turn(&h, "t5", false, "I rotated the permission myself.").await;
     assert!(
         h.fake
             .wait_for(|fake| fake.needs_told_last().is_none())
@@ -242,12 +232,7 @@ async fn an_offs_release_takes_the_set_down() {
     // whose entry words match `needs_shown`, the unclaimed sync sends nothing and the next
     // claim still tells the new set whole.
     act_again(&h).await;
-    told(
-        &h,
-        "t2",
-        &["the signing key password", "a reviewer for #42"],
-    )
-    .await;
+    told(&h, "t2", &["the signing permission", "a reviewer for #42"]).await;
     h.fake.reply_once(
         &format!("@{} meta unset attention owner=needs", h.fake.sid()),
         "ERR refused\n",
@@ -257,7 +242,7 @@ async fn an_offs_release_takes_the_set_down() {
         h.fake.claim().is_none() && !h.sup.held() && entry(&h).is_some()
     })
     .await;
-    let same_entry = owned(&["the signing key password", "a reviewer for #43"]);
+    let same_entry = owned(&["the signing permission", "a reviewer for #43"]);
     assert!(
         h.sup
             .want_needs(&same_entry, crate::needs::needs_key(&same_entry))
@@ -432,12 +417,12 @@ async fn a_new_claim_sends_the_standing_set_again() {
 /// nothing more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_set_an_earlier_image_left_comes_down_at_the_first_claim() {
-    let left = "Codex needs you: the signing key password (+1 more) \u{2014} carrying on";
+    let left = "Codex needs you: the signing permission (+1 more) \u{2014} carrying on";
     let h = started(&[], |fake, _| {
         fake.leave_needs(
             std::process::id(),
             left,
-            &["the signing key password", "a reviewer"],
+            &["the signing permission", "a reviewer"],
         );
     })
     .await;
@@ -479,7 +464,7 @@ async fn an_aterm_before_the_verb_is_asked_once_per_set() {
         h.sup.show_needs().await;
     }
     assert_eq!(needs_sets(&h), 1, "{:?}", h.fake.requests());
-    turn(&h, "t4", true, &report_of(&["the signing key password"])).await;
+    turn(&h, "t4", true, &report_of(&["the signing permission"])).await;
     wait_until("another set is asked", || needs_sets(&h) == 2).await;
     h.sup.show_needs().await;
     turn(&h, "t5", true, "Stage 5 is in.\nNEEDS YOU: nothing").await;
@@ -502,7 +487,7 @@ async fn an_aterm_before_the_verb_is_asked_once_per_set() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_denied_set_is_not_asked_again_under_its_claim() {
     let h = settled().await;
-    let need = "the signing key password";
+    let need = "the signing permission";
     let shown = format!("Codex needs you: {need} \u{2014} carrying on");
     h.fake.reply_once(
         &format!(

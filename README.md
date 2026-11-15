@@ -107,6 +107,14 @@ Added:
   retaining the selected model, current input and completed work during responses and
   foreground context compaction. Malformed or timer-unsafe retry advice falls back to
   normal backoff. Interrupt the turn to stop waiting.
+- **Kimi Code subscription models.** `codex --profile kimi` selects K3 within 256K through the
+  global Kimi Code endpoint; `codex --profile kimi-cn` selects the China endpoint. Set
+  `KIMI_API_KEY` from the Kimi Code Console for the kimi.ai subscription. The bundled catalog
+  includes K3.1 Pro, K3, K2.8 Preview and both HighSpeed variants, with reasoning, function and
+  parallel tool calls, text/image input, subagents and optional hosted web search. No Kimi CLI
+  installation or hand-written `models.json` is needed; an explicit `model_catalog_json` still wins.
+  Transient concurrency and overload responses retry with backoff; subscription quota walls remain
+  terminal instead of becoming generic retry loops.
 - **The rainbow kitty.** A launch banner: aterm's codex kitty riding aterm's spectrum, with
   "bloatware-free · nag-free · optimized for aterm" beside it, what was measured against
   OpenAI's Codex 0.164 as shipped on 2026-10-23 (about 6× less memory, no background daemon, 1 HTTPS

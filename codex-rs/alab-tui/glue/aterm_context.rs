@@ -175,7 +175,7 @@ mod tests {
         state.expect_mail_turn(codex_alab_tui::mail::MailTurn {
             id: 1,
             off: 7,
-            from: "s-lead@n-lab".to_string(),
+            from: "t00000000ab@n-lab".to_string(),
             kind: "task".to_string(),
             text: text.to_string(),
         });

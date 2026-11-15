@@ -134,7 +134,7 @@ impl Fixture {
         let listener = UnixListener::bind(&sock)?;
         let endpoint = Endpoint {
             sock,
-            sid: "s-123abc".into(),
+            sid: "t0pe7873g64".into(),
         };
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);
@@ -393,7 +393,7 @@ fn generic_waiting_refuses_settled_preload_sequence_authority() {
         "request": "1".repeat(32),
         "operation": "2".repeat(32),
         "session": {
-            "sid": "s-123abc", "process_pid": std::process::id(),
+            "sid": "t0pe7873g64", "process_pid": std::process::id(),
             "process_birth": BIRTH, "epoch": "source-host-epoch"
         },
         "member": MEMBER

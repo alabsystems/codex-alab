@@ -683,5 +683,7 @@
       ],
       "revisit": "Retain existing Cloud request/error-boundary and OTLP loopback tests in integrated validation; no new ALab behavior test is required for the syntactic cleanup."
     }
-  ]
+  ],
+  "superseded_by": "alab/upstream/7eaaee4270-from-0593016153-intake.json",
+  "supersession_reason": "Extend reviewed coverage through 7eaaee4270; preserve all prior decisions unchanged in the complete 46-commit active batch."
 }

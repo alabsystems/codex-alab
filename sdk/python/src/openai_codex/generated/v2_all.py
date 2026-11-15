@@ -185,6 +185,58 @@ class AlabAccountSecuritySetupIdentity(BaseModel):
     user_id: Annotated[str, Field(alias="userId")]
 
 
+class AlabGoalPersistencePhase(Enum):
+    ready = "ready"
+    writing = "writing"
+    held = "held"
+
+
+class AlabGoalRuntimeUpdatedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    generation: Annotated[
+        int | None,
+        Field(
+            description="Ordered within one authenticated native host, across every thread.", ge=0
+        ),
+    ] = 0
+    incarnation: Annotated[
+        str,
+        Field(
+            description="Opaque native runtime incarnation. Its bytes are never compared for order."
+        ),
+    ]
+    persistence: Annotated[
+        AlabGoalPersistencePhase | None,
+        Field(
+            description="Absent on retirement; an older peer or unavailable runtime remains unknown."
+        ),
+    ] = None
+    reset: Annotated[
+        bool | None,
+        Field(
+            description="Passive stream overflow invalidates observations, never goal/accounting state."
+        ),
+    ] = None
+    revision: Annotated[int, Field(ge=0)]
+    sequence: Annotated[
+        int | None,
+        Field(
+            description="Assigned by the native server sink, ordered within that backend transport.",
+            ge=0,
+        ),
+    ] = 0
+    thread_id: Annotated[str, Field(alias="threadId")]
+    transport: Annotated[
+        str,
+        Field(
+            description="Exact native server-sink lifetime; reconnects to a new server cannot reuse its sequence."
+        ),
+    ]
+    writes_pending: Annotated[bool, Field(alias="writesPending")]
+
+
 class AllowDenyRequirement(Enum):
     allow = "allow"
     deny = "deny"
@@ -589,6 +641,7 @@ class CodexErrorInfoValue(str, Enum):
     model_not_found = "modelNotFound"
     policy_capacity_unavailable = "policyCapacityUnavailable"
     cyber_policy = "cyberPolicy"
+    bio_policy = "bioPolicy"
     misalignment_policy_violation = "misalignmentPolicyViolation"
     too_many_denials = "tooManyDenials"
     internal_server_error = "internalServerError"
@@ -4687,6 +4740,24 @@ class ServerDiagnosticsProcess(BaseModel):
         None
     )
     resident_memory_bytes: Annotated[int | None, Field(alias="residentMemoryBytes", ge=0)] = None
+
+
+class AlabThreadGoalRuntimeUpdatedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["alab/thread/goal/runtimeUpdated"],
+        Field(title="Alab/thread/goal/runtimeUpdatedNotificationMethod"),
+    ]
+    params: AlabGoalRuntimeUpdatedNotification
 
 
 class ProjectChangedServerNotification(BaseModel):
@@ -14222,6 +14293,7 @@ class ServerNotification(
         | ThreadSectionChangedServerNotification
         | ThreadAttachmentUpdatedServerNotification
         | ThreadGoalUpdatedServerNotification
+        | AlabThreadGoalRuntimeUpdatedServerNotification
         | ThreadPredictionUpdatedServerNotification
         | ThreadGoalClearedServerNotification
         | ThreadQueueChangedServerNotification
@@ -14311,6 +14383,7 @@ class ServerNotification(
         | ThreadSectionChangedServerNotification
         | ThreadAttachmentUpdatedServerNotification
         | ThreadGoalUpdatedServerNotification
+        | AlabThreadGoalRuntimeUpdatedServerNotification
         | ThreadPredictionUpdatedServerNotification
         | ThreadGoalClearedServerNotification
         | ThreadQueueChangedServerNotification

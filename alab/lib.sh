@@ -4,6 +4,15 @@
 #
 # Shared by alab/*.sh. Kept to bash 3.2: macOS's /bin/bash runs these.
 
+# Reject unsupported source shells before BASH_SOURCE or any helper can run.
+# Keep this preflight POSIX syntax; it does not replace native qualification.
+if [ -z "${BASH_VERSION-}" ] ||
+   [ "$(command -v builtin 2>/dev/null)" != builtin ] ||
+   ! (builtin shopt -p) >/dev/null 2>&1; then
+  printf '%s\n' 'alab/lib.sh: Bash is required; source this library from Bash.' >&2
+  return 2 2>/dev/null || exit 2
+fi
+
 alab_library_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 ALAB_UPSTREAM_URL="https://github.com/openai/codex.git"
@@ -16,26 +25,40 @@ alab_die() {
 
 # Shared TOML-capable interpreter selection for review admission and packaging.
 # Resolve before native project selection so its profile can admit this exact tool.
+alab_python_311_probe() {
+  local response
+  # A successful exit alone also accepts programs that ignore the probe.
+  response="$("$1" -I -c 'import sys, tomllib; print("alab-python-311" if sys.version_info >= (3, 11) else "")' 2>/dev/null)" || return 1
+  [[ "${response}" == alab-python-311 ]]
+}
+
 alab_python_311() {
-  local python="${ALAB_PYTHON:-}" prefix="${1:-$(dirname "${ATPKG_BIN:-${HOME}/Library/Application Support/aterm/pkg/bin}")}" p
+  local python="${ALAB_PYTHON:-}" prefix="${1:-$(dirname "${ATPKG_BIN:-${HOME}/Library/Application Support/aterm/pkg/bin}")}" p directory
   if [[ -z "${python}" ]]; then
-    for p in /opt/homebrew/bin/python3.14 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 \
+    for p in "${prefix}/bin/python3" "${prefix}"/bin/python3.[0-9]* \
+      /opt/homebrew/bin/python3.14 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 \
       /opt/homebrew/bin/python3.11 \
       "${prefix}/abrew/bin/python3.14" "${prefix}/abrew/bin/python3.13" \
       "${prefix}/abrew/bin/python3.12" "${prefix}/abrew/bin/python3.11" \
       "${HOME}/.local/share/uv/python"/cpython-3.*/bin/python3.[0-9]* python3; do
       [[ "${p}" != *-config ]] || continue
-      if command -v "${p}" >/dev/null && "${p}" -I -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+      if command -v "${p}" >/dev/null && alab_python_311_probe "${p}"; then
         python="${p}"
         break
       fi
     done
   fi
-  [[ -n "${python}" ]] && "${python}" -I -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null || {
+  [[ -n "${python}" ]] && alab_python_311_probe "${python}" || {
     alab_say "no Python >= 3.11 for TOML review/packaging: set ALAB_PYTHON"
     return 1
   }
-  command -v "${python}"
+  python="$(command -v "${python}")" || return $?
+  # Build helpers change directories after selection. Keep the executable's
+  # symlink (a virtual environment may depend on it), but anchor relative paths.
+  case "${python}" in
+    /*) printf '%s\n' "${python}" ;;
+    *) directory="$(pwd -P)" || return $?; printf '%s/%s\n' "${directory}" "${python}" ;;
+  esac
 }
 
 # alab_spec_lines: the pathspecs in an alab/*-paths file on stdin, one per line (comments,

@@ -282,6 +282,9 @@ impl super::GoalRuntimeHandle {
         durable_deferral: bool,
     ) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
         let permit = self.goal_state_permit().await?;
+        if self.alab_goal_persistence_held() {
+            return Err("account recovery is held until failed goal persistence is reconciled".into());
+        }
         let store = self.inner.state_dbs.thread_goals();
         let current = store
             .get_thread_goal(self.thread_id())
@@ -311,6 +314,7 @@ impl super::GoalRuntimeHandle {
         if context.as_ref().map(|goal| goal.as_deref()) != Some(expected_goal) {
             return Err("the original account-recovery goal proof was invalidated".into());
         }
+        let alab_mutation = self.alab_begin_goal_mutation();
         let Some(restored) = store
             .alab_restore_auth_goal_with_deferral(self.thread_id(), wall, durable_deferral)
             .await
@@ -325,6 +329,7 @@ impl super::GoalRuntimeHandle {
         {
             return Err("account recovery belongs to a different native admission".into());
         }
+        if let Some(alab_mutation) = alab_mutation { alab_mutation.commit_mutation(); }
         self.inner
             .accounting_state
             .mark_idle_goal_active(restored.goal_id.clone());

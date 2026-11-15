@@ -1,8 +1,9 @@
 //! Structured-output schema and normalization for generated TUI thread titles.
 //!
 //! Automatic titles use the first message until generation completes and as a fallback;
-//! the originating thread's saved name takes precedence over an automatic result. Manual
-//! renames cancel pending requests; canceled events cannot affect newer requests.
+//! ALAB(execution) skips those hidden requests. The originating thread's saved name takes
+//! precedence over an automatic result. Manual renames cancel pending requests; canceled
+//! events cannot affect newer requests.
 
 use super::App;
 use super::thread_events::ThreadBufferedEvent;
@@ -71,6 +72,7 @@ impl App {
         destination: ThreadTitleDestination,
         source_text: &str,
     ) {
+        if destination == ThreadTitleDestination::Automatic && !codex_alab_tui::execution::automatic_thread_title_model_calls() { return; } // ALAB(execution): no hidden thread or model request for an automatic title
         if app_server.thread_params_mode().settings_owner() == ThreadSettingsOwner::Server {
             if let ThreadTitleDestination::RenameSuggestion { request_id } = destination {
                 self.chat_widget

@@ -24,6 +24,7 @@ pub(super) async fn continue_with_rewrite(
     prompt: String,
 ) {
     if !supports_server(app_server)
+        || !app.chat_widget.config_ref().features.enabled(Feature::SafetyRecourse) // ALAB(safety-recourse): passive suggestions cannot authorize a rewrite.
         || app.active_thread_id != Some(thread_id)
         || app.primary_thread_id != Some(thread_id)
         || app.chat_widget.last_turn_id() != Some(turn_id.as_str())

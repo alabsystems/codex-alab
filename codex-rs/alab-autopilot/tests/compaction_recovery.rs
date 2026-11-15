@@ -936,13 +936,20 @@ fn a_cyber_refusal_during_compaction_does_not_replay_it_as_an_independent_turn()
 #[test]
 fn a_compaction_deadline_survives_exhaustion_and_delays_native_recovery() {
     big_stack(|| async {
-        for v2 in [false, true] {
+        for (v2, opaque) in [(false, false), (false, true), (true, false), (true, true)] {
+            let failure = if opaque {
+                ResponseTemplate::new(400)
+                    .insert_header("Retry-After", "2")
+                    .set_body_json(json!({"detail": "Bad Request"}))
+            } else {
+                transient(true)
+            };
             let h = Harness::new(
                 v2,
                 0,
                 vec![
                     reply("initial", "The task has more work."),
-                    transient(true),
+                    failure,
                     reply("recovered", "The original task recovered."),
                 ],
             )
@@ -996,7 +1003,7 @@ fn a_compaction_deadline_survives_exhaustion_and_delays_native_recovery() {
             assert!(retry_at >= requests[1].0 + Duration::from_secs(2));
             assert!(
                 requests[2].0 >= retry_at,
-                "v2={v2}: native continuation bypassed compaction's deadline"
+                "v2={v2} opaque={opaque}: native continuation bypassed compaction's deadline"
             );
             assert!(
                 requests

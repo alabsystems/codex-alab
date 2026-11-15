@@ -54,6 +54,7 @@ use codex_file_watcher::WatchRegistration;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_protocol::auth::AuthMode;
+use codex_protocol::auth::RefreshTokenFailedReason;
 
 /// WHO A LOGIN SIGNS IN: its auth mode, and the user and account it names (ChatGPT's; `None`
 /// for an API key). Never printed: it has no `Debug`, and nothing says it but [`Read`].
@@ -295,6 +296,69 @@ impl FolderWatch {
                 .any(|path| path.file_name() == Some(self.name.as_os_str())),
         )
     }
+}
+
+/// THE REASON CODEX HOLDS FOR REFUSING THE LOGIN IT CACHES NOW: the permanent refresh failure
+/// codex recorded for that very credential (`refresh_failure_for_auth`), coarsely as upstream
+/// keeps it (`refresh_token_expired` is `Expired`, `refresh_token_reused` `Exhausted`,
+/// `refresh_token_invalidated` `Revoked`, anything else, `invalid_grant` and an unknown code
+/// among it, `Other`). `None` where codex holds none, or caches no login.
+pub(crate) fn refusal_held(manager: &AuthManager) -> Option<RefreshTokenFailedReason> {
+    let auth = manager.auth_cached()?;
+    manager
+        .refresh_failure_for_auth(&auth)
+        .map(|failure| failure.reason)
+}
+
+/// The vetoes kept beside the login `manager` reads (its `CODEX_HOME`).
+fn refusals(manager: &AuthManager) -> crate::login_refusal::Refusals {
+    crate::login_refusal::Refusals::under(&manager.runtime_config().codex_home)
+}
+
+/// KEEP CODEX'S OWN REFUSAL AS A VETO ([`crate::login_refusal`]): the turn's error said codex's
+/// refresh was refused for `reason`. It is kept, for the refresh token of the login codex
+/// caches now, only where it is not `Expired` and codex holds that same refusal for that very
+/// credential ([`refusal_held`]): the cached login is then the one whose token the refresh
+/// sent. Whether a veto was written now; nothing about the token is said.
+pub(crate) fn keep_refusal(manager: &AuthManager, reason: RefreshTokenFailedReason) -> bool {
+    if reason == RefreshTokenFailedReason::Expired || refusal_held(manager) != Some(reason) {
+        return false;
+    }
+    let Some(tokens) = manager
+        .auth_cached()
+        .and_then(|auth| auth.get_token_data().ok())
+    else {
+        return false;
+    };
+    refusals(manager)
+        .keep(&tokens.refresh_token, reason)
+        .unwrap_or(false)
+}
+
+/// The veto kept for the refresh token of the login `manager` caches now, if one is: a
+/// refusal codex heard in an earlier process (or another session over the same home).
+pub(crate) fn refusal_kept(manager: &AuthManager) -> Option<RefreshTokenFailedReason> {
+    let tokens = manager.auth_cached()?.get_token_data().ok()?;
+    refusals(manager).refused(&tokens.refresh_token)
+}
+
+/// WHETHER CODEX-ALAB'S OWN READING FORBIDS MOVING THIS LOGIN'S SESSION TO ANOTHER ACCOUNT: any
+/// refusal it knows of names a reason other than `Expired`, whether the turn's error carried
+/// it (`turn`), codex holds it for the cached login (`held`, [`refusal_held`]) or an earlier
+/// process kept it (`kept`, [`refusal_kept`]). A reused token (`Exhausted`) stays a stop: no
+/// record here or in aterm can show it was spent within one login's own lineage. `Expired`,
+/// or no reason known at all (codex sent nothing, as while aterm's refresh journal names the
+/// login), forbids nothing: then aterm's record decides. This is only ever a veto, never
+/// authority to move.
+pub(crate) fn refusal_vetoes_move(
+    turn: Option<RefreshTokenFailedReason>,
+    held: Option<RefreshTokenFailedReason>,
+    kept: Option<RefreshTokenFailedReason>,
+) -> bool {
+    [turn, held, kept]
+        .into_iter()
+        .flatten()
+        .any(|reason| reason != RefreshTokenFailedReason::Expired)
 }
 
 #[cfg(test)]

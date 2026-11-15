@@ -78,7 +78,14 @@ deletion commit called them "still called"; only their own tests call them.)
   background shell or waiting box is under way (see "In the TUI" and "At aterm's
   signal"). Sub-agents at rest and anything else held only in memory end with the
   old process. A session that left rest in the moment of the signal gets its one
-  carry-on (CONTRACT §5); an idle one comes back idle.
+  carry-on (CONTRACT §5); an idle one comes back idle. One waiting at a recorded
+  usage wall comes back at that wall, bound to the login moved to: that login's
+  next accepted usage read that permits the wall's bucket resumes it at once, the
+  retry rung the old login's tries reached dropped at the move (no rung is kept per
+  login, so a move back starts that login's ladder over too), and the deadline its
+  record carried stays the latest it waits (CONTRACT §5, the quota wake; before
+  2026-11-14 it waited out the old login's reset, and until `1d171802e3` the old
+  login's rung still paced that first resume).
 - **Background terminals stop it.** A background terminal (a dev server, a watch
   build) keeps the record `busy` for as long as it runs, and the restart would end
   it, so the move is refused up front, by codex-alab and by aterm alike (an outside

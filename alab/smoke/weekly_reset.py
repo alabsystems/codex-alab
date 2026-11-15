@@ -5,6 +5,8 @@
 
 Builds nothing. Supply --codex /absolute/binary or --package /absolute/package.
 All cases retain commands, guardian outcomes, native events and HTTP traces.
+Backend requests require the fixture bearer and account headers; traces retain
+only presence and match booleans for those headers.
 """
 import argparse
 import base64
@@ -49,12 +51,15 @@ DEADLINE_OUTAGE_CASES = ("usage-outage-deadline", "credit-list-outage-deadline")
 PROPAGATION_CASES = ("propagating-reset", "lost-ack-propagation")
 TWO_CREDITS = ("stale-allowance-credit", *PROPAGATION_CASES, "repeated-same-cycle", "stale-credit-ledger", "selected-no-credit")
 TWO_TOOLS = ("shared-credit", "repeated-same-cycle", "stale-credit-ledger", "unused-pending")
-PREFLIGHT_CASES = ("preflight-five-hour", "preflight-weekly", "preflight-weekly-24h")
-POLICY_PREFLIGHT_CASES = ("preflight-below-99", "preflight-beyond-24h", "preflight-mixed-windows")
-POLICY_BLOCKED_CASES = (*POLICY_PREFLIGHT_CASES, "recovery-below-99", "recovery-beyond-24h")
-POLICY_POLL_CASES = ("preflight-beyond-24h", "preflight-mixed-windows", "recovery-beyond-24h")
-SUCCESS_CASES = ("spent-retry-deadline", *DEADLINE_OUTAGE_CASES, "stale-allowance-credit", *OUTAGE_CASES, "shared-credit", "natural-reset", "committed-ack", "stale-reset-credit", *PROPAGATION_CASES, "near-reset", "late-credit", "recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit", *PREFLIGHT_CASES)
-CASE_NAMES = (*SUCCESS_CASES, *POLICY_BLOCKED_CASES, "stale-credit-ledger", "stale-restored", "identity-mismatch", "no-credit", "unrelated-provider")
+PREPOST_NEGATIVE_CASES = ("prepost-recovery-shifted", "prepost-recovery-foreign", "prepost-recovery-below-99")
+PREPOST_CASES = ("prepost-recovery-restored", *PREPOST_NEGATIVE_CASES,
+                 "prepost-recovery-denied", "prepost-preflight-99")
+PREFLIGHT_CASES = ("preflight-five-hour", "preflight-weekly", "preflight-weekly-24h", "preflight-beyond-24h", "preflight-weekly-25h", "prepost-preflight-99")
+POLICY_PREFLIGHT_CASES = ("preflight-below-99", "preflight-elapsed-reset", "preflight-mixed-windows")
+POLICY_BLOCKED_CASES = (*POLICY_PREFLIGHT_CASES, "recovery-below-99", "recovery-elapsed-reset")
+POLICY_POLL_CASES = ("preflight-elapsed-reset", "preflight-mixed-windows", "recovery-elapsed-reset")
+SUCCESS_CASES = ("recovery-beyond-24h", "recovery-weekly-25h", "prepost-recovery-restored", "prepost-recovery-denied", "spent-retry-deadline", *DEADLINE_OUTAGE_CASES, "stale-allowance-credit", *OUTAGE_CASES, "shared-credit", "natural-reset", "committed-ack", "stale-reset-credit", *PROPAGATION_CASES, "near-reset", "late-credit", "recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit", *PREFLIGHT_CASES)
+CASE_NAMES = (*SUCCESS_CASES, *POLICY_BLOCKED_CASES, *PREPOST_NEGATIVE_CASES, "stale-credit-ledger", "stale-restored", "identity-mismatch", "no-credit", "unrelated-provider")
 
 def require(condition, message):
     if not condition:
@@ -207,9 +212,12 @@ class Mock:
     def __init__(self, name):
         self.name = name
         reset_delay = (90 if name == "natural-reset" else 4 * 60 if name == "near-reset"
-                       else 25 * 3600 if name in ("preflight-beyond-24h", "recovery-beyond-24h", "preflight-mixed-windows")
+                       else -3600 if name == "preflight-mixed-windows"
+                       else 25 * 3600 if name in ("preflight-beyond-24h", "recovery-beyond-24h", "preflight-weekly-25h", "recovery-weekly-25h")
                        else 24 * 3600 if name == "preflight-weekly-24h" else 13 * 3600)
-        self.reset = int(time.time()) + reset_delay
+        now = int(time.time())
+        self.reset = now + reset_delay
+        self.five_hour_reset = now + 3600
         self.credit = name not in ("no-credit", "late-credit", "natural-reset")
         self.consumed = name == "unused-pending"
         self.requests = []
@@ -222,12 +230,16 @@ class Mock:
         self.spent = []
         self.declined = []
         self.wall_usage_reads = 0
-        self.propagation_reads = 0
+        self.propagation_started = None
         self.partial_receipt_path = None
         self.receipt_dir = None
         self.stale_allowance_reads = 0
+        self.credit_listings = 0
+        self.post_selection_reads = 0
+        self.expected_access_token = None
 
     def usage(self):
+        now = int(time.time())
         preflight = self.name in PREFLIGHT_CASES or (self.name in POLICY_PREFLIGHT_CASES and len(self.models) < 2)
         healthy = self.consumed or (not preflight and len(self.models) < 2)
         if len(self.models) >= 2:
@@ -242,10 +254,14 @@ class Mock:
             healthy = True
             reset += 604800
         if self.name == "stale-reset-credit" and self.wall_usage_reads == 1:
-            reset = int(time.time()) - 60
+            reset = now - 60
+        if self.name in ("preflight-elapsed-reset", "recovery-elapsed-reset"):
+            # The provider's 429 deadline remains ahead while its usage read
+            # reports an elapsed refresh. Polling must not spend on that stale read.
+            reset = now - 60
         if self.name in PROPAGATION_CASES and self.consumed:
-            self.propagation_reads += 1
-            healthy = self.propagation_reads >= (4 if self.name == "lost-ack-propagation" else 3)
+            healthy = (self.propagation_started is not None
+                       and time.monotonic() - self.propagation_started >= 60)
             reset += 3600
         available = int(self.credit and not self.consumed)
         if self.name in TWO_CREDITS:
@@ -254,24 +270,49 @@ class Mock:
                 available = 2
         elif self.name == "unused-pending":
             available = int(not self.spent)
-        return {"account_id": "other-account" if self.name == "identity-mismatch" else ACCOUNT,
+        value = {"account_id": "other-account" if self.name == "identity-mismatch" else ACCOUNT,
                 "user_id": USER, "plan_type": "pro",
                 "rate_limit": {"allowed": healthy or preflight, "limit_reached": not (healthy or preflight),
                     "primary_window": {"used_percent": (99 if self.name == "preflight-five-hour" and not healthy
                                                        else 95 if self.name == "preflight-below-99"
                                                        else 98 if self.name == "preflight-mixed-windows" else 0), "limit_window_seconds": 18000,
-                        "reset_after_seconds": 3600, "reset_at": int(time.time()) + 3600},
+                        "reset_after_seconds": self.five_hour_reset - now, "reset_at": self.five_hour_reset},
                     "secondary_window": {"used_percent": (0 if healthy or self.name in ("preflight-five-hour", "preflight-below-99")
                                                          else 98 if self.name == "recovery-below-99"
-                                                         else 99 if preflight else 100),
+                                                         else 99 if preflight or self.name == "recovery-weekly-25h" else 100),
                         "limit_window_seconds": 604800,
-                        "reset_after_seconds": reset - int(time.time()), "reset_at": reset}},
+                        "reset_after_seconds": reset - now, "reset_at": reset}},
                 "rate_limit_reset_credits": {"available_count": available}}
+        if self.name in PREPOST_CASES and self.credit_listings and not self.consumed:
+            self.post_selection_reads += 1
+            window = value["rate_limit"]["secondary_window"]
+            if self.name == "prepost-recovery-restored":
+                # The first fresh read is restored but still at99%; recovery
+                # must require DENIED. The subsequent sampler sees ordinary
+                # headroom, so its independent preflight has no reason to POST.
+                value["rate_limit"].update(allowed=True, limit_reached=False)
+                window["used_percent"] = 99 if self.post_selection_reads == 1 else 0
+            elif self.name == "prepost-recovery-shifted":
+                # Every eligibility/fresh-read pair differs, even when the
+                # retained credit is reused without another list request.
+                require(self.post_selection_reads <= 512, "excessive adversarial usage reads")
+                window["reset_at"] += self.post_selection_reads * 60
+                window["reset_after_seconds"] += self.post_selection_reads * 60
+            elif self.name == "prepost-recovery-foreign":
+                value["account_id"] = "other-account"
+            elif self.name == "prepost-recovery-below-99":
+                window["used_percent"] = 98
+        return value
 
-    def reply(self, method, path, body):
+    def reply(self, method, path, body, *, authentication=None):
         with self.lock:
             record = {"method": method, "path": path, "body": body, "at": time.monotonic()}
             self.requests.append(record)
+            if authentication is not None:
+                record["authentication"] = authentication
+                if not all(authentication.values()):
+                    record.update(status=401, fixtureError="backend fixture authentication mismatch")
+                    return 401, b'{"error":"fixture authentication mismatch"}', "application/json"
             if method == "POST" and path == "/v1/responses":
                 self.models.append(body)
                 number = len(self.models)
@@ -338,7 +379,8 @@ class Mock:
                     record["quotaResetUnix"] = self.reset
                     return 429, json.dumps({"error": {"type": "usage_limit_reached",
                         "message": "Fixture weekly quota exhausted", "resets_at": self.reset}}).encode(), "application/json"
-                naturally_restored = self.name == "natural-reset" and self.wall_usage_reads >= 2
+                naturally_restored = ((self.name == "natural-reset" and self.wall_usage_reads >= 2)
+                                      or (self.name == "prepost-recovery-restored" and self.post_selection_reads > 0))
                 if self.name in DEADLINE_OUTAGE_CASES:
                     record["serverUnix"] = int(time.time())
                     naturally_restored = record["serverUnix"] >= self.reset
@@ -355,6 +397,8 @@ class Mock:
                 return 403, b'{"error":{"message":"Unexpected model retry"}}', "application/json"
             if method == "GET" and path == "/backend-api/wham/usage":
                 value = self.usage()
+                if self.credit_listings:
+                    record["afterCreditSelection"] = self.credit_listings
                 if ((self.name == "usage-outage" and self.wall_usage_reads == 1)
                         or (self.name == "usage-outage-deadline" and len(self.models) >= 2)):
                     record["status"] = 503
@@ -386,19 +430,25 @@ class Mock:
                             value["credits"] = [credit for credit in value["credits"]
                                                 if credit["id"] not in self.spent + self.declined]
                         value["available_count"] = len(value["credits"])
+                self.credit_listings += 1
+                record["selectionNumber"] = self.credit_listings
             elif method == "POST" and path == "/backend-api/wham/rate-limit-reset-credits/consume":
                 latest = next((request["response"] for request in reversed(self.requests[:-1])
                                if request["path"].endswith("/usage") and "rate_limit" in request.get("response", {})), None)
                 now = int(time.time())
                 record["serverUnix"] = now
+                if self.name in PREPOST_CASES:
+                    fresh = [request for request in self.requests[:-1]
+                             if request["path"].endswith("/usage") and request.get("afterCreditSelection")]
+                    require(fresh, "redemption POST preceded its post-selection usage read")
                 require(latest is not None and latest["account_id"] == ACCOUNT and latest["user_id"] == USER
                         and any(isinstance(window.get("used_percent"), (int, float))
                                 and math.isfinite(window["used_percent"]) and window["used_percent"] >= 99
                                 and window.get("limit_window_seconds") in (18000, 604800)
                                 and isinstance(window.get("reset_at"), int)
-                                and 0 < window["reset_at"] - now <= 24 * 3600
+                                and window["reset_at"] > now
                                 for window in (latest["rate_limit"]["primary_window"], latest["rate_limit"]["secondary_window"])),
-                        "redemption policy requires >=99% and <=24h on the same current window")
+                        "redemption policy requires >=99% and a future reset on the same current window")
                 if self.name == "pending-old-cycle" and body.get("credit_id") == "previous-earned-credit":
                     require(body.get("redeem_request_id") == self.old_key,
                             "pending redemption did not retain the original key")
@@ -432,6 +482,8 @@ class Mock:
                     record["response"] = {"code": "no_credit", "windows_reset": 0}
                     return 200, json.dumps(record["response"]).encode(), "application/json"
                 self.consumed = True
+                if self.name in PROPAGATION_CASES:
+                    self.propagation_started = record["at"]
                 self.spent.append(body["credit_id"])
                 value = {"code": "reset", "windows_reset": 2}
                 if self.name in ("lost-ack", "lost-ack-propagation"):
@@ -454,8 +506,23 @@ def serve(mock):
                 self.send_error(413)
                 return
             body = json.loads(self.rfile.read(length)) if length else None
+            authentication = None
+            if self.path.startswith("/backend-api/"):
+                bearer = self.headers.get_all("authorization", [])
+                account = self.headers.get_all("chatgpt-account-id", [])
+                authentication = {
+                    "authorizationPresent": bool(bearer),
+                    "authorizationMatches": (mock.expected_access_token is not None
+                                              and bearer == ["Bearer " + mock.expected_access_token]),
+                    "accountPresent": bool(account),
+                    "accountMatches": account == [ACCOUNT],
+                }
             try:
-                status, data, content_type = mock.reply(self.command, self.path, body)
+                if authentication is None:
+                    status, data, content_type = mock.reply(self.command, self.path, body)
+                else:
+                    status, data, content_type = mock.reply(self.command, self.path, body,
+                                                          authentication=authentication)
             except Exception as error:
                 with mock.lock:
                     mock.requests[-1]["fixtureError"] = str(error)
@@ -506,6 +573,7 @@ stream_max_retries = 0
         "id_token": token, "access_token": token, "refresh_token": "fixture-refresh",
         "account_id": ACCOUNT}, "last_refresh": datetime.datetime.now(datetime.timezone.utc).isoformat()})
     (root / "codex-home/auth.json").chmod(0o600)
+    return token
 
 
 def case(executable, output, name):
@@ -521,7 +589,7 @@ def case(executable, output, name):
         try:
             # A request appearing in the server log does not prove its response
             # reached recovery. A second paced poll witnesses a completed wait loop.
-            retained = name in ("no-credit", "stale-credit-ledger", "stale-restored", *POLICY_POLL_CASES)
+            retained = name in ("no-credit", "stale-credit-ledger", "stale-restored", *POLICY_POLL_CASES, *PREPOST_NEGATIVE_CASES)
 
             def retained_wait():
                 if not retained:
@@ -535,7 +603,7 @@ def case(executable, output, name):
                         return False
                     last_model = max(request["at"] for request in mock.requests
                                      if request["path"] == "/v1/responses")
-                    endpoint = "/usage" if name == "stale-restored" or name in POLICY_POLL_CASES else "/rate-limit-reset-credits"
+                    endpoint = "/usage" if name == "stale-restored" or name in (*POLICY_POLL_CASES, *PREPOST_NEGATIVE_CASES) else "/rate-limit-reset-credits"
                     polls = [request for request in mock.requests
                              if request["path"].endswith(endpoint)
                              and request["at"] > last_model]
@@ -575,7 +643,8 @@ def case(executable, output, name):
                     pass
 
     try:
-        configure(root, server.server_port, openai_auth=name != "unrelated-provider")
+        mock.expected_access_token = configure(root, server.server_port,
+                                               openai_auth=name != "unrelated-provider")
         base = f"http://127.0.0.1:{server.server_port}/backend-api"
         account_key = hashlib.sha256(f"{base}\0{ACCOUNT}\0{USER}".encode()).hexdigest()
         mock.account_key = account_key
@@ -626,20 +695,33 @@ def case(executable, output, name):
                      for part in item.get("content", []) if isinstance(part, dict)]
         require(user_texts.count(PROMPT) == 1, "original input lost or duplicated")
     account_requests = [request for request in mock.requests if request["path"].startswith("/backend-api/")]
+    require(all(request.get("authentication") is not None
+                and all(request["authentication"].values()) for request in account_requests),
+            "backend request lacks verified fixture authentication")
     if name == "unrelated-provider":
         require(not account_requests, "unrelated provider consulted the stored ChatGPT account")
     else:
         require(any(request["path"] == "/backend-api/wham/usage" for request in mock.requests),
                 "automatic weekly quota check missing")
     consumes = [request for request in mock.requests if request["path"].endswith("/consume")]
+    previous_post = float("-inf")
+    for post in consumes:
+        preceding = [request for request in account_requests if request["at"] < post["at"]]
+        latest = preceding[-1] if preceding else {}
+        require(latest.get("method") == "GET" and latest.get("path", "").endswith("/usage")
+                and "rate_limit" in latest.get("response", {})
+                and all(latest.get("authentication", {}).values())
+                and previous_post < latest["at"] < post["at"],
+                "redemption POST lacks a fresh authenticated usage GET")
+        previous_post = post["at"]
     if name in SUCCESS_CASES:
         expected_models = 2 if name in PREFLIGHT_CASES else (4 if name in ("stale-allowance-credit", "spent-retry-deadline") else 5 if name in TWO_TOOLS else 3)
         require(code == 0 and len(mock.models) == expected_models, "weekly reset did not recover")
         expected_consumes = 2 if name in ("stale-allowance-credit", "lost-ack-propagation", "pending-old-cycle", "repeated-same-cycle", "selected-no-credit") else 1
-        if name == "natural-reset" or name in DEADLINE_OUTAGE_CASES:
+        if name in ("natural-reset", "prepost-recovery-restored") or name in DEADLINE_OUTAGE_CASES:
             expected_consumes = 0
         require(len(consumes) == expected_consumes
-                and (mock.consumed or name == "natural-reset" or name in DEADLINE_OUTAGE_CASES),
+                and (mock.consumed or name in ("natural-reset", "prepost-recovery-restored") or name in DEADLINE_OUTAGE_CASES),
                 "earned credit not consumed exactly once after pending reconciliation")
         if name in DEADLINE_OUTAGE_CASES:
             models = [request for request in mock.requests if request["path"] == "/v1/responses"]
@@ -663,11 +745,17 @@ def case(executable, output, name):
             denied_at = [request["at"] for request in mock.requests if "quotaResetUnix" in request][-1]
             reads = [request for request in mock.requests if request["path"].endswith("/usage")
                      and denied_at < request["at"] < consumes[1]["at"]]
-            require(len(reads) == 2 and reads[1]["at"] - reads[0]["at"] >= 29,
+            require(len(reads) == 3 and reads[1]["at"] - reads[0]["at"] >= 29,
                     "spent retry did not retain a paced usage poll")
             require(reads[0]["response"]["rate_limit"]["allowed"] is True
-                    and reads[1]["response"]["rate_limit"]["allowed"] is False,
+                    and all(read["response"]["rate_limit"]["allowed"] is False
+                            for read in reads[1:]),
                     "fixture did not reconcile stale healthy usage with current exhaustion")
+            lists = [request for request in mock.requests
+                     if request["path"].endswith("/rate-limit-reset-credits")
+                     and reads[1]["at"] < request["at"] < consumes[1]["at"]]
+            require(len(lists) == 1 and lists[0]["at"] < reads[2]["at"] < consumes[1]["at"],
+                    "redemption did not recheck usage after listing the next earned credit")
             require([request["body"]["credit_id"] for request in consumes]
                     == ["earned-weekly-credit", "earned-weekly-credit-2"],
                     "current exhaustion did not redeem the next earned credit")
@@ -745,19 +833,20 @@ def case(executable, output, name):
                       and request.get("response", {}).get("rate_limit", {}).get("allowed") is False]
             lists = [request for request in mock.requests
                      if request["path"].endswith("/rate-limit-reset-credits")]
-            require(len(denied) == 2 and denied[1]["at"] - denied[0]["at"] >= 29,
+            require(len(denied) == 3 and denied[1]["at"] - denied[0]["at"] >= 29,
                     "stale reset did not retain a paced usage poll")
             require(denied[0]["response"]["rate_limit"]["secondary_window"]["reset_after_seconds"] < 0
-                    and denied[1]["response"]["rate_limit"]["secondary_window"]["reset_after_seconds"] > 0,
+                    and all(request["response"]["rate_limit"]["secondary_window"]["reset_after_seconds"] > 0
+                            for request in denied[1:]),
                     "fixture did not advance stale usage to a fresh cycle")
             require(len(lists) == 1 and lists[0]["at"] > denied[1]["at"]
-                    and consumes[0]["at"] > lists[0]["at"],
+                    and lists[0]["at"] < denied[2]["at"] < consumes[0]["at"],
                     "stale usage authorized a credit list or redemption")
         if name in PROPAGATION_CASES:
             denied = [request for request in mock.requests
                       if request["path"].endswith("/usage") and request["at"] > consumes[0]["at"]
                       and request.get("response", {}).get("rate_limit", {}).get("allowed") is False]
-            require(len(denied) == (3 if name == "lost-ack-propagation" else 2)
+            require(len(denied) == (4 if name == "lost-ack-propagation" else 2)
                     and mock.spent == ["earned-weekly-credit"],
                     "delayed usage propagation spent an additional reset")
             require(all(request["response"]["rate_limit"]["secondary_window"]["reset_at"] > mock.reset
@@ -801,6 +890,16 @@ def case(executable, output, name):
             require(mock.spent == ["earned-weekly-credit"], "external restore excluded an unspent earned credit")
             require(consumes[0]["body"]["redeem_request_id"] == mock.old_key,
                     "new depletion abandoned the original ambiguous redemption key")
+        if name == "recovery-weekly-25h":
+            denied = [request["response"] for request in mock.requests
+                      if request["path"].endswith("/usage")
+                      and request.get("response", {}).get("rate_limit", {}).get("allowed") is False]
+            require(denied and all(reading["rate_limit"]["primary_window"]["used_percent"] == 0
+                                  and reading["rate_limit"]["secondary_window"]["used_percent"] == 99
+                                  and reading["rate_limit"]["secondary_window"]["limit_window_seconds"] == 604800
+                                  and reading["rate_limit"]["secondary_window"]["reset_after_seconds"] > 24 * 3600
+                                  for reading in denied),
+                    "25-hour recovery did not observe its denied 99% weekly window")
         if name in PREFLIGHT_CASES:
             first_model = next(request for request in mock.requests if request["path"] == "/v1/responses")
             require(consumes[0]["at"] < first_model["at"], "reset happened after model work started")
@@ -879,9 +978,24 @@ def case(executable, output, name):
                                 and request["response"]["rate_limit"]["allowed"] is True
                                 for request in mock.requests), "policy case skipped the preflight boundary")
         require(code != 0 and "turn.completed" not in types, "ineligible case reported success")
+    if name in PREPOST_CASES:
+        lists = [request for request in mock.requests if "selectionNumber" in request]
+        fresh = [request for request in mock.requests if request.get("afterCreditSelection")]
+        require(lists and fresh and lists[0]["at"] < fresh[0]["at"],
+                "fixture never reached usage after actual credit selection")
+        if name == "prepost-recovery-restored":
+            first = fresh[0]["response"]["rate_limit"]
+            require(first["allowed"] is True and first["secondary_window"]["used_percent"] == 99
+                    and not consumes, "restored recovery spent a credit at99%")
+        if name in PREPOST_NEGATIVE_CASES:
+            require(not consumes and not mock.spent, "changed post-selection usage authorized a POST")
+        for post in consumes:
+            require(any(lists[0]["at"] < read["at"] < post["at"] for read in fresh),
+                    "POST lacks an actual post-selection usage observation")
     result = {"case": name, "passed": True, "exit": code, "cancelled": cancelled,
               "guardianTimedOut": guardian["timed_out"], "rawReturncode": guardian["returncode"],
-              "modelRequests": len(mock.models), "consumeRequests": len(consumes), "events": types}
+              "authenticatedBackendRequests": len(account_requests),
+              "modelRequests": len(mock.models), "consumeRequests": len(consumes), "postSelectionUsageReads": mock.post_selection_reads, "events": types}
     write_json(root / "result.json", result)
     return result
 

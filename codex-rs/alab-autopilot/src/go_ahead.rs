@@ -7,7 +7,7 @@
 //! only a person's keeps the policy's other acts. It is lexical, like every reader beside it
 //! (ATERM-KI-1020-2): `fixtures/go-ahead-table.txt` is the behaviour it holds to.
 //!
-//! PROVENANCE: PORTED VERBATIM from aterm's `crates/aterm-agent/src/supervise/policy/go_ahead.rs`
+//! PROVENANCE: Originally ported from aterm's `crates/aterm-agent/src/supervise/policy/go_ahead.rs`
 //! at aterm main `79002d08ce` (2026-10-30; the go-ahead with every review fix through review 9,
 //! main's reader exclusions from `04716aa773`: a consent someone else gives, S2, and a need whose
 //! work the prose says waits on a person, S7; and main's owner classification, `eeb25b6823`,
@@ -16,7 +16,7 @@
 //! while `by EOD` and `by May` name no one): the texts ([`RULE_GO_AHEAD`], `never_a_need!`,
 //! [`NEVER_A_NEED`], [`GO_AHEAD_ANSWER`], [`unless_held`], [`GO_AHEAD_ROOM`], [`GO_AHEAD_DROP`], [`GO_AHEAD_OTHERS`], the token and quote
 //! frames), the reader ([`Park`], [`Park::said`], [`parks`], [`parked`] and every helper through
-//! `names_room`) and `own_cleanup_verbs`, item for item, only their paths changed: aterm's
+//! `names_room`) and `own_cleanup_verbs`, with their paths adapted: aterm's
 //! `turn_end` is codex-alab's [`crate::words`] (`DESTRUCTIVE_WORDS`, `fit_units`, `force_push`,
 //! `STOP_PHRASES`) and its `TurnEndState` is [`crate::decide::ThreadState`]. Beside them, from
 //! aterm's `turn_end.rs` at the same commit: [`GO_AHEAD_REFUSED`], [`GO_AHEAD_HOUR`],
@@ -123,6 +123,8 @@ pub const QUOTE_CLOSE: &str = "\".";
 /// A reply's park on a person's go-ahead for its own reversible work ([`parked`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Park {
+    /// Stored-credential preconditions to resolve before answering the go-ahead.
+    pub credential_lines: Vec<String>,
     /// The sentence or need that parks, as written (hidden characters spaced, cut to [`QUOTE_UNITS`]).
     pub quote: String,
     /// The word the agent asked the person to say (`say "rerun the checks"`), as written; none
@@ -281,7 +283,25 @@ pub fn parked(turn_said: &str, tail: &str) -> Option<Park> {
             .iter()
             .any(|(_, w)| w.split('-').any(|part| inflects_any(part, LANDING)))
         || units.iter().any(names_where);
+    let mut credential_lines = Vec::new();
+    let work = work_bases(&unit);
+    for context in units.iter().chain(std::iter::once(&unit)) {
+        let context_work = work_bases(context);
+        if (context_work.is_empty() || context_work.iter().any(|base| work.contains(base)))
+            && !reports_done(context)
+            && !attributed(context)
+            && !person_only(context)
+            && !person_first(context)
+            && (0..context.len()).any(|i| stored_credential_at(context, i) && lacks(context, i))
+        {
+            let line = needs::sanitized(&context.said);
+            if !line.is_empty() && !credential_lines.contains(&line) {
+                credential_lines.push(line);
+            }
+        }
+    }
     Some(Park {
+        credential_lines,
         quote: fit_units(&needs::sanitized(&unit.said), QUOTE_UNITS).into_owned(),
         token,
         waits_room: room,
@@ -295,6 +315,20 @@ pub fn parked(turn_said: &str, tail: &str) -> Option<Park> {
 /// The acts that land the agent's work, in any inflection: a park that names one parks unlanded
 /// work by its own words ([`Park::lands`]).
 const LANDING: &[&str] = &["push", "merge", "commit", "land", "rebase"];
+
+/// A completed-work report starts with a past-tense verb, optionally after its speaker.
+fn reports_done(unit: &Unit) -> bool {
+    const IRREGULAR: &[&str] = &[
+        "rewrote", "wrote", "made", "built", "rebuilt", "ran", "reran", "split", "cut", "put",
+        "set", "kept", "found", "took", "brought",
+    ];
+    let first = usize::from(matches!(
+        unit.word(0),
+        "i" | "i've" | "we" | "we've" | "just"
+    ));
+    let word = unit.word(first);
+    (word.len() > 4 && word.ends_with("ed")) || IRREGULAR.contains(&word)
+}
 
 /// A word to say as [`parked`] compares it with a word withheld: hidden characters spaced,
 /// lowercased, its digits folded.
@@ -382,21 +416,21 @@ fn standing_act(word: &str) -> bool {
     })
 }
 
-/// Whether a sentence of the turn's prose says the work `need` would do lacks or waits on what
-/// only a person can give: a [`person_only`] word [`lacks`] reads so, in a sentence that names
-/// some of the need's work ([`work_bases`]: `The build needs your GitHub token, which I don't
-/// have.` or `I can't push without credentials.` above `NEEDS YOU: say "go" so I can rebuild the
-/// branch and push it to main`). A sentence that names other work (`The commit needs your
-/// password`), only names the word (`The census check now flags a token`) or says the work does
-/// not need it (`I don't need your password to rebuild it`) blocks nothing, and the prose's
-/// other exclusions stay its own sentences'.
+/// Whether prose says this work lacks a person's act, or attributes stopping it to the
+/// person. The sentence must name some of the need's work ([`work_bases`]); other work
+/// blocks nothing. Stored-credential preconditions travel in [`Park::credential_lines`]
+/// instead, and a negated precondition ([`lacks`]) blocks nothing.
 fn blocked(need: &Unit, prose: &[Unit]) -> bool {
     let work = work_bases(need);
-    kept(Part::PersonOnly)
-        && prose.iter().any(|u| {
-            work_bases(u).iter().any(|base| work.contains(base))
-                && person_only_words(u).any(|(i, _)| lacks(u, i))
-        })
+    prose.iter().any(|u| {
+        work_bases(u).iter().any(|base| work.contains(base))
+            && ((kept(Part::PersonOnly) && person_only_words(u).any(|(i, _)| lacks(u, i)))
+                || (kept(Part::Attributed)
+                    && attributed(u)
+                    && u.words.iter().any(|(_, word)| {
+                        word == "held" || inflects_any(word, &["stop", "hold", "pause"])
+                    })))
+    })
 }
 
 /// The work `unit` names in its words or its code (`` `git push` ``), each as its base: a
@@ -1544,11 +1578,22 @@ fn attributed(unit: &Unit) -> bool {
     PHRASES.iter().any(|p| unit.has(p))
 }
 
-/// What only a person can give: a credential, a secret or sign-in, physical access, a Mac
+/// What only a person can give: a sign-in, physical access, a Mac
 /// restart, an OS grant or its dialog, access, money (credits, a budget, a quota), customers,
 /// mail, production.
 fn person_only(unit: &Unit) -> bool {
     person_only_words(unit).any(|(i, sigil)| sigil || counts(unit, i))
+}
+
+fn stored_credential_at(unit: &Unit, i: usize) -> bool {
+    crate::credential_need::is_credential(unit.word(i))
+        || ((matches!(unit.word(i + 1), "key" | "keys")
+            || (unit.word(i) == "access" && matches!(unit.word(i + 1), "token" | "tokens")))
+            && crate::credential_need::is_credential(&format!(
+                "{} {}",
+                unit.word(i),
+                unit.word(i + 1)
+            )))
 }
 
 /// The indexes of the words [`person_only`] reads, each with whether it is a `$` word or a
@@ -1660,7 +1705,7 @@ fn person_only_words(unit: &Unit) -> impl Iterator<Item = (usize, bool)> + '_ {
             || PHRASES.iter().any(|p| unit.at(i, p))
             || (matches!(w, "sign" | "signs") && (i + 1..i + 5).any(|k| unit.word(k) == "in"))
             || (matches!(w, "permission" | "permissions") && consent_at(unit, i).is_none());
-        hit.then_some((i, sigil))
+        (hit && (sigil || !stored_credential_at(unit, i))).then_some((i, sigil))
     })
 }
 
@@ -2443,9 +2488,13 @@ fn unclaimed_request(unit: &Unit) -> bool {
     })
 }
 
+/// A canonical tab ID, or an older session reference abbreviated in prose.
+/// The native wire and graph readers still require the exact canonical spelling.
 fn session_id(word: &str) -> bool {
-    word.strip_prefix("s-")
-        .is_some_and(|hex| hex.len() >= 6 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+    codex_alab_aterm::locate::valid_sid(word)
+        || word
+            .strip_prefix("s-")
+            .is_some_and(|hex| hex.len() >= 6 && hex.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// A decline, a rejection or a deadlock: a go-ahead does not lift those.

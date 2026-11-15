@@ -261,6 +261,7 @@ impl ThreadGoalRequestProcessor {
         }
 
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        if let Some(snapshot) = self.goal_service.alab_runtime_status_snapshot(thread_id) { crate::extensions::alab_goal_status::send(&self.outgoing, snapshot).await; } // ALAB(storage-status): reset resync bypasses any earlier stalled listener and precedes this request DB await.
         let state_db = self
             .state_db_for_materialized_thread(thread_id, GoalAccess::Read)
             .await?;
@@ -438,6 +439,7 @@ impl ThreadGoalRequestProcessor {
     }
 
     pub(crate) async fn emit_thread_goal_snapshot(&self, thread_id: ThreadId) {
+        self.goal_service.alab_emit_runtime_status(thread_id); // ALAB(storage-status): publish live metadata before opening/reading the goal store.
         let state_db = match self
             .state_db_for_materialized_thread(thread_id, GoalAccess::Read)
             .await

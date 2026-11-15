@@ -21,6 +21,7 @@ use std::time::Duration;
 
 fn intent(wall: RecoveryWall) -> Recovery {
     Recovery {
+        clock: None,
         thread: THREAD.into(),
         turn_id: "failed-turn".into(),
         point_at_ms: 1_000,
@@ -33,10 +34,61 @@ fn intent(wall: RecoveryWall) -> Recovery {
 
 fn in_flight_intent() -> InFlightRetry {
     InFlightRetry {
+        clock: None,
         thread: THREAD.into(),
         turn_id: "waiting-native-turn".into(),
         not_before_ms: 1_800_000,
     }
+}
+
+fn clock_note() -> codex_alab_core::recovery_clock::Anchor {
+    // Codec metadata only: this fixture does not observe a native boot or clock.
+    codex_alab_core::recovery_clock::Anchor {
+        boot_id: "codec-fixture_boot-42".into(),
+        continuous_ns: 9_000_000_000,
+        epoch_ms: 1_000,
+    }
+}
+
+fn pacing_clock_record(home: &std::path::Path) -> Record {
+    let shared = shared_with(launch(4242, true));
+    shared.observe(&frame(None, ProgramState::Working, home), 1_000);
+    let writer = Writer::new(shared, home.into(), Duration::ZERO, None);
+    writer.write_now().expect("record");
+    let mut original = record::read(&writer.path()).expect("record");
+    let mut recovery = intent(RecoveryWall::Server {
+        what: "at capacity".into(),
+        cut_off: false,
+        retry_at_ms: Some(1_700_000),
+    });
+    recovery.clock = Some(clock_note());
+    original.recovery = Some(recovery.into());
+    let mut retry = in_flight_intent();
+    retry.clock = Some(clock_note());
+    original.in_flight_retry = Some(retry.into());
+    original
+}
+
+fn raw_record_with_clock_members(original: &Record, field: &str, members: &str) -> String {
+    let mut value = serde_json::to_value(original).expect("record JSON");
+    let parent = value[field].as_object_mut().expect("known pacing object");
+    assert!(parent.remove("clock").is_some());
+    let parent = serde_json::to_string(parent).expect("pacing fields");
+    let rest = parent.strip_prefix('{').expect("pacing object opening");
+    let raw_parent = ["{", members, ",", rest].concat();
+    value[field] = serde_json::Value::Null;
+    let encoded = serde_json::to_string(&value).expect("full record JSON");
+    let needle = format!("\"{field}\":null");
+    assert_eq!(encoded.matches(&needle).count(), 1);
+    // Splice only after serialization: a Value cannot retain repeated JSON keys.
+    encoded.replacen(&needle, &format!("\"{field}\":{raw_parent}"), 1)
+}
+
+fn decode_raw_clock_record(raw: &str, path: &std::path::Path) -> [(&'static str, Record); 2] {
+    let direct = serde_json::from_slice::<Record>(raw.as_bytes()).expect("full record bytes");
+    std::fs::write(path, raw).expect("private raw record");
+    let file = record::read(path).expect("raw record remains readable");
+    [("serde", direct), ("file", file)]
 }
 
 #[test]
@@ -285,7 +337,8 @@ fn writer_round_trips_in_flight_deadlines_without_turning_them_into_recovery() {
     let home = tempfile::tempdir().expect("scratch records");
     let shared = shared_with(launch(4242, true));
     shared.observe(&frame(None, ProgramState::Working, home.path()), 1_000);
-    let retry = in_flight_intent();
+    let mut retry = in_flight_intent();
+    retry.clock = Some(clock_note());
     shared.set_in_flight_retry(Some(retry.clone()));
     let writer = Writer::new(shared, home.path().into(), Duration::ZERO, None);
     writer.write_now().expect("persist native wait");
@@ -302,10 +355,14 @@ fn writer_round_trips_in_flight_deadlines_without_turning_them_into_recovery() {
     let next = shared_with(launch(4242, true));
     let next_writer = Writer::new(next, home.path().into(), Duration::ZERO, None);
     next_writer.prepare();
+    let mut imported = retry;
+    imported.clock = None;
     assert_eq!(
         next.inherited().and_then(|old| old.in_flight_retry.clone()),
-        Some(retry)
+        Some(imported.clone()),
+        "a different boot loses only the clock, not the known wait"
     );
+    assert_eq!(next.in_flight_retry(), Some(imported));
 
     shared.set_in_flight_retry(Some(InFlightRetry {
         thread: "another-thread".into(),
@@ -345,6 +402,209 @@ fn malformed_in_flight_metadata_discards_only_the_optional_field() {
             serde_json::from_value::<Record>(candidate).expect("record remains valid"),
             original
         );
+    }
+}
+
+#[test]
+fn malformed_or_missing_clocks_keep_present_recovery_and_in_flight_waits() {
+    let home = tempfile::tempdir().expect("scratch records");
+    let shared = shared_with(launch(4242, true));
+    shared.observe(&frame(None, ProgramState::Working, home.path()), 1_000);
+    let writer = Writer::new(shared, home.path().into(), Duration::ZERO, None);
+    writer.write_now().expect("record");
+    let mut expected = record::read(&writer.path()).expect("record");
+    expected.recovery = Some(
+        intent(RecoveryWall::Server {
+            what: "at capacity".into(),
+            cut_off: false,
+            retry_at_ms: Some(1_700_000),
+        })
+        .into(),
+    );
+    expected.in_flight_retry = Some(in_flight_intent().into());
+    let old = serde_json::to_value(&expected).expect("JSON");
+    assert!(old["recovery"].get("clock").is_none());
+    assert!(old["inFlightRetry"].get("clock").is_none());
+    assert_eq!(
+        serde_json::from_value::<Record>(old.clone()).expect("legacy pacing record"),
+        expected
+    );
+    for bad in [
+        serde_json::Value::Null,
+        serde_json::json!("future clock note"),
+        serde_json::json!({"bootId":"codec-fixture_boot-42","continuousNs":9_000_000_000_u64,"epochMs":1_000,"kind":"awake"}),
+        serde_json::json!({"bootId":"codec-fixture_boot-42","continuousNs":9_000_000_000_u64}),
+        serde_json::json!({"bootId":"codec-fixture_boot-42","continuousNs":-1,"epochMs":1_000}),
+        serde_json::json!({"bootId":"codec-fixture_boot-42","continuousNs":1.5,"epochMs":1_000}),
+        serde_json::json!({"bootId":"codec-fixture_boot-42","continuousNs":9_000_000_000_u64,"epochMs":"later"}),
+        serde_json::json!({"bootId":"","continuousNs":9_000_000_000_u64,"epochMs":1_000}),
+        serde_json::json!({"bootId":"bad boot","continuousNs":9_000_000_000_u64,"epochMs":1_000}),
+        serde_json::json!({"bootId":"界","continuousNs":9_000_000_000_u64,"epochMs":1_000}),
+        serde_json::json!({"bootId":"b".repeat(129),"continuousNs":9_000_000_000_u64,"epochMs":1_000}),
+    ] {
+        let mut candidate = old.clone();
+        candidate["recovery"]["clock"] = bad.clone();
+        candidate["inFlightRetry"]["clock"] = bad;
+        let parsed: Record =
+            serde_json::from_value(candidate).expect("pacing record remains valid");
+        assert_eq!(parsed, expected, "only the unusable clock note is lost");
+        assert_eq!(
+            parsed.recovery.map(Recovery::from),
+            expected.recovery.clone().map(Recovery::from)
+        );
+        assert_eq!(
+            parsed.in_flight_retry.map(InFlightRetry::from),
+            expected.in_flight_retry.clone().map(InFlightRetry::from)
+        );
+    }
+}
+
+#[test]
+fn duplicate_clock_fields_keep_the_known_recovery_and_in_flight_waits() {
+    let home = tempfile::tempdir().expect("scratch records");
+    let original = pacing_clock_record(home.path());
+    let path = home.path().join("duplicate-clock-fields.json");
+    let clock_value = serde_json::to_value(record::RecoveryClock::from(clock_note()))
+        .expect("valid clock object");
+    let clock = serde_json::to_string(&clock_value).expect("valid raw clock");
+    let mut mismatches = Vec::new();
+    for field in ["recovery", "inFlightRetry"] {
+        let valid = raw_record_with_clock_members(&original, field, &format!("\"clock\":{clock}"));
+        for (reader, decoded) in decode_raw_clock_record(&valid, &path) {
+            assert_eq!(decoded, original, "valid raw {field}/{reader}");
+        }
+        let mut expected = original.clone();
+        match field {
+            "recovery" => expected.recovery.as_mut().expect("known recovery").clock = None,
+            _ => expected.in_flight_retry.as_mut().expect("known wait").clock = None,
+        }
+        for (name, conflicting) in [
+            ("bootId", serde_json::json!("different-fixture_boot-43")),
+            ("continuousNs", serde_json::json!(9_000_000_001_u64)),
+            ("epochMs", serde_json::json!(1_001_u64)),
+        ] {
+            for (case, duplicate) in [
+                ("identical", clock_value[name].clone()),
+                ("conflicting", conflicting),
+            ] {
+                let prefix = clock.strip_suffix('}').expect("clock object closing");
+                let name_json = serde_json::to_string(name).expect("clock field name");
+                let value_json = serde_json::to_string(&duplicate).expect("clock field value");
+                let raw_clock = [prefix, ",", &name_json, ":", &value_json, "}"].concat();
+                assert_eq!(raw_clock.matches(&format!("\"{name}\":")).count(), 2);
+                let raw = raw_record_with_clock_members(
+                    &original,
+                    field,
+                    &format!("\"clock\":{raw_clock}"),
+                );
+                for (reader, decoded) in decode_raw_clock_record(&raw, &path) {
+                    if decoded != expected {
+                        mismatches.push(format!("{field}/{name}/{case}/{reader}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "duplicate clock fields must lose only the clock, preserving both waits and all other fields: {mismatches:?}"
+    );
+}
+
+#[test]
+fn repeated_clock_members_keep_the_known_recovery_and_in_flight_waits() {
+    let home = tempfile::tempdir().expect("scratch records");
+    let original = pacing_clock_record(home.path());
+    let path = home.path().join("repeated-clock-members.json");
+    let clock =
+        serde_json::to_string(&record::RecoveryClock::from(clock_note())).expect("valid raw clock");
+    let mut other = clock_note();
+    other.epoch_ms += 1;
+    assert!(other.valid());
+    let other = serde_json::to_string(&record::RecoveryClock::from(other))
+        .expect("another valid raw clock");
+    let mut mismatches = Vec::new();
+    for field in ["recovery", "inFlightRetry"] {
+        let valid = raw_record_with_clock_members(&original, field, &format!("\"clock\":{clock}"));
+        for (reader, decoded) in decode_raw_clock_record(&valid, &path) {
+            assert_eq!(decoded, original, "valid raw {field}/{reader}");
+        }
+        let mut expected = original.clone();
+        match field {
+            "recovery" => expected.recovery.as_mut().expect("known recovery").clock = None,
+            _ => expected.in_flight_retry.as_mut().expect("known wait").clock = None,
+        }
+        for (case, second) in [("identical", &clock), ("conflicting", &other)] {
+            let members = format!("\"clock\":{clock},\"clock\":{second}");
+            let raw = raw_record_with_clock_members(&original, field, &members);
+            for (reader, decoded) in decode_raw_clock_record(&raw, &path) {
+                if decoded != expected {
+                    mismatches.push(format!("{field}/{case}/{reader}"));
+                }
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "repeated clock members must lose only the clock, preserving both waits and all other fields: {mismatches:?}"
+    );
+}
+
+#[test]
+fn raw_clock_adapter_preserves_nonclock_values_and_numeric_refusals() {
+    let home = tempfile::tempdir().expect("scratch records");
+    let original = pacing_clock_record(home.path());
+    let path = home.path().join("nonclock-controls.json");
+    let clock =
+        serde_json::to_string(&record::RecoveryClock::from(clock_note())).expect("valid raw clock");
+    let original_json = serde_json::to_string(&original).expect("valid full record");
+    let original_bounds = original_json.matches("\"notBefore\":").count();
+    for field in ["recovery", "inFlightRetry"] {
+        // The original notBefore remains later in the parent object and wins,
+        // matching the existing Value-based treatment of non-clock fields.
+        let members = format!("\"clock\":{clock},\"notBefore\":1");
+        let raw = raw_record_with_clock_members(&original, field, &members);
+        assert_eq!(raw.matches("\"notBefore\":").count(), original_bounds + 1);
+        for (reader, decoded) in decode_raw_clock_record(&raw, &path) {
+            assert_eq!(decoded, original, "non-clock last value: {field}/{reader}");
+        }
+
+        // Preserve Value's numeric domain, including arbitrary precision when
+        // the selected dependency graph enables it.
+        let members = format!("\"clock\":{clock},\"futurePacingValue\":1e400");
+        let raw = raw_record_with_clock_members(&original, field, &members);
+        if serde_json::from_str::<serde_json::Value>(&raw).is_ok() {
+            for (reader, decoded) in decode_raw_clock_record(&raw, &path) {
+                assert_eq!(
+                    decoded, original,
+                    "supported non-clock number: {field}/{reader}"
+                );
+            }
+        } else {
+            assert!(
+                serde_json::from_slice::<Record>(raw.as_bytes()).is_err(),
+                "unsupported non-clock number must reject the full record: {field}"
+            );
+            std::fs::write(&path, &raw).expect("private raw record");
+            assert!(
+                record::read(&path).is_none(),
+                "file reader must reject the full record too: {field}"
+            );
+        }
+    }
+
+    // Nested non-clock fields retain the same recursive last-value behavior.
+    let members = format!("\"clock\":{clock}");
+    let raw = raw_record_with_clock_members(&original, "recovery", &members);
+    let needle = "\"what\":\"at capacity\"";
+    assert_eq!(raw.matches(needle).count(), 1);
+    let raw = raw.replacen(
+        needle,
+        "\"what\":\"discarded earlier\",\"what\":\"at capacity\"",
+        1,
+    );
+    for (reader, decoded) in decode_raw_clock_record(&raw, &path) {
+        assert_eq!(decoded, original, "nested non-clock last value: {reader}");
     }
 }
 
@@ -478,7 +738,10 @@ fn in_flight_metadata_waits_for_the_same_launch_proof_before_a_second_crash() {
                 &frame(Some(&rollout), ProgramState::Working, home.path()),
                 1_000,
             );
-            let retry = in_flight_intent();
+            let mut retry = in_flight_intent();
+            if case == "off" {
+                retry.clock = Some(clock_note());
+            }
             old.set_in_flight_retry(Some(retry.clone()));
             let writer = Writer::new(
                 old,
@@ -511,6 +774,7 @@ fn in_flight_metadata_waits_for_the_same_launch_proof_before_a_second_crash() {
                 Some(FakeCli::command),
             );
             next_writer.prepare();
+            retry.clock = None;
             if framed {
                 next.observe(
                     &frame(Some(&rollout), ProgramState::Working, home.path()),
@@ -628,22 +892,36 @@ fn writer_round_trips_recovery_and_reexec_keeps_the_original_deadline() {
     let shared = shared_with(launch(4242, true));
     shared.observe(&frame(None, ProgramState::Error, home.path()), 1_000);
     let writer = Writer::new(shared, home.path().into(), Duration::ZERO, None);
-    let server = intent(RecoveryWall::Server {
+    let mut server = intent(RecoveryWall::Server {
         what: "model at capacity".into(),
         cut_off: true,
         retry_at_ms: Some(1_700_000),
     });
+    server.clock = Some(clock_note());
     shared.set_recovery(Some(server.clone()));
     writer.write_now().expect("persist failure wait");
     let record = record::read(&writer.path()).expect("read writer output");
+    assert_eq!(
+        serde_json::to_value(record.recovery.as_ref().unwrap()).unwrap()["clock"],
+        serde_json::json!({"bootId":"codec-fixture_boot-42","continuousNs":9_000_000_000_u64,"epochMs":1_000})
+    );
     assert_eq!(record.recovery.map(Recovery::from), Some(server.clone()));
 
     let next = shared_with(launch(4242, true));
     let next_writer = Writer::new(next, home.path().into(), Duration::ZERO, None);
     next_writer.prepare();
+    let mut imported = server;
+    imported.clock = None;
     assert_eq!(
         next.inherited().and_then(|old| old.recovery.clone()),
-        Some(server)
+        Some(imported.clone()),
+        "the raw codec preserved the anchor; import rejects its different boot"
+    );
+    next.set_autopilot(codex_alab_core::session::Autopilot::Off);
+    assert_eq!(
+        next.recovery(),
+        Some(imported),
+        "Off cannot erase the known wait after its clock was refused"
     );
 
     let usage = intent(RecoveryWall::Usage {
@@ -748,7 +1026,9 @@ fn long_provider_details_keep_classification_and_deadlines_in_a_readable_record(
             reset_label: Some(long),
         },
     ] {
-        shared.set_recovery(Some(intent(wall)));
+        let mut recovery = intent(wall);
+        recovery.clock = Some(clock_note());
+        shared.set_recovery(Some(recovery));
         writer.write_now().expect("bounded provider detail");
         let record = record::read(&writer.path()).expect("the whole session record stays readable");
         let recovered: Recovery = record
@@ -757,6 +1037,7 @@ fn long_provider_details_keep_classification_and_deadlines_in_a_readable_record(
             .into();
         assert_eq!(recovered.turn_id, "failed-turn");
         assert_eq!(recovered.not_before_ms, 1_800_000);
+        assert_eq!(recovered.clock, Some(clock_note()));
         match recovered.wall {
             RecoveryWall::Server {
                 what, retry_at_ms, ..
@@ -901,9 +1182,9 @@ fn a_delayed_launch_probe_publishes_only_uncleared_proven_crash_recovery() {
             "person",
             "sigint",
             "resume-cleared",
-            "off-cleared",
+            "off-refused",
         ] {
-            let preserved = case == "automatic";
+            let preserved = matches!(case, "automatic" | "off-refused");
             let home = tempfile::tempdir().expect("scratch records");
             let rollout = home.path().join("rollout.jsonl");
             std::fs::write(&rollout, "{}\n").expect("materialized rollout");
@@ -912,11 +1193,14 @@ fn a_delayed_launch_probe_publishes_only_uncleared_proven_crash_recovery() {
                 &frame(Some(&rollout), ProgramState::Error, home.path()),
                 1_000,
             );
-            let recovery = intent(RecoveryWall::Server {
+            let mut recovery = intent(RecoveryWall::Server {
                 what: "model at capacity".into(),
                 cut_off: false,
                 retry_at_ms: Some(1_700_000),
             });
+            if case == "off-refused" {
+                recovery.clock = Some(clock_note());
+            }
             old.set_recovery(Some(recovery.clone()));
             let writer = Writer::new(
                 old,
@@ -945,6 +1229,7 @@ fn a_delayed_launch_probe_publishes_only_uncleared_proven_crash_recovery() {
                 Some(FakeCli::command),
             );
             next_writer.prepare();
+            recovery.clock = None;
             if framed {
                 next.observe(
                     &frame(Some(&rollout), ProgramState::Error, home.path()),
@@ -961,7 +1246,7 @@ fn a_delayed_launch_probe_publishes_only_uncleared_proven_crash_recovery() {
             );
             match case {
                 "resume-cleared" => next.set_recovery(None),
-                "off-cleared" => next.set_autopilot(Autopilot::Off),
+                "off-refused" => next.set_autopilot(Autopilot::Off),
                 _ => {}
             }
             next.set_launch_witness(Some(LaunchWitness {
@@ -1004,7 +1289,7 @@ fn a_delayed_launch_probe_publishes_only_uncleared_proven_crash_recovery() {
             assert_eq!(
                 second.recovery(),
                 preserved.then_some(recovery),
-                "{case}, framed={framed}: a second crash retains only authorized intent"
+                "{case}, framed={framed}: a second crash retains the matching wait fact"
             );
         }
     }

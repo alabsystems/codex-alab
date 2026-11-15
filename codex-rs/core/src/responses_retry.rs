@@ -127,7 +127,7 @@ pub(crate) async fn handle_response_stream_error(
     }
 
     let requires_http_fallback = err.requires_http_fallback();
-    let switched = (requires_http_fallback || retry_state.retries >= max_retries)
+    let switched = (requires_http_fallback || retry_state.retries >= max_retries || alab_capacity_retry::prefer_clean_transport(&err)) // ALAB(recovery): replay an opaque rejection without reusing websocket continuation state.
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             turn_context.model_info(),

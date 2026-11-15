@@ -223,6 +223,8 @@ async fn turn_start_failure_is_shown_without_exiting() -> Result<()> {
 #[tokio::test]
 async fn misalignment_policy_blocks_queued_turns_and_goal_resumption() -> Result<()> {
     let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    app.chat_widget
+        .set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ true);
     let checkout = tempfile::tempdir()?;
     app.config.cwd = AbsolutePathBuf::from_absolute_path(checkout.path())?;
     for args in [
@@ -348,6 +350,8 @@ async fn misalignment_policy_blocks_queued_turns_and_goal_resumption() -> Result
 #[tokio::test]
 async fn misalignment_policy_in_parent_stops_active_side_conversation() -> Result<()> {
     let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    app.chat_widget
+        .set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ true);
     let parent_thread_id = ThreadId::new();
     let side_thread_id = ThreadId::new();
     app.primary_thread_id = Some(parent_thread_id);
@@ -386,6 +390,56 @@ async fn misalignment_policy_in_parent_stops_active_side_conversation() -> Resul
             .contains("Chat stopped as a precaution")
     );
     assert_matches!(op_rx.try_recv(), Ok(Op::Interrupt));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn passive_misalignment_in_parent_does_not_interrupt_side_conversation() -> Result<()> {
+    let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let parent_thread_id = ThreadId::new();
+    let side_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(parent_thread_id);
+    app.active_thread_id = Some(side_thread_id);
+    app.side_threads
+        .insert(side_thread_id, SideThreadState::new(parent_thread_id));
+    app.chat_widget.handle_thread_session(test_thread_session(
+        side_thread_id,
+        app.config.cwd.to_path_buf(),
+    ));
+    app.chat_widget
+        .restore_user_message_to_composer("pending side turn".into());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    while op_rx.try_recv().is_ok() {}
+
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        ServerNotification::Error(ErrorNotification {
+            error: AppServerTurnError {
+                misalignment: None,
+                message: "misalignment policy violation".to_string(),
+                codex_error_info: Some(CodexErrorInfo::MisalignmentPolicyViolation),
+                additional_details: None,
+            },
+            will_retry: false,
+            thread_id: parent_thread_id.to_string(),
+            turn_id: "parent-turn".to_string(),
+        }),
+    )
+    .await?;
+
+    assert!(!app.chat_widget.has_misalignment_policy_violation());
+    assert!(app.chat_widget.is_user_turn_pending_or_running());
+    assert!(app.chat_widget.no_modal_or_popup_active());
+    assert!(op_rx.try_recv().is_err());
+    assert!(
+        std::iter::from_fn(|| app_event_rx.try_recv().ok()).any(|event| {
+            matches!(event, AppEvent::InsertHistoryCell(cell)
+            if lines_to_single_string(&cell.display_lines(/*width*/ 80))
+                .contains("The request was stopped; you can continue with a new request"))
+        })
+    );
 
     Ok(())
 }

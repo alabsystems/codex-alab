@@ -30,9 +30,11 @@ async fn reconcile_old_credit(had_usable_allowance: bool, committed_ack: bool) {
             }))
         })
         .expect(if had_usable_allowance && !committed_ack {
+            6
+        } else if committed_ack {
             4
         } else {
-            3
+            5
         })
         .mount(&server)
         .await;

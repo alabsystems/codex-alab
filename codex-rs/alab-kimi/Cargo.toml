@@ -1,0 +1,26 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "codex-alab-kimi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_alab_kimi"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-api = { workspace = true }
+codex-model-provider-info = { workspace = true }
+codex-models-manager = { workspace = true }
+codex-protocol = { workspace = true }
+http = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+codex-http-client = { workspace = true }
+pretty_assertions = { workspace = true }

@@ -5,7 +5,8 @@
 //! (`crates/aterm-ctl/src/lib.rs` `self_instance_sock_in`, `read_token_file_at`).
 //!
 //! - The session is `$ATERM_PARENT_SESSION_ID` (never `ATERM_SESSION_ID`, a nested
-//!   aterm's preminted identity), shaped `s-<hex>`.
+//!   aterm's preminted identity): `t` and 10 lower-case Crockford base32 characters,
+//!   or `s-` and 20 lower-case hex digits for an existing older tab.
 //! - The rendezvous dir is `$XDG_RUNTIME_DIR/aterm`, else `$HOME/Library/Application
 //!   Support/aterm` (`aterm_uds::control_socket_dir`).
 //! - `<dir>/graph/<sid>` holds `sock <abs path>` and `pid <n>` lines, written by the
@@ -35,7 +36,7 @@ const MAX_GRAPH_ENTRY_BYTES: u64 = 16 * 1024;
 pub struct Endpoint {
     /// The instance's control socket.
     pub sock: PathBuf,
-    /// The session (`s-<hex>`) this process runs in.
+    /// The tab ID this process runs in.
     pub sid: String,
 }
 
@@ -84,11 +85,18 @@ pub fn control_socket_dir() -> Option<PathBuf> {
     )
 }
 
-/// Whether `sid` has the server's shape, `s-<hex>`: anything else could walk out of the
-/// graph directory.
+/// Whether `sid` is aterm's canonical tab ID: `t` and 10 lower-case Crockford base32
+/// characters, or an existing older tab's `s-` and 20 lower-case hex digits.
+/// Exact lengths and alphabets prevent graph traversal and case-insensitive aliases.
 pub fn valid_sid(sid: &str) -> bool {
+    if let Some(word) = sid.strip_prefix('t') {
+        return word.len() == 10
+            && word.bytes().all(|b| {
+                matches!(b, b'0'..=b'9' | b'a'..=b'h' | b'j'..=b'k' | b'm'..=b'n' | b'p'..=b't' | b'v'..=b'z')
+            });
+    }
     sid.strip_prefix("s-").is_some_and(|hex| {
-        !hex.is_empty()
+        hex.len() == 20
             && hex
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -97,13 +105,25 @@ pub fn valid_sid(sid: &str) -> bool {
 
 /// The endpoint of `sid` from its graph entry in `dir`, or `None`.
 pub fn locate_in(dir: &Path, sid: &str) -> Option<Endpoint> {
+    read_endpoint(dir, sid).ok()
+}
+
+/// [`locate_in`], saying why no endpoint came back: `InvalidInput` for a `sid` of the
+/// wrong shape, `InvalidData` for an entry that names no socket, and otherwise the graph
+/// entry's own read error (`PermissionDenied` where a sandbox denies the read).
+pub fn read_endpoint(dir: &Path, sid: &str) -> std::io::Result<Endpoint> {
+    use std::io::Error;
+    use std::io::ErrorKind;
     if !valid_sid(sid) {
-        return None;
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "session id is not a canonical tab ID",
+        ));
     }
-    let body =
-        read_regular_utf8(&dir.join("graph").join(sid), MAX_GRAPH_ENTRY_BYTES, "graph").ok()?;
-    let sock = graph_entry_sock(&body)?;
-    Some(Endpoint {
+    let body = read_regular_utf8(&dir.join("graph").join(sid), MAX_GRAPH_ENTRY_BYTES, "graph")?;
+    let sock = graph_entry_sock(&body)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "graph entry names no socket"))?;
+    Ok(Endpoint {
         sock: PathBuf::from(sock),
         sid: sid.to_string(),
     })

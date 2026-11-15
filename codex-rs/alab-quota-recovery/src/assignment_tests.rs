@@ -91,7 +91,7 @@ async fn account_switch_during_redemption_cannot_release_the_destination_retry()
                         "limit_window_seconds":604800,"reset_at":cycle,"reset_after_seconds":3600}}
             }))
         })
-        .expect(2)
+        .expect(3)
         .mount(&fixture.server)
         .await;
     Mock::given(method("GET"))

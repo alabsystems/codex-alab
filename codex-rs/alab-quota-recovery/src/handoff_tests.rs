@@ -3,8 +3,9 @@
 
 //! A spent allowance with no earned credit ends the original request for a
 //! host that would leave that wall for another account: a spent week, or a
-//! spent five-hour window whose reset the 429 itself names. The host is told
-//! which. Every other wall keeps polling.
+//! spent five-hour window beside a usable week, whatever reset the 429 named.
+//! The host is told which, with the reset the usage read names. Every other
+//! wall keeps polling.
 
 use super::*;
 use codex_alab_core::quota::WallHandoff;
@@ -215,8 +216,8 @@ fn hour_ahead() -> i64 {
     chrono::Utc::now().timestamp() + 3600
 }
 
-fn day_ahead() -> i64 {
-    chrono::Utc::now().timestamp() + 24 * 3600
+fn distant_week_reset() -> i64 {
+    chrono::Utc::now().timestamp() + 25 * 3600
 }
 
 /// A spent week whose credit list is `list`, with no redemption permitted.
@@ -245,7 +246,7 @@ async fn creditless_week(list: ResponseTemplate, reset: i64) -> Fixture {
 
 #[tokio::test]
 async fn weekly_wall_without_credit_yields_to_a_ready_account_handoff() {
-    let reset = day_ahead();
+    let reset = distant_week_reset();
     let fixture = creditless_week(credits(&[]), reset).await;
     let (handoff, asked) = host(true);
     let recovered = tokio::time::timeout(
@@ -282,10 +283,9 @@ async fn weekly_wall_without_credit_yields_to_a_ready_account_handoff() {
     );
 }
 
-/// A credit can exist without permission to spend it. The ordinary wall must
-/// still reach account handoff when the natural refresh is more than a day away.
+/// A creditless ordinary wall still reaches account handoff more than a day away.
 #[tokio::test]
-async fn a_weekly_wall_outside_the_redemption_horizon_still_reaches_handoff() {
+async fn a_distant_creditless_weekly_wall_still_reaches_handoff() {
     let fixture = Fixture::new().await;
     let reset = chrono::Utc::now().timestamp() + 25 * 3600;
     Mock::given(method("GET"))
@@ -294,14 +294,19 @@ async fn a_weekly_wall_outside_the_redemption_horizon_still_reaches_handoff() {
         .expect(1)
         .mount(&fixture.server)
         .await;
-    forbid_reset_spending(&fixture).await;
+    Mock::given(method("GET"))
+        .and(path(CREDITS))
+        .respond_with(credits(&[]))
+        .expect(1)
+        .mount(&fixture.server)
+        .await;
     let (handoff, asked) = host(true);
     let recovered = tokio::time::timeout(
         Duration::from_secs(60),
         fixture.wait(Duration::from_secs(3600), Some(reset), Some(&handoff)),
     )
     .await
-    .expect("redemption policy kept the weekly wall from a ready account handoff");
+    .expect("credit unavailability kept the weekly wall from a ready account handoff");
     assert!(!recovered, "handoff preserves the original usage error");
     assert_eq!(
         asked.walls(),
@@ -313,10 +318,10 @@ async fn a_weekly_wall_outside_the_redemption_horizon_still_reaches_handoff() {
     assert_eq!(fixture.posts().await, 0);
 }
 
-/// Polling must survive the policy refusal, with or without an available host.
+/// Polling must survive unavailable credits, with or without an available host.
 /// The next usage response restores allowance without consuming any credit.
 #[tokio::test]
-async fn a_wall_outside_the_redemption_horizon_keeps_polling_until_restored() {
+async fn a_distant_creditless_wall_keeps_polling_until_restored() {
     for with_host in [false, true] {
         let fixture = Fixture::new().await;
         let reset = chrono::Utc::now().timestamp() + 25 * 3600;
@@ -330,7 +335,12 @@ async fn a_wall_outside_the_redemption_horizon_keeps_polling_until_restored() {
             .expect(2)
             .mount(&fixture.server)
             .await;
-        forbid_reset_spending(&fixture).await;
+        Mock::given(method("GET"))
+            .and(path(CREDITS))
+            .respond_with(credits(&[]))
+            .expect(1)
+            .mount(&fixture.server)
+            .await;
         let (handoff, asked) = host(false);
         assert!(
             tokio::time::timeout(
@@ -338,8 +348,8 @@ async fn a_wall_outside_the_redemption_horizon_keeps_polling_until_restored() {
                 fixture.wait(Duration::ZERO, Some(reset), with_host.then_some(&handoff)),
             )
             .await
-            .expect("policy-ineligible wall stopped observing restored allowance"),
-            "policy refusal must keep the original request polling, host={with_host}",
+            .expect("creditless wall stopped observing restored allowance"),
+            "credit unavailability must keep the original request polling, host={with_host}",
         );
         assert_eq!(reads.load(Ordering::SeqCst), 2);
         assert_eq!(asked.count(), usize::from(with_host));
@@ -347,10 +357,10 @@ async fn a_wall_outside_the_redemption_horizon_keeps_polling_until_restored() {
     }
 }
 
-/// An uncertain or committed reset keeps its custody while policy forbids a
+/// An uncertain or committed reset keeps its custody while stale usage forbids a
 /// further POST. A ready account must not steal its request before restoration.
 #[tokio::test]
-async fn reset_custody_outside_the_redemption_horizon_neither_spends_nor_yields() {
+async fn reset_custody_with_elapsed_usage_neither_spends_nor_yields() {
     for (name, outcome) in [
         ("pending", Outcome::Pending),
         ("awaiting ack", Outcome::AwaitingAck),
@@ -358,7 +368,7 @@ async fn reset_custody_outside_the_redemption_horizon_neither_spends_nor_yields(
         ("consumed", Outcome::Consumed),
     ] {
         let fixture = Fixture::new().await;
-        let reset = chrono::Utc::now().timestamp() + 25 * 3600;
+        let reset = chrono::Utc::now().timestamp() - 1;
         let reads = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&reads);
         Mock::given(method("GET"))
@@ -389,7 +399,7 @@ async fn reset_custody_outside_the_redemption_horizon_neither_spends_nor_yields(
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(60),
-                fixture.wait(Duration::ZERO, Some(reset), Some(&handoff)),
+                fixture.wait(Duration::ZERO, Some(hour_ahead()), Some(&handoff)),
             )
             .await
             .expect("reset custody stopped observing restored allowance"),
@@ -429,7 +439,7 @@ async fn forbid_reset_spending(fixture: &Fixture) {
 #[tokio::test]
 async fn an_available_credit_is_redeemed_before_any_handoff_is_considered() {
     let fixture = Fixture::new().await;
-    let reset = day_ahead();
+    let reset = distant_week_reset();
     let redeemed = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&redeemed);
     Mock::given(method("GET"))
@@ -437,7 +447,7 @@ async fn an_available_credit_is_redeemed_before_any_handoff_is_considered() {
         .respond_with(move |_: &wiremock::Request| {
             usage(true, observed.load(Ordering::SeqCst), reset)
         })
-        .expect(2)
+        .expect(3)
         .mount(&fixture.server)
         .await;
     Mock::given(method("GET"))
@@ -476,11 +486,23 @@ async fn an_available_credit_is_redeemed_before_any_handoff_is_considered() {
 
 /// A spent five-hour window on a week that is not spent is the host's to
 /// judge: it is told the window and the moment it resets, as the usage read
-/// names it, and its yes ends the request. The 429 and the usage read name
-/// one reset, give or take what two reports of it may differ by.
+/// names it, and its yes ends the request, whatever reset the 429 named: none,
+/// the window's own, one a few seconds either side, or one far off either way.
+/// The ended turn's wall is the read's (the Autopilot keeps the wall its yes
+/// was given for), so nothing that follows the turn runs on the 429's.
 #[tokio::test]
-async fn a_creditless_five_hour_wall_asks_the_host_about_that_window() {
-    for named_after in [0, 50, -50] {
+async fn a_creditless_five_hour_wall_is_offered_with_the_reads_reset_whatever_the_429_named() {
+    for named_after in [
+        Some(0),
+        Some(50),
+        Some(-50),
+        Some(61),
+        Some(-61),
+        Some(120),
+        Some(23 * 3600),
+        Some(-1800),
+        None,
+    ] {
         let reset = hour_ahead();
         let fixture = creditless_five_hours(reset).await;
         let (handoff, asked) = host(true);
@@ -488,27 +510,30 @@ async fn a_creditless_five_hour_wall_asks_the_host_about_that_window() {
             Duration::from_secs(5),
             fixture.wait(
                 Duration::from_secs(3600),
-                Some(reset + named_after),
+                named_after.map(|after| reset + after),
                 Some(&handoff),
             ),
         )
         .await
-        .expect("a creditless five-hour wall kept the request from a host that would leave it");
+        .unwrap_or_else(|_| {
+            panic!(
+                "a creditless five-hour wall whose 429 named {named_after:?} kept the request \
+                 from a host that would leave it"
+            )
+        });
         assert!(
             !recovered,
-            "the turn must end on its original usage error, not retry the request"
+            "the turn must end on its original usage error, not retry the request ({named_after:?})"
         );
-        let walls = asked.walls();
-        assert_eq!(walls.len(), 1, "{named_after}");
         assert_eq!(
-            walls[0],
-            SpentWall {
+            asked.walls(),
+            [SpentWall {
                 window: SpentWindow::FiveHour,
                 resets_at: reset,
-            },
-            "the usage read's reset, not the 429's ({named_after})"
+            }],
+            "the host is asked once, about the usage read's reset, not the 429's ({named_after:?})"
         );
-        assert_eq!(fixture.posts().await, 0);
+        assert_eq!(fixture.posts().await, 0, "{named_after:?}");
     }
 }
 
@@ -556,26 +581,12 @@ async fn a_five_hour_wall_the_host_declines_keeps_polling() {
     assert_eq!(asked.count(), 1);
 }
 
-/// What follows an ended turn runs on the 429's reset. With none named, an
-/// ended five-hour turn would be asked about without bound, so it is not
-/// offered. (A spent week is: `weekly_wall_without_credit_...` and below.)
+/// A spent week is offered whatever the 429 named, none included, as the
+/// five-hour window is above.
 #[tokio::test]
-async fn a_five_hour_wall_whose_429_names_no_reset_keeps_polling() {
-    let fixture = creditless_five_hours(hour_ahead()).await;
-    let (handoff, asked) = host(true);
-    assert!(
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            fixture.wait(Duration::from_secs(3600), None, Some(&handoff)),
-        )
-        .await
-        .is_err(),
-        "a five-hour wall with no named reset was handed to the host"
-    );
-    assert_eq!(asked.count(), 0);
-
-    // POSITIVE CONTROL: a spent week whose 429 names no reset is still offered.
-    let fixture = creditless_week(credits(&[]), day_ahead()).await;
+async fn a_spent_week_whose_429_names_no_reset_is_offered_with_the_reads_reset() {
+    let reset = distant_week_reset();
+    let fixture = creditless_week(credits(&[]), reset).await;
     let (handoff, asked) = host(true);
     let recovered = tokio::time::timeout(
         Duration::from_secs(5),
@@ -584,55 +595,40 @@ async fn a_five_hour_wall_whose_429_names_no_reset_keeps_polling() {
     .await
     .expect("a spent week with no named reset was kept from a ready handoff");
     assert!(!recovered);
-    assert_eq!(asked.count(), 1);
+    assert_eq!(
+        asked.walls(),
+        [SpentWall {
+            window: SpentWindow::Week,
+            resets_at: reset,
+        }]
+    );
 }
 
-/// A 429 that names a later reset than the five-hour window's would hold the
-/// ended session, and the bound on asking the host, to that later moment.
+/// The host's no leaves the request polling whatever the 429 named: with no
+/// reset named, and with one far from the window's own, the request is asked
+/// about again at each poll and ends only on a yes, a restored allowance or
+/// the 429's own reset.
 #[tokio::test]
-async fn a_five_hour_wall_whose_429_names_a_later_reset_keeps_polling() {
-    for later in [23 * 3600, 120] {
+async fn a_declined_five_hour_wall_keeps_polling_whatever_the_429_named() {
+    for named_after in [None, Some(23 * 3600), Some(-1800)] {
         let reset = hour_ahead();
         let fixture = creditless_five_hours(reset).await;
-        let (handoff, asked) = host(true);
+        let (handoff, asked) = host(false);
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(2),
                 fixture.wait(
                     Duration::from_secs(3600),
-                    Some(reset + later),
+                    named_after.map(|after| reset + after),
                     Some(&handoff)
                 ),
             )
             .await
             .is_err(),
-            "a 429 naming a reset {later} s after the window's own was handed to the host"
+            "a host that would not leave a five-hour wall ended its wait ({named_after:?})"
         );
-        assert_eq!(asked.count(), 0, "{later}");
+        assert_eq!(asked.count(), 1, "{named_after:?}");
     }
-}
-
-/// A 429 that names an earlier reset than the five-hour window's would have
-/// the ended session resumed into the same wall.
-#[tokio::test]
-async fn a_five_hour_wall_whose_429_names_an_earlier_reset_keeps_polling() {
-    let reset = hour_ahead();
-    let fixture = creditless_five_hours(reset).await;
-    let (handoff, asked) = host(true);
-    assert!(
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            fixture.wait(
-                Duration::from_secs(3600),
-                Some(reset - 1800),
-                Some(&handoff)
-            ),
-        )
-        .await
-        .is_err(),
-        "a 429 naming a reset half an hour before the window's own was handed to the host"
-    );
-    assert_eq!(asked.count(), 0);
 }
 
 /// Both windows spent: the week is the wall, as the host judges it, and the
@@ -640,7 +636,7 @@ async fn a_five_hour_wall_whose_429_names_an_earlier_reset_keeps_polling() {
 #[tokio::test]
 async fn a_spent_week_is_named_before_a_spent_five_hour_window() {
     let fixture = Fixture::new().await;
-    let week = day_ahead();
+    let week = distant_week_reset();
     Mock::given(method("GET"))
         .and(path(USAGE))
         .respond_with(usage_of_both(hour_ahead(), week))
@@ -675,7 +671,7 @@ async fn a_spent_week_is_named_before_a_spent_five_hour_window() {
 #[tokio::test]
 async fn an_unready_handoff_keeps_the_sampler_for_a_late_credit() {
     let fixture = Fixture::new().await;
-    let reset = day_ahead();
+    let reset = distant_week_reset();
     let redeemed = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&redeemed);
     Mock::given(method("GET"))
@@ -683,7 +679,7 @@ async fn an_unready_handoff_keeps_the_sampler_for_a_late_credit() {
         .respond_with(move |_: &wiremock::Request| {
             usage(true, observed.load(Ordering::SeqCst), reset)
         })
-        .expect(3)
+        .expect(4)
         .mount(&fixture.server)
         .await;
     let lists = Arc::new(AtomicUsize::new(0));
@@ -730,7 +726,7 @@ async fn an_unready_handoff_keeps_the_sampler_for_a_late_credit() {
 #[tokio::test]
 async fn a_credit_list_outage_yields_a_weekly_wall_only_on_its_second_failed_read() {
     let fixture = Fixture::new().await;
-    let reset = day_ahead();
+    let reset = distant_week_reset();
     Mock::given(method("GET"))
         .and(path(USAGE))
         .respond_with(usage(true, false, reset))
@@ -783,7 +779,7 @@ async fn a_credit_list_outage_yields_a_weekly_wall_only_on_its_second_failed_rea
 #[tokio::test]
 async fn a_credit_behind_one_failed_list_read_is_redeemed_before_any_handoff() {
     let fixture = Fixture::new().await;
-    let reset = day_ahead();
+    let reset = distant_week_reset();
     let redeemed = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&redeemed);
     Mock::given(method("GET"))
@@ -791,7 +787,7 @@ async fn a_credit_behind_one_failed_list_read_is_redeemed_before_any_handoff() {
         .respond_with(move |_: &wiremock::Request| {
             usage(true, observed.load(Ordering::SeqCst), reset)
         })
-        .expect(3)
+        .expect(4)
         .mount(&fixture.server)
         .await;
     let lists = Arc::new(AtomicUsize::new(0));
@@ -841,7 +837,7 @@ async fn a_credit_behind_one_failed_list_read_is_redeemed_before_any_handoff() {
 #[tokio::test]
 async fn a_refused_credit_does_not_yield_within_the_attempt_that_tried_it() {
     let fixture = Fixture::new().await;
-    let reset = day_ahead();
+    let reset = distant_week_reset();
     Mock::given(method("GET"))
         .and(path(USAGE))
         .respond_with(usage(true, false, reset))
@@ -878,7 +874,7 @@ async fn a_refused_credit_does_not_yield_within_the_attempt_that_tried_it() {
 #[tokio::test]
 async fn consumed_credit_awaiting_propagation_never_yields() {
     let fixture = Fixture::new().await;
-    let reset = day_ahead();
+    let reset = distant_week_reset();
     let redeemed = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&redeemed);
     let reads = Arc::new(AtomicUsize::new(0));
@@ -1140,41 +1136,470 @@ fn the_latest_reset_among_spent_windows_of_one_length_is_the_walls() {
     );
 }
 
-/// A spent week is offered whatever the 429 named; a spent five-hour window
-/// only when the 429's reset is the window's own, within a minute. Both are
-/// moments, so the rule reads no clock and the minute is exact.
-#[test]
-fn only_a_five_hour_wall_the_429_agrees_with_is_offered() {
-    const NOW: i64 = 1_800_000_000;
-    let wall = |window, seconds: i64| SpentWall {
-        window,
-        resets_at: NOW + seconds,
+/// A spent week `reset` away whose usage is read each look, with a credit list
+/// that offers `A` once `offered` is set and a redemption that restores the
+/// allowance. The usage reads so far are counted.
+struct Waited {
+    fixture: Fixture,
+    reads: Arc<AtomicUsize>,
+    offered: Arc<AtomicBool>,
+}
+
+async fn waited(reset: i64) -> Waited {
+    let fixture = Fixture::new().await;
+    let reads = Arc::new(AtomicUsize::new(0));
+    let offered = Arc::new(AtomicBool::new(false));
+    let redeemed = Arc::new(AtomicBool::new(false));
+    let (counted, restored) = (Arc::clone(&reads), Arc::clone(&redeemed));
+    Mock::given(method("GET"))
+        .and(path(USAGE))
+        .respond_with(move |_: &wiremock::Request| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            usage(true, restored.load(Ordering::SeqCst), reset)
+        })
+        .mount(&fixture.server)
+        .await;
+    let listed = Arc::clone(&offered);
+    Mock::given(method("GET"))
+        .and(path(CREDITS))
+        .respond_with(move |_: &wiremock::Request| {
+            if listed.load(Ordering::SeqCst) {
+                credits(&["A"])
+            } else {
+                credits(&[])
+            }
+        })
+        .mount(&fixture.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(CONSUME))
+        .respond_with(move |_: &wiremock::Request| {
+            redeemed.store(true, Ordering::SeqCst);
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"code":"reset","windows_reset":2}))
+        })
+        .mount(&fixture.server)
+        .await;
+    Waited {
+        fixture,
+        reads,
+        offered,
+    }
+}
+
+/// A host that is not ready at its first question and ready from the second,
+/// with the signal it sends when its answer may have changed, and how often it
+/// was asked.
+fn host_that_signals() -> (
+    WallHandoff,
+    tokio::sync::watch::Sender<u64>,
+    Arc<AtomicUsize>,
+) {
+    let (wake, signals) = tokio::sync::watch::channel(0_u64);
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    let handoff = WallHandoff::new(move |_| {
+        let ready = counted.fetch_add(1, Ordering::SeqCst) >= 1;
+        async move { ready }
+    })
+    .waking(signals);
+    (handoff, wake, asked)
+}
+
+/// Longer than any test here waits: a look that comes is never the poll's.
+const NEVER: Duration = Duration::from_secs(3600);
+
+/// A HOST'S SIGNAL HAS IT ASKED AGAIN AT ONCE, NOT AT THE NEXT POLL. The request
+/// holds its turn, and so the session's record, busy while it waits on a host
+/// that was not ready; a host that moves accounts only under an idle record
+/// would wait out the poll interval for the very turn it needs ended.
+#[tokio::test]
+async fn a_host_that_signals_is_asked_again_before_the_poll() {
+    let reset = distant_week_reset();
+    let waited = waited(reset).await;
+    let (handoff, wake, asked) = host_that_signals();
+    let waiting = waited.fixture.wait(NEVER, Some(reset), Some(&handoff));
+    tokio::pin!(waiting);
+    // CONTROL: a host that is not ready, and silent, leaves the request waiting.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+            .await
+            .is_err(),
+        "a host that was not ready ended the wait"
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert_eq!(waited.reads.load(Ordering::SeqCst), 1);
+
+    wake.send_modify(|signals| *signals += 1);
+    let recovered = tokio::time::timeout(Duration::from_secs(10), &mut waiting)
+        .await
+        .expect("the host's signal did not have it asked again");
+    assert!(
+        !recovered,
+        "the turn ends on its original usage error for the host that is now ready"
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        waited.reads.load(Ordering::SeqCst),
+        2,
+        "the signal's look reads the usage again before the host is asked"
+    );
+    assert_eq!(waited.fixture.posts().await, 0);
+}
+
+/// THE EARNED RESET STILL COMES FIRST AT A SIGNAL. The signal only ends the wait
+/// early: a credit that became available meanwhile is redeemed and the request
+/// resumes, and the host, which would now say yes, is not asked.
+#[tokio::test]
+async fn a_credit_found_at_the_signal_is_redeemed_before_the_host_is_asked() {
+    let reset = distant_week_reset();
+    let waited = waited(reset).await;
+    let (handoff, wake, asked) = host_that_signals();
+    let waiting = waited.fixture.wait(NEVER, Some(reset), Some(&handoff));
+    tokio::pin!(waiting);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+            .await
+            .is_err(),
+        "a host that was not ready ended the wait"
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+
+    waited.offered.store(true, Ordering::SeqCst);
+    wake.send_modify(|signals| *signals += 1);
+    let recovered = tokio::time::timeout(Duration::from_secs(10), &mut waiting)
+        .await
+        .expect("the host's signal did not bring another look");
+    assert!(recovered, "the earned reset resumes the original request");
+    assert_eq!(waited.fixture.posts().await, 1);
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the host was asked before the credit the signal's look found was redeemed"
+    );
+}
+
+/// A SIGNAL SENT WHILE THE HOST IS BEING ASKED IS NOT LOST. The host's answer
+/// can turn to yes between its no and this request's wait, and the signal for
+/// that comes before anything waits on it.
+#[tokio::test]
+async fn a_signal_sent_during_the_question_is_not_lost() {
+    let reset = distant_week_reset();
+    let waited = waited(reset).await;
+    let (wake, signals) = tokio::sync::watch::channel(0_u64);
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    let handoff = WallHandoff::new(move |_| {
+        let first = counted.fetch_add(1, Ordering::SeqCst) == 0;
+        if first {
+            // Not ready, and ready a moment later: signalled before the answer lands.
+            wake.send_modify(|signals| *signals += 1);
+        }
+        async move { !first }
+    })
+    .waking(signals);
+    let recovered = tokio::time::timeout(
+        Duration::from_secs(10),
+        waited.fixture.wait(NEVER, Some(reset), Some(&handoff)),
+    )
+    .await
+    .expect("a signal sent while the host was asked was lost");
+    assert!(!recovered);
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+}
+
+/// A HOST THAT IS GONE LEAVES THE POLL, AND NOTHING FASTER. Its signal's sender
+/// is dropped; a wait that read that as a signal would look, ask and wait
+/// again without pause, a usage read each time.
+#[tokio::test]
+async fn a_host_whose_signal_is_gone_is_asked_only_at_the_poll() {
+    const POLL: Duration = Duration::from_secs(2);
+    let reset = distant_week_reset();
+    let waited = waited(reset).await;
+    let (wake, signals) = tokio::sync::watch::channel(0_u64);
+    let handoff = WallHandoff::new(|_| async { false }).waking(signals);
+    drop(wake);
+    let started = tokio::time::Instant::now();
+    let waiting = waited.fixture.wait(POLL, Some(reset), Some(&handoff));
+    tokio::pin!(waiting);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), &mut waiting)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        waited.reads.load(Ordering::SeqCst),
+        1,
+        "a host that is gone was read as one that signals"
+    );
+    // The poll still comes.
+    let deadline = started + Duration::from_secs(30);
+    while waited.reads.load(Ordering::SeqCst) < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the poll never came"
+        );
+        let _ = tokio::time::timeout(Duration::from_millis(50), &mut waiting).await;
+    }
+    assert!(
+        started.elapsed() >= POLL,
+        "the second look came before the poll: {:?}",
+        started.elapsed()
+    );
+}
+
+/// SIGNALS THAT KEEP COMING BUY ONE LOOK A SECOND. Each look is a usage read
+/// and a credit list read, and the signal is the host's to send as often as its
+/// state moves.
+#[tokio::test]
+async fn signals_that_keep_coming_buy_one_look_a_second() {
+    let reset = distant_week_reset();
+    let waited = waited(reset).await;
+    let (wake, signals) = tokio::sync::watch::channel(0_u64);
+    let handoff = WallHandoff::new(|_| async { false }).waking(signals);
+    let waiting = waited.fixture.wait(NEVER, Some(reset), Some(&handoff));
+    tokio::pin!(waiting);
+    let started = tokio::time::Instant::now();
+    while started.elapsed() < Duration::from_millis(2500) {
+        wake.send_modify(|signals| *signals += 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut waiting)
+                .await
+                .is_err()
+        );
+    }
+    let reads = waited.reads.load(Ordering::SeqCst);
+    // The first look, then one a second: the floor is between the starts of two looks.
+    assert!(
+        (2..=4).contains(&reads),
+        "{reads} looks in 2.5 s of signals"
+    );
+}
+
+/// A spent week `reset` away behind a credit list outage: the list answers 503
+/// to its first `failures` reads (every read, with `None`) and offers `A` after
+/// them, whose redemption restores the allowance. The list reads so far are
+/// counted.
+async fn waited_behind_an_outage(
+    reset: i64,
+    failures: Option<usize>,
+) -> (Fixture, Arc<AtomicUsize>) {
+    let fixture = Fixture::new().await;
+    let redeemed = Arc::new(AtomicBool::new(false));
+    let restored = Arc::clone(&redeemed);
+    Mock::given(method("GET"))
+        .and(path(USAGE))
+        .respond_with(move |_: &wiremock::Request| {
+            usage(true, restored.load(Ordering::SeqCst), reset)
+        })
+        .mount(&fixture.server)
+        .await;
+    let lists = Arc::new(AtomicUsize::new(0));
+    let listed = Arc::clone(&lists);
+    Mock::given(method("GET"))
+        .and(path(CREDITS))
+        .respond_with(move |_: &wiremock::Request| {
+            let read = listed.fetch_add(1, Ordering::SeqCst);
+            if failures.is_none_or(|failures| read < failures) {
+                ResponseTemplate::new(503)
+            } else {
+                credits(&["A"])
+            }
+        })
+        .mount(&fixture.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(CONSUME))
+        .respond_with(move |_: &wiremock::Request| {
+            redeemed.store(true, Ordering::SeqCst);
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"code":"reset","windows_reset":2}))
+        })
+        .mount(&fixture.server)
+        .await;
+    (fixture, lists)
+}
+
+/// A host that would end the request whenever it is asked, with the signal it
+/// sends, and how often it was asked.
+fn ready_host_that_signals() -> (
+    WallHandoff,
+    tokio::sync::watch::Sender<u64>,
+    Arc<AtomicUsize>,
+) {
+    let (wake, signals) = tokio::sync::watch::channel(0_u64);
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    let handoff = WallHandoff::new(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        async { true }
+    })
+    .waking(signals);
+    (handoff, wake, asked)
+}
+
+/// A SIGNAL'S LOOK DOES NOT STAND IN FOR THE POLL'S AFTER AN UNREAD CREDIT LIST.
+/// One unread list may hide an earned credit, so the request is not ended for
+/// the host until the list has stayed unread for a whole poll. A host's signal
+/// brings a look within a second or so, and a host whose move begins sends two
+/// in a row; if those looks counted as the poll's, an outage of two seconds
+/// would end a request that had a credit to redeem. Here the list fails twice
+/// and then offers the credit: the signal's look reads the second failure, the
+/// host, which would say yes, is not asked, and the next look redeems.
+#[tokio::test]
+async fn unread_credit_lists_a_signal_apart_do_not_end_the_request() {
+    let reset = distant_week_reset();
+    let (fixture, lists) = waited_behind_an_outage(reset, Some(2)).await;
+    let (handoff, wake, asked) = ready_host_that_signals();
+    let waiting = fixture.wait(NEVER, Some(reset), Some(&handoff));
+    tokio::pin!(waiting);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+            .await
+            .is_err(),
+        "one unread credit list ended the request"
+    );
+    assert_eq!(lists.load(Ordering::SeqCst), 1);
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+
+    // The signal's look: the list is unread again, about a second after the first.
+    wake.send_modify(|signals| *signals += 1);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+            .await
+            .is_err(),
+        "two unread credit lists a signal apart ended the request"
+    );
+    assert_eq!(
+        lists.load(Ordering::SeqCst),
+        2,
+        "the signal brought no look"
+    );
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        0,
+        "the host was asked within one poll of the first unread list"
+    );
+
+    // The credit the outage hid is found at the next look and redeemed.
+    wake.send_modify(|signals| *signals += 1);
+    let recovered = tokio::time::timeout(Duration::from_secs(10), &mut waiting)
+        .await
+        .expect("the credit behind the outage was never redeemed");
+    assert!(recovered, "the earned reset resumes the original request");
+    assert_eq!(fixture.posts().await, 1);
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+}
+
+/// THE HOST HEARS EVERY LOOK BEGIN, BEFORE IT READS ANYTHING, THE LOOKS THAT
+/// NEVER ASK IT TOO. A host that signals only once a look began since its last
+/// signal must hear of a look whose credit list is unread: that look ends
+/// before the question, and its request waits on the host's next signal as much
+/// as one the host told no. Here the list fails twice and then offers the
+/// credit: the host hears three looks, each before its list read, and is asked
+/// nothing.
+#[tokio::test]
+async fn the_host_hears_every_look_begin_whether_or_not_it_is_asked() {
+    let reset = distant_week_reset();
+    let (fixture, lists) = waited_behind_an_outage(reset, Some(2)).await;
+    let (wake, signals) = tokio::sync::watch::channel(0_u64);
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    // The list reads made before each look the host heard of.
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let (told, read) = (Arc::clone(&heard), Arc::clone(&lists));
+    let handoff = WallHandoff::new(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        async { true }
+    })
+    .waking(signals)
+    .hearing_looks(move || {
+        told.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(read.load(Ordering::SeqCst));
+    });
+    let heard = || {
+        heard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     };
-    for reset_at in [None, Some(NOW + 30), Some(NOW + 3600), Some(NOW + 900_000)] {
+    let waiting = fixture.wait(NEVER, Some(reset), Some(&handoff));
+    tokio::pin!(waiting);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+            .await
+            .is_err(),
+        "one unread credit list ended the request"
+    );
+    assert_eq!(heard(), [0], "the first look, before its list read");
+
+    wake.send_modify(|signals| *signals += 1);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        lists.load(Ordering::SeqCst),
+        2,
+        "the signal brought no look"
+    );
+    assert_eq!(
+        heard(),
+        [0, 1],
+        "a look whose list was unread was not heard before it read"
+    );
+
+    wake.send_modify(|signals| *signals += 1);
+    let recovered = tokio::time::timeout(Duration::from_secs(10), &mut waiting)
+        .await
+        .expect("the credit behind the outage was never redeemed");
+    assert!(recovered);
+    assert_eq!(heard(), [0, 1, 2]);
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        0,
+        "a look that ended before its question asked the host"
+    );
+}
+
+/// A CREDIT LIST OUTAGE STILL YIELDS AFTER ONE WHOLE POLL, HOWEVER OFTEN THE
+/// HOST SIGNALS. Each signal starts the wait for the next poll again, so a rule
+/// that counted only the poll's own looks would hold a spent week away from
+/// another account for as long as signals kept coming. The rule is the span:
+/// the list unread at a look a poll interval or more after it first was.
+#[tokio::test]
+async fn a_credit_list_outage_yields_after_a_whole_poll_whatever_the_host_signals() {
+    const POLL: Duration = Duration::from_secs(3);
+    let reset = distant_week_reset();
+    let (fixture, lists) = waited_behind_an_outage(reset, None).await;
+    let (handoff, wake, asked) = ready_host_that_signals();
+    let started = tokio::time::Instant::now();
+    let waiting = fixture.wait(POLL, Some(reset), Some(&handoff));
+    tokio::pin!(waiting);
+    let recovered = loop {
+        wake.send_modify(|signals| *signals += 1);
+        if let Ok(recovered) = tokio::time::timeout(Duration::from_millis(50), &mut waiting).await {
+            break recovered;
+        }
         assert!(
-            offerable(wall(SpentWindow::Week, 86_400), reset_at),
-            "{reset_at:?}"
+            started.elapsed() < Duration::from_secs(30),
+            "an outage under a signalling host never yielded: {} list reads",
+            lists.load(Ordering::SeqCst)
         );
-    }
-    let five_hours = wall(SpentWindow::FiveHour, 3600);
-    for named in [3600, 3600 + 60, 3600 - 60] {
-        assert!(offerable(five_hours, Some(NOW + named)), "{named}");
-    }
-    for named in [3600 + 61, 3600 - 61, 86_400, 30, 0, -5] {
-        assert!(!offerable(five_hours, Some(NOW + named)), "{named}");
-    }
-    assert!(!offerable(five_hours, None));
-    // Resets no clock could name do not wrap into agreement.
-    for (window_reset, named) in [(i64::MAX, i64::MIN), (i64::MIN, i64::MAX), (i64::MAX, 0)] {
-        assert!(
-            !offerable(
-                SpentWall {
-                    window: SpentWindow::FiveHour,
-                    resets_at: window_reset,
-                },
-                Some(named)
-            ),
-            "{window_reset} {named}"
-        );
-    }
+    };
+    assert!(!recovered, "the request ends for the host that is ready");
+    assert!(
+        started.elapsed() >= POLL,
+        "the host was asked {:?} after the first unread list, within one poll",
+        started.elapsed()
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert!(
+        lists.load(Ordering::SeqCst) >= 3,
+        "the signals brought no looks of their own: {} list reads",
+        lists.load(Ordering::SeqCst)
+    );
+    assert_eq!(fixture.posts().await, 0);
 }

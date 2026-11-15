@@ -68,6 +68,7 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ThreadTokenUsageUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::AlabGoalRuntimeUpdated(notification) => (!notification.reset).then_some(notification.thread_id.as_str()), // ALAB(storage-status): same native backend/thread routing admission.
         ServerNotification::ThreadGoalUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }

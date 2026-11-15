@@ -37,7 +37,9 @@ fn autopilot() -> Arc<Autopilot> {
         endpoint: Arc::new(|| None),
         client: ClientOptions::default(),
     });
-    Autopilot::new(sup, None, None, Timing::default(), |_| true)
+    let autopilot = Autopilot::new(sup, None, None, Timing::default(), |_| true);
+    autopilot.set_retry_clock(crate::recovery::test_clock_read());
+    autopilot
 }
 
 fn thread() -> (ExtensionData, Arc<ThreadRt>) {
@@ -607,6 +609,7 @@ async fn the_record_carries_the_threads_pace_and_a_resume_takes_it_up() {
     assert_eq!(shared.pace(rt.key()).map(|pace| pace.short_streak), Some(1));
     // A resumed thread takes up what the record writer's start left for it.
     let (_store, resumed) = thread();
+    autopilot.keep_thread(&resumed);
     let first = now_ms() - 20 * 60_000;
     let last = now_ms() - 5 * 60_000;
     let answered = now_ms() - 3 * 60_000;
@@ -702,6 +705,7 @@ async fn the_record_carries_the_threads_pace_and_a_resume_takes_it_up() {
     assert_eq!(shared.pace(resumed.key()), None);
     // NEGATIVE CONTROL: another thread's pace.
     let (_store, other) = thread();
+    autopilot.keep_thread(&other);
     autopilot.seed_pace(&other, None);
     assert_eq!(other.state().short_streak, 0);
     assert_eq!(shared.pace(other.key()), None);
@@ -777,6 +781,7 @@ async fn a_re_exec_keeps_ruling_fs_replies_and_a_relaunch_starts_them_empty() {
         let autopilot = autopilot();
         let shared = autopilot.supervisor().shared();
         let (_store, rt) = thread();
+        autopilot.keep_thread(&rt);
         match start {
             Start::ReExec => {
                 assert!(shared.set_inherited(Inherited {
@@ -967,6 +972,7 @@ async fn a_persons_esc_outlives_a_re_exec_and_a_relaunch() {
             let autopilot = autopilot();
             let shared = autopilot.supervisor().shared();
             let (_store, rt) = thread();
+            autopilot.keep_thread(&rt);
             let pace = Pace {
                 short_streak: 1,
                 esc: carried.map(|turn| EscHold {
@@ -1109,6 +1115,7 @@ async fn the_record_carries_the_persons_hour_and_the_go_ahead_count() {
             let autopilot = autopilot();
             let shared = autopilot.supervisor().shared();
             let (_store, rt) = thread();
+            autopilot.keep_thread(&rt);
             match start {
                 Start::ReExec => {
                     assert!(shared.set_inherited(Inherited {
@@ -1188,6 +1195,7 @@ async fn a_resume_takes_up_the_act_a_wall_cut() {
     let shared = autopilot.supervisor().shared();
     for (word, taken) in [("cruise", true), ("off", false)] {
         let (_store, resumed) = thread();
+        autopilot.keep_thread(&resumed);
         let cut = CutAct {
             text: "Defend it.".to_string(),
             mode: word.to_string(),
@@ -1637,6 +1645,7 @@ async fn the_records_needs_off_and_folder_reach_the_resumed_thread() {
             updated_at_ms: written_at,
             needs_off: carried_off,
             recovery: Some(codex_alab_core::session::Recovery {
+                clock: crate::recovery::test_clock(0),
                 thread: recovery_rt.key().to_string(),
                 turn_id: "walled".into(),
                 point_at_ms: written_at,

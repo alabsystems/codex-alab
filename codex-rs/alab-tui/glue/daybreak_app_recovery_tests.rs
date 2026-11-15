@@ -87,6 +87,8 @@ async fn assert_daybreak_correction(active_harness: bool) -> color_eyre::eyre::R
         .update_account_state(Some(account.clone()), None, true, true);
     app.chat_widget
         .set_feature_enabled(Feature::CliDaybreak, true);
+    app.chat_widget
+        .set_feature_enabled(Feature::SafetyRecourse, true);
 
     // Supply the selected account's catalog through the widget's real request boundary.
     app.chat_widget.open_model_popup();

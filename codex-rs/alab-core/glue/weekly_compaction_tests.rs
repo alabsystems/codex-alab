@@ -31,6 +31,66 @@ fn creditless_weekly_wall_reads_its_handoff_from_the_turn_store() {
     run_private_child("weekly_handoff_child", "handoff", "ALAB_WEEKLY_HANDOFF_OK");
 }
 
+/// A hidden helper's walled turn (the TUI's title or rename suggestion, and its
+/// recap) ends on its usage error at once. No handoff is ever ready for such a
+/// thread, so recovery would hold the turn, and the session busy, until the
+/// wall's reset.
+#[test]
+fn hidden_title_turn_ends_on_its_usage_wall_without_recovery() {
+    run_private_child("helper_wall_child", "helper-title", "ALAB_HELPER_WALL_OK");
+}
+
+#[test]
+fn hidden_recap_turn_ends_on_its_usage_wall_without_recovery() {
+    run_private_child("helper_wall_child", "helper-system", "ALAB_HELPER_WALL_OK");
+}
+
+/// The controls: the same wall and the same unready handoff on a thread that
+/// is a conversation, which keeps its recovery.
+#[test]
+fn user_thread_at_a_usage_wall_still_asks_its_handoff() {
+    run_private_child("helper_wall_child", "control-user", "ALAB_HELPER_WALL_OK");
+}
+
+#[test]
+fn ephemeral_side_chat_at_a_usage_wall_still_recovers() {
+    run_private_child(
+        "helper_wall_child",
+        "control-side-chat",
+        "ALAB_HELPER_WALL_OK",
+    );
+}
+
+#[test]
+fn saved_title_feature_thread_at_a_usage_wall_still_recovers() {
+    run_private_child(
+        "helper_wall_child",
+        "control-saved-title",
+        "ALAB_HELPER_WALL_OK",
+    );
+}
+
+/// A headless exec turn is the run's own request whatever its thread is called:
+/// `codex exec --ephemeral --thread-source system` names a helper's thread, and
+/// its usage error does not end it, so it keeps its look for an earned reset.
+#[test]
+fn exec_turn_on_a_helper_named_thread_still_recovers() {
+    run_private_child(
+        "helper_wall_child",
+        "control-exec-system",
+        "ALAB_HELPER_WALL_OK",
+    );
+}
+
+#[test]
+fn exec_turn_on_a_title_named_thread_still_recovers() {
+    run_private_child(
+        "helper_wall_child",
+        "control-exec-title",
+        "ALAB_HELPER_WALL_OK",
+    );
+}
+
 /// Run `child` of this module alone in a process of its own, where activating
 /// ALab and its home cannot reach the other tests of this binary.
 fn run_private_child(child: &str, mode: &str, marker: &str) {
@@ -100,7 +160,7 @@ async fn weekly_compaction_child() {
         let restored = Arc::new(AtomicBool::new(false));
         let observed = Arc::clone(&restored);
         let usage_reads = Arc::new(AtomicUsize::new(0));
-        let horizon = 13 * 3600;
+        let horizon = if retry { 25 * 3600 } else { 13 * 3600 };
         let reset = chrono::Utc::now().timestamp() + horizon;
         Mock::given(method("GET"))
             .and(path("/api/codex/usage"))
@@ -119,7 +179,8 @@ async fn weekly_compaction_child() {
                             "limit_window_seconds":604800,"reset_at":reset,"reset_after_seconds":horizon}}
                 }))
             })
-            .expect(if preflight { 2 } else if retry { 3 } else { 4 })
+            // Every redemption revalidates usage after credit selection.
+            .expect(if preflight { 3 } else if retry { 4 } else { 5 })
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -308,7 +369,7 @@ async fn weekly_compaction_child() {
                 model_indices[0] < consume && consume < model_indices[1],
                 "the earned reset must precede the retried request"
             );
-            assert!((1..=24 * 3600).contains(&(reset - chrono::Utc::now().timestamp())));
+            assert!(reset - chrono::Utc::now().timestamp() > 24 * 3600);
         }
         assert!(
             turn.extension_data
@@ -446,4 +507,159 @@ async fn weekly_handoff_child() {
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
     println!("ALAB_WEEKLY_HANDOFF_OK");
+}
+
+/// One turn at a creditless weekly wall whose handoff is not ready, as the host
+/// answers for every thread but the primary one. Only the thread's identity
+/// differs between the cases, and for the exec cases the turn's host.
+#[tokio::test]
+#[expect(
+    clippy::print_stdout,
+    reason = "private test child completion evidence"
+)]
+async fn helper_wall_child() {
+    use codex_alab_core::quota::WallHandoff;
+    use codex_protocol::protocol::ThreadSource;
+    let feature = |name: &str| Some(ThreadSource::Feature(name.to_string()));
+    let (ephemeral, source, exec, hidden) = match std::env::var(CHILD).as_deref() {
+        Ok("helper-title") => (true, feature("thread_title"), false, true),
+        Ok("helper-system") => (true, feature("system"), false, true),
+        Ok("control-user") => (false, Some(ThreadSource::User), false, false),
+        Ok("control-side-chat") => (true, feature("tui_side_chat"), false, false),
+        Ok("control-saved-title") => (false, feature("thread_title"), false, false),
+        Ok("control-exec-system") => (true, feature("system"), true, false),
+        Ok("control-exec-title") => (true, feature("thread_title"), true, false),
+        _ => return,
+    };
+    if !std::env::args().any(|arg| arg == "--exact") {
+        return;
+    }
+    codex_alab_core::activate();
+    let server = responses::start_mock_server().await;
+    let home = tempfile::tempdir().unwrap();
+    let reset = chrono::Utc::now().timestamp() + 13 * 3600;
+    Mock::given(method("GET"))
+        .and(path("/api/codex/usage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "account_id":"account","user_id":"user","plan_type":"plus",
+            "rate_limit":{"allowed":false,"limit_reached":true,
+                "secondary_window":{"used_percent":100,"limit_window_seconds":604800,
+                    "reset_at":reset,"reset_after_seconds":46800}}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/codex/rate-limit-reset-credits"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"available_count":0,"credits":[]})),
+        )
+        .mount(&server)
+        .await;
+    let auth = CodexAuth::from_external_chatgpt_tokens(
+        "e30.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudCIsImNoYXRncHRfdXNlcl9pZCI6InVzZXIiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InBsdXMifX0.fixture",
+        "account", Some("plus"),
+    ).unwrap();
+    let mut provider = built_in_model_providers(None)["openai"].clone();
+    provider.base_url = Some(format!("{}/v1", server.uri()));
+    provider.supports_websockets = false;
+    let base = server.uri();
+    let (session, mut turn, _events) = make_session_and_context_with_auth_config_home_and_rx(
+        auth,
+        Vec::new(),
+        home.path(),
+        move |config| {
+            config.model = Some("gpt-5.2".into());
+            config.model_provider = provider;
+            config.chatgpt_base_url = base;
+            config.ephemeral = ephemeral;
+        },
+    )
+    .await;
+    session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .thread_source = source.clone();
+    let thread = session.thread_config_snapshot().await;
+    assert_eq!(
+        (thread.ephemeral, thread.thread_source),
+        (ephemeral, source),
+        "the fixture's thread is the one this case names"
+    );
+    // The TUI gives its helper threads its own session source, as every thread.
+    // An exec run's turn carries the exec source and the mark its host installs.
+    Arc::get_mut(&mut turn)
+        .expect("the fixture's turn context is not shared yet")
+        .session_source = if exec {
+        codex_protocol::protocol::SessionSource::Exec
+    } else {
+        codex_protocol::protocol::SessionSource::Cli
+    };
+    if exec {
+        turn.extension_data
+            .insert(codex_alab_core::quota::HeadlessExec);
+    }
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    turn.extension_data.insert(WallHandoff::new(move |_| {
+        let counted = Arc::clone(&counted);
+        async move {
+            counted.fetch_add(1, Ordering::SeqCst);
+            false
+        }
+    }));
+    let state = codex_alab_quota_recovery::State::bind(&session.services.auth_manager).await;
+    turn.extension_data.insert_if(state, |old| old.is_none());
+    let wall = codex_protocol::error::CodexErr::UsageLimitReached(
+        codex_protocol::error::UsageLimitReachedError {
+            plan_type: None,
+            resets_at: chrono::DateTime::from_timestamp(reset, 0),
+            limit_window_minutes: None,
+            rate_limits: None,
+            promo_message: None,
+            rate_limit_reached_type: None,
+        },
+    );
+    let before = server.received_requests().await.unwrap().len();
+    let recovery =
+        crate::responses_retry::alab_capacity_retry::recover_weekly(&wall, &session, &turn);
+    let outcome = tokio::time::timeout(Duration::from_secs(5), recovery).await;
+    let requests = server.received_requests().await.unwrap();
+    let reads = |wanted: &str| {
+        requests[before..]
+            .iter()
+            .filter(|request| request.url.path() == wanted)
+            .count()
+    };
+    let observed = (
+        reads("/api/codex/usage"),
+        reads("/api/codex/rate-limit-reset-credits"),
+        asked.load(Ordering::SeqCst),
+    );
+    if hidden {
+        assert_eq!(
+            outcome,
+            Ok(false),
+            "a hidden helper's walled turn ends on its usage error at once"
+        );
+        assert_eq!(
+            observed,
+            (0, 0, 0),
+            "no usage read, no credit read and no handoff question for a hidden helper"
+        );
+    } else {
+        assert!(
+            outcome.is_err(),
+            "a conversation's turn keeps polling for an earned reset while no handoff is ready"
+        );
+        // No handoff is asked for an exec turn: its host keeps the request.
+        assert_eq!(
+            observed,
+            (1, 1, usize::from(!exec)),
+            "one usage read and one credit read before the first poll, and one handoff question for an interactive turn"
+        );
+    }
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    println!("ALAB_HELPER_WALL_OK");
 }

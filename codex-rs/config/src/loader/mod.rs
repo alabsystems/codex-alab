@@ -328,6 +328,18 @@ pub async fn load_config_layers_state(
     }
     layers.push(base_user_layer);
 
+    if let Some(profile) = active_user_profile.as_ref()
+        && let Some(config) = codex_alab_core::selected_packaged_profile(profile.as_str())
+    {
+        layers.push(ConfigLayerEntry::new(
+            ConfigLayerSource::User {
+                file: active_user_file.clone(),
+                profile: Some(profile.to_string()),
+            },
+            TomlValue::Table(config),
+        )); // ALAB(kimi): built-in provider profile defaults sit beneath the selected Profile V2 file
+    }
+
     if active_user_file != base_user_file {
         layers.push(
             load_user_config_layer(

@@ -841,6 +841,59 @@ async fn turn_error_usage_limit_accounts_progress_and_clears_accounting() -> any
 }
 
 #[tokio::test]
+async fn policy_refusals_keep_goal_active_for_idle_continuation() -> anyhow::Result<()> {
+    codex_alab_core::activate();
+    for (info, details) in [
+        (
+            codex_protocol::protocol::CodexErrorInfo::CyberPolicy,
+            codex_protocol::error::CodexErrorDetails::CyberPolicy {
+                message: "Daybreak access is required for this request".to_string(),
+            },
+        ),
+        (
+            codex_protocol::protocol::CodexErrorInfo::BioPolicy,
+            codex_protocol::error::CodexErrorDetails::BioPolicy {
+                message: "Biological access is refused for this request".to_string(),
+            },
+        ),
+        (
+            codex_protocol::protocol::CodexErrorInfo::MisalignmentPolicyViolation,
+            codex_protocol::error::CodexErrorDetails::MisalignmentPolicyViolation {
+                message: "The instruction alignment review refused this request".to_string(),
+                misalignment: None,
+            },
+        ),
+    ] {
+        let runtime = test_runtime().await?;
+        let thread_id = test_thread_id()?;
+        seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+        let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+        harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+        let tools = harness.tools();
+        tool_by_name(&tools, "create_goal")
+            .handle(tool_call(
+                "create_goal",
+                "call-create-goal",
+                json!({ "objective": "continue ordinary work after a policy refusal" }),
+            ))
+            .await?;
+
+        harness
+            .notify_turn_error("turn-1", CodexErr::new(details))
+            .await;
+
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+        assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status, "{info:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn turn_error_blocks_goal() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;

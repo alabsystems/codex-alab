@@ -74,6 +74,7 @@ fn tied_predecessor_records_cannot_restore_a_cleared_provider_wait() {
             now_ms(),
         );
         old.set_recovery(Some(Recovery {
+            clock: crate::recovery::test_clock(0),
             thread: THREAD.into(),
             turn_id: "failed-turn".into(),
             point_at_ms: 1_000,
@@ -400,9 +401,11 @@ fn a_second_startup_carries_only_an_authenticated_busy_predecessor() {
 /// person typed (no lease, their key just before it): the process keeps the seeded intent
 /// and restores no wall, which is the case the lapse cannot bound, and its own record
 /// carries neither.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn a_relaunch_of_a_session_killed_while_asking_for_a_handoff_stands_at_its_wall() {
     use codex_alab_core::account_handoff::Purpose;
+    use codex_alab_core::recovery_clock::Sample;
     use codex_alab_core::session::AccountHandoff;
     use codex_alab_core::session::Autopilot as Harnessed;
     use codex_alab_core::session::Frame;
@@ -441,9 +444,11 @@ async fn a_relaunch_of_a_session_killed_while_asking_for_a_handoff_stands_at_its
         let (items, _, _) = codex_core::RolloutRecorder::load_rollout_items(&rollout)
             .await
             .expect("the native rollout reader");
+        let identity = codex_alab_tui::identity::current().expect("native fixture identity");
         let args = vec!["codex".to_owned(), "resume".into(), thread.clone()];
         let launch = |pid, started_at_ms| Launch {
             pid,
+            identity: Some(identity.clone()),
             args: args.iter().map(OsString::from).collect(),
             argv0: Some("codex".into()),
             started_at_ms,
@@ -498,6 +503,9 @@ async fn a_relaunch_of_a_session_killed_while_asking_for_a_handoff_stands_at_its
             ..Default::default()
         };
         let wall = Recovery {
+            clock: Sample::read(Some(&identity))
+                .expect("native fixture boot clock")
+                .anchor(asked_at),
             thread: thread.clone(),
             turn_id: "failed-turn".into(),
             point_at_ms: asked_at,
@@ -646,6 +654,195 @@ async fn a_relaunch_of_a_session_killed_while_asking_for_a_handoff_stands_at_its
     }
 }
 
+/// THE LOST LOGIN'S MOVE, KILLED WHILE IT IS ASKED FOR (`alab/design/accounts-lost-login.md`):
+/// the process that was asking left only its unbound intent on record (a login wall carries no
+/// recovery: its history restores it); the next process's writer sweeps and seeds it, and the
+/// real resume scan runs over the failed turn's history. Under aterm's lease the relaunch
+/// stands at the login wall of the failed turn, the intent is still on record, and the record
+/// the new process writes carries it, so the next pass asks again (within its own bound).
+#[tokio::test]
+async fn a_relaunch_of_a_session_killed_while_asking_to_move_its_lost_login_stands_at_its_wall() {
+    use codex_alab_core::account_handoff::Purpose;
+    use codex_alab_core::session::AccountHandoff;
+    use codex_alab_core::session::Autopilot as Harnessed;
+    use codex_alab_core::session::Frame;
+    use codex_alab_core::session::NativeOrigin;
+    use codex_alab_core::session::NativePhase;
+    use codex_alab_core::session::OwedAct;
+    use codex_protocol::ThreadId;
+
+    fn command() -> clap::Command {
+        clap::Command::new("codex")
+            .subcommand(clap::Command::new("resume").arg(clap::Arg::new("session_id")))
+    }
+
+    codex_alab_core::activate();
+    let id = ThreadId::new();
+    let thread = id.to_string();
+    let home = tempfile::tempdir().expect("scratch records");
+    let rollout = home.path().join("rollout.jsonl");
+    let history = format!(
+        "{}\n{}\n",
+        serde_json::json!({"timestamp":"2026-11-13T00:00:00Z", "type":"event_msg", "payload":{
+            "type":"task_started", "turn_id":"failed-turn", "model_context_window":258400,
+            "collaboration_mode_kind":"default", "turn_attribution":{
+                "turn_id":"failed-turn", "turn_trigger":"user", "parent_turn_id":null,
+                "initiating_agent_path":null,"root_turn_id":"failed-turn"}}}),
+        serde_json::json!({"timestamp":"2026-11-13T00:00:01Z", "type":"event_msg", "payload":{
+            "type":"task_complete", "turn_id":"failed-turn", "last_agent_message":null,
+            "error":{"message":"your refresh token has expired",
+                "codex_error_info":"unauthorized"}}}),
+    );
+    std::fs::write(&rollout, history).expect("persisted failed turn");
+    let (items, _, _) = codex_core::RolloutRecorder::load_rollout_items(&rollout)
+        .await
+        .expect("the native rollout reader");
+    let args = ["codex".to_owned(), "resume".into(), thread.clone()];
+    let launch = |pid, started_at_ms| Launch {
+        pid,
+        args: args.iter().map(OsString::from).collect(),
+        argv0: Some("codex".into()),
+        started_at_ms,
+        ..Default::default()
+    };
+    let frame = |shared: &Shared| {
+        shared.observe(
+            &Frame {
+                primary_thread: Some(&thread),
+                displayed_thread: Some(&thread),
+                rollout_path: Some(&rollout),
+                cwd: home.path(),
+                model: "gpt-5",
+                codex_home: home.path(),
+                embedded: true,
+                state: ProgramState::Idle,
+                draft_empty: true,
+                queued_input: false,
+                popup_open: false,
+                editor_open: false,
+                pending_user_turn: false,
+            },
+            now_ms(),
+        );
+    };
+
+    // The process that was asking: the intent no receipt binds, as `follow_renewal` leaves it
+    // on record before it asks the host.
+    let intent = OwedAct {
+        thread: thread.clone(),
+        native_origin: Some(NativeOrigin {
+            turn_id: "failed-turn".into(),
+            phase: NativePhase::Complete,
+        }),
+        renewal: Some(AccountHandoff {
+            purpose: Purpose::LoginRotation,
+            openai_scope: true,
+            local: false,
+            account: "a".repeat(64),
+            user: "b".repeat(64),
+            destination: None,
+            receipt: None,
+            turn: None,
+            accepted: false,
+            starts: 1,
+            goal_id: None,
+        }),
+        rule: Some(Purpose::LoginRotation.rule().into()),
+        text: Some("Continue the original task.".into()),
+        mode: Some("cruise".into()),
+        ..Default::default()
+    };
+    let asked_at = now_ms();
+    let old: &'static Shared = Box::leak(Box::new(Shared::new()));
+    old.set_launch(launch(1_000_000_011, asked_at));
+    old.set_autopilot(Harnessed::Active);
+    frame(old);
+    old.set_owed_act(Some(intent.clone()));
+    let writer = Writer::new(old, home.path().into(), Duration::ZERO, Some(command));
+    writer.write_now().expect("the asking process's record");
+    // Killed: no ending is ever written. What the record holds is read back.
+    let dead = record::read(&writer.path()).expect("the writer's record");
+    assert_eq!(dead.exit, None);
+    assert_eq!(
+        dead.owed.clone().map(OwedAct::from),
+        Some(intent.clone()),
+        "the record carries the unbound move under its own rule"
+    );
+    assert_eq!(dead.recovery, None, "a login wall carries no recovery");
+
+    // aterm's relaunch of it.
+    let started = dead.updated_at + 1;
+    let next: &'static Shared = Box::leak(Box::new(Shared::new()));
+    next.set_launch(launch(1_000_000_012, started));
+    next.set_autopilot(Harnessed::Active);
+    let next_writer = Writer::new(next, home.path().into(), Duration::ZERO, Some(command));
+    next_writer.prepare();
+    let predecessor = next
+        .predecessor(&thread)
+        .expect("the dead record is this start's predecessor");
+    assert_eq!(predecessor.owed_act, Some(intent.clone()));
+    assert_eq!(next.owed_act(), Some(intent.clone()), "the writer seeds it");
+    next.set_launch_witness(Some(LaunchWitness {
+        hand: Some("lease:aterm-harness@812".into()),
+        human: HumanSeen::Never,
+        read_at_ms: started + 1,
+        server_pid: Some(812),
+        hand_pid: HandPid::Absent,
+    }));
+    while now_ms() <= started {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+
+    let sup = crate::Supervisor::new(crate::SupervisorOptions {
+        shared: next,
+        endpoint: Arc::new(|| None),
+        client: codex_alab_aterm::Options::default(),
+    });
+    let autopilot = crate::Autopilot::new(sup, None, None, Timing::default(), |_| true);
+    autopilot.set_retry_clock(crate::recovery::test_clock_read());
+    let store = ExtensionData::new(thread.clone());
+    store.insert(crate::extension::ThreadRt::new(
+        id,
+        None,
+        false,
+        Duration::ZERO,
+    ));
+    let rt = store
+        .get::<crate::extension::ThreadRt>()
+        .expect("native runtime");
+    autopilot.keep_thread(&rt);
+    autopilot.set_history(items);
+    Arc::clone(&autopilot).resume_scan(Arc::clone(&rt)).await;
+
+    let state = rt.state();
+    let stands_at = state.point.as_ref().and_then(|point| point.wall.clone());
+    assert_eq!(
+        stands_at,
+        Some(Wall::Login),
+        "the relaunch stands at the login wall"
+    );
+    assert_eq!(state.point_turn_id.as_deref(), Some("failed-turn"));
+    assert_eq!(
+        next.owed_act(),
+        Some(intent.clone()),
+        "the move's intent is still on record"
+    );
+    frame(next);
+    next_writer.write_now().expect("the relaunched record");
+    let current = record::read(&next_writer.path()).expect("the relaunched record");
+    assert_eq!(
+        current.owed.map(OwedAct::from),
+        Some(intent),
+        "the relaunched process's record carries it on"
+    );
+    autopilot
+        .on_thread_stop(ThreadStopInput {
+            session_store: &ExtensionData::new("cleanup"),
+            thread_store: &store,
+        })
+        .await;
+}
+
 #[derive(Clone, Copy)]
 enum WaitKind {
     Server,
@@ -666,6 +863,15 @@ async fn after_recorded_wait(
         ("limit_wait", "true"),
     ])
     .await;
+    // A boot clock has its own origin. Keep that same axis through the crash;
+    // substituting wall time at restore must fail the exact deadline checks.
+    let raw_clock = crate::recovery::test_clock_read();
+    let retry_clock = Arc::new(move || {
+        let mut sample = raw_clock()?;
+        sample.continuous_ns = sample.continuous_ns.checked_sub(30_000_000_000)?;
+        Some(sample)
+    });
+    h.autopilot.set_retry_clock(retry_clock.clone());
     let at = clock();
     let provider_deadline = at + WAIT;
     let wall = match kind {
@@ -825,7 +1031,7 @@ async fn after_recorded_wait(
         Relaunch::Owed(owed) => Some((crate::Autopilot::owed_of(&owed), false)),
         _ => None,
     };
-    let resume_epoch = now_ms();
+    let resume_sample = retry_clock().expect("retained fixture boot clock");
     let resume_now = clock();
     assert!(resume_into(
         &mut state,
@@ -836,14 +1042,17 @@ async fn after_recorded_wait(
         resume_now
     ));
     if let Some(recovery) = recovery {
-        assert!(crate::recovery::restore(
-            &mut state,
-            &items,
-            &recovery,
-            resume_now,
-            resume_epoch,
-            &timing
-        ));
+        assert!(
+            crate::recovery::restore(
+                &mut state,
+                &items,
+                &recovery,
+                Some(&resume_sample),
+                resume_now,
+                &timing
+            )
+            .restored()
+        );
     }
     let after = decide(&state, &policy, &timing, resume_now, Duration::ZERO);
     (before, after)

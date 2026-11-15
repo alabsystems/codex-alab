@@ -18,6 +18,7 @@ impl ChatWidget {
                 ServerNotification::ThreadNameUpdated(_)
                     | ServerNotification::ThreadTokenUsageUpdated(_)
                     | ServerNotification::ThreadGoalUpdated(_)
+                    | ServerNotification::AlabGoalRuntimeUpdated(_)
                     | ServerNotification::ThreadGoalCleared(_)
                     | ServerNotification::ThreadSettingsUpdated(_)
             )

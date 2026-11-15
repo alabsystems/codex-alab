@@ -1,0 +1,686 @@
+// Copyright 2026 Andrew Yates
+// SPDX-License-Identifier: Apache-2.0
+
+//! Exercise framing through the real client handshake without timing guesses.
+
+use super::*;
+use futures::StreamExt;
+use std::collections::VecDeque;
+use tokio::io::AsyncReadExt;
+use tokio::sync::oneshot;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+const BODY: &[u8] = b"{\"detail\":\"Bad Request\"}";
+
+enum End {
+    Eof,
+    Pending,
+    Error,
+    Policy,
+}
+
+struct ScriptedIo {
+    chunks: VecDeque<Vec<u8>>,
+    at: usize,
+    end: End,
+    gate_after_first: Option<oneshot::Receiver<()>>,
+    first_observed: Option<oneshot::Sender<()>>,
+    chunks_read: usize,
+}
+
+impl ScriptedIo {
+    fn new(chunks: Vec<Vec<u8>>, end: End) -> Self {
+        Self {
+            chunks: chunks.into(),
+            at: 0,
+            end,
+            gate_after_first: None,
+            first_observed: None,
+            chunks_read: 0,
+        }
+    }
+}
+
+impl AsyncRead for ScriptedIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.chunks_read > 0
+            && let Some(gate) = self.gate_after_first.as_mut()
+        {
+            match Pin::new(gate).poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(result) => {
+                    result.expect("release scripted response fragment");
+                    self.gate_after_first = None;
+                }
+            }
+        }
+        if let Some(chunk) = self.chunks.front() {
+            let chunk_len = chunk.len();
+            let take = (chunk_len - self.at).min(output.remaining());
+            output.put_slice(&chunk[self.at..self.at + take]);
+            self.at += take;
+            if self.at == chunk_len {
+                self.chunks.pop_front();
+                self.at = 0;
+                self.chunks_read += 1;
+                if let Some(observed) = self.first_observed.take() {
+                    let _ = observed.send(());
+                }
+            }
+            return Poll::Ready(Ok(()));
+        }
+        match self.end {
+            End::Eof => Poll::Ready(Ok(())),
+            End::Pending => Poll::Pending,
+            End::Error => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "scripted read failure",
+            ))),
+            End::Policy => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                codex_http_client::NetworkPolicyDenied::Revoked,
+            ))),
+        }
+    }
+}
+
+impl AsyncWrite for ScriptedIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Ok(bytes.len()))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+fn request() -> Request {
+    "ws://127.0.0.1/v1/responses".into_client_request().unwrap()
+}
+
+fn head(status: u16, fields: &str) -> Vec<u8> {
+    format!("HTTP/1.1 {status} Rejected\r\nx-request-id: req_framing-1\r\nRetry-After: 10\r\n{fields}\r\n").into_bytes()
+}
+
+async fn rejected(stream: ScriptedIo) -> Response {
+    match tokio::time::timeout(
+        Duration::from_secs(20),
+        client_async_tls_with_config(request(), stream, None, None),
+    )
+    .await
+    .expect("bounded client handshake")
+    {
+        Err(WebSocketError::Http(response)) => *response,
+        _ => panic!("expected original HTTP rejection"),
+    }
+}
+
+async fn next_message(websocket: &mut WebSocketStream<GuardedStream<ScriptedIo>>) -> Message {
+    tokio::time::timeout(Duration::from_secs(1), websocket.next())
+        .await
+        .expect("bounded response frame")
+        .expect("response frame")
+        .expect("valid response frame")
+}
+
+fn evidence(response: &Response, status: u16, body: Option<&[u8]>, outcome: RejectionBodyOutcome) {
+    assert_eq!(response.status().as_u16(), status);
+    assert_eq!(response.headers()["x-request-id"], "req_framing-1");
+    assert_eq!(response.headers()["retry-after"], "10");
+    assert_eq!(response.body().as_deref(), body);
+    let metadata = response
+        .extensions()
+        .get::<RejectionMetadata>()
+        .expect("captured header-time evidence");
+    assert_eq!(metadata.outcome, outcome);
+    assert!(metadata.retry_after.is_some());
+    assert_eq!(metadata.decoded_body_bytes, body.map(<[u8]>::len));
+}
+
+#[tokio::test]
+async fn declared_rejection_body_survives_every_body_byte_fragment() {
+    for status in [400, 403] {
+        let headers = head(status, &format!("Content-Length: {}\r\n", BODY.len()));
+        let mut fragments = vec![headers];
+        fragments.extend(BODY.iter().map(|byte| vec![*byte]));
+        let response = rejected(ScriptedIo::new(fragments, End::Pending)).await;
+        evidence(
+            &response,
+            status,
+            Some(BODY),
+            RejectionBodyOutcome::Complete,
+        );
+    }
+}
+
+#[tokio::test]
+async fn fragmented_headers_are_parsed_without_discarding_the_body() {
+    let headers = head(403, &format!("Content-Length: {}\r\n", BODY.len()));
+    let mut fragments = headers.chunks(23).map(<[u8]>::to_vec).collect::<Vec<_>>();
+    fragments.extend(BODY.chunks(3).map(<[u8]>::to_vec));
+    let response = rejected(ScriptedIo::new(fragments, End::Pending)).await;
+    evidence(&response, 403, Some(BODY), RejectionBodyOutcome::Complete);
+}
+
+fn near_limit_headers(mut headers: Vec<u8>) -> Vec<u8> {
+    headers.truncate(headers.len() - 2);
+    headers.extend_from_slice(b"x-padding: ");
+    headers.resize(MAX_HEADERS - 9, b'p');
+    headers.extend_from_slice(b"\r\n\r\n");
+    assert_eq!(headers.len(), MAX_HEADERS - 5);
+    headers
+}
+
+fn header_and_tail_chunks(headers: Vec<u8>, tail: &[u8]) -> Vec<Vec<u8>> {
+    let split = headers.len() - 17;
+    vec![
+        headers[..split].to_vec(),
+        [&headers[split..], tail].concat(),
+    ]
+}
+
+#[tokio::test]
+async fn header_budget_does_not_count_the_same_read_rejection_body() {
+    let headers = near_limit_headers(head(400, &format!("Content-Length: {}\r\n", BODY.len())));
+    let response = rejected(ScriptedIo::new(
+        header_and_tail_chunks(headers, BODY),
+        End::Pending,
+    ))
+    .await;
+    evidence(&response, 400, Some(BODY), RejectionBodyOutcome::Complete);
+}
+
+#[tokio::test]
+async fn chunked_body_is_decoded_after_its_trailer_terminator() {
+    let split = BODY.len() / 2;
+    let mut wire = format!("{split:x};name=token;quoted=\"a\\\"b\"\r\n").into_bytes();
+    wire.extend_from_slice(&BODY[..split]);
+    wire.extend_from_slice(format!("\r\n{:x}\r\n", BODY.len() - split).as_bytes());
+    wire.extend_from_slice(&BODY[split..]);
+    wire.extend_from_slice(b"\r\n0\r\nx-finished: yes\r\n\r\n");
+    let mut fragments = vec![head(400, "Transfer-Encoding: chunked\r\n")];
+    fragments.extend(wire.into_iter().map(|byte| vec![byte]));
+    let response = rejected(ScriptedIo::new(fragments, End::Pending)).await;
+    evidence(&response, 400, Some(BODY), RejectionBodyOutcome::Complete);
+}
+
+#[tokio::test]
+async fn eof_delimited_rejection_requires_actual_eof() {
+    let response = rejected(ScriptedIo::new(
+        vec![head(400, ""), BODY.to_vec()],
+        End::Eof,
+    ))
+    .await;
+    evidence(&response, 400, Some(BODY), RejectionBodyOutcome::Complete);
+}
+
+#[tokio::test]
+async fn incomplete_and_ambiguous_framing_never_exposes_a_complete_json_prefix() {
+    let cases = [
+        (
+            format!("Content-Length: {}\r\n", BODY.len() + 1),
+            BODY.to_vec(),
+            RejectionBodyOutcome::Truncated,
+        ),
+        (
+            "Transfer-Encoding: chunked\r\n".into(),
+            [
+                format!("{:x}\r\n", BODY.len()).into_bytes(),
+                BODY.to_vec(),
+                b"\r\n0\r\n".to_vec(),
+            ]
+            .concat(),
+            RejectionBodyOutcome::Truncated,
+        ),
+        (
+            "Transfer-Encoding: chunked\r\n".into(),
+            [
+                format!("{:x}\r\n", BODY.len()).into_bytes(),
+                BODY.to_vec(),
+                b"X\n0\r\n\r\n".to_vec(),
+            ]
+            .concat(),
+            RejectionBodyOutcome::Malformed,
+        ),
+        (
+            format!(
+                "Content-Length: {}\r\nContent-Length: {}\r\n",
+                BODY.len(),
+                BODY.len() + 1
+            ),
+            BODY.to_vec(),
+            RejectionBodyOutcome::Malformed,
+        ),
+        (
+            format!(
+                "Transfer-Encoding: chunked\r\nContent-Length: {}\r\n",
+                BODY.len()
+            ),
+            BODY.to_vec(),
+            RejectionBodyOutcome::Malformed,
+        ),
+        (
+            "Transfer-Encoding: gzip, chunked\r\n".into(),
+            BODY.to_vec(),
+            RejectionBodyOutcome::Unsupported,
+        ),
+        (
+            format!(
+                "Content-Encoding: gzip\r\nContent-Length: {}\r\n",
+                BODY.len()
+            ),
+            BODY.to_vec(),
+            RejectionBodyOutcome::Unsupported,
+        ),
+    ];
+    for (fields, bytes, outcome) in cases {
+        let response = rejected(ScriptedIo::new(vec![head(403, &fields), bytes], End::Eof)).await;
+        evidence(&response, 403, None, outcome);
+    }
+}
+
+#[tokio::test]
+async fn equal_content_lengths_are_unambiguous_and_zero_is_measured() {
+    let response = rejected(ScriptedIo::new(
+        vec![
+            head(
+                400,
+                &format!(
+                    "Content-Length: {}, {}\r\nContent-Length: {}\r\n",
+                    BODY.len(),
+                    BODY.len(),
+                    BODY.len()
+                ),
+            ),
+            BODY.to_vec(),
+        ],
+        End::Pending,
+    ))
+    .await;
+    evidence(&response, 400, Some(BODY), RejectionBodyOutcome::Complete);
+    let response = rejected(ScriptedIo::new(
+        vec![head(400, "Content-Length: 0\r\n")],
+        End::Pending,
+    ))
+    .await;
+    evidence(&response, 400, Some(b""), RejectionBodyOutcome::Complete);
+}
+
+#[tokio::test]
+async fn body_and_chunk_metadata_limits_preserve_http_refusal_without_partial_body() {
+    let fields = format!("Content-Length: {}\r\n", MAX_BODY + 1);
+    let response = rejected(ScriptedIo::new(
+        vec![head(403, &fields), BODY.to_vec()],
+        End::Pending,
+    ))
+    .await;
+    evidence(&response, 403, None, RejectionBodyOutcome::TooLarge);
+
+    let trailers = "x-metadata: ".to_owned() + &"x".repeat(200) + "\r\n";
+    let response = rejected(ScriptedIo::new(
+        vec![
+            head(403, "Transfer-Encoding: chunked\r\n"),
+            [
+                format!("{:x}\r\n", BODY.len()).into_bytes(),
+                BODY.to_vec(),
+                b"\r\n0\r\n".to_vec(),
+                trailers.repeat(100).into_bytes(),
+                b"\r\n".to_vec(),
+            ]
+            .concat(),
+        ],
+        End::Pending,
+    ))
+    .await;
+    evidence(&response, 403, None, RejectionBodyOutcome::TooLarge);
+
+    let response = rejected(ScriptedIo::new(
+        vec![head(400, ""), vec![b'x'; MAX_BODY + 1]],
+        End::Eof,
+    ))
+    .await;
+    evidence(&response, 400, None, RejectionBodyOutcome::TooLarge);
+
+    let oversized_line = format!("1;{}\r\nx\r\n0\r\n\r\n", "a".repeat(MAX_LINE));
+    let response = rejected(ScriptedIo::new(
+        vec![
+            head(403, "Transfer-Encoding: chunked\r\n"),
+            oversized_line.into_bytes(),
+        ],
+        End::Pending,
+    ))
+    .await;
+    evidence(&response, 403, None, RejectionBodyOutcome::TooLarge);
+
+    let body = vec![b'x'; MAX_BODY];
+    let response = rejected(ScriptedIo::new(
+        vec![
+            head(400, &format!("Content-Length: {MAX_BODY}\r\n")),
+            body.clone(),
+        ],
+        End::Pending,
+    ))
+    .await;
+    evidence(&response, 400, Some(&body), RejectionBodyOutcome::Complete);
+}
+
+#[tokio::test(start_paused = true)]
+async fn body_deadline_is_absolute_and_never_accepts_a_json_prefix() {
+    for fields in [
+        "".to_owned(),
+        format!("Content-Length: {}\r\n", BODY.len() + 1),
+    ] {
+        let started = Instant::now();
+        let response = rejected(ScriptedIo::new(
+            vec![head(403, &fields), BODY.to_vec()],
+            End::Pending,
+        ))
+        .await;
+        evidence(&response, 403, None, RejectionBodyOutcome::TimedOut);
+        assert_eq!(Instant::now() - started, BODY_TIMEOUT);
+        assert_eq!(
+            response
+                .extensions()
+                .get::<RejectionMetadata>()
+                .unwrap()
+                .capture_elapsed,
+            BODY_TIMEOUT
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn delayed_body_keeps_retry_advice_anchored_to_header_receipt() {
+    let (observed, ready) = oneshot::channel();
+    let (release, gate) = oneshot::channel();
+    let mut stream = ScriptedIo::new(
+        vec![
+            head(400, &format!("Content-Length: {}\r\n", BODY.len())),
+            BODY.to_vec(),
+        ],
+        End::Pending,
+    );
+    stream.first_observed = Some(observed);
+    stream.gate_after_first = Some(gate);
+    let started = Instant::now();
+    let (response, ()) = tokio::join!(rejected(stream), async {
+        ready.await.unwrap();
+        tokio::time::advance(Duration::from_secs(3)).await;
+        release.send(()).unwrap();
+    });
+    evidence(&response, 400, Some(BODY), RejectionBodyOutcome::Complete);
+    let advice = response
+        .extensions()
+        .get::<RejectionMetadata>()
+        .unwrap()
+        .retry_after
+        .unwrap();
+    assert_eq!(advice.deadline(), started + Duration::from_secs(10));
+    assert_eq!(advice.remaining_delay(), Duration::from_secs(7));
+    assert_eq!(
+        response
+            .extensions()
+            .get::<RejectionMetadata>()
+            .unwrap()
+            .capture_elapsed,
+        Duration::from_secs(3)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn later_body_fragments_do_not_restart_the_absolute_deadline() {
+    let (observed, ready) = oneshot::channel();
+    let (release, gate) = oneshot::channel();
+    let mut stream = ScriptedIo::new(
+        vec![
+            head(403, &format!("Content-Length: {}\r\n", BODY.len() + 1)),
+            BODY.to_vec(),
+        ],
+        End::Pending,
+    );
+    stream.first_observed = Some(observed);
+    stream.gate_after_first = Some(gate);
+    let started = Instant::now();
+    let (response, ()) = tokio::join!(rejected(stream), async {
+        ready.await.unwrap();
+        tokio::time::advance(Duration::from_secs(3)).await;
+        release.send(()).unwrap();
+    });
+    evidence(&response, 403, None, RejectionBodyOutcome::TimedOut);
+    assert_eq!(Instant::now() - started, BODY_TIMEOUT);
+}
+
+#[tokio::test(start_paused = true)]
+async fn header_read_budget_bounds_the_prebuffer() {
+    let mut chunks = vec![b"HTTP/1.1 400 Rejected\r\nx-incomplete: ".to_vec()];
+    chunks.extend((0..64).map(|_| b"x".to_vec()));
+    let error = match client_async_tls_with_config(
+        request(),
+        ScriptedIo::new(chunks, End::Pending),
+        None,
+        None,
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("tiny header reads must retain the original attack guard"),
+    };
+    assert!(
+        matches!(error, WebSocketError::Io(ref error) if error.kind() == io::ErrorKind::InvalidData)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn successful_upgrade_uses_the_callers_budget_for_delayed_headers() {
+    let (observed, ready) = oneshot::channel();
+    let (release, gate) = oneshot::channel();
+    let mut request = request();
+    request.headers_mut().insert(
+        "sec-websocket-key",
+        "dGhlIHNhbXBsZSBub25jZQ==".parse().unwrap(),
+    );
+    let mut tail = b"Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n".to_vec();
+    tail.extend_from_slice(&[0x81, 2, b'o', b'k']);
+    let mut stream = ScriptedIo::new(
+        vec![b"HTTP/1.1 101 Switching Protocols\r\n".to_vec(), tail],
+        End::Pending,
+    );
+    stream.first_observed = Some(observed);
+    stream.gate_after_first = Some(gate);
+    let started = Instant::now();
+    let (result, ()) = tokio::join!(
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            client_async_tls_with_config(request, stream, None, None),
+        ),
+        async {
+            ready.await.unwrap();
+            tokio::time::advance(Duration::from_secs(20)).await;
+            release.send(()).unwrap();
+        }
+    );
+    let (mut websocket, response) = result.expect("caller connection budget").unwrap();
+    assert_eq!(Instant::now() - started, Duration::from_secs(20));
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    assert!(response.extensions().get::<RejectionMetadata>().is_none());
+    assert_eq!(next_message(&mut websocket).await, Message::text("ok"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn delayed_rejection_headers_start_a_full_new_entity_budget() {
+    let (observed, ready) = oneshot::channel();
+    let (release, gate) = oneshot::channel();
+    let headers = head(403, &format!("Content-Length: {}\r\n", BODY.len() + 1));
+    let split = b"HTTP/1.1 403 Rejected\r\n".len();
+    let mut stream = ScriptedIo::new(
+        vec![
+            headers[..split].to_vec(),
+            [&headers[split..], BODY].concat(),
+        ],
+        End::Pending,
+    );
+    stream.first_observed = Some(observed);
+    stream.gate_after_first = Some(gate);
+    let started = Instant::now();
+    let (result, ()) = tokio::join!(
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            client_async_tls_with_config(request(), stream, None, None),
+        ),
+        async {
+            ready.await.unwrap();
+            tokio::time::advance(Duration::from_secs(20)).await;
+            release.send(()).unwrap();
+        }
+    );
+    let response = match result.expect("caller connection budget") {
+        Err(WebSocketError::Http(response)) => response,
+        _ => panic!("expected original HTTP rejection"),
+    };
+    evidence(&response, 403, None, RejectionBodyOutcome::TimedOut);
+    assert_eq!(
+        Instant::now() - started,
+        Duration::from_secs(20) + BODY_TIMEOUT
+    );
+    let metadata = response.extensions().get::<RejectionMetadata>().unwrap();
+    assert_eq!(metadata.capture_elapsed, BODY_TIMEOUT);
+    assert_eq!(
+        metadata.retry_after.unwrap().deadline(),
+        started + Duration::from_secs(30)
+    );
+}
+
+#[tokio::test]
+async fn body_read_failure_does_not_erase_a_received_http_status() {
+    let response = rejected(ScriptedIo::new(
+        vec![
+            head(403, &format!("Content-Length: {}\r\n", BODY.len() + 1)),
+            BODY.to_vec(),
+        ],
+        End::Error,
+    ))
+    .await;
+    evidence(&response, 403, None, RejectionBodyOutcome::ReadError);
+}
+
+#[tokio::test]
+async fn body_policy_refusal_keeps_its_original_typed_io_error() {
+    let error = match client_async_tls_with_config(
+        request(),
+        ScriptedIo::new(
+            vec![
+                head(403, &format!("Content-Length: {}\r\n", BODY.len() + 1)),
+                BODY.to_vec(),
+            ],
+            End::Policy,
+        ),
+        None,
+        None,
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("policy denial must prevent the upgrade"),
+    };
+    let WebSocketError::Io(error) = error else {
+        panic!("policy denial must keep its original error kind");
+    };
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<codex_http_client::NetworkPolicyDenied>()),
+        Some(&codex_http_client::NetworkPolicyDenied::Revoked)
+    );
+}
+
+#[tokio::test]
+async fn successful_upgrade_keeps_the_original_verifier_and_buffered_frames() {
+    let mut request = request();
+    request.headers_mut().insert(
+        "sec-websocket-key",
+        "dGhlIHNhbXBsZSBub25jZQ==".parse().unwrap(),
+    );
+    let mut wire = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n".to_vec();
+    wire.extend_from_slice(&[0x81, 2, b'o', b'k']);
+    let (mut websocket, response) = client_async_tls_with_config(
+        request,
+        ScriptedIo::new(vec![wire, vec![0x81, 3, b'e', b'n', b'd']], End::Pending),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    assert!(response.extensions().get::<RejectionMetadata>().is_none());
+    assert_eq!(next_message(&mut websocket).await, Message::text("ok"));
+    assert_eq!(next_message(&mut websocket).await, Message::text("end"));
+}
+
+#[tokio::test]
+async fn header_budget_does_not_count_same_read_successful_frame_bytes() {
+    let mut request = request();
+    request.headers_mut().insert(
+        "sec-websocket-key",
+        "dGhlIHNhbXBsZSBub25jZQ==".parse().unwrap(),
+    );
+    let headers = near_limit_headers(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n".to_vec());
+    let payload = "x".repeat(32);
+    let frame = [&[0x81, 32], payload.as_bytes()].concat();
+    let (mut websocket, response) = client_async_tls_with_config(
+        request,
+        ScriptedIo::new(header_and_tail_chunks(headers, &frame), End::Pending),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    assert!(response.extensions().get::<RejectionMetadata>().is_none());
+    assert_eq!(next_message(&mut websocket).await, Message::text(payload));
+}
+
+#[tokio::test]
+async fn successful_status_still_requires_the_original_accept_verification() {
+    let wire = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: invalid\r\n\r\n".to_vec();
+    let error = match client_async_tls_with_config(
+        request(),
+        ScriptedIo::new(vec![wire], End::Eof),
+        None,
+        None,
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("original verifier must reject an invalid WebSocket accept value"),
+    };
+    assert!(matches!(error, WebSocketError::Protocol(_)));
+}
+
+#[tokio::test]
+async fn success_adapter_replays_original_header_and_tail_bytes_exactly() {
+    let wire = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\nframe-tail".to_vec();
+    let capture = Arc::new(Mutex::new(None));
+    let mut stream = RejectionStream::new(
+        ScriptedIo::new(vec![wire.clone(), b"next".to_vec()], End::Eof),
+        capture.clone(),
+    );
+    let mut replay = Vec::new();
+    tokio::time::timeout(Duration::from_secs(1), stream.read_to_end(&mut replay))
+        .await
+        .expect("bounded replay")
+        .unwrap();
+    assert_eq!(replay, [wire, b"next".to_vec()].concat());
+    assert!(capture.lock().unwrap().is_none());
+}

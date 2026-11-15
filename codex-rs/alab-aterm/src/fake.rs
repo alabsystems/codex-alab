@@ -18,8 +18,11 @@
 //! - **Proven claim** ([`Mode::Current`]): a `meta set supervisor codex-alab@<pid>` with
 //!   no `ttl=` is proven only when the connection's kernel peer pid equals `<pid>` and
 //!   `<pid>` is the foreground leader ([`FakeAterm::set_foreground_leader`]; by default
-//!   this test process). A proven claim replaces an `aterm-harness@…` claim, or a proven
-//!   claim whose pid is gone; any other live holder is `ERR busy supervisor=<holder>`.
+//!   this test process). A claim meets the one standing by aterm's claim rule
+//!   ([`claim_rule`]): a proven claim replaces an unproven `aterm-harness@…` claim, or a
+//!   proven claim whose pid is gone; any other live holder is `ERR busy
+//!   supervisor=<holder>`, and so is the holder of a standing proven claim whose new claim
+//!   is unproven.
 //! - **Connection-bound**: a claim without `ttl=` ends when its connection closes or turns
 //!   into a subscribe stream; a proven claim ends when its pid is gone.
 //! - **The typing stop's arm** ([`Mode::Current`]): `meta set harness_held same-reply|no-work`
@@ -125,6 +128,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -442,11 +446,14 @@ pub struct FakePost {
 }
 
 /// aterm's bridge routing of a `to=` (`aterm-link` `Bridge::resolve_to`, `say` aside): a
-/// session only as `@s-<sid>[@n-<node>]`, anything else only as one bare principal (a class
-/// prefix `s-|n-|h-|a-` and 1..=32 of `[a-z0-9-]`).
+/// session route as `@<tab>[@n-<node>]`, otherwise one bare principal: a
+/// canonical tab ID, or `n-|h-|a-` and 1..=32 of `[a-z0-9-]`.
 fn bridge_routes(to: &str) -> bool {
     fn principal(p: &str) -> bool {
-        ["s-", "n-", "h-", "a-"]
+        if crate::locate::valid_sid(p) {
+            return true;
+        }
+        ["n-", "h-", "a-"]
             .iter()
             .find_map(|c| p.strip_prefix(c))
             .is_some_and(|name| {
@@ -463,8 +470,7 @@ fn bridge_routes(to: &str) -> bool {
                 Some((sid, node)) => (sid, Some(node)),
                 None => (rest, None),
             };
-            principal(sid)
-                && sid.starts_with("s-")
+            crate::locate::valid_sid(sid)
                 && node.is_none_or(|n| principal(n) && n.starts_with("n-"))
         }
         None => principal(&to),
@@ -472,6 +478,48 @@ fn bridge_routes(to: &str) -> bool {
 }
 
 const SUPERVISOR_USAGE: &str = "ERR usage: meta set supervisor <holder> [ttl=<ms>] | meta unset supervisor [holder=<holder>]\n";
+
+/// How a claim meets the claim standing: aterm's `ClaimRule`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimRule {
+    Take,
+    Renew,
+    Replace,
+    Busy,
+}
+
+/// aterm's claim rule (`session_timeline::claim_rule`), arm for arm. `standing` is the
+/// standing claim's holder and whether it is proven, `standing_gone` whether its proven
+/// process is gone. A claim takes a tab nobody holds. Its own holder's claim it renews,
+/// except that an unproven claim never takes the place of its holder's proven one. Another
+/// holder's it replaces only when it is proven itself and that claim is aterm's own host's
+/// unproven `aterm-harness@…` or a proven one whose process is gone. Anything else is busy.
+fn claim_rule(
+    standing: Option<(&str, bool)>,
+    standing_gone: bool,
+    holder: &str,
+    proven: bool,
+) -> ClaimRule {
+    match standing {
+        None => ClaimRule::Take,
+        Some((h, standing_proven)) if h == holder => {
+            if standing_proven && !proven {
+                ClaimRule::Busy
+            } else {
+                ClaimRule::Renew
+            }
+        }
+        Some((h, standing_proven)) => {
+            let host = !standing_proven && h.starts_with("aterm-harness@");
+            let dead = standing_proven && standing_gone;
+            if proven && (host || dead) {
+                ClaimRule::Replace
+            } else {
+                ClaimRule::Busy
+            }
+        }
+    }
+}
 
 /// aterm's `notice` usage before `later` (aterm-messages `NOTICE_USAGE` until f17fb9bcaf).
 const OLD_NOTICE_USAGE: &str = "ERR usage: notice <post|progress|done|ask|dismiss|act> \u{2026}\n";
@@ -758,6 +806,12 @@ struct State {
     busy_next: u32,
     /// Verbs whose requests wait, read but unanswered, until the gate opens.
     gated: HashSet<String>,
+    /// How many more matching requests each gate lets through before it holds one
+    /// ([`FakeAterm::gate_after`]).
+    gate_passes: HashMap<String, usize>,
+    /// How often each gate let go of the requests it held and stayed closed
+    /// ([`FakeAterm::release_held`]).
+    gate_releases: HashMap<String, u64>,
     /// Requests that met a closed gate, in arrival order.
     gated_seen: Vec<String>,
     /// Command prefixes whose next applied request loses its reply and connection.
@@ -2049,15 +2103,18 @@ impl State {
             }
             _ => None,
         };
-        if let Some(other) = &self.claim
-            && other.holder != holder
-        {
-            let replaceable = proven_pid.is_some()
-                && (other.holder.starts_with("aterm-harness@")
-                    || other.proven_pid.is_some_and(|p| self.gone.contains(&p)));
-            if !replaceable {
-                return format!("ERR busy supervisor={}\n", pct_encode(&other.holder));
-            }
+        let standing = self
+            .claim
+            .as_ref()
+            .map(|c| (c.holder.as_str(), c.proven_pid.is_some()));
+        let gone = self
+            .claim
+            .as_ref()
+            .and_then(|c| c.proven_pid)
+            .is_some_and(|p| self.gone.contains(&p));
+        if claim_rule(standing, gone, holder, proven_pid.is_some()) == ClaimRule::Busy {
+            let other = standing.map_or("", |(h, _)| h);
+            return format!("ERR busy supervisor={}\n", pct_encode(other));
         }
         self.set_claim(Some(FakeClaim {
             holder: holder.to_string(),
@@ -2138,7 +2195,12 @@ impl FakeAterm {
     pub async fn start(dir: &Path, mode: Mode) -> std::io::Result<FakeAterm> {
         let n = NEXT_FAKE.fetch_add(1, Ordering::Relaxed);
         let instance = 4_000_000 + n;
-        let sid = format!("s-{:08x}{:012x}", std::process::id(), u64::from(n));
+        let alphabet = b"0123456789abcdefghjkmnpqrstvwxyz";
+        let word: String = (0..10)
+            .rev()
+            .map(|shift| alphabet[((u64::from(n) >> (shift * 5)) & 31) as usize] as char)
+            .collect();
+        let sid = format!("t{word}");
         let token = format!("{:032x}", u128::from(n) * 0x9e37_79b9_7f4a_7c15 + 7);
         let sock = dir.join(format!("aterm-{instance}.sock"));
         write_private(
@@ -2213,6 +2275,8 @@ impl FakeAterm {
             stalled: HashSet::new(),
             busy_next: 0,
             gated: HashSet::new(),
+            gate_passes: HashMap::new(),
+            gate_releases: HashMap::new(),
             gated_seen: Vec::new(),
             drop_replies: HashSet::new(),
             deferred_closes: None,
@@ -2846,6 +2910,19 @@ impl FakeAterm {
         }));
     }
 
+    /// Put `pid`'s proven claim in place, bound to no connection the fake serves, with `pid`
+    /// leading the session's foreground group: a codex-alab TUI that holds the tab, as a
+    /// run in its own unified-exec PTY meets it.
+    pub fn claim_proven_by(&self, pid: u32) {
+        let mut s = lock(&self.state);
+        s.foreground_leader = Some(pid);
+        s.set_claim(Some(FakeClaim {
+            holder: crate::holder_for(pid),
+            conn: None,
+            proven_pid: Some(pid),
+        }));
+    }
+
     /// `pid` is gone: a proven claim for it is cleared, as aterm does at its exit.
     pub fn kill_pid(&self, pid: u32) {
         let mut s = lock(&self.state);
@@ -2867,10 +2944,30 @@ impl FakeAterm {
         lock(&self.state).gated.insert(verb.to_string());
     }
 
+    /// [`FakeAterm::gate`], letting the next `passes` matching requests through first: the
+    /// request after them is the one held (a gate on the third of three like requests a
+    /// caller sends in a row, which a gate closed between them could only race).
+    pub fn gate_after(&self, verb: &str, passes: usize) {
+        let mut s = lock(&self.state);
+        s.gate_passes.insert(verb.to_string(), passes);
+        s.gated.insert(verb.to_string());
+    }
+
+    /// Answer the requests the gate on `verb` holds now and hold the next one: a caller that
+    /// sends one such request per attempt has each attempt held in turn, with no opening
+    /// between two for a request to slip through ([`FakeAterm::open_gate`], then
+    /// [`FakeAterm::gate`]).
+    pub fn release_held(&self, verb: &str) {
+        let mut s = lock(&self.state);
+        *s.gate_releases.entry(verb.to_string()).or_default() += 1;
+        s.changed();
+    }
+
     /// Answer `verb` again, the held requests first, in order.
     pub fn open_gate(&self, verb: &str) {
         let mut s = lock(&self.state);
         s.gated.remove(verb);
+        s.gate_passes.remove(verb);
         s.changed();
     }
 
@@ -3012,7 +3109,8 @@ async fn serve(stream: UnixStream, state: Arc<Mutex<State>>, observed: u64) {
         if verb == "version" {
             observe_handshake(&state, observed, HandshakeStage::VersionReceived);
         }
-        let mut gated = None;
+        // The gate's releases as they stood when it first held this request.
+        let mut gated: Option<u64> = None;
         loop {
             let mut changes = {
                 let mut s = lock(&state);
@@ -3020,21 +3118,37 @@ async fn serve(stream: UnixStream, state: Arc<Mutex<State>>, observed: u64) {
                     .strip_prefix('@')
                     .and_then(|rest| rest.split_once(' '))
                     .map_or(line.as_str(), |(_, rest)| rest);
-                if !s.gated.iter().any(|gate| {
-                    request == gate
-                        || request
-                            .strip_prefix(gate)
-                            .is_some_and(|tail| tail.starts_with(' '))
-                }) {
+                let Some(gate) = s
+                    .gated
+                    .iter()
+                    .find(|gate| {
+                        request == gate.as_str()
+                            || request
+                                .strip_prefix(gate.as_str())
+                                .is_some_and(|tail| tail.starts_with(' '))
+                    })
+                    .cloned()
+                else {
                     break;
-                }
-                if gated.is_none() {
-                    s.gated_seen.push(line.clone());
-                    s.changed();
+                };
+                let releases = s.gate_releases.get(&gate).copied().unwrap_or(0);
+                match gated {
+                    Some(held) if held != releases => break,
+                    Some(_) => {}
+                    None => {
+                        if let Some(passes) = s.gate_passes.get_mut(&gate)
+                            && *passes > 0
+                        {
+                            *passes -= 1;
+                            break;
+                        }
+                        s.gated_seen.push(line.clone());
+                        s.changed();
+                        gated = Some(releases);
+                    }
                 }
                 s.changes.subscribe()
             };
-            gated = Some(());
             if changes.changed().await.is_err() {
                 break;
             }

@@ -36,7 +36,7 @@ async fn a_paginated_rollout_names_the_task_and_the_last_reply() {
     assert_eq!(scan(&[OURS]).await, (false, None));
 }
 
-const NEED: &str = r#"{"timestamp":"2026-10-16T22:06:56.463Z","ordinal":13,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"t1","turn_id":"t1","last_agent_message":"Stage 1 is in.\nNEEDS YOU: the prod API key","started_at":1792188416,"completed_at":1792188416,"duration_ms":30,"time_to_first_token_ms":28}}"#;
+const NEED: &str = r#"{"timestamp":"2026-10-16T22:06:56.463Z","ordinal":13,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"t1","turn_id":"t1","last_agent_message":"Stage 1 is in.\nNEEDS YOU: the prod API grant","started_at":1792188416,"completed_at":1792188416,"duration_ms":30,"time_to_first_token_ms":28}}"#;
 const SILENT: &str = r#"{"timestamp":"2026-10-16T22:07:31.463Z","ordinal":20,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"t2","turn_id":"t2","last_agent_message":"Widened the tests; two more cases pass.","started_at":1792188421,"completed_at":1792188451,"duration_ms":30,"time_to_first_token_ms":28}}"#;
 const GOAL: &str = r#"{"timestamp":"2026-10-16T22:08:01.441Z","ordinal":21,"type":"event_msg","payload":{"type":"task_started","turn_attribution":{"turn_id":"t3","turn_trigger":"goal","parent_turn_id":null,"initiating_agent_path":null,"root_turn_id":"t3"},"turn_id":"t3","root_turn_id":"t3","started_at":1792188481,"model_context_window":258400,"collaboration_mode_kind":"default"}}"#;
 
@@ -57,7 +57,7 @@ async fn needs(lines: &[&str]) -> crate::decide::Needs {
 #[tokio::test]
 async fn a_history_leaves_the_needs_its_reports_named_standing() {
     let named = needs(&[PERSON, NEED]).await;
-    assert_eq!(named.standing, ["the prod API key"]);
+    assert_eq!(named.standing, ["the prod API grant"]);
     assert_eq!(named.acked, None);
     let later = needs(&[PERSON, NEED, OURS, SILENT, GOAL]).await;
     assert_eq!(later.standing, named.standing);
@@ -75,7 +75,7 @@ async fn a_history_leaves_the_needs_its_reports_named_standing() {
 #[tokio::test]
 async fn a_persons_turn_the_history_never_saw_end_leaves_the_needs_standing() {
     let open = needs(&[PERSON, NEED, PERSON]).await;
-    assert_eq!(open.standing, ["the prod API key"]);
+    assert_eq!(open.standing, ["the prod API grant"]);
     assert_eq!(
         needs(&[PERSON, NEED, PERSON, SILENT]).await,
         crate::decide::Needs::default()
@@ -83,10 +83,10 @@ async fn a_persons_turn_the_history_never_saw_end_leaves_the_needs_standing() {
 }
 
 const WALLED: &str = r#"{"timestamp":"2026-10-16T22:07:31.463Z","ordinal":20,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"t2","turn_id":"t2","last_agent_message":null,"error":{"message":"This request was refused by the cybersecurity access policy.","codex_error_info":"cyber_policy"},"started_at":1792188421,"completed_at":1792188451,"duration_ms":30}}"#;
-const WALLED_SAYING: &str = r#"{"timestamp":"2026-10-16T22:07:31.463Z","ordinal":20,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"t2","turn_id":"t2","last_agent_message":"Stage 2 is half in.\nNEEDS YOU: the signing key","error":{"message":"stream disconnected before completion","codex_error_info":{"response_stream_disconnected":{"http_status_code":502}}},"started_at":1792188421,"completed_at":1792188451,"duration_ms":30}}"#;
-const SAYING: &str = r#"{"timestamp":"2026-10-16T22:07:31.463Z","ordinal":20,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"t2","turn_id":"t2","last_agent_message":"Stage 2 is half in.\nNEEDS YOU: the signing key","started_at":1792188421,"completed_at":1792188451,"duration_ms":30}}"#;
+const WALLED_SAYING: &str = r#"{"timestamp":"2026-10-16T22:07:31.463Z","ordinal":20,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"t2","turn_id":"t2","last_agent_message":"Stage 2 is half in.\nNEEDS YOU: the signing permission","error":{"message":"stream disconnected before completion","codex_error_info":{"response_stream_disconnected":{"http_status_code":502}}},"started_at":1792188421,"completed_at":1792188451,"duration_ms":30}}"#;
+const SAYING: &str = r#"{"timestamp":"2026-10-16T22:07:31.463Z","ordinal":20,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"t2","turn_id":"t2","last_agent_message":"Stage 2 is half in.\nNEEDS YOU: the signing permission","started_at":1792188421,"completed_at":1792188451,"duration_ms":30}}"#;
 
-const SAID_THEN_STOPPED: &str = r#"{"timestamp":"2026-10-16T22:07:30.000Z","ordinal":19,"type":"event_msg","payload":{"type":"agent_message","message":"Stage 2 is half in.\nNEEDS YOU: the signing key"}}"#;
+const SAID_THEN_STOPPED: &str = r#"{"timestamp":"2026-10-16T22:07:30.000Z","ordinal":19,"type":"event_msg","payload":{"type":"agent_message","message":"Stage 2 is half in.\nNEEDS YOU: the signing permission"}}"#;
 const STOPPED: &str = r#"{"timestamp":"2026-10-16T22:07:31.463Z","ordinal":20,"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t2","reason":"interrupted"}}"#;
 
 /// A TURN A WALL OR AN INTERRUPT ENDED ANSWERS NOTHING, AND NAMES THE NEEDS ITS COMPLETE
@@ -102,7 +102,7 @@ const STOPPED: &str = r#"{"timestamp":"2026-10-16T22:07:31.463Z","ordinal":20,"t
 #[tokio::test]
 async fn a_turn_a_wall_or_an_interrupt_ended_answers_no_need_and_names_its_own() {
     let walled = needs(&[PERSON, NEED, PERSON, WALLED]).await;
-    assert_eq!(walled.standing, ["the prod API key"]);
+    assert_eq!(walled.standing, ["the prod API grant"]);
     assert_eq!(
         needs(&[PERSON, NEED, PERSON, SILENT]).await,
         crate::decide::Needs::default(),
@@ -111,13 +111,13 @@ async fn a_turn_a_wall_or_an_interrupt_ended_answers_no_need_and_names_its_own()
     let cut = needs(&[PERSON, DONE, OURS, WALLED_SAYING]).await;
     assert_eq!(
         cut.standing,
-        ["the signing key"],
+        ["the signing permission"],
         "a wall's turn names its need"
     );
     let stopped = needs(&[PERSON, DONE, OURS, SAID_THEN_STOPPED, STOPPED]).await;
     assert_eq!(
         stopped.standing,
-        ["the signing key"],
+        ["the signing permission"],
         "an interrupted turn names its need"
     );
     assert_eq!(
@@ -128,7 +128,7 @@ async fn a_turn_a_wall_or_an_interrupt_ended_answers_no_need_and_names_its_own()
     let said = needs(&[PERSON, DONE, OURS, SAYING]).await;
     assert_eq!(
         said.standing,
-        ["the signing key"],
+        ["the signing permission"],
         "NEGATIVE CONTROL: a reply that ended names its need"
     );
 }
@@ -155,12 +155,16 @@ async fn a_relaunch_or_the_re_exec_puts_the_historys_needs_back() {
         assert!(crate::extension::resume_into(
             &mut state, &items, relaunched, owed, 0, at
         ));
-        let want: &[&str] = if restored { &["the prod API key"] } else { &[] };
+        let want: &[&str] = if restored {
+            &["the prod API grant"]
+        } else {
+            &[]
+        };
         assert_eq!(state.needs.standing, want, "relaunched={relaunched}");
     }
 }
 
-const NEED_TOO: &str = r#"{"timestamp":"2026-10-16T22:08:31.463Z","ordinal":30,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"t3","turn_id":"t3","last_agent_message":"Stage 2 is in.\nNEEDS YOU: the signing key","started_at":1792188481,"completed_at":1792188511,"duration_ms":30,"time_to_first_token_ms":28}}"#;
+const NEED_TOO: &str = r#"{"timestamp":"2026-10-16T22:08:31.463Z","ordinal":30,"type":"event_msg","payload":{"type":"task_complete","root_turn_id":"t3","turn_id":"t3","last_agent_message":"Stage 2 is in.\nNEEDS YOU: the signing permission","started_at":1792188481,"completed_at":1792188511,"duration_ms":30,"time_to_first_token_ms":28}}"#;
 
 async fn items(lines: &[&str]) -> Vec<codex_history::RolloutItem> {
     let dir = tempfile::tempdir().unwrap_or_else(|err| panic!("scratch dir: {err}"));
@@ -200,19 +204,19 @@ async fn a_need_an_off_took_down_is_not_put_back_by_the_next_image() {
         // NEGATIVE CONTROL: no Off took a set down, or another set.
         assert_eq!(
             resume(&named, relaunched, owed.clone(), 0),
-            ["the prod API key"],
+            ["the prod API grant"],
             "{why}"
         );
         assert_eq!(
             resume(&named, relaunched, owed.clone(), off ^ 1),
-            ["the prod API key"],
+            ["the prod API grant"],
             "{why}"
         );
         // NEGATIVE CONTROL: the worker named a set after the Off; it stands.
         let later = items(&[PERSON, NEED, OURS, NEED_TOO]).await;
         assert_eq!(
             resume(&later, relaunched, owed, off),
-            ["the signing key"],
+            ["the signing permission"],
             "{why}"
         );
     }
@@ -265,13 +269,13 @@ async fn a_need_said_earlier_in_a_turn_is_restored_from_the_history() {
     let done = items(&[DONE]).await;
     let turn =
         |said: Vec<codex_history::RolloutItem>| [person.clone(), said, done.clone()].concat();
-    let need = "Pushed the branch.\nNEEDS YOU: the prod API key";
+    let need = "Pushed the branch.\nNEEDS YOU: the prod API grant";
     for (form, said) in [
         ("legacy", vec![legacy(need), legacy(reply)]),
         ("paginated", vec![paginated(need), paginated(reply)]),
     ] {
         let needs = crate::extension::history_needs(&turn(said));
-        assert_eq!(needs.standing, ["the prod API key"], "{form}");
+        assert_eq!(needs.standing, ["the prod API grant"], "{form}");
     }
     // NEGATIVE CONTROLS.
     for (why, said) in [
@@ -307,7 +311,7 @@ const TYPED: &str = r#"{"timestamp":"2026-10-21T13:09:12.281Z","type":"event_msg
 #[tokio::test]
 async fn a_compactions_turn_answers_nothing_and_is_no_task_in_the_history() {
     let compacted = needs(&[PERSON, NEED, COMPACT, COMPACTED, COMPACT_DONE]).await;
-    assert_eq!(compacted.standing, ["the prod API key"]);
+    assert_eq!(compacted.standing, ["the prod API grant"]);
     assert_eq!(compacted.acked, None, "no act of codex-alab's acked it");
     assert_eq!(
         scan(&[OURS, COMPACT, COMPACTED, COMPACT_DONE]).await,

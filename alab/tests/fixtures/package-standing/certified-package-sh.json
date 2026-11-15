@@ -1,0 +1,40 @@
+{
+  "source": "d75c9b47196df14d99247827e7522d1bd29f8a6d",
+  "version": "0.8.0-dev.4321+codex.0.168.0.gd75c9b471",
+  "client_version": "0.169.0-dev.4321+gd75c9b471",
+  "baseline": "0.168.0",
+  "upstream": {
+    "commit": "ce3031018ef130e653ed4d9c5bb971652de97161",
+    "commit_date": "2026-11-12T15:35:27Z",
+    "commits_since_release": 286,
+    "release": "rust-v0.168.0"
+  },
+  "target": "aarch64-apple-darwin",
+  "compiler": {
+    "rustc": "rustc 1.99.0-dev (20565c325 2026-10-19) (trustc 0.11.0+g20565c325)",
+    "rustc_vV": "rustc 1.99.0-dev (20565c325 2026-10-19) (trustc 0.11.0+g20565c325)\nbinary: trustc\ncommit-hash: 20565c3255adf151f9eb920e89cdf83c38f84abe\ncommit-date: 2026-10-19\nhost: aarch64-apple-darwin\nrelease: 1.99.0-dev\ntrust: 0.11.0+g20565c325\nLLVM version: 22.1.2\n",
+    "sysroot": "/opt/fixture/pkg/store/trust/15698.noindex",
+    "binaries_sha256": "fd3bda4228b62f44447fe87f69af9889a50b94ee0e75e23a17ed0daf8e86fcf0",
+    "id": "9c69de73e3ed3d49",
+    "admitted": true,
+    "admitted_why": "native project selection matched its held execution root",
+    "verification": {
+      "source": "d75c9b47196df14d99247827e7522d1bd29f8a6d",
+      "lane": "certify",
+      "include_dependencies": true,
+      "report_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "binaries": {
+        "codex": {
+          "built_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "packaged_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "authority": "observation of successful live certified compilation; saved report bytes confer no verifier authority"
+    }
+  },
+  "ripgrep": "15.2.0",
+  "ripgrep_features": "+pcre2",
+  "rusty_v8": "147.4.0",
+  "packager": "5a632e4345000000000000000000000000000000",
+  "built_at": "2026-11-13T18:00:00Z"
+}

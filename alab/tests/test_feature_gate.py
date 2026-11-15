@@ -185,6 +185,8 @@ class FeatureAdmissionTests(unittest.TestCase):
     def test_selected_profile_reads_only_existing_bundle_and_keeps_empty_args_portable(self):
         # Exercise the actual check_selected shell entry under macOS /bin/bash,
         # recording its containment arguments without claiming native authority.
+        # Record at the verified boundary: its production wrapper starts a new
+        # shell, so an override of only the inner containment function is lost.
         self.review(affected=False)
         self.check_body()
         pristine = self.repo / 'pristine'
@@ -203,7 +205,7 @@ class FeatureAdmissionTests(unittest.TestCase):
                 'alab_pristine() { printf "%s\\n" "$FIXTURE_PRISTINE"; }\n'
                 'alab_pristine_at() { :; }\n'
                 'alab_check_targets_ready() { printf "%s\\n" "$FIXTURE_TARGET"; }\n'
-                'alab_contained() { "$ALAB_PYTHON" -c '\
+                'alab_verified_contained() { "$ALAB_PYTHON" -c '\
                 "'import json,os,sys; open(os.environ[\"FIXTURE_CAPTURE\"],\"w\").write(json.dumps(sys.argv[1:]))' "
                 '"$@"; }\ncheck_selected')
         missing = GATE.bundle_path(self.repo, self.source)

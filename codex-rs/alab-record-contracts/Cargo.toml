@@ -1,0 +1,22 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "codex-alab-record-contracts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "codex_alab_record_contracts"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+codex-alab-tui = { path = "../alab-tui" }
+serde_json = { workspace = true }
+tempfile = { workspace = true }

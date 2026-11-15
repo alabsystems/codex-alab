@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
+use tokio::sync::watch;
 
 /// Volatile admission for account-quota recovery in a root turn executed by an
 /// exec host. The host's extension registry supplies it; saved session origin
@@ -54,13 +55,48 @@ impl SpentWall {
 
 type HandoffProbe = dyn Fn(SpentWall) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync;
 
+type LookHeard = dyn Fn() + Send + Sync;
+
 /// Installed in a root turn's store by a host that can move the conversation to
 /// another account once that turn ends at a usage wall. Quota recovery tells it
 /// which wall and asks only whether ending the walled turn now would be
 /// followed by such a move. It grants no execution, spends no credit and
 /// selects no account; the host re-checks everything after the turn ends.
+///
+/// A yes ends the walled request on its 429, so the turn ends at the wall the
+/// probe was told: an owner that answers yes keeps that wall as the ended
+/// turn's, with the reset the usage read named, whatever reset the 429 named
+/// (none, or another moment). Nothing after the turn runs on the 429's.
 pub struct WallHandoff {
     probe: Box<HandoffProbe>,
+    /// The host changes this when its answer may have turned to yes
+    /// ([`Self::waking`]); `None` for a host that says nothing between questions.
+    wake: Option<watch::Receiver<u64>>,
+    /// Told as each look of the caller's wait begins ([`Self::look_begins`]);
+    /// `None` for a host that does not hear of looks.
+    looks: Option<Box<LookHeard>>,
+}
+
+/// A wait for a host's word that its answer may have changed ([`WallHandoff::watch`]).
+pub struct HandoffWatch(Option<watch::Receiver<u64>>);
+
+impl HandoffWatch {
+    /// Resolves once the host has signalled since this watch was made or last
+    /// resolved. It carries no answer: the caller asks the host again.
+    ///
+    /// A handoff with no wake, and one whose host is gone, never resolve. A
+    /// caller asks again at each wake, so a watch that resolved at once for such
+    /// a host would have it ask without pause; its own interval is all that is
+    /// left to it there.
+    pub async fn changed(&mut self) {
+        if let Some(wake) = self.0.as_mut()
+            && wake.changed().await.is_ok()
+        {
+            return;
+        }
+        self.0 = None;
+        std::future::pending::<()>().await;
+    }
 }
 
 impl WallHandoff {
@@ -75,7 +111,51 @@ impl WallHandoff {
     {
         Self {
             probe: Box::new(move |wall| Box::pin(probe(wall))),
+            wake: None,
+            looks: None,
         }
+    }
+
+    /// The host changes `wake` whenever its answer may have turned to yes. A
+    /// caller that waits on a host that was not ready ([`Self::watch`]) then
+    /// asks again at once, where it would otherwise ask only at its own
+    /// interval; the turn it holds meanwhile keeps the session busy.
+    pub fn waking(mut self, wake: watch::Receiver<u64>) -> Self {
+        self.wake = Some(wake);
+        self
+    }
+
+    /// The host hears through `heard` as each look of a caller's wait begins
+    /// ([`Self::look_begins`]). A host that wakes its callers ([`Self::waking`])
+    /// need then signal only once a look began since its last signal: a caller
+    /// whose last look began before that signal looks again after it anyway,
+    /// and one whose look began since may have read the host before the change.
+    /// Each look is a usage read and a credit list read for every caller that
+    /// waits.
+    pub fn hearing_looks(mut self, heard: impl Fn() + Send + Sync + 'static) -> Self {
+        self.looks = Some(Box::new(heard));
+        self
+    }
+
+    /// A look of the caller's wait begins. Said at every look, before it reads
+    /// anything, whether or not it comes to ask the host ([`Self::ready`]): a
+    /// look that ends before its question (a credit list unread, a read that
+    /// failed, an attempt that ran out of time) waits on the host's next signal
+    /// as much as one the host told no.
+    pub fn look_begins(&self) {
+        if let Some(heard) = self.looks.as_ref() {
+            heard();
+        }
+    }
+
+    /// A wait for the host's next signal, counted from this call: make it before
+    /// the first question, and a signal sent while a question is in flight is
+    /// kept for the wait that follows it.
+    pub fn watch(&self) -> HandoffWatch {
+        HandoffWatch(self.wake.clone().map(|mut wake| {
+            wake.mark_unchanged();
+            wake
+        }))
     }
 
     /// Advisory and evaluated while the turn still runs. A stale answer costs
@@ -400,6 +480,48 @@ mod tests {
             "an answer inside the bound is taken"
         );
         assert!(!WallHandoff::new(|_| async { false }).ready(week).await);
+    }
+
+    /// A WATCH RESOLVES FOR A SIGNAL SENT AFTER IT WAS MADE, ONCE, AND NEVER WITHOUT ONE. A
+    /// caller asks its host again at each resolve, so a watch that resolved with nothing
+    /// sent (no wake installed, the host gone, a signal older than the watch) would have it
+    /// ask without pause.
+    #[tokio::test(start_paused = true)]
+    async fn a_handoff_watch_resolves_once_per_signal_and_never_without_one() {
+        const LONG: Duration = Duration::from_secs(3600);
+        async fn resolves(watch: &mut HandoffWatch) -> bool {
+            tokio::time::timeout(LONG, watch.changed()).await.is_ok()
+        }
+        // No wake installed.
+        let mut silent = WallHandoff::new(|_| async { false }).watch();
+        assert!(!resolves(&mut silent).await, "a host with no wake woke");
+
+        let (wake, signals) = watch::channel(0_u64);
+        let handoff = WallHandoff::new(|_| async { false }).waking(signals);
+        // A signal older than the watch is not waited for.
+        wake.send_modify(|n| *n += 1);
+        let mut watch = handoff.watch();
+        assert!(!resolves(&mut watch).await, "an old signal woke");
+        // One sent since resolves it once, however long ago it was sent.
+        wake.send_modify(|n| *n += 1);
+        tokio::time::sleep(LONG).await;
+        assert!(resolves(&mut watch).await, "a signal did not wake");
+        assert!(!resolves(&mut watch).await, "one signal woke twice");
+        // A signal sent while nobody waits is kept for the next wait.
+        wake.send_modify(|n| *n += 1);
+        wake.send_modify(|n| *n += 1);
+        assert!(
+            resolves(&mut watch).await,
+            "a signal between waits was lost"
+        );
+        assert!(!resolves(&mut watch).await);
+        // The host is gone: nothing more will come, and the watch never resolves.
+        drop(wake);
+        assert!(!resolves(&mut watch).await, "a host that is gone woke");
+        assert!(
+            !resolves(&mut watch).await,
+            "a host that is gone woke later"
+        );
     }
 
     /// The host is told the wall the request stands at, unchanged: its answer

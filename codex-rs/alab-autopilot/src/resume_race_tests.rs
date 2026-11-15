@@ -354,6 +354,7 @@ async fn a_restored_measured_network_wall_measures_its_route_again() {
             client: ClientOptions::default(),
         });
         let autopilot = Autopilot::new(sup, None, None, Timing::default(), |_| true);
+        autopilot.set_retry_clock(crate::recovery::test_clock_read());
         // Every route's proxy decision read as direct; nothing here completes a handshake.
         assert!(autopilot.set_net_probe(
             Arc::new(|| Err(std::io::Error::other("no trust in this test"))),
@@ -396,6 +397,7 @@ async fn a_restored_measured_network_wall_measures_its_route_again() {
         shared.set_inherited(Inherited {
             session_id: Some(rt.key.clone()),
             recovery: Some(Recovery {
+                clock: crate::recovery::test_clock(0),
                 thread: rt.key.clone(),
                 turn_id: "walled".into(),
                 point_at_ms: now_ms() - 60_000,
@@ -444,6 +446,7 @@ async fn restored_deadlines_begin_counting_sleep_at_materialization() {
             client: ClientOptions::default(),
         });
         let autopilot = Autopilot::new(sup, None, None, Timing::default(), |_| true);
+        autopilot.set_retry_clock(crate::recovery::test_clock_read());
         let id = ThreadId::new();
         let store = ExtensionData::new(id.to_string());
         store.insert(ThreadRt::new(id, None, false, Duration::ZERO));
@@ -469,6 +472,7 @@ async fn restored_deadlines_begin_counting_sleep_at_materialization() {
         shared.set_inherited(Inherited {
             session_id: Some(rt.key.clone()),
             recovery: Some(Recovery {
+clock: crate::recovery::test_clock(0),
                 thread: rt.key.clone(), turn_id: "usage-turn".into(), point_at_ms: epoch - 60_000,
                 not_before_ms: epoch + 3_600_000, by_autopilot: true, by_person: false,
                 wall: RecoveryWall::Usage { quota: None, reset_at_ms: Some(epoch + 3_600_000), reset_label: Some("12:00".into()) },

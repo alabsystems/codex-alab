@@ -216,7 +216,7 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
 
     /// Maps an API client error into the provider's user-facing error representation.
     fn map_api_error(&self, error: ApiError) -> CodexErr {
-        codex_api::map_api_error(error)
+        codex_alab_kimi::map_api_error(codex_alab_core::active(), self.info(), error) // ALAB(kimi): provider-specific quota and transient-limit semantics
     }
 
     /// Returns provider configuration adapted for the API client.

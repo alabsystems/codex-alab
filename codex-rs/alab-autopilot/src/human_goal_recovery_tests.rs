@@ -15,7 +15,7 @@ use codex_alab_core::session::Frame;
 use codex_state::ThreadGoalStatus;
 use core_test_support::responses;
 
-const HANG: Duration = Duration::from_secs(60);
+const HANG: Duration = super::upgrade_handoff_tests::NATIVE_HANG;
 const OBJECTIVE: &str = "Finish the original compiler integration and publish it";
 
 async fn harness() -> (Harness, Arc<GoalService>) {

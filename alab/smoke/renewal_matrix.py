@@ -10,12 +10,16 @@ from pathlib import Path
 import subprocess
 import sys
 
+import capacity_exec as probe
 import native_host_record
+import package_standing
+import renewal_follow
 
 BASE_CASES = ("happy", "lost-signal-ack", "panic-before-signal", "lost-consume-ack",
               "late-hold", "owner-stop")
 CASES = BASE_CASES + ("weekly-quota", "weekly-quota-rollback", "weekly-quota-exhausted", "weekly-quota-chain", "grace-beyond-budget", "post-signal-resume", "owner-stop-after-signal",
-                      "failed-forward-rollback", "successor-prefix-crash")
+                      "failed-forward-rollback", "successor-prefix-crash", "five-hour-wall-soon",
+                      "five-hour-wall-far")
 
 
 def digest(path):
@@ -28,14 +32,46 @@ def pinned_inputs(host, package):
     Their hashes are written to qualification.json before the first case and compared
     around every case: the controller and what it imports (the model, the provider
     fixture that decides what is served, the host record's rules that decide which host
-    is accepted, the guardian), the host and its record, and the package under test.
+    is accepted and the package standing's that decide which package is, the guardian),
+    the host and its record, and the package under test.
     """
     smoke = Path(__file__).resolve().parent
     return (Path(__file__).resolve(), smoke / "renewal_follow.py", smoke / "capacity_exec.py",
             smoke / "provider_fixture.py", smoke / "native_host_record.py",
+            smoke / "package_standing.py",
             smoke.parent / "command_guard.py", host, host.parent / "build.json",
             package / "bin" / "codex", package / "alab-build.json",
             package / "codex-package.json")
+
+
+def case_passed(case, returncode, result):
+    """Whether one case's run counts: `result` is its result.json, or None when it left none.
+
+    The controller exited 0 and reported a pass under a guardian that neither failed nor
+    timed out, the host exited 0, and a case with an oracle of its own
+    (renewal_follow.CASE_PROOFS) left that oracle's record: a `five-hour-wall-far` result
+    that passed on the weekly oracle alone is not one.
+    """
+    if returncode != 0 or not isinstance(result, dict) or result.get("passed") is not True:
+        return False
+    guardian = result.get("guardian") or {}
+    proof = renewal_follow.CASE_PROOFS.get(case)
+    return bool(guardian.get("returncode") == 0 and guardian.get("timed_out") is False
+                and result.get("rawHostReturncode") == 0
+                and (proof is None or (isinstance(result.get(proof), dict) and result[proof])))
+
+
+def package_refusal(package):
+    """Why the package under test qualifies no run, or None: read from its own record.
+
+    A trial package (trial_package.py), or one whose record no certified packager wrote,
+    is refused as a trial host is: a single case run with it is trial evidence.
+    """
+    try:
+        build = probe.package_records(package)[0]
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        return f"its records do not load: {type(error).__name__}: {error}"
+    return package_standing.not_qualifying(build)
 
 
 def main():
@@ -57,6 +93,9 @@ def main():
         native_host_record.require_aterm_name(host)
         # This file is the qualification: `passed` is read without the record's sentence.
         native_host_record.require(refusal is None, "the native host record qualifies no "
+            f"run: {refusal}; run a case singly with renewal_follow.py for trial evidence")
+        refusal = package_refusal(package)
+        native_host_record.require(refusal is None, "the package's own record qualifies no "
             f"run: {refusal}; run a case singly with renewal_follow.py for trial evidence")
     except RuntimeError as error:
         # Refuse before anything is hashed, and say what to do: no case has run.
@@ -101,10 +140,7 @@ def main():
             unchanged()
             result_path = case_root / "result.json"
             result = json.loads(result_path.read_text()) if result_path.is_file() else None
-            passed = bool(completed.returncode == 0 and result and result.get("passed") is True
-                          and result.get("guardian", {}).get("returncode") == 0
-                          and result.get("guardian", {}).get("timed_out") is False
-                          and result.get("rawHostReturncode") == 0)
+            passed = case_passed(case, completed.returncode, result)
             report["cases"].append({"case": case, "passed": passed,
                                     "controllerExit": completed.returncode,
                                     "result": str(result_path),

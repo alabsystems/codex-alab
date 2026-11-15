@@ -40,8 +40,10 @@ async fn interrupted_redemption(automatic_timeout: bool, natural_reset: bool) {
     Mock::given(method("GET"))
         .and(path("/api/codex/usage"))
         .respond_with(move |_: &wiremock::Request| {
-            let count = observed_reads.fetch_add(1, Ordering::SeqCst);
-            let healthy = observed.load(Ordering::SeqCst) && count >= 3;
+            // Propagation lags the actual reconciliation POST by one read;
+            // pre-POST policy reads must not advance that backend state.
+            let healthy = observed.load(Ordering::SeqCst)
+                && observed_reads.fetch_add(1, Ordering::SeqCst) > 0;
             let reset = cycle
                 + if observed_sent.load(Ordering::SeqCst) {
                     3600
@@ -55,7 +57,7 @@ async fn interrupted_redemption(automatic_timeout: bool, natural_reset: bool) {
                         "limit_window_seconds":604800,"reset_at":reset,"reset_after_seconds":3600}}
             }))
         })
-        .expect(4)
+        .expect(6)
         .mount(&server)
         .await;
     Mock::given(method("GET"))

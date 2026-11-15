@@ -1,7 +1,7 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! Capacity-only event handling inside codex-api's existing Responses parser.
+//! Recognized provider failure handling inside the existing Responses parser.
 
 use super::ApiError;
 use super::parse_failed_response;
@@ -67,6 +67,7 @@ fn emit_when_active(active: bool, error: &ApiError) -> bool {
                 | ApiError::UsageNotIncluded
                 | ApiError::ModelNotFound { .. }
                 | ApiError::InvalidPrompt { .. }
+                | ApiError::InvalidAudioInput { .. }
                 | ApiError::CyberPolicy { .. }
                 | ApiError::InferenceHookDenied { .. }
                 | ApiError::BioPolicy { .. }
@@ -126,6 +127,14 @@ mod tests {
             },
             ApiError::InvalidPrompt {
                 message: "invalid".into(),
+            },
+            ApiError::InvalidAudioInput {
+                message: "invalid recording".into(),
+                per_recording: true,
+            },
+            ApiError::InvalidAudioInput {
+                message: "invalid audio payload".into(),
+                per_recording: false,
             },
             ApiError::InferenceHookDenied {
                 message: "denied".into(),

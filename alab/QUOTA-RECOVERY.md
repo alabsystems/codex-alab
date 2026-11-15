@@ -7,11 +7,17 @@ request of that turn reuses a reading that permitted it only while the reading's
 headroom proves the conservative 95% read threshold out of reach, and reads again
 otherwise (see "Reusing a clear usage reading" below). Automatic redemption needs
 the same five-hour or weekly window to report at least 99% utilization and a
-future natural refresh no more than 24 hours away. Both boundaries are inclusive;
-a missing or elapsed refresh does not authorize redemption. Unknown identity or
+future natural refresh. A missing or elapsed refresh does not authorize redemption. Unknown identity or
 permission, nonordinary quota and explicit spend denial do not authorize this
 action. These checks apply to preflight, reactive recovery and uncertain request
 retries alike. No AI prompt chooses or redeems the reset.
+Immediately before every consumption POST, including a pending operation's retry,
+Codex fetches usage again and checks the same account and reset cycle. Credit-list
+waits and durable ledger writes cannot preserve an earlier reading's permission
+to spend. A failed read, changed identity, lower usage or an ineligible refresh
+sends no new consumption POST. An earlier pending POST may already have consumed
+its credit; the ledger retains that uncertainty. Reactive recovery also rechecks that ordinary usage
+is still denied; restored allowance returns to the normal retry path.
 The check runs before each sampling or foreground-compaction attempt, including
 a retry after a transport or capacity wait. Authentication is bound before
 request preparation; each attempt checks the same account-bound state again.
@@ -44,10 +50,24 @@ unknown permission cannot wake the wall. The recovery evidence is checked again
 after asynchronous preparation before submission.
 
 New recovery records retain account, native user and bucket scope plus whether an
-ordinary-usage denial was witnessed, never permission. A restart binds matching
-current authentication and requires a new request started after restoration.
-Older persisted recovery records lack this scope. They
-keep their original reset deadline after restart; no account scope is inferred
+ordinary-usage denial was witnessed, never permission. A restart binds the wall's
+bucket and that denial to the authentication it runs under, as a wall seen at
+restoration, and requires a new request of that account started after
+restoration. So a restart on another login, as aterm's `/accounts use` and
+`/accounts auto` make, resumes on the new login's first accepted read that
+permits the bucket, at once whatever rung the old login's tries had climbed: the
+rung the record's pace carries is dropped at the move, and the new login starts
+its own retry ladder at no try, which the record then carries. No rung is kept
+per login, so a move back to the old login starts its ladder over too; without a
+fresh permitting read the deadline on record still floors the try (a restart on
+the same login keeps the rung). A
+read that denies the bucket keeps the wait, a read of the login it left answers
+nothing, and the deadline the record carried stays the latest the resume comes.
+(Amended 2026-11-14, gap 3 of that day's audit: only matching authentication was
+bound, so a session moved at its wall waited out the reset of the login it left;
+until `1d171802e3` the old login's rung still paced the new login's first
+permitted resume.) Older persisted recovery records lack this scope. They keep
+their original reset deadline after restart; no account scope is inferred
 from a later usage read. A new live wall can bind the known native account even
 when no usage read preceded it. The bridge does not poll separately, buy credits,
 sign in or switch accounts. Root TUI and exec samplers redeem earned resets
@@ -269,23 +289,23 @@ package index, pin, selected runtime or credentials.
 
 An active ALab root turn can redeem an existing earned Codex reset credit when a
 fresh authenticated usage read reports a five-hour or weekly window at least
-99% used and that same window's natural refresh is in the next 24 hours, including
-exactly 24 hours. A missing or elapsed refresh is ineligible. An unknown account or user,
-explicit credit or spend-control refusal, and missing available reset credits do
-not authorize redemption. The operation does not purchase credits.
+99% used and that same window's natural refresh is still in the future, including
+refreshes more than 24 hours away. A missing or elapsed refresh is ineligible. An unknown account or user, explicit credit or spend-control refusal,
+and missing available reset credits do not authorize redemption. The operation
+does not purchase credits.
 
-The 2026-11-12 correction separates redemption policy from the conservative 95%
-read-cache threshold. The former policy redeemed at 95% and imposed only a
-five-minute minimum wait, allowing an earned reset below 99% or days before a
-weekly refresh. The common selector now requires both conditions on one window
-before credit selection or retrying a pending redemption; utilization from one
-window and the refresh time of another cannot be combined. Scratch HTTP tests
-offer a real mock credit and assert no consumption outside either condition,
-including retries using a durable pending key. No live credits are used.
-An exhausted allowance outside the redemption policy still polls for ordinary
-restoration or reaches an available account handoff. A policy refusal does not
-claim that the account has no credit. Pending or consumed-but-unreleased reset
-custody continues observing usage without spending again or yielding its request.
+Redemption policy is separate from the conservative 95% read-cache threshold.
+The common selector requires at least 99% utilization and a future refresh
+on one window before credit selection or retrying a pending
+redemption; utilization from
+one window and the refresh time of another cannot be combined. Scratch HTTP tests
+offer a real mock credit, admit weekly refreshes more than 24 hours away, and
+assert no consumption below 99% or after the refresh, including
+retries using a durable pending key. No live credits are used.
+An exhausted ordinary allowance with no available earned credit still polls for
+ordinary restoration or reaches an available account handoff. Pending or
+consumed-but-unreleased reset custody continues observing usage without spending
+again or yielding its request.
 
 The account, native user and authentication ownership generation are bound
 before sampling or foreground compaction. Recovery runs inside the original

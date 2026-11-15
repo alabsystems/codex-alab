@@ -22,7 +22,9 @@ pub(super) fn on_metadata(chat: &mut ChatWidget, notification: TurnModerationMet
         || chat.side_conversation_active()
         || chat.config_ref().ephemeral
         || chat.blocks_direct_input
-        || (chat.safety_recourse.is_some() && chat.has_queued_follow_up_messages())
+        || (chat.config.features.enabled(Feature::SafetyRecourse) // ALAB(safety-recourse): only interactive prompts displace queued work.
+            && chat.safety_recourse.is_some()
+            && chat.has_queued_follow_up_messages())
     {
         return;
     }
@@ -80,14 +82,17 @@ pub(super) fn render_failure(
     let Some(result) = pending.result else {
         return false;
     };
-    if chat.has_queued_follow_up_messages() || !matches_error(pending.domain, error) {
+    let interactive = chat.config.features.enabled(Feature::SafetyRecourse);
+    if (interactive && chat.has_queued_follow_up_messages())
+        || !matches_error(pending.domain, error)
+    {
         return false;
     }
     let (Some(thread_id), Some(turn_id)) = (chat.thread_id(), chat.last_turn_id()) else {
         return false;
     };
     let mut items = Vec::new();
-    for (label, prompt) in result.suggestions {
+    for (label, prompt) in result.suggestions.iter().cloned() {
         let turn_id = turn_id.to_string();
         items.push(SelectionItem {
             name: label,
@@ -136,8 +141,23 @@ pub(super) fn render_failure(
     chat.input_queue.submit_pending_steers_after_interrupt = false;
     chat.finalize_turn();
     chat.add_to_history(cell);
+    // ALAB(safety-recourse): Show suggestions in history without interrupting subsequent work.
+    if !interactive {
+        if !result.suggestions.is_empty() {
+            chat.add_to_history(history_cell::new_info_event(
+                "Suggested rewrites (not submitted):".to_string(),
+                /*hint*/ None,
+            ));
+        }
+        for (label, prompt) in &result.suggestions {
+            chat.add_to_history(history_cell::new_info_event(
+                format!("{label}: {prompt}"),
+                /*hint*/ None,
+            ));
+        }
+        chat.maybe_send_next_queued_input();
     // ALAB(recovery): refusal recourse stays informational while the harness advances permitted work.
-    if !items.is_empty() && !chat.alab_autonomous_root_active() {
+    } else if !items.is_empty() && !chat.alab_autonomous_root_active() {
         chat.bottom_pane.show_selection_view(SelectionViewParams {
             view_id: Some(VIEW_ID),
             title: Some(
@@ -150,4 +170,22 @@ pub(super) fn render_failure(
     }
     chat.request_redraw();
     true
+}
+
+pub(super) fn on_feature_changed(chat: &mut ChatWidget, enabled: bool) {
+    if enabled {
+        return;
+    }
+    let mut dismissed = chat.bottom_pane.dismiss_view_by_id(VIEW_ID);
+    dismissed |= chat
+        .bottom_pane
+        .dismiss_view_by_id(super::safety_buffering::SAFETY_BUFFERING_PROMPT_VIEW_ID);
+    dismissed |= chat
+        .bottom_pane
+        .dismiss_view_by_id(super::turn_runtime::DAYBREAK_RECOVERY_VIEW_ID);
+    // ALAB(safety-recourse): Opting out releases prompts and any queue hold they owned.
+    if dismissed && chat.bottom_pane.no_modal_or_popup_active() {
+        chat.on_modal_or_popup_closed();
+    }
+    chat.request_redraw();
 }

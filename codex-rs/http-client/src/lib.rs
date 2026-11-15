@@ -10,6 +10,8 @@ mod client_tls;
 mod custom_ca;
 mod error;
 mod native_roots;
+#[path = "../../alab-core/glue/websocket_native_tls.rs"]
+mod alab_websocket_native_tls; // ALAB(recovery): complete rejected upgrades after TLS without changing default roots.
 mod network_policy;
 mod openai_endpoints;
 mod openai_headers;
@@ -41,6 +43,7 @@ pub use crate::custom_ca::BuildCustomCaTransportError;
 pub use crate::custom_ca::build_reqwest_client_for_subprocess_tests;
 pub use crate::custom_ca::build_reqwest_client_with_custom_ca;
 pub use crate::custom_ca::build_rustls_client_config_with_custom_ca;
+pub use crate::alab_websocket_native_tls::build_native_only_websocket_tls_config; // ALAB(recovery): preserve the native-only WebSocket default.
 pub use crate::custom_ca::maybe_build_rustls_client_config_with_custom_ca;
 pub use crate::error::StreamError;
 pub use crate::error::TransportError;

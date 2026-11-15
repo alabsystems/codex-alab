@@ -5,7 +5,10 @@
 //! Recovery this metadata grants no action and cannot bypass the one-carry-on bound.
 
 use crate::decide::ThreadState;
+use crate::decide::Timing;
+use crate::recovery::Outcome;
 use crate::resume_history::NativePoint;
+use codex_alab_core::recovery_clock::Sample;
 use codex_alab_core::session::InFlightRetry;
 use codex_history::RolloutItem;
 use codex_protocol::protocol::TurnAbortReason;
@@ -16,17 +19,18 @@ pub(crate) fn restore(
     items: &[RolloutItem],
     retry: &InFlightRetry,
     signal_teardown: bool,
+    sample: Option<&Sample>,
     now: Instant,
-    epoch: u64,
-) -> bool {
+    timing: &Timing,
+) -> Outcome {
     if !state.task || !state.carry_on {
-        return false;
+        return Outcome::Unmatched;
     }
     // The carry-on and its provider bound must agree about the latest native turn:
     // a late terminal from a retired attempt cannot erase its successor's pacing.
     let native = crate::resume_history::latest(items);
     if !native.started || native.turn_id != Some(retry.turn_id.as_str()) {
-        return false;
+        return Outcome::Unmatched;
     }
     let current = match native.point {
         NativePoint::Running => true,
@@ -41,13 +45,17 @@ pub(crate) fn restore(
         _ => false,
     };
     if !current {
-        return false;
+        return Outcome::Unmatched;
     }
-    let Some(deadline) = crate::recovery::instant_of(retry.not_before_ms, now, epoch) else {
-        return false;
+    let Some(deadline) = retry
+        .clock
+        .as_ref()
+        .and_then(|clock| clock.instant_of(retry.not_before_ms, sample?, now))
+    else {
+        return crate::recovery::refuse_clock(state, &retry.turn_id, now, timing);
     };
     state.carry_on_not_before = Some(deadline);
-    true
+    Outcome::Restored
 }
 
 #[cfg(test)]
@@ -105,6 +113,7 @@ mod tests {
             let elapsed =
                 u64::try_from(now.duration_since(start).as_millis()).expect("fixture clock fits");
             *captured.lock().unwrap() = deadline.map(|deadline| InFlightRetry {
+                clock: crate::recovery::test_clock(0),
                 thread: "thread".into(),
                 turn_id: "waiting".into(),
                 not_before_ms: crate::recovery::epoch_of(
@@ -185,14 +194,18 @@ mod tests {
         let items = vec![started("waiting")];
         let mut carried = ThreadState::default();
         carried.observe_resume(true, None, true);
-        assert!(restore(
-            &mut carried,
-            &items,
-            &restored_retry,
-            false,
-            now,
-            epoch
-        ));
+        assert!(
+            restore(
+                &mut carried,
+                &items,
+                &restored_retry,
+                false,
+                Some(&crate::recovery::test_sample(epoch)),
+                now,
+                &crate::decide::Timing::default()
+            )
+            .restored()
+        );
         assert_eq!(
             carried.carry_on_not_before,
             Some(now + Duration::from_millis(7_001)),
@@ -201,7 +214,16 @@ mod tests {
         let mut uncarried = ThreadState::default();
         uncarried.observe_resume(true, None, false);
         assert!(
-            !restore(&mut uncarried, &items, &restored_retry, false, now, epoch),
+            !restore(
+                &mut uncarried,
+                &items,
+                &restored_retry,
+                false,
+                Some(&crate::recovery::test_sample(epoch)),
+                now,
+                &crate::decide::Timing::default()
+            )
+            .restored(),
             "corrected pacing still grants no carry-on authority"
         );
         drop(guard);
@@ -216,6 +238,7 @@ mod tests {
     fn pacing_requires_an_existing_carry_on_and_the_exact_latest_native_attempt() {
         let now = Instant::now();
         let retry = InFlightRetry {
+            clock: crate::recovery::test_clock(0),
             thread: "thread".into(),
             turn_id: "waiting".into(),
             not_before_ms: 60_000,
@@ -287,7 +310,16 @@ mod tests {
             let mut state = ThreadState::default();
             state.observe_resume(true, None, true);
             assert_eq!(
-                restore(&mut state, &items, &retry, signal, now, 1_000),
+                restore(
+                    &mut state,
+                    &items,
+                    &retry,
+                    signal,
+                    Some(&crate::recovery::test_sample(1_000)),
+                    now,
+                    &crate::decide::Timing::default()
+                )
+                .restored(),
                 expected,
                 "{items:?} signal={signal}"
             );
@@ -298,7 +330,18 @@ mod tests {
         }
         let mut state = ThreadState::default();
         state.observe_resume(true, None, false);
-        assert!(!restore(&mut state, &base, &retry, true, now, 1_000));
+        assert!(
+            !restore(
+                &mut state,
+                &base,
+                &retry,
+                true,
+                Some(&crate::recovery::test_sample(1_000)),
+                now,
+                &crate::decide::Timing::default()
+            )
+            .restored()
+        );
         assert!(!state.carry_on, "pacing never authorizes a person's resume");
 
         let no_start = vec![
@@ -308,16 +351,105 @@ mod tests {
         let mut state = ThreadState::default();
         state.observe_resume(true, None, true);
         assert!(
-            !restore(&mut state, &no_start, &retry, true, now, 1_000),
+            !restore(
+                &mut state,
+                &no_start,
+                &retry,
+                true,
+                Some(&crate::recovery::test_sample(1_000)),
+                now,
+                &crate::decide::Timing::default()
+            )
+            .restored(),
             "a completion-derived turn identity does not witness a native TurnStarted"
         );
         assert_eq!(state.carry_on_not_before, None);
     }
 
     #[test]
+    fn matching_unverifiable_pacing_cannot_become_an_unpaced_carry_on() {
+        let now = Instant::now();
+        let valid = crate::recovery::test_sample(1_000);
+        let other_boot = Sample {
+            boot_id: "another-boot".into(),
+            ..valid
+        };
+        for (clock, sample) in [
+            (None, Some(&valid)),
+            (crate::recovery::test_clock(0), None),
+            (crate::recovery::test_clock(0), Some(&other_boot)),
+        ] {
+            let retry = InFlightRetry {
+                thread: "thread".into(),
+                turn_id: "waiting".into(),
+                not_before_ms: 60_000,
+                clock,
+            };
+            let mut state = ThreadState::default();
+            state.observe_resume(true, None, true);
+            state.native_origin = Some(codex_alab_core::session::NativeOrigin {
+                turn_id: "waiting".into(),
+                phase: codex_alab_core::session::NativePhase::Running,
+            });
+            assert_eq!(
+                restore(
+                    &mut state,
+                    &[started("waiting")],
+                    &retry,
+                    false,
+                    sample,
+                    now,
+                    &Timing::default()
+                ),
+                Outcome::RefusedClock
+            );
+            assert!(!state.carry_on);
+            assert!(state.owed.is_none());
+            assert!(state.carry_on_not_before.is_none());
+            assert_eq!(state.retry_clock_refused.as_deref(), Some("waiting"));
+            assert!(matches!(
+                state.point.as_ref().and_then(|point| point.wall.as_ref()),
+                Some(crate::decide::Wall::Fatal { .. })
+            ));
+            let mut interrupted = state.clone();
+            crate::extension::rewatch_bound(
+                &mut interrupted,
+                &[
+                    started("waiting"),
+                    event(
+                        json!({"type":"turn_aborted", "turn_id":"waiting", "reason":"interrupted"}),
+                    ),
+                ],
+                0,
+                now,
+            );
+            assert!(
+                interrupted.retry_clock_refused.is_some(),
+                "teardown does not spend the same wait"
+            );
+            crate::extension::rewatch_bound(
+                &mut state,
+                &[
+                    started("waiting"),
+                    event(
+                        json!({"type":"task_complete", "turn_id":"waiting", "last_agent_message":"finished"}),
+                    ),
+                ],
+                0,
+                now,
+            );
+            assert!(
+                state.retry_clock_refused.is_none(),
+                "a genuine same-turn completion retires in-flight pacing"
+            );
+        }
+    }
+
+    #[test]
     fn late_retired_terminals_keep_the_native_carry_on_behind_the_provider_deadline() {
         let now = Instant::now();
         let retry = InFlightRetry {
+            clock: crate::recovery::test_clock(0),
             thread: "thread".into(),
             turn_id: "waiting".into(),
             not_before_ms: 60_000,
@@ -350,7 +482,18 @@ mod tests {
                 state.carry_on,
                 "the retired terminal does not end the current native turn"
             );
-            assert!(restore(&mut state, &items, &retry, false, now, 1_000));
+            assert!(
+                restore(
+                    &mut state,
+                    &items,
+                    &retry,
+                    false,
+                    Some(&crate::recovery::test_sample(1_000)),
+                    now,
+                    &crate::decide::Timing::default()
+                )
+                .restored()
+            );
             assert_eq!(
                 state.carry_on_not_before,
                 Some(now + std::time::Duration::from_secs(59)),
@@ -363,6 +506,7 @@ mod tests {
     fn signal_teardown_cannot_revive_an_attempt_an_earlier_terminal_ended() {
         let now = Instant::now();
         let retry = InFlightRetry {
+            clock: crate::recovery::test_clock(0),
             thread: "thread".into(),
             turn_id: "waiting".into(),
             not_before_ms: 60_000,
@@ -423,7 +567,16 @@ mod tests {
             // correctly denied the outer carry-on before it could be called.
             state.observe_resume(true, None, true);
             assert_eq!(
-                restore(&mut state, &items, &retry, true, now, 1_000),
+                restore(
+                    &mut state,
+                    &items,
+                    &retry,
+                    true,
+                    Some(&crate::recovery::test_sample(1_000)),
+                    now,
+                    &crate::decide::Timing::default()
+                )
+                .restored(),
                 expected,
                 "{items:?}"
             );

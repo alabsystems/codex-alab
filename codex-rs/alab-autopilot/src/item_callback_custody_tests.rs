@@ -12,7 +12,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::turn_input::TurnInputSubmission;
 use core_test_support::responses;
 
-const HANG: Duration = Duration::from_secs(60);
+const HANG: Duration = super::upgrade_handoff_tests::NATIVE_HANG;
 const LATE_INPUT: &str = "late input held by the native finisher";
 
 struct ErrorGate(

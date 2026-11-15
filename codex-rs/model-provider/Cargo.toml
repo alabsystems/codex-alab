@@ -54,3 +54,7 @@ wiremock = { workspace = true }
 # ALAB(build): codex-alab's switch (codex-rs/alab-core)
 [dependencies.codex-alab-core]
 path = "../alab-core"
+
+# ALAB(kimi): recover transient Kimi limits without retrying subscription quota walls.
+[dependencies.codex-alab-kimi]
+path = "../alab-kimi"

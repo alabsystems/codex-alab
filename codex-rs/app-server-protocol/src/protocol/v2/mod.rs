@@ -91,3 +91,5 @@ pub use windows_sandbox::*;
 
 #[cfg(test)]
 mod tests;
+
+pub use codex_protocol::protocol::{AlabGoalPersistencePhase, AlabGoalRuntimeUpdatedNotification}; // ALAB(storage-status): shared passive wire types.

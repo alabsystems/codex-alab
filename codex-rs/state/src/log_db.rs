@@ -219,6 +219,8 @@ impl LogDbLayer {
 
     fn try_send(&self, entry: LogEntry) {
         if let Err(error) = self.sender.try_send(LogDbCommand::Entry(Box::new(entry))) {
+            // ALAB(recovery): retain observed queue loss without blocking the event path.
+            codex_alab_core::log_health::mark_entry_loss(&self.has_write_failure);
             let reason = match error {
                 mpsc::error::TrySendError::Full(_) => "full",
                 mpsc::error::TrySendError::Closed(_) => "closed",

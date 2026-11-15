@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location('publication', Path(__file__).parents[1] / 'github_push.py')
 PUSH = importlib.util.module_from_spec(SPEC)
@@ -23,13 +24,14 @@ class Native:
         self.calls = []
         self.failure = None
         self.race = None
+        self.transport_refs = None
+        self.transport_shallow = None
 
     def call(self, *args):
         self.calls.append(args)
-        if args[:2] == ('repo', 'clone'):
-            git(self.remote, 'clone', '--mirror', str(self.remote), args[3])
-            return b'{}'
         assert args[:2] == ('repo', 'push'), args
+        self.transport_refs = git(args[3], 'for-each-ref', '--format=%(refname)').splitlines()
+        self.transport_shallow = git(args[3], 'rev-parse', '--is-shallow-repository')
         row = json.loads(Path(args[5]).read_text())[0]
         assert git(args[3], 'rev-parse', 'refs/alab/candidate') == row['after']
         if self.race:
@@ -48,6 +50,8 @@ class Native:
         return [{'ref': 'refs/heads/main', 'object': {'sha': git(self.remote, 'rev-parse', 'main')}}]
 
     def fetch_batch(self, identity, repo, rows, **kwargs):
+        self.calls.append(('repo', 'fetch', identity,
+                           tuple((row['source'], row['into']) for row in rows)))
         git(repo, 'fetch', '--no-tags', str(self.remote),
             *[row['source'] + ':' + row['into'] for row in rows])
 
@@ -90,9 +94,50 @@ class PublicationTests(unittest.TestCase):
         self.assertIn(b'created', self.publish())
         self.assertEqual(git(self.remote, 'rev-parse', 'main'), self.after)
         self.assertEqual((self.repo / '.git/config').read_bytes(), config)
-        self.assertEqual([c[1] for c in self.native.calls], ['clone', 'push'])
+        self.assertEqual([c[1] for c in self.native.calls], ['fetch', 'push'])
 
-    def test_advance_before_clone_is_a_proven_race_without_push(self):
+    def test_transport_has_complete_candidate_history_and_only_authoritative_main(self):
+        unrelated = self.advance()
+        git(self.remote, 'update-ref', 'refs/heads/unrelated', unrelated)
+        git(self.remote, 'update-ref', 'refs/tags/unrelated', unrelated)
+        git(self.remote, 'symbolic-ref', 'HEAD', 'refs/heads/unrelated')
+        self.publish()
+        self.assertEqual(self.native.transport_shallow, 'false')
+        self.assertEqual([ref for ref in self.native.transport_refs
+                          if not ref.startswith('refs/agh/')],
+                         ['refs/alab/candidate', 'refs/remotes/origin/main'])
+        self.assertEqual(self.native.calls[0][:3], ('repo', 'fetch', 'fixture/codex'))
+        self.assertEqual([source for source, _into in self.native.calls[0][3]],
+                         ['refs/heads/main'])
+
+    def test_a_candidate_lost_during_local_transfer_refuses_before_any_remote_request(self):
+        run_git = G.git
+
+        def lose_candidate_at_local_transfer(repo, *args, **kwargs):
+            if args[0] == 'fetch' and str(self.repo.resolve()) in args:
+                (self.repo / '.git/objects' / self.after[:2] / self.after[2:]).unlink()
+            return run_git(repo, *args, **kwargs)
+
+        with mock.patch.object(G, 'git', side_effect=lose_candidate_at_local_transfer):
+            with self.assertRaises(G.Refused): self.publish()
+        self.assertEqual(self.native.calls, [])
+
+    def test_local_publication_keeps_the_validated_commit_when_head_moves(self):
+        git(self.repo, 'remote', 'set-url', 'origin', str(self.remote))
+        run_git = G.git
+
+        def move_head_before_push(repo, *args, **kwargs):
+            if args[0] == 'push':
+                run_git(self.repo, 'commit', '-q', '--allow-empty', '-m', 'later work')
+            return run_git(repo, *args, **kwargs)
+
+        with mock.patch.object(G, 'git', side_effect=move_head_before_push):
+            self.publish()
+        self.assertNotEqual(git(self.repo, 'rev-parse', 'HEAD'), self.after)
+        self.assertEqual(git(self.remote, 'rev-parse', 'main'), self.after)
+        self.assertEqual(self.native.calls, [])
+
+    def test_advance_before_fetch_is_a_proven_race_without_push(self):
         git(self.remote, 'update-ref', 'refs/heads/main', self.advance())
         with self.assertRaises(PUSH.Advanced): self.publish()
         self.assertEqual(len(self.native.calls), 1)

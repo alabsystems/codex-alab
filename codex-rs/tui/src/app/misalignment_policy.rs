@@ -40,12 +40,19 @@ impl App {
             &mut lines,
         );
         let _ = tui.enter_alt_screen();
-        self.overlay = Some(Overlay::new_static_with_lines(
+        self.overlay = Some(Overlay::new_misalignment_review_with_lines(
             lines,
             "What we detected".to_string(),
             self.keymap.pager.clone(),
         ));
         tui.frame_requester().schedule_frame();
+    }
+
+    pub(super) fn close_misalignment_review_overlay(&mut self) {
+        // ALAB(misalignment-review): Do not leave a full-screen review active after opt-out.
+        if matches!(self.overlay, Some(Overlay::MisalignmentReview(_))) {
+            self.overlay = None;
+        }
     }
 
     pub(super) async fn continue_misalignment(

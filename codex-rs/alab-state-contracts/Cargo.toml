@@ -1,0 +1,30 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "codex-alab-state-contracts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "codex_alab_state_contracts"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+codex-alab-core = { path = "../alab-core" }
+codex-api = { workspace = true }
+codex-http-client = { workspace = true }
+codex-state = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = "=0.3.22"

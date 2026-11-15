@@ -145,3 +145,6 @@ impl<T: Into<reqwest::Body>> From<http::Response<T>> for HttpResponse {
         reqwest::Response::from(response).into()
     }
 }
+
+#[path = "../../alab-core/glue/http_error_body_capture.rs"]
+mod alab_error_body_capture; // ALAB(recovery): keep bounded rejection reads under the response's original permit.

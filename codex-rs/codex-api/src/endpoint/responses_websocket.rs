@@ -1,3 +1,4 @@
+use super::alab_request_diagnostics; // ALAB(recovery): request metadata stays local and content-free.
 use crate::RESPONSES_PATH;
 use crate::auth::SharedAuthProvider;
 use crate::common::ResponseEvent;
@@ -329,6 +330,7 @@ impl ResponsesWebsocketConnection {
             connection_reused,
         };
         let request_text = serialize_websocket_request(&request)?;
+        let alab_diagnostic = alab_request_diagnostics::websocket(&request, request_text.len(), connection_reused); // ALAB(recovery): count the full or incremental payload actually serialized.
 
         let current_span = Span::current();
         tokio::spawn(
@@ -366,9 +368,8 @@ impl ResponsesWebsocketConnection {
                     biased;
                     _ = tx_event.closed() => return,
                     () = &mut interrupt_timeout => {
-                        let _ = tx_event.send(Err(ApiError::Stream(
-                            "timed out draining interrupted response".into(),
-                        ))).await;
+                        let event = Err(ApiError::Stream("timed out draining interrupted response".into()));
+                        let _ = tx_event.send(alab_request_diagnostics::websocket_result(alab_diagnostic.as_ref(), event)).await; // ALAB(recovery): correlate the selected pre-lock timeout without changing its error.
                         return;
                     }
                     guard = stream.lock() => guard,
@@ -377,11 +378,8 @@ impl ResponsesWebsocketConnection {
                     return;
                 }
                 let Some(mut ws_stream) = guard.take() else {
-                    let _ = tx_event
-                        .send(Err(ApiError::Stream(
-                            "websocket connection is closed".to_string(),
-                        )))
-                        .await;
+                    let event = Err(ApiError::Stream("websocket connection is closed".to_string()));
+                    let _ = tx_event.send(alab_request_diagnostics::websocket_result(alab_diagnostic.as_ref(), event)).await; // ALAB(recovery): correlate a selected error before a socket was available.
                     return;
                 };
                 let mut completion = None;
@@ -431,7 +429,7 @@ impl ResponsesWebsocketConnection {
                     // Failed cancellation retires the socket while preserving any received
                     // completion and its usage for the abandoned classifier's cleanup.
                     let event = completion.map_or_else(|| Err(err), Ok);
-                    let _ = tx_event.send(event).await;
+                    let _ = tx_event.send(alab_request_diagnostics::websocket_result(alab_diagnostic.as_ref(), event)).await; // ALAB(recovery): cleanup failure is no request failure when completion was preserved.
                 } else {
                     *guard = Some(ws_stream);
                     if let Some(completed) = completion {
@@ -707,7 +705,7 @@ fn map_ws_error(err: WsError, url: &Url) -> ApiError {
         WsError::Http(response) => {
             let status = response.status();
             let headers = response.headers().clone();
-            let retry_after = RetryAfter::from_headers(&headers);
+            let retry_after = alab_request_diagnostics::websocket_rejection_retry_after(&response); // ALAB(recovery): waiting for the body cannot restart relative provider advice.
             let body = response
                 .body()
                 .as_ref()
@@ -807,7 +805,7 @@ fn map_wrapped_websocket_error_event(
     Some(ApiError::Transport(TransportError::Http {
         status,
         url: None,
-        headers: headers.as_ref().map(json_headers_to_http_headers),
+        headers: alab_error_headers::http_headers(headers.as_ref(), error.as_ref().and_then(|error| error.headers.as_ref())), // ALAB(recovery): preserve validated nested correlation IDs without merging auth or recovery headers.
         body: Some(original_payload),
         retry_after,
     }))
@@ -1152,6 +1150,10 @@ fn serialize_websocket_request(request: &ResponsesWsRequest<'_>) -> Result<Strin
 #[cfg(test)]
 #[path = "../../../alab-core/glue/websocket_error_headers_tests.rs"]
 mod alab_header_tests; // ALAB(capacity): exercise explicit HTTP status through the actual WebSocket event loop.
+
+#[cfg(test)]
+#[path = "../../../alab-core/glue/websocket_request_diagnostics_tests.rs"]
+mod alab_request_diagnostic_tests; // ALAB(recovery): exercise selected terminal results through the public request entry.
 
 #[cfg(test)]
 mod tests {

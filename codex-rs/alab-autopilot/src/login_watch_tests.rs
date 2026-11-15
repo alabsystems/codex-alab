@@ -17,6 +17,8 @@
 //!   after it arms one again;
 //! - a watch armed after a passive spell compares with the stat the last one read, so a file
 //!   that moved once is reloaded once.
+//! - a login renewed in the file before the watch first ran is delivered by the watch's first
+//!   wake, whether or not the decision that armed it had checked the profile's renewal itself.
 //!
 //! The looks run every [`LOOK`] here (aterm's are 15 s apart); a test that says nothing came of
 //! them waits for looks to have passed, never for time.
@@ -44,6 +46,14 @@ async fn on_a_login() -> (Harness, tempfile::TempDir, Arc<codex_login::AuthManag
 async fn login_fixture(
     proven: bool,
 ) -> (Harness, tempfile::TempDir, Arc<codex_login::AuthManager>) {
+    login_fixture_looking(proven, LOOK).await
+}
+
+/// [`login_fixture`], its looks `look` apart.
+async fn login_fixture_looking(
+    proven: bool,
+    look: Duration,
+) -> (Harness, tempfile::TempDir, Arc<codex_login::AuthManager>) {
     let home = fixtures::home();
     fixtures::api_key(home.path(), OLD_KEY);
     let manager = fixtures::manager(home.path(), AuthCredentialsStoreMode::File).await;
@@ -60,7 +70,7 @@ async fn login_fixture(
         true,
         ClientOptions::default(),
         Timing {
-            login_look: LOOK,
+            login_look: look,
             ..Timing::default()
         },
         Some(Arc::new(config)),
@@ -279,4 +289,47 @@ async fn a_watch_armed_after_a_passive_spell_reloads_no_unchanged_file() {
         "{:?}",
         h.sup.journal()
     );
+}
+
+/// A LOGIN RENEWED BEFORE THE WATCH FIRST RAN IS DELIVERED AT ITS FIRST WAKE, whatever the
+/// decision that armed the watch had checked itself: the wall's baseline is read while a turn
+/// runs (so no watch is armed), the key is renewed in the file, and the read after the turn arms
+/// the watch with codex still holding the old key. The watch reconciles the file it starts on,
+/// codex reloads the renewed key and the thread looks again, with no look taken (they are an
+/// hour apart). A watch told the profile's renewal was checked ([`Autopilot::watch_login`])
+/// owes that profile no second decision; the login's return it still says.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_login_renewed_before_the_watch_first_ran_is_delivered() {
+    for renewal_checked in [false, true] {
+        let (h, home, manager) = login_fixture_looking(true, Duration::from_secs(3600)).await;
+        restored_wall(&h);
+        assert!(h.shared.turn_started(h.rt.key(), "a-persons-turn"));
+        assert!(!h.autopilot.login_for(&h.rt, renewal_checked).1.back);
+        assert_eq!(
+            notes(&h, "the lost login's file is watched while the wall stands"),
+            0,
+            "no watch while the turn runs"
+        );
+        fixtures::api_key(home.path(), NEW_KEY);
+        h.shared.turn_ended(h.rt.key(), "a-persons-turn");
+        assert!(
+            !h.autopilot.login_for(&h.rt, renewal_checked).1.back,
+            "codex holds the old key until the watch has it reload"
+        );
+        assert_eq!(
+            notes(&h, "the lost login's file is watched while the wall stands"),
+            1
+        );
+        wait_until("the thread looked again at the renewal", || {
+            notes(&h, "looked again at the lost login's return") == 1
+        })
+        .await;
+        assert_eq!(key_held(&manager).as_deref(), Some(NEW_KEY));
+        assert!(h.rt.state().login.back, "{:?}", h.sup.journal());
+        assert_eq!(
+            h.autopilot.login_looks(),
+            0,
+            "renewal_checked={renewal_checked}"
+        );
+    }
 }

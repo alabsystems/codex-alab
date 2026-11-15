@@ -134,3 +134,7 @@ pub use codex_protocol::protocol::RealtimeAudioFrame;
 pub use codex_protocol::protocol::RealtimeEvent;
 
 #[path = "../../alab-core/glue/api_auth_source.rs"] pub mod alab_auth_source; // ALAB(accounts): credential admission precedes token extraction and owns derived transport life.
+
+#[cfg(test)]
+#[path = "../../alab-core/glue/test_child_process.rs"]
+pub(crate) mod test_child_process; // ALAB(test): drain and reap exact-test children with bounded retained evidence.

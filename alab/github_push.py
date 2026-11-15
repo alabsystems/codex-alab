@@ -34,20 +34,24 @@ def publish(repo, remote, expected, *, client=None):
     identity, network = GITHUB.location(repo, remote)
     if not network:
         # Local repositories are fixture/offline transports, never a GitHub fallback.
-        return GITHUB.git(repo, 'push', '--porcelain', identity, 'HEAD:refs/heads/main')
+        return GITHUB.git(repo, 'push', '--porcelain', identity, after + ':refs/heads/main')
     client = client or GITHUB.Agh()
-    # Agh explicitly recommends a fresh clone when source config cannot pass its
-    # write screen. Preserve all source guards, and let Agh screen the new clone.
+    # Screen a fresh, complete transport without changing any source guards.
+    # Preload only the candidate's graph locally; the admitted exact-main fetch
+    # then transfers only missing objects, rather than mirroring every remote ref.
     with tempfile.TemporaryDirectory(prefix='alab-publish-', suffix='.noindex') as scratch:
         transport = Path(scratch) / 'transport.git'
-        client.call('repo', 'clone', identity, str(transport), '--mirror')
-        current = GITHUB.git(transport, 'rev-parse', '--verify', 'refs/heads/main').decode().strip()
+        GITHUB.git(scratch, 'init', '--bare', '--quiet', str(transport))
+        GITHUB.git(transport, 'fetch', '--no-tags', '--no-write-fetch-head',
+                   '--recurse-submodules=no', str(repo), after + ':refs/alab/candidate')
+        GITHUB.fetch(transport, identity,
+                     ['refs/heads/main:refs/remotes/origin/main'], client=client)
+        current = GITHUB.git(transport, 'rev-parse', '--verify',
+                             'refs/remotes/origin/main').decode().strip()
         if current != expected:
             if is_ancestor(transport, expected, current):
                 raise Advanced('main advanced before publication')
             raise GITHUB.Refused('main changed history before publication')
-        GITHUB.git(transport, 'fetch', '--no-tags', '--no-write-fetch-head',
-                   '--recurse-submodules=no', str(repo), after + ':refs/alab/candidate')
         # Bind the native request to the exact objects inspected above. Agh repeats
         # its ancestry and expected-ref checks, and owns all network writes.
         request = Path(scratch) / 'updates.json'

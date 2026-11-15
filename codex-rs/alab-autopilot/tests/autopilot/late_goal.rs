@@ -12,13 +12,15 @@
 //! The extension needs the thread manager, which `TestCodex` makes after the registry, so the
 //! harness registers this forwarder where the binary has the extension (after the autopilot),
 //! then installs the extension against the built manager and starts its runtime on the
-//! primary thread ([`LateGoal::bind`]). The goal's tools are not offered to the model.
+//! primary thread ([`LateGoal::bind`]). The default omits goal tools and token callbacks;
+//! accounting regressions explicitly opt into those production capabilities.
 
 use std::sync::Arc;
 use std::sync::OnceLock;
 
 use codex_analytics::AnalyticsEventsClient;
 use codex_core::config::Config;
+use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistry;
@@ -27,6 +29,11 @@ use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ThreadStopInput;
+use codex_extension_api::TokenUsageContributor;
+use codex_extension_api::ToolContributor;
+use codex_extension_api::ToolFinishInput;
+use codex_extension_api::ToolLifecycleContributor;
+use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnLifecycleContributor;
@@ -36,15 +43,26 @@ use codex_goal_extension::GoalExtensionConfig;
 use codex_goal_extension::GoalService;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::TokenUsageInfo;
 use core_test_support::test_codex::TestCodex;
 
 /// The goal extension's thread and turn hooks, once [`LateGoal::bind`] has installed it.
 #[derive(Default)]
 pub(crate) struct LateGoal {
+    event_sink: Option<Arc<dyn codex_extension_api::ExtensionEventSink>>,
     registry: OnceLock<ExtensionRegistry<Config>>,
 }
 
 impl LateGoal {
+    pub(crate) fn with_event_sink(
+        event_sink: Option<Arc<dyn codex_extension_api::ExtensionEventSink>>,
+    ) -> Self {
+        Self {
+            event_sink,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn register(self: &Arc<Self>, builder: &mut ExtensionRegistryBuilder<Config>) {
         builder.thread_lifecycle_contributor(Arc::clone(self) as _);
         builder.turn_lifecycle_contributor(Arc::clone(self) as _);
@@ -58,7 +76,7 @@ impl LateGoal {
             .codex
             .state_db()
             .unwrap_or_else(|| panic!("the goal database"));
-        let mut builder = ExtensionRegistryBuilder::<Config>::new();
+        let mut builder = self.event_sink.as_ref().map_or_else(ExtensionRegistryBuilder::<Config>::new, |sink| ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(sink)));
         codex_goal_extension::install_with_backend(
             &mut builder,
             db,
@@ -103,6 +121,87 @@ impl LateGoal {
         self.registry
             .get()
             .map_or(&[], ExtensionRegistry::turn_lifecycle_contributors)
+    }
+}
+
+impl ConfigContributor<Config> for LateGoal {
+    fn on_config_changed(
+        &self,
+        session_store: &ExtensionData,
+        thread_store: &ExtensionData,
+        previous_config: &Config,
+        new_config: &Config,
+    ) {
+        if let Some(registry) = self.registry.get() {
+            for contributor in registry.config_contributors() {
+                contributor.on_config_changed(
+                    session_store,
+                    thread_store,
+                    previous_config,
+                    new_config,
+                );
+            }
+        }
+    }
+}
+
+impl TokenUsageContributor for LateGoal {
+    fn on_token_usage<'a>(
+        &'a self,
+        session_store: &'a ExtensionData,
+        thread_store: &'a ExtensionData,
+        turn_store: &'a ExtensionData,
+        usage: &'a TokenUsageInfo,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(registry) = self.registry.get() {
+                for contributor in registry.token_usage_contributors() {
+                    contributor
+                        .on_token_usage(session_store, thread_store, turn_store, usage)
+                        .await;
+                }
+            }
+        })
+    }
+}
+
+impl ToolContributor for LateGoal {
+    fn tools(
+        &self,
+        session_store: &ExtensionData,
+        thread_store: &ExtensionData,
+    ) -> Vec<
+        Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>,
+    > {
+        self.registry
+            .get()
+            .into_iter()
+            .flat_map(ExtensionRegistry::tool_contributors)
+            .flat_map(|contributor| contributor.tools(session_store, thread_store))
+            .collect()
+    }
+}
+
+impl ToolLifecycleContributor for LateGoal {
+    fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(async move {
+            if let Some(registry) = self.registry.get() {
+                for contributor in registry.tool_lifecycle_contributors() {
+                    contributor
+                        .on_tool_finish(ToolFinishInput {
+                            session_store: input.session_store,
+                            thread_store: input.thread_store,
+                            turn_store: input.turn_store,
+                            turn_id: input.turn_id,
+                            call_id: input.call_id,
+                            tool_name: input.tool_name,
+                            source: input.source.clone(),
+                            outcome: input.outcome,
+                        })
+                        .await;
+                }
+            }
+        })
     }
 }
 

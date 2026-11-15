@@ -25,6 +25,7 @@ it needs no functional hook.
 | `sync.sh` | merge the newest upstream into `main`: run it at least daily |
 | `daily.sh` | the unattended wrapper: stepwise sync, status, journal, LaunchAgent |
 | `CONTRACT.md` | the native harness: what codex-alab does itself in aterm, and the wire between them |
+| [REQUEST-DIAGNOSTICS.md](REQUEST-DIAGNOSTICS.md) | read-only request evidence, process/attempt correlation, field meanings and limits |
 | `check.sh` | the gate a sync passes before it lands |
 | `qualification.py` | run the unchanged native gate and retain its log and exact before/after source identities outside the source tree |
 | `delta.sh`, `hook_topics.py` | upstream diff/conflict risk; `--topics [REV]` inventories committed local hooks without an upstream remote, using the shared Python 3.11+ extractor |
@@ -35,7 +36,7 @@ it needs no functional hook.
 | `feature_evidence.py`, `feature_gate.py`, `python_test_results.py` | source-bound named scenario declarations, portable log bundles, Python workflow execution and affected-feature admission before sync compilation |
 | `upstream_status.py`, `artifact_status.py` | local source/review lag plus optional explicit packaged, selected and running artifact identities; no qualification or promotion is inferred |
 | `account_registry_probe.py` | read-only OpenAI account associations for a registry machine; reports duplicate names and checks a requested count without authenticating or changing accounts |
-| `github_push.py` | publish an exact fast-forward main through Agh using a fresh admitted transport clone while preserving the source clone's guards |
+| `github_push.py` | publish an exact fast-forward main through Agh using a fresh admitted transport repository while preserving the source clone's guards |
 | `package.sh` | build a codex package and advance its already selected local artifact channel |
 | `local_update.py` | poll origin/main for that selected local channel; prepare its separate LaunchAgent |
 | `promote.py` | conditionally select a forward local package through atpkg after smoke passes |
@@ -47,10 +48,13 @@ it needs no functional hook.
 | `setup.sh` | make a clone sync-ready: upstream remote and refs, rerere |
 | `smoke/dropin.py` | codex-alab against OpenAI's build: still a drop-in `codex` ("The drop-in check") |
 | `smoke/capacity_exec.py` | the smokes' shared loopback Responses model, command-guardian runner and package reader; its capacity and quota cases run in aterm's jailed lane ("Headless capacity and quota recovery") |
+| `smoke/kimi.py` | every native Kimi model through real `codex exec` calls against loopback Responses, including reasoning, tools, images, profiles and subscription auth |
 | `smoke/parallel_logins.py` | concurrent real exec processes with distinct credentials and shared conversation storage; no build |
 | `smoke/quota_resume.py` | quota recovery across persisted thread origins using existing binaries |
 | `smoke/quota_wait.py` | repeated stale-reset backoff and native cancellation during a distant reset |
+| `smoke/request_recovery.py` | opaque HTTP 400 retry after a completed plan step, retained input and Retry-After, with specific/array refusal controls; runs an existing binary or package; requires Python 3.11+ for secondary exception diagnostics |
 | `smoke/weekly_reset.py` | earned reset credits, natural resets, receipt reconciliation and paced recovery using an existing binary or package |
+| `smoke/history_pagination.py` | real app-created saved history, native PTY paging and resizing with a custom loopback provider; runs in the maintained gate |
 | `smoke/prune_test.py` | `prune.py` against a scratch package root and atpkg prefix |
 
 ## What upstream is like (measured 2026-10-15)
@@ -189,13 +193,24 @@ reader checks the source tree and log hash. An absent or invalid record cannot i
 qualified source. Records may be moved together with their sibling `gate.log`.
 
 GitHub reads use `github.py`; writes use `github_push.py` and Agh's atomic
-expected-ref operation. A fresh transport clone avoids changing the source
+expected-ref operation. A fresh bare transport avoids changing the source
 clone's intentional upstream push refusal, which Agh's write-config screen rejects.
-Only local Git transfers the exact candidate graph into that admitted clone.
+Local Git preloads the exact candidate graph; an admitted Agh fetch then reads only
+authoritative main, transferring any missing objects. Unrelated refs and the remote
+default branch are not imported, and the transport retains complete history.
 An upstream history rewrite, a non-forward candidate, an authentication error or
 an unknown write outcome stops publication. A typed lease conflict retries only
 after a fresh admitted fetch proves that main advanced forward; every composed
 candidate is checked again by the existing sync loop.
+
+Autopilot's offline repository probe reads remote-tracking refs. `agh repo fetch-main`
+updates a private ref, so it can verify main while leaving `origin/main` stale and
+the probe still reporting unpushed work. With the selected managed Python, run
+`alab/github.py --repo CHECKOUT fetch origin refs/heads/main:refs/remotes/origin/main`
+to refresh that tracking observation through fresh Agh enumeration, exact-object
+transfer and fast-forward/CAS checks. This moves no local branch or worktree HEAD.
+Complete any running qualification first, since it records the origin base before
+and after its gate. Private refs alone do not supply the probe's remote evidence.
 
 A sync that stops for a person (exit 3, 4 or 6) records why, and so do a `--no-push`
 merge and a person's `--continue` that failed: each waits (exit 5) for `--continue` or
@@ -333,6 +348,24 @@ Its steps:
    independently verified V8 archive and binding as packaging, in the private Cargo
    home's cache; pristine comparisons resolve their own tree's pins. The pair also stays
    available for direct host/runtime unit tests and isolated retries.
+   Focused API regressions keep `-p codex-api -p codex-alab-api-tests` in both
+   RED and final runtime commands; use a test-name filter for RED. The API crate's
+   dev dependencies enable Hyper server features, so dropping that package changes
+   the shared dependency graph. Keep the ordinary target for runtime tests. From
+   `codex-rs/` inside the existing qualified project shell, scope the override to
+   the selected Tippy command:
+
+   ```sh
+   CARGO_TARGET_DIR="$(alab_check_lint_target "$CARGO_TARGET_DIR")" \
+     "$ALAB_CARGO" tippy --locked --no-deps --all-targets \
+     -p codex-api -p codex-alab-api-tests --message-format=json -- --cap-lints warn
+   ```
+
+   This follows the gate's separate `<target>/tippy` cache; exporting that directory
+   for both phases would recreate their fingerprint collision. Keep all-target
+   lint ownership classification and native admission. The
+   [measured review](reviews/focused-api-validation-2026-11-14.md) distinguishes
+   actual dirty reasons from an unmeasured performance claim.
    It needs `jq` (`/usr/bin/jq` on macOS 15 and later); `python3
    alab/tests/test_lint_owned.py` checks `alab/lint.jq`'s reading of cargo's messages, and
    `python3 alab/tests/test_check_lint_step.py` runs the step itself, the pristine
@@ -345,6 +378,27 @@ Its steps:
    `test_unit_runner_native.py` additionally needs Python 3.11 or newer and real Trust
    Cargo, and checks inherited context before a native harness initializes Rust, plus
    existing Cargo runner configuration and a Python signal-change negative control.
+   For the full Python workflow, use Python 3.11 or newer in that qualified project
+   controller, with `ALAB_TEST_UNIT_RUNNER` naming the selected adapter and
+   `ALAB_NATIVE_CARGO_COMMAND` naming the admitted Cargo prefix as a JSON array:
+
+   ```sh
+   export ALAB_NATIVE_CARGO_COMMAND="$(jq -nc \
+     --arg front "$ATPKG_PROJECT_FRONT" --arg cargo "$ATPKG_PROJECT_TARGO" \
+     '[$front,"__build_admit",$cargo]')"
+   "$ALAB_PYTHON" -I -B alab/python_tests.py
+   ```
+
+   This discovers every `test_*.py` case once and emits `ALAB_PYTHON_MANIFEST`.
+   The complete native runner class must pass first, without skips or expected
+   failures, and finish its ordinary class/module cleanup. An unavailable native
+   prerequisite returns failure before remaining test bodies run; discovery still
+   imports their modules. All remaining cases then run with normal unittest
+   outcomes and without failfast. `ALAB_PYTHON_WORKFLOW` records phase results and
+   exact started, finished and missing case IDs; interrupted or incomplete coverage
+   cannot report full success. The native command, profile, admission and 60-second
+   fixture deadline remain unchanged. These are Python workflow results, not an
+   application certificate.
    Measured contained on this Mac (2026-10-21, `alab_contained` as
    `run_check` calls it): the whole gate passed, jq, `<target>/tippy` and the step's metadata
    read included (17 upstream diagnostics set aside), and with a build-script fault planted
@@ -355,14 +409,17 @@ Its steps:
    under load, insta's one-assertion-per-process rule). Before a core or app-server
    unit suite runs, the step builds its declared `test_stdio_server` and
    `codex-code-mode-host` runtime helpers in that tree's own target. Cargo's artifact
-   paths bind the test environment, overriding inherited helper aliases. The step
+   paths bind the test environment, overriding inherited helper aliases. Standalone
+   `codex-alab-autopilot` units prepare only the Code Mode host; mixed package
+   selections build their required helper union once. The step
    also builds and binds that tree's full `codex` executable for the MCP suite's
    sandbox-capability checks, first running that exact artifact with `--version`
    so first-launch loading is outside the capability probe's timeout. A failed
    helper build or missing/ambiguous executable is a prerequisite failure, never an
    excused test assertion. The native host uses packaging's independently verified
    upstream V8 pair, cached in the private Cargo home; resolution requires Python 3.11
-   or newer (`ALAB_PYTHON` selects the interpreter). The step runs the suite with an
+   or newer (managed atpkg Python is discovered automatically; `ALAB_PYTHON`
+   selects an explicit interpreter). The step runs the suite with an
    8 MiB stack and `--no-fail-fast`. Cargo metadata and compiled artifacts bind each
    failure to its package/version, manifest, library target/source and exact test name.
    The step reruns each original copy alone, then what still fails on pristine upstream.
@@ -1090,8 +1147,11 @@ What a run does, in order (`--help` says the same):
    runtime-checked obligations block the build. The native live compiler verdict
    decides; saved JSON is observational and cannot substitute for that run.
    Reports stay in a fresh private target-directory leaf. The package records
-   the source, compiler, report digest, and both built and packaged binary digests
-   in `compiler.verification`, without publishing local report paths.
+   the source, compiler, report digest, and equal built and packaged binary digests
+   in `compiler.verification`, without publishing local report paths. A changed
+   executable refuses the observation before the compiler record is updated.
+   These hashes establish byte equality only; native certified-artifact admission
+   requires its separate genuine proof and artifact owners.
    Every supported binary is supplied as a prebuilt input to that target's packager,
    so its Python never starts a second Cargo build. The build runs with
    `STABLE_GIT_COMMIT=<commit>`, the package's `CODEX_ALAB_BUILD_VERSION` and upstream
@@ -1172,12 +1232,14 @@ What a run does, in order (`--help` says the same):
    built never runs outside the sandbox, not even for a message).
 5. **The package**: upstream's `scripts/build_codex_package.py --target aarch64-apple-darwin
    --variant codex --package-version <v> --entrypoint-bin … --code-mode-host-bin …
-   --rg-bin … --strip all` stages it in a new hidden `<out>/codex/.<v>.partial.*`
+   --rg-bin … --strip none` stages it in a new hidden `<out>/codex/.<v>.partial.*`
    (`<out>` defaults to `~/.local/share/aterm/dev-builds/artifacts`, as aterm's
    `tools/atpkg-build-local.sh`). That directory is the only one it can write: the two
    binaries and the cached rg it reads are read-only to it, and so is every published
-   package. With prebuilt bins it only stages; `xcrun strip -S -x` keeps the ad-hoc
-   signature. A process the packager leaves behind could go on writing that directory (a
+   package. Prebuilt application binaries retain their compiled bytes, including
+   their existing signatures; stripping or another transformation requires a
+   checked correspondence that this path does not provide. A process the
+   packager leaves behind could go on writing that directory (a
    symlink named `LICENSE`, say, that a later write outside the sandbox would follow), so
    nothing more is written there and it is never published: `copy_package.py` copies
    regular-file bytes and modes, opening each input relative to a held directory
@@ -1756,9 +1818,19 @@ the local-only packaging and future published-lane plans in Decisions 3 and 6.
    unverified lane; they confer no proof authority on the shipping application.
    After the live certified build, the gate executes that new Codex against
    isolated loopback reset fixtures: eligible five-hour and weekly windows,
-   usage below 99 percent, and a reset beyond 24 hours. The negative cases
-   require zero redemption POSTs. The far-reset case observes a paced second
-   usage poll, adding roughly 30 seconds. Managed Python runs isolated and loads
+   including weekly refreshes 24 and 25 hours away, and rejects usage below
+   99 percent or a missing or elapsed refresh. It also changes the
+   allowance, cycle or account after selecting an earned credit and requires a
+   fresh usage check before any redemption POST. Restored-at-99 recovery keeps
+   the credit; still-denied recovery and eligible preflight independently remain
+   positive controls. Negative cases require zero new redemption POSTs and a
+   paced second poll. The same gate creates 260 completed turns through the real
+   app-server, resumes their saved thread in a native PTY, loads at least three
+   older history pages, and pages up/down while resizing 76↔38 columns. It
+   requires natural successful app exit, actual owning reap and observed group
+   absence; timeout, panic, external cancellation or protocol errors fail the
+   runtime step. The custodian separately records its retained-group teardown
+   signal; that observation is distinct from the app's natural successful exit. Managed Python runs isolated and loads
    only the source smoke directory explicitly; no inherited Python path or
    user site supplies fixture code. Scratch fake credentials and sockets stay
    under the protected short TMPDIR, while source/binary-bound results, HTTP

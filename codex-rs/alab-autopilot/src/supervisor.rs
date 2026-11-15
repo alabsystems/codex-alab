@@ -90,6 +90,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
+use std::sync::OnceLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -228,6 +229,19 @@ pub const RULE_MAIL_REPORT: &str = "mail-report@v1";
 /// again.
 pub const RECHECK: Duration = Duration::from_secs(60);
 
+/// THE LONGEST A CLAIM STANDS SEALED FOR AN ACCOUNT HANDOFF
+/// ([`Supervisor::seal_claim_for_handoff`]; review of 06dfcad367, finding 8): aterm's own bound
+/// on the restart it sealed, then a grace.
+/// aterm's commit worker replays the sealed `prepare` only until that prepare's deadline, 120 s
+/// after aterm answered `ready` (the prepare's `deadline_us` and the receipt's `expires_ms`, in
+/// aterm's `codex_rotation_control.rs` and `codex_renewal_control.rs`); past it nothing aterm
+/// replays is admitted, so a re-confirm can no longer cost the handoff anything. The 30 s grace
+/// lets a replay admitted just before that deadline reach its signal. It is counted from the
+/// `ready` this process read, which comes after aterm's, on a clock that never runs ahead of
+/// aterm's (on macOS it stops while the host sleeps, `CLOCK_UPTIME_RAW`, and aterm's
+/// `CLOCK_MONOTONIC` does not), so it never ends before aterm's own deadline.
+pub const HANDOFF_SEAL: Duration = Duration::from_secs(150);
+
 /// How soon an act that met a person's hold reads `status` again when no lift reached it
 /// (aterm's `WAIT_STEP`, the longest step its loop's `park_on_hold` takes between `status`
 /// reads). The lift is met at once by the `effective=on` read its `hold` event brings
@@ -317,7 +331,24 @@ pub(crate) struct AdmissionFence {
     generation: Option<u64>,
     since: Option<Instant>,
     policy: Option<Policy>,
-    tui_generation: u64,
+    /// The TUI's native point ([`Shared::admission_generation`]): a frame, a person's input,
+    /// a turn's start or end moves it, and a TUI or app-server event the admission's own
+    /// checks do not read (the periodic usage reply) does not.
+    tui_generation: codex_alab_core::session::AdmissionGeneration,
+}
+
+/// A claim sealed for an account handoff ([`Supervisor::seal_claim_for_handoff`]).
+#[derive(Debug)]
+struct HandoffSeal {
+    /// The claim ([`State::claims_taken`]) under which the host answered `ready`.
+    claim: u64,
+    /// The thread whose handoff it is: its follow keeps the handoff's point while the seal
+    /// stands ([`Supervisor::end_handoff_seal`]).
+    thread: String,
+    /// The receipt the host answered `ready` for.
+    receipt: String,
+    /// When it ends whatever the host answers meanwhile ([`HANDOFF_SEAL`] after the `ready`).
+    ends: Instant,
 }
 
 #[derive(Default)]
@@ -372,6 +403,11 @@ struct State {
     /// no echo consumes would let a later person's clear pass for an echo (review of 7e7622ff7,
     /// finding 2).
     echoes_due: u64,
+    /// THE ACCOUNT HANDOFF THAT SEALED A CLAIM ([`Supervisor::seal_claim_for_handoff`]). Kept
+    /// until another one replaces it or the follow that keeps its point lets the point go
+    /// ([`Supervisor::end_handoff_seal`]); it seals only while it names the claim held now and
+    /// the record's handoff intent is bound to its receipt ([`Supervisor::claim_sealed`]).
+    handoff_seal: Option<HandoffSeal>,
     /// Lost/Gap events admitted by this connection's reader, not yet classified.
     queued_claim_events: Arc<ClaimEvents>,
     /// Reasons sort first by kind, then origin. A root can replace only its own reason;
@@ -840,6 +876,9 @@ enum Taken {
 pub struct Supervisor {
     /// Itself, for the tasks it starts (the badge reader).
     me: Weak<Supervisor>,
+    /// Installed Shared callbacks borrow this owner's runtime after upgrading `me`.
+    /// A retained Shared must not keep a retired runtime's I/O driver alive.
+    runtime: OnceLock<tokio::runtime::Handle>,
     opts: SupervisorOptions,
     state: Mutex<State>,
     /// Policy refresh and an unaccepted-claim cleanup share one order. Never acquire
@@ -870,6 +909,9 @@ pub struct Supervisor {
     /// How soon an act that met a hold reads `status` again ([`HOLD_RECHECK`]; tests lengthen
     /// it with [`Self::wait_recheck_ms`]), in milliseconds.
     hold_recheck_ms: AtomicU64,
+    /// The longest a claim stands sealed for an account handoff ([`HANDOFF_SEAL`]; tests shorten
+    /// it), in milliseconds.
+    handoff_seal_ms: AtomicU64,
     /// A retry of the owed sends waits on its timer.
     owed_retry_armed: AtomicBool,
     /// A startup screen's attention an earlier start left standing (a sign-in, a folder trust)
@@ -1039,12 +1081,17 @@ mod claim_publication_tests;
 #[path = "claim_release_order_tests.rs"]
 mod claim_release_order_tests;
 
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[path = "runtime_ownership_tests.rs"]
+mod runtime_ownership_tests;
+
 impl Supervisor {
     pub fn new(opts: SupervisorOptions) -> Arc<Supervisor> {
         let (claims, _) = watch::channel(0);
         let (exit_result, _) = watch::channel(None);
         Arc::new_cyclic(|me| Supervisor {
             me: me.clone(),
+            runtime: OnceLock::new(),
             opts,
             state: Mutex::new(State::default()),
             policy_refresh: tokio::sync::Semaphore::new(1),
@@ -1066,6 +1113,9 @@ impl Supervisor {
             wait_recheck_ms: AtomicU64::new(u64::try_from(RECHECK.as_millis()).unwrap_or(u64::MAX)),
             hold_recheck_ms: AtomicU64::new(
                 u64::try_from(HOLD_RECHECK.as_millis()).unwrap_or(u64::MAX),
+            ),
+            handoff_seal_ms: AtomicU64::new(
+                u64::try_from(HANDOFF_SEAL.as_millis()).unwrap_or(u64::MAX),
             ),
             owed_retry_armed: AtomicBool::new(false),
             login_looked: AtomicBool::new(false),
@@ -1175,6 +1225,15 @@ impl Supervisor {
     pub fn set_owed_retry(&self, after: Duration) {
         self.owed_retry_ms.store(
             u64::try_from(after.as_millis()).unwrap_or(u64::MAX).max(1),
+            Ordering::SeqCst,
+        );
+    }
+
+    /// Set the longest a claim stands sealed for an account handoff from the `ready` that seals
+    /// it (default [`HANDOFF_SEAL`]); a seal set before keeps its own end.
+    pub fn set_handoff_seal(&self, lasts: Duration) {
+        self.handoff_seal_ms.store(
+            u64::try_from(lasts.as_millis()).unwrap_or(u64::MAX),
             Ordering::SeqCst,
         );
     }
@@ -1395,10 +1454,14 @@ impl Supervisor {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
+        self.runtime.get_or_init(|| runtime);
         let me = Arc::downgrade(self);
         let _ = self.opts.shared.set_release(Box::new(move |within| {
             let Some(me) = me.upgrade() else {
                 return true;
+            };
+            let Some(runtime) = me.runtime.get() else {
+                return false;
             };
             // Register before publishing closing: a refused take can then wait for this
             // same operation, even when the exit's caller exhausts its own wait budget.
@@ -1555,9 +1618,11 @@ impl Supervisor {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
+        self.runtime.get_or_init(|| runtime);
         let me = Arc::downgrade(self);
         let _ = self.opts.shared.set_context_reader(Box::new(move |within| {
             let me = me.upgrade()?;
+            let runtime = me.runtime.get()?;
             if !me.held() {
                 return None;
             }
@@ -1604,12 +1669,17 @@ impl Supervisor {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
+        self.runtime.get_or_init(|| runtime);
         let me = Arc::downgrade(self);
         let _ = self
             .opts
             .shared
             .set_mail_reader(Box::new(move |kind, off, within| {
                 let me = me.upgrade().ok_or("the supervisor is gone")?;
+                let runtime = me
+                    .runtime
+                    .get()
+                    .ok_or("the supervisor runtime is unavailable")?;
                 if !me.held() {
                     return Err("no proven aterm claim".to_string());
                 }
@@ -1684,7 +1754,7 @@ impl Supervisor {
     /// older task or ask nobody has handled stands below it (raising `mail:` attention), and
     /// goes once that one is ([`Supervisor::flush_receipts`]); the report goes at once. A
     /// report goes only to an address aterm's bridge routes ([`codex_alab_aterm::mail::reply_to`]:
-    /// a session sender as `@s-…`); the local `post` answers `OK` either way.
+    /// a session sender as `@<tab-ID>`); the local `post` answers `OK` either way.
     pub async fn receipt(
         &self,
         turn: codex_alab_core::mail::MailTurn,
@@ -2519,6 +2589,11 @@ impl Supervisor {
     /// leaves aterm a copy with no line to relaunch (end-to-end run 2026-10-16: "names no
     /// line aterm would relaunch") or none at all ("ended in order").
     async fn renew_for_record(&self, client: &Client) {
+        // A sealed claim is not renewed, not even for the record ([`Self::claim_sealed`]): the
+        // line stays owed, and a change after the seal ends renews it.
+        if self.claim_sealed() {
+            return;
+        }
         let line = self.opts.shared.resume_lines();
         {
             let st = self.lock();
@@ -2922,9 +2997,9 @@ impl Supervisor {
                 self.opts.shared.set_needs_off(off);
             }
         });
-        // An explicit Off ends provider recovery before a remote release can wait. A
-        // transient Passive keeps it; lost_locally already prevents new publication.
-        self.opts.shared.set_recovery(None);
+        // Off ends usable recovery intent. An unverifiable timing fact remains
+        // recorded so a second crash cannot turn it into an unpaced carry-on.
+        self.opts.shared.clear_recovery_intent();
         if !self.opts.shared.flush_record() {
             self.note("the explicit off could not persist its cleared provider recovery");
         }
@@ -3533,24 +3608,7 @@ impl Supervisor {
     /// before or during its checks. Call the synchronous predicate again after
     /// the final database admission lease; never await network under that lease.
     pub(crate) async fn ready_for_admission(&self) -> Result<AdmissionFence, Ready> {
-        let tui_generation = self.opts.shared.upgrade_generation();
-        let fence = {
-            let st = self.lock();
-            AdmissionFence {
-                events: Arc::clone(&st.queued_claim_events),
-                event_epoch: st
-                    .queued_claim_events
-                    .admission_epoch
-                    .load(Ordering::SeqCst),
-                lost_epoch: self.lost_epoch.load(Ordering::SeqCst),
-                released: self.released.load(Ordering::SeqCst),
-                claim: st.claims_taken,
-                generation: st.generation,
-                since: st.since,
-                policy: st.policy.clone(),
-                tui_generation,
-            }
-        };
+        let fence = self.admission_observation();
         match self.ready().await {
             Ready::Go if self.admission_fence_current(&fence) => Ok(fence),
             Ready::Go => Err(Ready::Wait {
@@ -3561,6 +3619,129 @@ impl Supervisor {
         }
     }
 
+    /// The claim's authority as already observed, with no transport and no re-confirm: the
+    /// fence [`Self::ready_for_admission`] takes before its checks, and the one a pass over a
+    /// sealed claim takes instead of them ([`Self::claim_sealed`]). It grants nothing by
+    /// itself: [`Self::admission_fence_current`] is still asked before any irreversible step,
+    /// and it holds only where the claim was re-confirmed since it was taken.
+    pub(crate) fn admission_observation(&self) -> AdmissionFence {
+        let tui_generation = self.opts.shared.admission_generation();
+        let st = self.lock();
+        AdmissionFence {
+            events: Arc::clone(&st.queued_claim_events),
+            event_epoch: st
+                .queued_claim_events
+                .admission_epoch
+                .load(Ordering::SeqCst),
+            lost_epoch: self.lost_epoch.load(Ordering::SeqCst),
+            released: self.released.load(Ordering::SeqCst),
+            claim: st.claims_taken,
+            generation: st.generation,
+            since: st.since,
+            policy: st.policy.clone(),
+            tui_generation,
+        }
+    }
+
+    /// SEAL THE CLAIM FOR AN ACCOUNT HANDOFF: the host answered `ready` for `receipt` to a
+    /// request sent under `fence`, a readiness that re-confirmed the claim. aterm seals the
+    /// handoff's native authority to the claim's revision as it stood then, and its commit
+    /// worker replays that sealed `prepare` before it signals this process; every same-holder
+    /// `meta set supervisor` moves the revision, and a moved one has every replay refused. So
+    /// while the seal stands ([`Self::claim_sealed`]) nothing here re-confirms the claim: an
+    /// act's checks wait instead ([`Self::ready`]) and the record's renewal waits too. The
+    /// claim needs no renewal to stay held meanwhile: it is bound to its connection (no
+    /// `ttl=`), which aterm keeps for as long as that connection serves requests. `thread` is
+    /// the thread whose follow keeps the handoff's point ([`Self::end_handoff_seal`]). The seal
+    /// lasts [`HANDOFF_SEAL`] at most, whatever the host answers meanwhile.
+    pub(crate) fn seal_claim_for_handoff(
+        &self,
+        fence: &AdmissionFence,
+        thread: &str,
+        receipt: &str,
+    ) {
+        let lasts = Duration::from_millis(self.handoff_seal_ms.load(Ordering::SeqCst));
+        self.lock().handoff_seal = Some(HandoffSeal {
+            claim: fence.claim,
+            thread: thread.to_owned(),
+            receipt: receipt.to_owned(),
+            ends: clock() + lasts,
+        });
+    }
+
+    /// THE FOLLOW THAT KEPT `thread`'S HANDOFF POINT LET IT GO (review of 06dfcad367, finding 1):
+    /// a seal for that thread's handoff ends with it, whatever receipt the record still names.
+    /// The point then goes to the thread's own decision (a usage wall's resume at its reset, a
+    /// login back on its file), whose act has to re-confirm the claim; a seal left standing would
+    /// hold that act, and every other, until a person typed or the claim moved. A host that no
+    /// longer permits the handoff (or a login that came back in its file, or an identity that is
+    /// neither end of it) will not finish the move, so the re-confirm costs the handoff nothing.
+    /// A seal for another thread's handoff stands.
+    pub(crate) fn end_handoff_seal(&self, thread: &str) {
+        let standing = self.claim_sealed();
+        let ended = {
+            let mut st = self.lock();
+            if st
+                .handoff_seal
+                .as_ref()
+                .is_some_and(|seal| seal.thread == thread)
+            {
+                st.handoff_seal.take()
+            } else {
+                None
+            }
+        };
+        if standing && ended.is_some() {
+            self.note(format!(
+                "{thread}: the account handoff's follow let its point go; the claim's seal for it ends"
+            ));
+        }
+    }
+
+    /// Whether the claim held now stands sealed for an account handoff
+    /// ([`Self::seal_claim_for_handoff`]): the seal names this claim, and the record's handoff
+    /// intent is still bound to its receipt. A claim taken again since (whose revision aterm
+    /// moved anyway) or a receipt the intent no longer names (retired, consumed or discarded)
+    /// seals nothing, and a follow that lets the handoff's point go ends its seal
+    /// ([`Self::end_handoff_seal`]), so a seal can never outlive what it protects. Nor can it
+    /// outlive aterm's own deadline for the restart it sealed ([`HANDOFF_SEAL`]).
+    pub(crate) fn claim_sealed(&self) -> bool {
+        self.sealed_until().is_some()
+    }
+
+    /// When the seal standing on the claim ends at the latest ([`Self::claim_sealed`]); `None`
+    /// where none stands. A seal past its end is taken off here, and where it still stood (its
+    /// claim held, its receipt on record) the journal says so: from then every act's checks
+    /// re-confirm the claim again, though the host may still answer for the receipt (a
+    /// `committed` that never ends this process, a `waiting` that never moves).
+    fn sealed_until(&self) -> Option<Instant> {
+        let bound = self
+            .opts
+            .shared
+            .owed_act()
+            .and_then(|owed| owed.renewal)
+            .and_then(|renewal| renewal.receipt);
+        let expired = {
+            let mut st = self.lock();
+            let seal = st.handoff_seal.as_ref()?;
+            let stands =
+                seal.claim == st.claims_taken && bound.as_deref() == Some(seal.receipt.as_str());
+            if clock() < seal.ends {
+                return stands.then_some(seal.ends);
+            }
+            let ended = st.handoff_seal.take();
+            ended.filter(|_| stands)
+        };
+        if let Some(seal) = expired {
+            self.note(format!(
+                "{}: the claim's seal for an account handoff ended at aterm's deadline for the \
+                 restart it sealed; acts re-confirm the claim again",
+                seal.thread
+            ));
+        }
+        None
+    }
+
     /// Recheck only already observed authority, without transport, a new claim
     /// or a refreshed generation. A loss followed by reacquisition cannot make
     /// an old fence current again, nor can clearing a later TUI draft.
@@ -3568,7 +3749,7 @@ impl Supervisor {
         if self.closing()
             || !codex_alab_core::active()
             || self.opts.shared.autopilot() != AutopilotState::Active
-            || self.opts.shared.upgrade_generation() != fence.tui_generation
+            || self.opts.shared.admission_generation() != fence.tui_generation
         {
             return false;
         }
@@ -3600,7 +3781,7 @@ impl Supervisor {
             && fence.events.admission_pending.load(Ordering::SeqCst) == 0
             && fence.events.admission_epoch.load(Ordering::SeqCst) == fence.event_epoch
             && self.tui_wait_for(Act::Turn, grace, clock()).is_none()
-            && self.opts.shared.upgrade_generation() == fence.tui_generation
+            && self.opts.shared.admission_generation() == fence.tui_generation
     }
 
     /// The current TUI half of turn readiness, without remote I/O or a claim grant.
@@ -3858,6 +4039,17 @@ impl Supervisor {
             return Ready::Wait {
                 until: clock() + self.recheck(),
                 why: "a queued claim change is still being settled".to_string(),
+            };
+        }
+        // A CLAIM SEALED FOR AN ACCOUNT HANDOFF IS NOT RE-CONFIRMED, so nothing acts on it: the
+        // re-confirm would move the revision the host sealed, and the host's commit could then
+        // never end this process ([`Self::seal_claim_for_handoff`]). The seal ends with the
+        // receipt the record binds, with the follow that keeps the handoff's point, or at
+        // aterm's own deadline for the restart it sealed, when a waiting act looks again.
+        if let Some(ends) = self.sealed_until() {
+            return Ready::Wait {
+                until: ends.min(clock() + self.recheck()),
+                why: "the claim stands sealed for an account handoff".to_string(),
             };
         }
         match client.reconfirm().await {

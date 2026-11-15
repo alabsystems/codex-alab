@@ -6,10 +6,6 @@
 # still overrides each one. An owner-only build, installed and updated by atpkg, run inside
 # aterm: nothing goes to OpenAI but the model, login and usage traffic the product needs.
 
-# Start new sessions on GPT-6.1 Sol at Ultra unless the user selects otherwise.
-model = "gpt-6.1-sol"
-model_reasoning_effort = "ultra"
-
 # atpkg updates codex-alab; the update check polls GitHub and Homebrew every 20 h.
 check_for_update_on_startup = false
 
@@ -41,6 +37,12 @@ plugins = false
 skill_search = false
 image_generation = false
 tool_suggest = false
+# Never pause a turn to install a skill's MCP dependencies or retry a dead network forever.
+skill_mcp_dependency_install = false
+unbounded_connection_retries = false
+# Show server-supplied findings and rewrite suggestions in history without pausing work.
+misalignment_review = false
+safety_recourse = false
 
 [tui]
 alab_interface = true
@@ -60,3 +62,33 @@ terminal_title = ["run-state", "thread-name", "project-name"]
 [notice]
 hide_rate_limit_model_nudge = true
 hide_gov_cloud_guidance = true
+
+# Kimi Code subscription access. These providers are inert until a profile or explicit selection
+# chooses one; the API key belongs to the user's kimi.ai membership, not Kimi Open Platform.
+[model_providers.kimi]
+name = "Kimi Code"
+base_url = "https://api.kimi.ai/coding/v1"
+env_key = "KIMI_API_KEY"
+env_key_instructions = "Create an API key in the Kimi Code Console for your kimi.ai subscription, then set KIMI_API_KEY. Do not use a Kimi Open Platform key."
+wire_api = "responses"
+
+[model_providers.kimi-cn]
+name = "Kimi Code (China)"
+base_url = "https://api.kimi.com/coding/v1"
+env_key = "KIMI_API_KEY"
+env_key_instructions = "Create an API key in the Kimi Code Console for your kimi.ai subscription, then set KIMI_API_KEY. Do not use a Kimi Open Platform key."
+wire_api = "responses"
+
+# K3 within 256K is the conservative default. The bundled picker also includes 1M and HighSpeed
+# models for eligible plans; no model catalog file or Kimi CLI installation is required.
+[profiles.kimi]
+model = "k3-256k"
+model_provider = "kimi"
+web_search = "live"
+tools = { update_plan = { enabled = true } }
+
+[profiles.kimi-cn]
+model = "k3-256k"
+model_provider = "kimi-cn"
+web_search = "live"
+tools = { update_plan = { enabled = true } }

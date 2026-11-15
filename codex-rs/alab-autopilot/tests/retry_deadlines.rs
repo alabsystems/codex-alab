@@ -123,6 +123,13 @@ async fn recovery(status: u16) {
     Mock::given(method("POST"))
         .and(path_regex(".*/responses$"))
         .respond_with(move |request: &wiremock::Request| {
+            let failure = |message: &str| {
+                if status == 400 {
+                    json!({"detail": "Bad Request"})
+                } else {
+                    json!({"error": {"code": "rate_limit_exceeded", "message": message}})
+                }
+            };
             let mut requests = captured
                 .lock()
                 .unwrap_or_else(|err| panic!("request lock: {err:?}"));
@@ -148,14 +155,9 @@ async fn recovery(status: u16) {
                 ])),
                 2 => ResponseTemplate::new(status)
                     .insert_header("Retry-After", "2")
-                    .set_body_json(json!({"error": {
-                        "code": "rate_limit_exceeded",
-                        "message": "Transient provider failure."
-                    }})),
-                3 => ResponseTemplate::new(status).set_body_json(json!({"error": {
-                    "code": "rate_limit_exceeded",
-                    "message": "A second transient failure has no retry advice."
-                }})),
+                    .set_body_json(failure("Transient provider failure.")),
+                3 => ResponseTemplate::new(status)
+                    .set_body_json(failure("A second transient failure has no retry advice.")),
                 4 => responses::sse_response(responses::sse(vec![
                     responses::ev_response_created("recovered"),
                     responses::ev_assistant_message(
@@ -356,4 +358,9 @@ fn http_429_advice_survives_zero_ordinary_retries_then_the_task_recovers() {
 #[test]
 fn http_503_advice_survives_zero_ordinary_retries_then_the_task_recovers() {
     big_stack(|| recovery(503));
+}
+
+#[test]
+fn opaque_http_400_advice_survives_zero_ordinary_retries_then_the_task_recovers() {
+    big_stack(|| recovery(400));
 }

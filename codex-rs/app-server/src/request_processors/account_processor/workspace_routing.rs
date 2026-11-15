@@ -265,7 +265,8 @@ impl AccountRequestProcessor {
         let read = alab_bootstrap_account(self.read_account(/*request*/ None).await)
             .map_err(|error| match error {
                 AccountReadError::InvalidAccount(error) => invalid_request(error.to_string()),
-                AccountReadError::Routing(error) => internal_error(error.to_string()),
+                // ALAB(workspace-routing): give only the transient timeout a stable reason.
+                AccountReadError::Routing(error) => alab_workspace_routing_rpc_error(error),
             })?;
         let mut account = read.account_state.account.map(Account::from);
         if let Some(Account::Chatgpt { workspace_name, .. }) = &mut account {
@@ -641,3 +642,6 @@ mod tests;
 
 // ALAB(bootstrap-auth): rejected credentials must reach sign-in instead of aborting startup.
 include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../alab-core/glue/bootstrap_account.rs"));
+
+// ALAB(workspace-routing): keep retry classification independent of human-readable wording.
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../alab-core/glue/workspace_routing_error.rs"));

@@ -16,6 +16,7 @@ import time
 
 import capacity_exec as probe
 import native_host_record
+import package_standing
 import renewal_follow as native
 
 ORIGINAL_INSTRUCTIONS = "Retain the original handoff configuration marker."
@@ -478,6 +479,7 @@ def main():
     server, worker = native.serve(model)
     report = {"passed": False, "source": build["source"], "version": manifest["version"],
               "nativeHost": native_host_record.summary(host_record),
+              "package": package_standing.summary(build),
               "dropConsumeAck": args.drop_consume_ack or args.stop_after_consume,
               "chain": args.chain, "exhausted": args.exhausted,
               "human": args.human, "ephemeral": args.ephemeral, "review": args.review,

@@ -10,6 +10,31 @@ rotations. Two live fleet machines agree on their shared account catalog. Live
 enrollment of the additional account remains blocked by Cloudflare, so live
 provider rotation and the full parallel-login goal are not declared complete.
 
+## Run shapes
+
+Every result in this file was recorded on a run that leads its aterm tab's
+foreground process group. aterm's exec verbs admit only the tab's proven claim,
+and only that leader can hold it (`CONTRACT.md` §1). The shapes:
+
+| Shape | Before C1 | With C1 (built) | After C2 with aterm's A2 (planned) |
+| --- | --- | --- | --- |
+| `codex exec` typed at the tab's prompt, or exec'd in place (`exec`, `nice`, a `sh -c` whose last command it is) | moves | moves | moves, and claims nothing |
+| a child of a script, a pipeline member that is not its group's leader, under `/usr/bin/time` or `timeout`, started with `&` | waits, no line | waits; one line, that the move waits for it to lead; no claim sent; checked again locally every 5 s, so a job brought to the front with `fg` claims and moves | moves |
+| from an agent's tool shell under `setsid`, detached or orphaned, still carrying the session of a tab that is open | waits, no line | waits; it leads no terminal, so the line and the local check of the row above; no claim sent, whatever its sandbox allows | moves where its lineage reaches the tab and its sandbox allows the socket; a detached or orphaned run, or one its sandbox denies, is a recorded exclusion |
+| any run carrying the session of a tab that has since closed (a detached tmux or screen server, an orphaned run) | waits, no line | waits, no line: aterm removed the tab's rendezvous entry, and a missing entry is no answer (an aterm restart or seamless update shows one too), read again every 5 s for the wall, as for an aterm that is gone | the same, a recorded exclusion |
+| the leader of another PTY (tmux, codex's unified-exec PTY) in the tab | waits, no line; claims every 5 s | waits; one line; claims once per wall (aterm does not prove it, or the tab's leader holds the proven claim); stops asking | moves where its lineage reaches the tab |
+| the leader of another PTY whose sandbox denies the socket (`EPERM`) | waits, no line | waits; one line; stops asking for the wall | the same, a recorded exclusion (law 2) |
+| the leader under a hold, Autopilot Off, or another off | waits, no line; asked again every 5 s; moves after the lift | waits; one line; asked again every 30 s; moves after the lift | the same for every admitted shape, judged by the Codex-scoped policy |
+| the leader while aterm shows a dialog, stalls its main thread, or seamless-updates (a socket that refuses or is missing, `ERR auth`) | asked again every 5 s; moves after | the same, and no line | the same |
+| outside any aterm tab (no session named) | waits, no line | waits; one line; stops asking for the wall | the same, a recorded exclusion |
+| signed in with an API key, at a wall | waits, no line | waits; one line; stops asking for the wall | the same |
+| vanilla mode | upstream's usage error ends the run | the same | the same, a recorded exclusion |
+
+C1 is built (`alab-aterm/src/exec_route.rs`). A1 to A3, C2 and C3 are
+planned and not built (`CONTRACT.md` §1.1, the steps' status). The C3 smokes
+will add a launch shape to `exec_accounts.py` and `exec_shared_pool.py` for
+each row.
+
 ## Previous qualification, 2026-11-04
 
 The combined source `9ab68908135c5e5306ee1fd612a0da5c78426458` passes the full

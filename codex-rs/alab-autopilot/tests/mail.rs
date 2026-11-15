@@ -109,7 +109,7 @@ async fn the_mail_a_typed_line_names_is_read_under_the_proven_claim() {
     let h = harness(Mode::Current).await;
     let (id, off) = h
         .fake
-        .deliver("s-lead@n-lab", "task", "agent", "Run the tests.");
+        .deliver("t00000000ab@n-lab", "task", "agent", "Run the tests.");
     wait_until("the claim is held", || h.sup.held()).await;
     let mail = read(&h, TriggerKind::Task, off).await.expect("mail");
     assert_eq!((mail.id, mail.off), (id, off));
@@ -118,7 +118,7 @@ async fn the_mail_a_typed_line_names_is_read_under_the_proven_claim() {
     // A relayed one reads too: the TUI holds it in the composer for a person.
     let (_, relayed) = h
         .fake
-        .deliver("s-lead@n-lab", "task", "relayed", "From a screen.");
+        .deliver("t00000000ab@n-lab", "task", "relayed", "From a screen.");
     let relayed = read(&h, TriggerKind::Task, relayed).await.expect("mail");
     assert!(!relayed.sendable());
     // Errors are said, and the line then goes as typed.
@@ -130,7 +130,7 @@ async fn the_mail_a_typed_line_names_is_read_under_the_proven_claim() {
 async fn without_a_proven_claim_no_mail_is_read() {
     // Negative control: an aterm that never proves the claim.
     let h = harness(Mode::Old).await;
-    let (_, off) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (_, off) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     wait_until("the supervisor read the old aterm", || {
         h.sup.journal().iter().any(|l| l.contains("never claims"))
     })
@@ -148,7 +148,7 @@ fn turn(id: u64, off: u64) -> MailTurn {
     MailTurn {
         id,
         off,
-        from: "s-lead@n-lab".to_string(),
+        from: "t00000000ab@n-lab".to_string(),
         kind: "task".to_string(),
         text: "…".to_string(),
     }
@@ -157,7 +157,7 @@ fn turn(id: u64, off: u64) -> MailTurn {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mail_turns_end_marks_the_row_and_reports_back() {
     let h = harness(Mode::Current).await;
-    let (id, off) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     h.fake.set_status("seq", "41");
     h.fake.set_status("hash", "00112233445566aa");
     wait_until("the claim is held", || h.sup.held()).await;
@@ -173,7 +173,11 @@ async fn a_mail_turns_end_marks_the_row_and_reports_back() {
     assert_eq!(posts.len(), 1, "{:?}", h.sup.journal());
     // A session sender is answered as `@s-…`, the one form aterm's bridge routes (a bare
     // `s-…@n-…` is answered `OK` locally and retired on the bridge).
-    assert!(posts[0].options.contains(&"to=@s-lead@n-lab".to_string()));
+    assert!(
+        posts[0]
+            .options
+            .contains(&"to=@t00000000ab@n-lab".to_string())
+    );
     assert!(posts[0].routed);
     assert!(posts[0].options.contains(&"kind=report".to_string()));
     assert!(posts[0].options.contains(&format!("re={off}")));
@@ -184,7 +188,9 @@ async fn a_mail_turns_end_marks_the_row_and_reports_back() {
         h.fake.acts()
     );
     // An interrupted turn defers.
-    let (id2, off2) = h.fake.deliver("s-lead@n-lab", "task", "agent", "again");
+    let (id2, off2) = h
+        .fake
+        .deliver("t00000000ab@n-lab", "task", "agent", "again");
     h.sup
         .receipt(turn(id2, off2), Verdict::Deferred, None)
         .await;
@@ -206,7 +212,7 @@ async fn a_mail_turns_end_marks_the_row_and_reports_back() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_receipt_goes_without_the_claim_and_an_owed_one_goes_at_the_next_claim() {
     let h = harness(Mode::Current).await;
-    let (id, off) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     wait_until("the claim is held", || h.sup.held()).await;
     h.fake.clear_claim();
     wait_until("passive", || !h.sup.held()).await;
@@ -216,7 +222,7 @@ async fn no_receipt_goes_without_the_claim_and_an_owed_one_goes_at_the_next_clai
     assert!(h.fake.receipts().is_empty());
     assert!(h.fake.posts().is_empty());
     // The wait before the policy moves: a frame for other mail comes, and still nothing goes.
-    let _ = h.fake.deliver("s-lead@n-lab", "note", "agent", "fyi");
+    let _ = h.fake.deliver("t00000000ab@n-lab", "note", "agent", "fyi");
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(h.fake.receipts().is_empty(), "{:?}", h.fake.receipts());
     assert!(h.fake.posts().is_empty(), "{:?}", h.fake.posts());
@@ -235,10 +241,10 @@ async fn no_receipt_goes_without_the_claim_and_an_owed_one_goes_at_the_next_clai
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_receipt_a_badge_read_already_sent_is_not_sent_again() {
     let h = harness(Mode::Current).await;
-    let (id, off) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     wait_until("the claim is held", || h.sup.acting()).await;
     h.sup.hold_receipt(id, Verdict::Handled);
-    let (id_q, off_q) = h.fake.deliver("s-lead@n-lab", "ask", "agent", "q");
+    let (id_q, off_q) = h.fake.deliver("t00000000ab@n-lab", "ask", "agent", "q");
     wait_until("the badge read sends the held receipt", || {
         h.fake.receipts() == vec![(id, "handled".to_string())]
     })
@@ -263,7 +269,7 @@ async fn the_badge_follows_the_mail_stream_and_types_nothing() {
     wait_until("the claim is held", || h.sup.held()).await;
     assert_eq!(h.shared.mail_badge(), None);
     let before = h.frames.load(Ordering::SeqCst);
-    let (id, _) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, _) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     wait_until("the badge shows the task", || {
         h.shared.mail_badge().and_then(|b| b.text()).as_deref() == Some("✉ 1 task")
     })
@@ -287,7 +293,7 @@ async fn the_badge_follows_the_mail_stream_and_types_nothing() {
         h.fake.requests()
     );
     // The claim goes: so does the badge.
-    h.fake.deliver("s-lead@n-lab", "ask", "agent", "q");
+    h.fake.deliver("t00000000ab@n-lab", "ask", "agent", "q");
     wait_until("the badge shows the ask", || {
         h.shared.mail_badge().is_some()
     })
@@ -302,8 +308,12 @@ async fn the_badge_follows_the_mail_stream_and_types_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_receipt_waits_behind_an_older_unhandled_task() {
     let h = harness(Mode::Current).await;
-    let (a, off_a) = h.fake.deliver("s-lead@n-lab", "task", "agent", "first");
-    let (b, off_b) = h.fake.deliver("s-lead@n-lab", "task", "agent", "second");
+    let (a, off_a) = h
+        .fake
+        .deliver("t00000000ab@n-lab", "task", "agent", "first");
+    let (b, off_b) = h
+        .fake
+        .deliver("t00000000ab@n-lab", "task", "agent", "second");
     wait_until("the claim is held", || h.sup.held()).await;
     // @B's turn ends while @A is unhandled: no receipt passes @A, the report still goes,
     // and attention says why the receipt waits.
@@ -346,8 +356,12 @@ async fn a_receipt_waits_behind_an_older_unhandled_task() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_owed_receipt_goes_once_the_older_task_is_handled_elsewhere() {
     let h = harness(Mode::Current).await;
-    let (a, _) = h.fake.deliver("s-lead@n-lab", "task", "agent", "first");
-    let (b, off_b) = h.fake.deliver("s-lead@n-lab", "task", "agent", "second");
+    let (a, _) = h
+        .fake
+        .deliver("t00000000ab@n-lab", "task", "agent", "first");
+    let (b, off_b) = h
+        .fake
+        .deliver("t00000000ab@n-lab", "task", "agent", "second");
     wait_until("the claim is held", || h.sup.held()).await;
     h.sup.receipt(turn(b, off_b), Verdict::Handled, None).await;
     assert!(h.fake.receipts().is_empty());
@@ -367,7 +381,7 @@ async fn an_owed_receipt_goes_once_the_older_task_is_handled_elsewhere() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_handled_mail_is_never_run_again() {
     let h = harness(Mode::Current).await;
-    let (id, off) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     wait_until("the claim is held", || h.sup.held()).await;
     assert!(read(&h, TriggerKind::Task, off).await.is_ok());
     // The turn ended handled: the line recalled from history is refused at once (before the
@@ -382,7 +396,9 @@ async fn a_handled_mail_is_never_run_again() {
     assert!(read(&h, TriggerKind::Task, off).await.is_err());
     assert_eq!(h.fake.posts().len(), 1, "one report, never two");
     // Positive control: an interrupted (deferred) mail may run again.
-    let (id2, off2) = h.fake.deliver("s-lead@n-lab", "task", "agent", "again");
+    let (id2, off2) = h
+        .fake
+        .deliver("t00000000ab@n-lab", "task", "agent", "again");
     h.sup
         .receipt(turn(id2, off2), Verdict::Deferred, None)
         .await;
@@ -396,7 +412,7 @@ async fn an_unanswered_badge_read_never_costs_the_claim() {
     wait_until("the claim is held", || h.sup.held()).await;
     let claim_conn = h.fake.claim().and_then(|c| c.conn);
     h.fake.stall("inbox");
-    h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     wait_until("the badge read gave up", || {
         h.sup
             .journal()
@@ -407,7 +423,7 @@ async fn an_unanswered_badge_read_never_costs_the_claim() {
     assert!(h.sup.held(), "{:?}", h.sup.journal());
     assert_eq!(h.fake.claim().and_then(|c| c.conn), claim_conn);
     h.fake.unstall("inbox");
-    h.fake.deliver("s-lead@n-lab", "ask", "agent", "q");
+    h.fake.deliver("t00000000ab@n-lab", "ask", "agent", "q");
     wait_until("the badge shows both", || {
         h.shared.mail_badge().and_then(|b| b.text()).as_deref() == Some("✉ 1 task · 1 ask")
     })
@@ -417,7 +433,7 @@ async fn an_unanswered_badge_read_never_costs_the_claim() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sender_the_bridge_cannot_route_gets_no_report() {
     let h = harness(Mode::Current).await;
-    let (id, off) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     wait_until("the claim is held", || h.sup.held()).await;
     let mut t = turn(id, off);
     t.from = "lead".to_string();
@@ -451,7 +467,7 @@ async fn a_report_whose_post_failed_is_owed_and_sent_again() {
     // Refused: dropped.
     h.fake
         .refuse_posts(Some("ERR quota: the sender's inbox is full"));
-    let (id, off) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     h.sup
         .receipt(turn(id, off), Verdict::Handled, Some("done".to_string()))
         .await;
@@ -464,9 +480,11 @@ async fn a_report_whose_post_failed_is_owed_and_sent_again() {
     // Unanswered: owed again, and sent once aterm answers, by the retry alone. Its receipt
     // went before, with a badge read, so no `inbox-seen` event follows the failure to bring
     // another send.
-    let (id2, off2) = h.fake.deliver("s-lead@n-lab", "task", "agent", "again");
+    let (id2, off2) = h
+        .fake
+        .deliver("t00000000ab@n-lab", "task", "agent", "again");
     h.sup.hold_receipt(id2, Verdict::Handled);
-    let _ = h.fake.deliver("s-lead@n-lab", "note", "agent", "fyi");
+    let _ = h.fake.deliver("t00000000ab@n-lab", "note", "agent", "fyi");
     wait_until("a badge read sends the receipt", || {
         h.fake.receipts().last() == Some(&(id2, "handled".to_string()))
     })
@@ -507,14 +525,14 @@ async fn a_report_a_badge_read_sends_carries_the_stamp() {
     let h = harness(Mode::Current).await;
     h.fake.set_status("seq", "41");
     h.fake.set_status("hash", "00112233445566aa");
-    let (id, off) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     wait_until("the claim is held", || h.sup.acting()).await;
     // The turn's end holds its receipt; a badge read's send (another mail's frame) starts with
     // no report owed and waits on the inbox rows.
     h.sup.hold_receipt(id, Verdict::Handled);
     let met = h.fake.gated_requests().len();
     h.fake.gate("inbox");
-    let _ = h.fake.deliver("s-lead@n-lab", "note", "agent", "fyi");
+    let _ = h.fake.deliver("t00000000ab@n-lab", "note", "agent", "fyi");
     wait_until("the badge's send reads the rows", || {
         h.fake.gated_requests().len() > met
     })
@@ -552,12 +570,12 @@ async fn a_standby_while_receipts_are_flushed_holds_them() {
     let h = harness(Mode::Current).await;
     wait_until("the claim is held", || h.sup.acting()).await;
     for standby in [false, true] {
-        let (id, _) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+        let (id, _) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
         h.shared.set_mail_badge(None);
         h.sup.hold_receipt(id, Verdict::Handled);
         let met = h.fake.gated_requests().len();
         h.fake.gate("inbox");
-        let _ = h.fake.deliver("s-lead@n-lab", "note", "agent", "fyi");
+        let _ = h.fake.deliver("t00000000ab@n-lab", "note", "agent", "fyi");
         wait_until("the badge's send reads the rows", || {
             h.fake.gated_requests().len() > met
         })

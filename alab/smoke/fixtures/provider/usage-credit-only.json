@@ -1,0 +1,17 @@
+{
+  "account_id": "source-account",
+  "credits": {
+    "balance": "0",
+    "has_credits": false,
+    "unlimited": false
+  },
+  "plan_type": "self_serve_business_usage_based",
+  "rate_limit": {
+    "allowed": false,
+    "limit_reached": true
+  },
+  "rate_limit_reset_credits": {
+    "available_count": 0
+  },
+  "user_id": "fixture-user"
+}

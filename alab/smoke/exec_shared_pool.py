@@ -16,6 +16,7 @@ import time
 import capacity_exec as probe
 import exec_accounts
 import native_host_record
+import package_standing
 import renewal_follow as native
 
 
@@ -110,6 +111,8 @@ def main():
               # The record's attestation travels with its source: a trial host's commit is
               # not a qualified one.
               "nativeHost": native_host_record.summary(host_record),
+              # So does the package's own standing: a trial package qualifies nothing.
+              "package": package_standing.summary(build),
               "sessions": args.sessions, "canaryDelay": args.canary_delay, "chain": args.chain,
               "completionBudgetSeconds": args.completion_timeout, "latePrepare": args.late_prepare,
               "sharedPool": str(root / "host-state")}

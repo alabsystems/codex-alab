@@ -14,15 +14,15 @@ use codex_http_client::connect_windows_proxy;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use rustls::ClientConfig;
-use rustls::pki_types::ServerName;
+use self::alab_handshake::proxy_server_name; // ALAB(recovery): distinguish proxy URI brackets from TLS IP identity.
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 use tokio::time::sleep_until;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::Connector;
-use tokio_tungstenite::client_async_tls_with_config;
-use tokio_tungstenite::connect_async_tls_with_config;
-use tokio_tungstenite::proxy::connect_via_proxy;
+use self::alab_handshake::client_async_tls_with_config; // ALAB(recovery): complete bounded HTTP rejection entities after TLS.
+use self::alab_handshake::connect_async_tls_with_config; // ALAB(recovery): retain default proxy routing with the same rejection reader.
+use self::alab_handshake::connect_via_proxy; // ALAB(recovery): encode IPv6 targets for HTTP and SOCKS proxy protocols.
 use tokio_tungstenite::tungstenite::Error as WebSocketError;
 use tokio_tungstenite::tungstenite::error::TlsError;
 use tokio_tungstenite::tungstenite::error::UrlError;
@@ -38,6 +38,9 @@ use crate::ConnectionInner;
 use crate::TcpNodelay;
 
 const HAPPY_EYEBALLS_DELAY: Duration = Duration::from_millis(250);
+
+#[path = "../../alab-core/glue/websocket_rejection.rs"]
+pub(crate) mod alab_handshake; // ALAB(recovery): HTTP framing and bounded rejection capture stay ALab-owned.
 
 pub(crate) async fn connect(
     request: Request,
@@ -131,7 +134,7 @@ pub(crate) async fn connect(
                     None => build_rustls_client_config_with_custom_ca()
                         .map_err(|error| WebSocketError::Io(error.into()))?,
                 };
-                let server_name = ServerName::try_from(proxy.config.host.clone())
+                let server_name = proxy_server_name(proxy.config.host.clone()) // ALAB(recovery): verify an IPv6 proxy as an IP address.
                     .map_err(|_| WebSocketError::Tls(TlsError::InvalidDnsName))?;
                 let stream = TlsConnector::from(proxy_tls_config)
                     .connect(server_name, stream)

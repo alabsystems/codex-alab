@@ -192,7 +192,7 @@ fn resumed_native_stop_releases_only_the_exact_confirmed_consumed_custody() {
                     let mut owed = shared.owed_act().ok_or("missing restored custody")?;
                     let thread = owed.thread.clone();
                     owed.renewal.as_mut().ok_or("missing native receipt")?.turn = Some(turn);
-                    if !shared.publish_renewal(shared.upgrade_generation(), owed)
+                    if !shared.publish_renewal(shared.admission_generation(), owed)
                         || !shared.flush_record()
                         || !shared.admit_recovered_turn(&thread, &expected)
                     {
@@ -276,7 +276,7 @@ fn resumed_native_stop_releases_only_the_exact_confirmed_consumed_custody() {
                 newer.not_before_ms = now_ms() + 1_000;
                 assert!(
                     h.shared
-                        .publish_renewal(h.shared.upgrade_generation(), newer.clone())
+                        .publish_renewal(h.shared.admission_generation(), newer.clone())
                 );
                 expected_after = Some(newer);
             } else if matches!(case, "acknowledged" | "lost-ack-reconciled") {
@@ -431,7 +431,7 @@ fn resumed_native_stop_releases_only_the_exact_confirmed_consumed_custody() {
                         newer.not_before_ms = now_ms() + 1_000;
                         assert!(
                             h.shared
-                                .publish_renewal(h.shared.upgrade_generation(), newer.clone())
+                                .publish_renewal(h.shared.admission_generation(), newer.clone())
                         );
                         expected_after = Some(newer);
                     } else if case == "retry-new-native" {

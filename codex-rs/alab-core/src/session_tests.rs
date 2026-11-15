@@ -29,6 +29,114 @@ fn frame<'a>(primary: Option<&'a str>, state: ProgramState) -> Frame<'a> {
     }
 }
 
+fn carried_model_goal() -> crate::session::WallGoal {
+    crate::session::WallGoal {
+        goal_id: "original-goal".into(),
+        objective: "finish and verify the original task".into(),
+        token_budget: Some(1_000),
+        turn: "model-blocked-turn".into(),
+        person_stops: 0,
+    }
+}
+
+#[test]
+fn model_goal_custody_survives_native_acceptance_without_importing_old_pacing() {
+    use crate::session::Pace;
+    let shared = Shared::new();
+    assert!(shared.turn_started("t1", "unrelated-reply"));
+    shared.set_pace(
+        "t1",
+        Pace {
+            short_streak: 3,
+            typed_ms: vec![123],
+            ..Pace::default()
+        },
+    );
+    assert!(!shared.seed_before_native_work(|| panic!("old turn state must stay superseded")));
+    shared.carry_model_goal("t1", Some(carried_model_goal()));
+    assert_eq!(
+        shared.pace("t1"),
+        Some(Pace {
+            short_streak: 3,
+            typed_ms: vec![123],
+            model_blocked_goal: Some(carried_model_goal()),
+            ..Pace::default()
+        })
+    );
+    // A fresh native pace publication does not erase unvalidated provenance.
+    shared.set_pace("t1", Pace::default());
+    assert_eq!(
+        shared.pace("t1").and_then(|pace| pace.model_blocked_goal),
+        Some(carried_model_goal())
+    );
+}
+
+#[test]
+fn an_explicit_person_goal_set_retires_model_custody_before_or_after_import() {
+    for stopped in [false, true] {
+        for before in [false, true] {
+            let shared = Shared::new();
+            if before {
+                shared.person_goal_set("t1", stopped);
+            }
+            shared.carry_model_goal("t1", Some(carried_model_goal()));
+            if !before {
+                shared.person_goal_set("t1", stopped);
+            }
+            shared.carry_model_goal("t1", Some(carried_model_goal()));
+            assert_eq!(shared.carried_model_goal("t1"), None);
+            assert_eq!(shared.pace("t1"), None);
+            assert_eq!(shared.person_goal_stops("t1"), u64::from(stopped));
+        }
+    }
+}
+
+#[test]
+fn model_goal_custody_retirement_and_empty_sources_cannot_be_refilled() {
+    for first in ["retired", "empty", "imported"] {
+        let shared = Shared::new();
+        match first {
+            "retired" => shared.retire_carried_model_goal("t1"),
+            "empty" => shared.carry_model_goal("t1", None),
+            "imported" => {
+                shared.carry_model_goal("t1", Some(carried_model_goal()));
+                shared.retire_carried_model_goal("t1");
+            }
+            _ => unreachable!(),
+        }
+        shared.carry_model_goal("t1", Some(carried_model_goal()));
+        assert_eq!(shared.carried_model_goal("t1"), None, "{first}");
+        assert_eq!(shared.pace("t1"), None, "{first}");
+    }
+}
+
+#[test]
+fn model_goal_watch_only_announces_new_positive_imports() {
+    let shared = Shared::new();
+    let mut imports = shared.model_goal_watch();
+    assert_eq!(*imports.borrow_and_update(), 0);
+    shared.carry_model_goal("empty", None);
+    shared.retire_carried_model_goal("retired");
+    shared.carry_model_goal("retired", Some(carried_model_goal()));
+    shared.set_pace("t1", crate::session::Pace::default());
+    assert!(!imports.has_changed().expect("sender remains live"));
+    shared.carry_model_goal("t1", Some(carried_model_goal()));
+    assert!(
+        imports
+            .has_changed()
+            .expect("positive import wakes recovery")
+    );
+    assert_eq!(*imports.borrow_and_update(), 1);
+    shared.carry_model_goal("t1", Some(carried_model_goal()));
+    shared.retire_carried_model_goal("t1");
+    shared.carry_model_goal("t1", Some(carried_model_goal()));
+    assert!(
+        !imports
+            .has_changed()
+            .expect("retirement cannot loop recovery")
+    );
+}
+
 #[test]
 fn an_unchanged_frame_is_not_a_change() {
     let shared = Shared::new();
@@ -47,6 +155,7 @@ fn in_flight_provider_pacing_tracks_only_the_current_primary_native_turn() {
     let shared = Shared::new();
     shared.observe(&frame(Some("t1"), ProgramState::Working), 10);
     let retry = InFlightRetry {
+        clock: None,
         thread: "t1".into(),
         turn_id: "waiting".into(),
         not_before_ms: 500,
@@ -101,6 +210,7 @@ fn in_flight_waits_end_at_manual_stops_and_survive_only_relaunchable_signal_tear
         shared.observe(&frame(Some("t1"), ProgramState::Working), 10);
         shared.turn_started("t1", "waiting");
         let retry = InFlightRetry {
+            clock: None,
             thread: "t1".into(),
             turn_id: "waiting".into(),
             not_before_ms: 500,
@@ -128,6 +238,7 @@ fn in_flight_waits_end_at_manual_stops_and_survive_only_relaunchable_signal_tear
     shared.observe(&frame(Some("t1"), ProgramState::Working), 10);
     shared.turn_started("t1", "waiting");
     assert!(shared.publish_in_flight_retry(InFlightRetry {
+        clock: None,
         thread: "t1".into(),
         turn_id: "waiting".into(),
         not_before_ms: 500
@@ -150,6 +261,11 @@ fn provider_intent_survives_passivity_and_ends_at_off_or_a_new_target_turn() {
     let shared = Shared::new();
     shared.set_autopilot(Autopilot::Active);
     let recovery = Recovery {
+        clock: Some(crate::recovery_clock::Anchor {
+            boot_id: "same-boot".into(),
+            continuous_ns: 1_000,
+            epoch_ms: 10,
+        }),
         thread: "t1".into(),
         turn_id: "failed".into(),
         point_at_ms: 10,
@@ -162,14 +278,27 @@ fn provider_intent_survives_passivity_and_ends_at_off_or_a_new_target_turn() {
             reset_label: None,
         },
     };
-    assert!(shared.publish_recovery(shared.upgrade_generation(), recovery.clone(), || true));
+    assert!(shared.publish_recovery(shared.admission_generation(), recovery.clone(), || true));
     shared.set_autopilot(Autopilot::Passive);
     assert_eq!(shared.recovery(), Some(recovery.clone()));
     shared.set_autopilot(Autopilot::Off);
     assert_eq!(shared.recovery(), None);
 
+    let mut unknown_timing = recovery.clone();
+    unknown_timing.clock = None;
+    let held = Shared::new();
+    held.set_recovery(Some(unknown_timing.clone()));
+    held.clear_recovery_intent();
+    held.set_autopilot(Autopilot::Off);
+    assert_eq!(held.autopilot(), Autopilot::Off);
+    assert_eq!(held.recovery(), Some(unknown_timing.clone()));
+    held.turn_started("other-thread", "unrelated");
+    assert_eq!(held.recovery(), Some(unknown_timing));
+    held.turn_started("t1", "superseding");
+    assert_eq!(held.recovery(), None);
+
     shared.set_autopilot(Autopilot::Active);
-    assert!(shared.publish_recovery(shared.upgrade_generation(), recovery.clone(), || true));
+    assert!(shared.publish_recovery(shared.admission_generation(), recovery.clone(), || true));
     let owed = crate::session::OwedAct {
         thread: "t1".into(),
         ..Default::default()
@@ -187,7 +316,7 @@ fn provider_intent_survives_passivity_and_ends_at_off_or_a_new_target_turn() {
         None,
         "a late record sync cannot restore it"
     );
-    assert!(!shared.publish_recovery(shared.upgrade_generation(), recovery, || true));
+    assert!(!shared.publish_recovery(shared.admission_generation(), recovery, || true));
     shared.turn_ended("t1", "superseding");
     shared.set_owed_act(Some(owed.clone()));
     assert_eq!(shared.owed_act(), Some(owed));
@@ -247,6 +376,125 @@ fn an_upgrade_commits_only_the_native_state_it_actually_checked() {
     assert!(shared.commit_upgrade(checked));
     assert!(shared.exec_pending());
     assert!(!shared.cancel_upgrade(|| panic!("a committed leave cannot restore its timer")));
+}
+
+/// A TUI OR APP-SERVER EVENT MOVES THE LIVE UPGRADE'S SCAN ALONE; EVERY FACT AN AUTOMATIC
+/// TURN'S ADMISSION RESTS ON MOVES BOTH COUNTERS (review of the happy successor that never
+/// reran its turn: the TUI's 60 s usage reply, `RateLimitsLoaded`, landed inside each
+/// admission's host reads and refused it). An admission decided before an event still
+/// publishes; one decided before a fact does not; and the live upgrade's commit refuses after
+/// an event exactly as after a fact.
+#[test]
+fn an_event_moves_only_the_upgrade_scan_and_each_admission_fact_moves_both() {
+    use crate::boxes::BoxKind;
+    use crate::boxes::OpenBox;
+    use crate::session::AccountHandoff;
+    use crate::session::Autopilot;
+    use crate::session::OwedAct;
+    type Fact = (&'static str, fn(&Shared));
+    let facts: &[Fact] = &[
+        ("a person's key", |s| s.human_input(100)),
+        ("a person's scroll", |s| s.human_attention(100)),
+        ("a frame with a draft", |s| {
+            let mut f = frame(Some("t1"), ProgramState::Idle);
+            f.draft_empty = false;
+            s.observe(&f, 20);
+        }),
+        ("a frame showing another thread", |s| {
+            s.observe(&frame(Some("t2"), ProgramState::Idle), 20);
+        }),
+        ("a root thread", |s| s.note_root_thread("new-thread")),
+        ("an overlay", |s| s.set_overlay_open(true)),
+        ("a signal", |s| {
+            s.set_signal(15);
+        }),
+        ("an Off", |s| s.set_autopilot(Autopilot::Off)),
+        ("a claim", |s| s.set_claim(Some("codex-alab@1".into()))),
+        ("a box", |s| {
+            s.report_box(OpenBox {
+                id: "plan-1".into(),
+                kind: BoxKind::Plan { rows: Vec::new() },
+                opened_ms: 5,
+            });
+        }),
+        ("a turn's start", |s| {
+            s.turn_started("t1", "turn");
+        }),
+        ("a turn's end", |s| s.turn_ended("t1", "turn")),
+        ("a resume at rest", |s| {
+            s.apply_resume_at_rest("t1", || ());
+        }),
+        ("an upgrade cancelled", |s| {
+            s.cancel_upgrade(|| ());
+        }),
+        ("an untracked thread's lifecycle", |s| s.invalidate_native()),
+    ];
+    let fresh = || {
+        let shared = Shared::new();
+        shared.set_autopilot(Autopilot::Active);
+        shared.observe(&frame(Some("t1"), ProgramState::Idle), 10);
+        shared
+    };
+    let renewal = OwedAct {
+        thread: "t1".into(),
+        renewal: Some(AccountHandoff {
+            purpose: crate::account_handoff::Purpose::Login,
+            destination: None,
+            openai_scope: true,
+            local: false,
+            account: "a".repeat(64),
+            user: "b".repeat(64),
+            receipt: Some("c".repeat(32)),
+            turn: None,
+            accepted: false,
+            starts: 1,
+            goal_id: None,
+        }),
+        ..Default::default()
+    };
+    for (what, fact) in facts {
+        let shared = fresh();
+        let (scan, admission) = (shared.upgrade_generation(), shared.admission_generation());
+        fact(&shared);
+        assert_ne!(shared.upgrade_generation(), scan, "{what} moves the scan");
+        assert_ne!(
+            shared.admission_generation(),
+            admission,
+            "{what} moves the admission"
+        );
+        assert!(!shared.commit_upgrade(scan), "{what}");
+        assert!(
+            !shared.publish_renewal(admission, renewal.clone()),
+            "{what}"
+        );
+    }
+    // A thread's end moves them only where a turn of it was running.
+    let shared = fresh();
+    assert!(shared.turn_started("t1", "turn"));
+    let admission = shared.admission_generation();
+    shared.thread_ended("t1");
+    assert_ne!(shared.admission_generation(), admission, "a thread's end");
+
+    let shared = fresh();
+    let (scan, admission) = (shared.upgrade_generation(), shared.admission_generation());
+    shared.invalidate_upgrade();
+    assert_ne!(shared.upgrade_generation(), scan, "an event moves the scan");
+    assert_eq!(
+        shared.admission_generation(),
+        admission,
+        "an event leaves the admission's native point"
+    );
+    assert!(
+        !shared.commit_upgrade(scan),
+        "the live upgrade refuses a scan an event came after"
+    );
+    assert!(!shared.exec_pending());
+    assert!(
+        shared.publish_renewal(admission, renewal.clone()),
+        "an admission decided before the event still publishes"
+    );
+    assert_eq!(shared.owed_act(), Some(renewal));
+    assert!(shared.commit_upgrade(shared.upgrade_generation()));
 }
 
 #[test]
@@ -1330,7 +1578,7 @@ fn renewal_custody_survives_its_accepted_turn_but_not_new_native_work() {
     let shared = Shared::new();
     assert!(shared.turn_started("thread", "wall"));
     shared.turn_ended("thread", "wall");
-    assert!(shared.publish_renewal(shared.upgrade_generation(), marker.clone()));
+    assert!(shared.publish_renewal(shared.admission_generation(), marker.clone()));
     assert!(shared.admit_recovered_turn("thread", "wall"));
     assert!(shared.turn_started("thread", "wall"));
     assert!(
@@ -1349,9 +1597,105 @@ fn renewal_custody_survives_its_accepted_turn_but_not_new_native_work() {
     assert!(shared.owed_act().is_none());
 
     let shared = Shared::new();
-    let generation = shared.upgrade_generation();
+    let generation = shared.admission_generation();
     assert!(shared.publish_renewal(generation, marker.clone()));
     shared.turn_started("thread", "a-new-human-turn");
     assert!(shared.owed_act().is_none());
     assert!(!shared.publish_renewal(generation, marker));
+}
+
+/// A USAGE WALL'S MOVE NEWLY ON RECORD WAKES ITS WATCHERS ONCE. A turn of another root thread
+/// that waits the same wall out asks only every 30 seconds whether a move would follow its
+/// end, and holds the record busy meanwhile; the watch has it look again as the move begins.
+/// What is not a new move wakes nothing, or each pass of the ask would cost every waiting
+/// turn a usage read: the same intent published again, a receipt bound to it, a login's own
+/// renewal, and a lost login's move, which is not a usage wall's.
+#[test]
+fn a_usage_move_newly_on_record_wakes_its_watchers_once() {
+    use crate::account_handoff::Purpose;
+    use crate::session::AccountHandoff;
+    use crate::session::NativeOrigin;
+    use crate::session::NativePhase;
+    use crate::session::OwedAct;
+    let intent = |purpose: Purpose, account: &str| OwedAct {
+        thread: "primary".into(),
+        native_origin: Some(NativeOrigin {
+            turn_id: "wall".into(),
+            phase: NativePhase::Complete,
+        }),
+        renewal: Some(AccountHandoff {
+            purpose,
+            destination: None,
+            openai_scope: true,
+            local: false,
+            account: account.repeat(64),
+            user: "b".repeat(64),
+            receipt: None,
+            turn: None,
+            accepted: false,
+            starts: 1,
+            goal_id: None,
+        }),
+        rule: Some(purpose.rule().into()),
+        ..Default::default()
+    };
+    let shared = Shared::new();
+    let mut watch = shared.account_move_watch();
+    let mut woke = |what: &str, expected: bool| {
+        assert_eq!(
+            watch.has_changed().ok(),
+            Some(expected),
+            "{what}: the watch {}",
+            if expected { "slept" } else { "woke" }
+        );
+        watch.mark_unchanged();
+    };
+    woke("nothing on record", false);
+
+    // The move's intent comes onto the record.
+    let usage = intent(Purpose::WeeklyQuota, "a");
+    shared.set_owed_act(Some(usage.clone()));
+    woke("a usage wall's move intent", true);
+    // The same intent again, as every pass of its ask publishes it.
+    assert!(shared.publish_renewal(shared.admission_generation(), usage.clone()));
+    woke("the same intent again", false);
+    // A receipt bound to it: the same move, further on.
+    let mut bound = usage.clone();
+    let renewal = bound.renewal.as_mut().unwrap();
+    assert!(renewal.bind(&"c".repeat(32), &"d".repeat(64), &"e".repeat(64), "wall"));
+    assert!(shared.publish_renewal(shared.admission_generation(), bound.clone()));
+    woke("a receipt bound to the intent", false);
+    // The receipt retired: the intent is unbound again, and is still that move.
+    assert!(shared.publish_renewal(shared.admission_generation(), usage.clone()));
+    woke("the receipt retired", false);
+    // Released and made again: a move begins.
+    assert!(shared.discard_renewal(&usage));
+    woke("the intent released", false);
+    shared.set_owed_act(Some(usage));
+    woke("the intent made again", true);
+    // Another account left is another move. It replaces the standing intent directly, with
+    // no release between, so the slot never goes empty: what wakes is the account the new
+    // intent leaves, compared with the one on record.
+    let other = intent(Purpose::WeeklyQuota, "f");
+    shared.set_owed_act(Some(other.clone()));
+    assert_eq!(shared.owed_act(), Some(other.clone()));
+    woke("a move from another account", true);
+    shared.set_owed_act(Some(other));
+    woke("that move again", false);
+
+    // Neither a login's own renewal nor a lost login's move is a usage wall's move.
+    for purpose in [Purpose::Login, Purpose::LoginRotation] {
+        let shared = Shared::new();
+        let mut watch = shared.account_move_watch();
+        shared.set_owed_act(Some(intent(purpose, "a")));
+        assert!(shared.owed_act().is_some());
+        assert_eq!(watch.has_changed().ok(), Some(false), "{purpose:?} woke");
+        watch.mark_unchanged();
+    }
+
+    // The Autopilot's own word that its ask is live again wakes too.
+    let shared = Shared::new();
+    let watch = shared.account_move_watch();
+    shared.note_account_move();
+    assert_eq!(watch.has_changed().ok(), Some(true));
 }

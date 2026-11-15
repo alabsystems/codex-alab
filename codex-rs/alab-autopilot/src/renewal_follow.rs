@@ -9,6 +9,7 @@ use super::account_broker;
 use super::account_broker::Outcome;
 use super::account_broker::Receipt;
 use super::*;
+use crate::supervisor::AdmissionFence;
 use codex_alab_aterm::renewal::Identity;
 use codex_alab_core::account_handoff::Purpose;
 use codex_alab_core::quota::SpentWall;
@@ -20,6 +21,167 @@ use codex_alab_core::session::RecoveryWall;
 use codex_history::RolloutItem;
 
 use codex_alab_aterm::account_recovery::policy_allows as policy_allows_recovery;
+
+/// HOW SOON A BOUND RECEIPT'S POINT IS LOOKED AT AGAIN, a login's as a usage wall's: the host
+/// answered `ready` behind it, so what is left is its restart of this session (`waiting`) or
+/// this process's own recovery of the turn (`committed`), and no person answers either. The
+/// minute a login waited here before lost the happy successor's turn to a 270 s budget.
+const BOUND_RECHECK: Duration = Duration::from_secs(5);
+
+/// How soon a renewal point of `purpose` is looked at again where nothing else says when. A
+/// usage wall's quota preparation runs asynchronously in aterm and its observation expires
+/// after a minute, so a ready result is consumed promptly, and a lost login's move is asked
+/// about as promptly because its ask is bounded; a login's own renewal waits the ordinary
+/// policy-recheck period. Any is looked at after [`BOUND_RECHECK`] at most once a receipt
+/// binds its intent (`bound`), on every path that keeps the point: a pass that could not read
+/// the goal's custody or the thread's history as much as one that read the host.
+fn point_recheck(purpose: Purpose, bound: bool) -> Duration {
+    let unbound = match purpose {
+        Purpose::WeeklyQuota | Purpose::LoginRotation => Duration::from_secs(5),
+        Purpose::Login => RECHECK,
+    };
+    if bound {
+        unbound.min(BOUND_RECHECK)
+    } else {
+        unbound
+    }
+}
+
+/// Whether a receipt binds `owed`'s renewal intent.
+fn receipt_bound(owed: &OwedAct) -> bool {
+    owed.renewal
+        .as_ref()
+        .is_some_and(|renewal| renewal.receipt.is_some())
+}
+
+/// HOW SOON A PASS FOLLOWS A RECOVERED TURN'S REFUSED ADMISSION ([`admission_retry`]). A
+/// refusal starts no work and keeps the intent and its receipt, and it is most often a fact
+/// that moved during the admission's host reads and stands still a moment later. It is not
+/// free, though: core reserves the turn and writes its settings into the rollout (one
+/// `ThreadSettingsApplied` item) before it asks the admission, and a refusal clears the
+/// reservation only. So core is not asked while the TUI itself says wait
+/// ([`Autopilot::recover_renewal`]; that look is paced by this too), and a refusal that
+/// stands is asked again less often ([`ADMISSION_STANDS`]).
+const ADMISSION_RETRY: Duration = Duration::from_secs(1);
+
+/// HOW LONG ONE REASON IS REFUSED IN A ROW BEFORE IT IS A WAIT and no longer a fact that
+/// moved (a hold, a host that goes on answering otherwise): from then on it is asked again
+/// every [`RECHECK`], as a wait with no deadline of its own is anywhere else. Seconds apart
+/// without end, each ask wrote its rollout item for as long as the reason stood.
+const ADMISSION_STANDS: Duration = RECHECK;
+
+/// The wait before the next pass after `refusals` refused admissions in a row before this
+/// one, whose reason has been given for `stood`: [`ADMISSION_RETRY`], doubling with each and
+/// never past [`BOUND_RECHECK`], until the reason has stood for [`ADMISSION_STANDS`]; then
+/// [`RECHECK`].
+fn admission_retry(refusals: u64, stood: Duration) -> Duration {
+    if stood >= ADMISSION_STANDS {
+        return RECHECK;
+    }
+    let doublings = u32::try_from(refusals).unwrap_or(u32::MAX);
+    ADMISSION_RETRY
+        .saturating_mul(2u32.saturating_pow(doublings))
+        .min(BOUND_RECHECK)
+}
+
+/// A walled turn's recovered starts that did not go, in a row: a series is one walled turn's
+/// and ends when the turn starts. Memory only.
+pub(super) struct AdmissionRefusals {
+    /// The walled turn they were asked for.
+    turn: String,
+    /// Those among them that lengthen the wait ([`admission_retry`]): the admissions core
+    /// refused, and the looks the TUI's own wait stopped before core was asked.
+    refused: u64,
+    /// The latest one's reason, which the log and the journal already said.
+    reason: String,
+    /// When that reason was first given in this row ([`ADMISSION_STANDS`]).
+    since: Instant,
+    /// Whether the row's refusals have slowed to [`RECHECK`], which was said too.
+    standing: bool,
+}
+
+impl AdmissionRefusals {
+    /// `turn`'s recovered start did not go at `now`, for `reason`; `refused` where that
+    /// lengthens the next wait (core asked the admission and it refused, or the TUI's own wait
+    /// stopped the look), and not where core did not take the start. Returns how many of this
+    /// series were `refused` before this one, whether this one is news, and how long `reason`
+    /// has been the reason in a row: the log and the journal say why once per reason in a row,
+    /// and once more when it has stood long enough to be looked at less often
+    /// ([`ADMISSION_STANDS`]), not once per pass, since a reason that stands (a person's
+    /// draft, a hold) is met again at every look.
+    fn record(
+        series: &mut Option<Self>,
+        turn: String,
+        reason: &str,
+        refused: bool,
+        now: Instant,
+    ) -> (u64, bool, Duration) {
+        let (before, row) = match series.take() {
+            Some(was) if was.turn == turn => (
+                was.refused,
+                (was.reason == reason).then_some((was.since, was.standing)),
+            ),
+            _ => (0, None),
+        };
+        let since = row.map_or(now, |(since, _)| since);
+        let stood = now.saturating_duration_since(since);
+        let standing = refused && stood >= ADMISSION_STANDS;
+        let news = row.is_none_or(|(_, was_standing)| standing && !was_standing);
+        *series = Some(Self {
+            turn,
+            refused: before.saturating_add(u64::from(refused)),
+            reason: reason.to_owned(),
+            since,
+            standing,
+        });
+        (before, news, stood)
+    }
+}
+
+/// THE PERSON'S LINE FOR A MOVE THE SESSION'S BACKGROUND TERMINALS HOLD
+/// ([`Autopilot::tell_terminals_hold`]): fixed words that name no account and no thread, as
+/// they are said in every root thread's history, within the 256 bytes the app server keeps
+/// of a warning. They say another account has room, so they are said only where the host's
+/// pool shows one.
+pub(super) const MOVE_WAITS_FOR_TERMINALS: &str = "The usage limit is reached, and another \
+                                                   signed-in account has room. Background \
+                                                   terminals run in this session, and the \
+                                                   restart would end them, so the move waits \
+                                                   until they finish or you stop them.";
+
+/// THE HOST'S REFUSALS OF ONE ASK SERIES THE JOURNAL TOLD ([`Autopilot::note_handoff_refused`]):
+/// the asked turn, and each closed word ([`codex_alab_aterm::rotation::REFUSALS`]) the host
+/// answered it with. A refusal that stands is met at every pass, five seconds apart, so it is
+/// said once a series. Memory only.
+#[derive(Default)]
+pub(super) struct HandoffRefusals {
+    turn: String,
+    words: Vec<String>,
+}
+
+impl HandoffRefusals {
+    /// The host refused `turn`'s handoff in `word`: whether that is news to this series. A
+    /// series is one asked turn's; another turn's starts a new one.
+    fn record(&mut self, turn: &str, word: &str) -> bool {
+        if self.turn != turn {
+            self.turn = turn.to_owned();
+            self.words.clear();
+        }
+        if self.words.iter().any(|told| told == word) {
+            return false;
+        }
+        self.words.push(word.to_owned());
+        true
+    }
+}
+
+#[cfg(test)]
+#[path = "renewal_admission_retry_tests.rs"]
+mod admission_retry_tests;
+
+#[path = "renewal_completion.rs"]
+pub(super) mod completion;
+use completion::Seen;
 
 fn starts(items: &[RolloutItem], turn: &str) -> u64 {
     items
@@ -83,13 +245,12 @@ async fn rotation_target_in_sight(client: &codex_alab_aterm::Client) -> bool {
 /// is all a `not-needed` answer would have left, so the ask ends and that
 /// resume takes the point.
 ///
-/// The reset is the one the 429 named, not the reset of the window the turn
-/// was yielded for. For a five-hour wall the two agree to within a minute
-/// (the yield requires it). For a spent week they need not: a 429 that named
-/// an earlier reset (a five-hour window's) lapses the ask then, and the
-/// resume is typed into a week that is still spent. That costs one model
-/// request; it meets the wall again, and that turn's end asks for a handoff
-/// again. The window's own reset is not carried to this point.
+/// For a turn the host's yes ended (quota recovery's handoff), the reset is
+/// the one the walled request's usage read named for the window the turn was
+/// yielded for, whatever the 429 named: the turn's error builds its wall from
+/// the read the yes was given for (`TrackData::handoff_wall`). A usage wall
+/// no yes ended (a turn whose request ended on its own, a point a restart
+/// rebuilt from history alone) carries the 429's reset, or none.
 ///
 /// A bound receipt is never abandoned here: the host may already have
 /// committed it. A wall that names no reset has no such moment, and neither
@@ -133,6 +294,50 @@ enum RecoveryHost {
     /// proven claim's policy, so a missing connection here is a claim lost
     /// since, never a session outside aterm.
     Unread,
+}
+
+/// What one pass of [`Autopilot::follow_renewal`] came to.
+pub(super) enum Follow {
+    /// It keeps the point: the decision ends here, and the pass's own recheck is the next.
+    Keeps,
+    /// It lets the point go to the rest of the decision. `checked`: the pass stood at a scope a
+    /// renewal may be asked for ([`Autopilot::eligible_renewal_scope`]) and read on from
+    /// there, so the lost login's watch it arms owes that profile no second pass
+    /// ([`Autopilot::watch_login`]).
+    Leaves { checked: bool },
+}
+
+/// What one pass of [`Autopilot::follow_renewal`] holds the claim by.
+enum Pass {
+    /// No receipt binds the intent: the before-every-act checks ran and re-confirmed the claim
+    /// for this pass ([`Supervisor::ready_for_admission`]). It may ask the host to prepare,
+    /// and commit what the host answers `ready`, sealing the claim to that receipt.
+    Confirmed(AdmissionFence),
+    /// A receipt binds the intent: the host sealed the claim as it stood at its `ready`, so
+    /// this pass only reads (the receipt's `status`), under the claim as already observed
+    /// ([`Supervisor::admission_observation`]), and re-confirms nothing.
+    Sealed(AdmissionFence),
+}
+
+impl Pass {
+    /// Whether the authority this pass was taken under still stands after an await. A sealed
+    /// pass only reads, and the reads need no more than its caller's own `current()`.
+    fn stands(&self, sup: &Supervisor) -> bool {
+        match self {
+            Self::Confirmed(fence) => sup.admission_fence_current(fence),
+            Self::Sealed(_) => true,
+        }
+    }
+
+    /// Whether this pass may send `commit` for a receipt the host answered `ready`: a
+    /// confirmed pass under its unchanged readiness; a sealed one only while the claim it
+    /// holds is still the one the host sealed, unchanged since it was observed.
+    fn may_commit(&self, sup: &Supervisor) -> bool {
+        match self {
+            Self::Confirmed(fence) => sup.admission_fence_current(fence),
+            Self::Sealed(fence) => sup.claim_sealed() && sup.admission_fence_current(fence),
+        }
+    }
 }
 
 enum RenewalAckCause<'a> {
@@ -331,6 +536,9 @@ impl Autopilot {
                                 }
                                 _ => false,
                             };
+                            if consumed && me.renewal_ack_current(&rt, &retry) {
+                                me.report_completion(&rt, &retry.owed, Seen::History(&history));
+                            }
                             if consumed
                                 && me.renewal_ack_current(&rt, &retry)
                                 && me.sup.shared().discard_renewal(&retry.owed)
@@ -729,6 +937,7 @@ impl Autopilot {
             && let Some(client) = self.sup.renewal_ack_client()
             && confirmed_consumption(&client, &owed).await
         {
+            self.report_completion(rt, &owed, Seen::Stop);
             if self.renewal_ack_owned(rt, &owed, epoch) && shared.discard_renewal(&owed) {
                 let _ = write_through(shared).await;
             }
@@ -763,11 +972,11 @@ impl Autopilot {
             let act = act.clone();
             let policy = policy.clone();
             Box::pin(async move {
-                let generation = me.sup.shared().upgrade_generation();
+                let generation = me.sup.shared().admission_generation();
                 let owner_revision = me.request_owner_revision();
                 let current = || {
                     me.sup.acting()
-                        && me.sup.shared().upgrade_generation() == generation
+                        && me.sup.shared().admission_generation() == generation
                         && me.eligible_login_scope(&rt)
                         && owner_revision.is_some()
                         && me.request_owner_revision() == owner_revision
@@ -780,7 +989,7 @@ impl Autopilot {
                 };
                 if turn != wall
                     || !current()
-                    || !me.login_for(&rt).1.back
+                    || !me.login_for(&rt, false).1.back
                     || !matches!(me.sup.ready().await, Ready::Go)
                 {
                     return Err("same-file login recovery changed".into());
@@ -833,7 +1042,7 @@ impl Autopilot {
                         ..Default::default()
                     };
                     let shared = me.sup.shared();
-                    if !shared.publish_renewal(shared.upgrade_generation(), owed)
+                    if !shared.publish_renewal(shared.admission_generation(), owed)
                         || !write_through(shared).await
                     {
                         return Err("same-file recovery intent was not persisted".into());
@@ -886,7 +1095,7 @@ impl Autopilot {
                 };
                 if !current()
                     || me.renewal_identity() != expected_identity
-                    || !me.login_for(&rt).1.back
+                    || !me.login_for(&rt, false).1.back
                 {
                     return Err("same-file login recovery changed".into());
                 }
@@ -910,7 +1119,7 @@ impl Autopilot {
                 if !me.sup.admission_fence_current(&readiness)
                     || !current()
                     || me.renewal_identity() != expected_identity
-                    || !me.login_for(&rt).1.back
+                    || !me.login_for(&rt, false).1.back
                 {
                     return Err("same-file admission witness changed".into());
                 }
@@ -940,21 +1149,101 @@ impl Autopilot {
     /// the recovery itself and for the in-turn question whether it would
     /// follow; only the recovery tells the last two apart.
     async fn recovery_host(&self, purpose: Purpose) -> RecoveryHost {
+        self.first_recovery_host(&[purpose], purpose).await.1
+    }
+
+    /// [`Self::recovery_host`] for the first of `preferred` the host's one policy reply
+    /// permits, else for `purpose`, which is also the purpose of a reply that permits none or
+    /// was not read. One read either way: a lost login whose host prints no word for its move
+    /// sends the same requests as before that move existed.
+    async fn first_recovery_host(
+        &self,
+        preferred: &[Purpose],
+        purpose: Purpose,
+    ) -> (Purpose, RecoveryHost) {
         let (Some(client), Some(policy)) = (self.sup.renewal_client(), self.sup.policy()) else {
-            return RecoveryHost::Unread;
+            return (purpose, RecoveryHost::Unread);
         };
         match client.harness_policy().await {
             Ok(codex_alab_aterm::policy::PolicyAnswer::Supported(remote)) => {
-                if policy_allows_recovery(&remote, purpose) {
-                    RecoveryHost::Permits(Box::new((client, policy, remote)))
-                } else {
-                    RecoveryHost::Refuses
+                match preferred
+                    .iter()
+                    .copied()
+                    .chain([purpose])
+                    .find(|purpose| policy_allows_recovery(&remote, *purpose))
+                {
+                    Some(permitted) => (
+                        permitted,
+                        RecoveryHost::Permits(Box::new((client, policy, remote))),
+                    ),
+                    None => (purpose, RecoveryHost::Refuses),
                 }
             }
             Ok(codex_alab_aterm::policy::PolicyAnswer::Unsupported(_)) | Err(_) => {
-                RecoveryHost::Unread
+                (purpose, RecoveryHost::Unread)
             }
         }
+    }
+
+    /// WHETHER THIS LOST LOGIN MAY BE MOVED TO ANOTHER ACCOUNT AT ALL, before the host is asked
+    /// (`alab/design/accounts-lost-login.md`): the move was not declined since the last native
+    /// start, and codex-alab's own reading of the refusal does not veto it (any reason but an
+    /// expired token, from this turn, codex's held refusal, or a veto kept for the token).
+    /// The host decides the rest, `refresh_token_expired` on its own record among it.
+    fn login_rotation_open(&self, rt: &ThreadRt) -> bool {
+        rt.login_rotation_declined.load(Ordering::SeqCst)
+            != rt.accepted_turns.load(Ordering::SeqCst)
+            && !self.login_move_vetoed(rt)
+    }
+
+    /// When this process began asking for the lost login's move of `turn`: now, at the first
+    /// ask of it.
+    fn login_rotation_asked_since(&self, rt: &ThreadRt, turn: &str) -> Instant {
+        let mut asked = lock(&rt.login_rotation_asked);
+        match asked.as_ref() {
+            Some((asked_turn, since)) if asked_turn == turn => *since,
+            _ => {
+                let now = clock();
+                *asked = Some((turn.to_owned(), now));
+                now
+            }
+        }
+    }
+
+    /// Whether this process has asked for the lost login's move of `turn` for
+    /// [`decide::Timing::login_rotation_ask`] with no receipt bound.
+    fn login_rotation_lapsed(&self, rt: &ThreadRt, turn: &str) -> bool {
+        clock().saturating_duration_since(self.login_rotation_asked_since(rt, turn))
+            >= self.timing.login_rotation_ask
+    }
+
+    /// THE LOST LOGIN'S MOVE IS DECLINED: the host said no, or answered nothing it could act on,
+    /// or no receipt came in time, or a veto now stands. The intent comes off the record
+    /// (the goal's sign-in recovery stays: the login wall's own path carries it on), no move
+    /// is asked for again until the next native start, and the point is looked at again at
+    /// once, where the login wall goes the way it goes without a move: the same account's
+    /// renewal (`codex-renewal`) where the host renews logins, else a person's sign-in.
+    async fn decline_login_rotation(
+        self: &Arc<Self>,
+        rt: &Arc<ThreadRt>,
+        owed: &OwedAct,
+        accepted: u64,
+        why: &str,
+    ) -> bool {
+        rt.login_rotation_declined.store(accepted, Ordering::SeqCst);
+        lock(&rt.login_rotation_asked).take();
+        self.sup.note(format!(
+            "{}: the lost login is not moved to another account ({why}); the login wall's own \
+             path takes the point",
+            rt.key
+        ));
+        let shared = self.sup.shared();
+        if shared.discard_renewal(owed) {
+            let _ = write_through(shared).await;
+        }
+        self.sup.end_handoff_seal(&rt.key);
+        self.schedule(rt, clock());
+        true
     }
 
     /// Whether ending this thread's running turn at the creditless usage wall
@@ -967,9 +1256,37 @@ impl Autopilot {
     /// with nowhere to go answers `waiting` to an ended turn, which no longer
     /// polls for an earned reset. Advisory; it selects no account, and every
     /// check runs again after the turn ends. A five-hour wall is refused with
-    /// no request to a host whose remembered policy reply prints no bound.
+    /// no request to a host whose remembered policy reply prints no bound. A
+    /// yes ends the walled request, and the turn's handoff keeps `wall` as the
+    /// wall that turn ends at, with the read's reset whatever the 429 named.
+    ///
+    /// That is the primary thread's answer: its turn is the one a move restarts
+    /// on the other account. Any other root thread's turn (a side chat's) starts
+    /// no move, and is answered by whether the session is already leaving
+    /// ([`Self::session_leaves_account`]), with no request to the host.
+    ///
+    /// THE SESSION'S BACKGROUND TERMINALS HOLD IT (gap 1 of the audit of
+    /// 2026-11-14, as its review amended it). The move's restart ends every
+    /// unified-exec terminal (a dev server, a watch) the session runs, in any of
+    /// its threads, and aterm's rest fence sees only the ones of the thread the
+    /// TUI shows (its footer's count keeps the frame `working` and the record
+    /// `busy`); a move never silently ends a running server. So while
+    /// [`Self::session_background_terminals`] (core's count over the threads the
+    /// thread manager lists) is above zero the answer is no: the turn keeps
+    /// looking for an earned reset at its own cadence, and its first question
+    /// after the terminals end is answered on the gates alone. Where every other
+    /// gate says the move would follow (the pool's among them, which the word
+    /// to the person reads), the person is told once a wall why it waits
+    /// ([`Self::tell_terminals_hold`]); from then on, while the terminals still
+    /// run, the question sends the host nothing. Another root thread's answer
+    /// and the ask itself are held the same way
+    /// ([`Self::session_leaves_account`], `follow_renewal`).
     pub(super) async fn quota_handoff_ready(&self, rt: &ThreadRt, wall: SpentWall) -> bool {
         let shared = self.sup.shared();
+        let primary = shared.view().primary_thread;
+        if primary.as_deref() != Some(rt.key.as_str()) {
+            return self.session_leaves_account(rt, primary.as_deref()).await;
+        }
         let standing = || {
             shared.view().primary_thread.as_deref() == Some(rt.key.as_str())
                 && shared.is_registered(&rt.key)
@@ -980,6 +1297,12 @@ impl Autopilot {
                 && self.renewal_identity().is_some()
         };
         if !standing() {
+            return false;
+        }
+        let turn = rt.accepted_turns.load(Ordering::SeqCst);
+        if rt.terminals_hold_told.load(Ordering::SeqCst) == turn
+            && self.session_background_terminals().await > 0
+        {
             return false;
         }
         // A HOST THAT LEAVES NO FIVE-HOUR WALL IS NOT ASKED ABOUT ONE. A creditless
@@ -1012,10 +1335,308 @@ impl Autopilot {
         // asked for its pool. The wall's time to its reset is measured now,
         // after the policy read, not when the walled request read its usage.
         let asked_at = i64::try_from(now_ms() / 1000).unwrap_or(i64::MAX);
-        codex_alab_aterm::account_recovery::leaves_wall(&remote, wall, asked_at)
-            && rotation_target_in_sight(&client).await
+        if !(codex_alab_aterm::account_recovery::leaves_wall(&remote, wall, asked_at)
             && self.sup.acting()
-            && standing()
+            && standing())
+        {
+            return false;
+        }
+        // Read after the host's policy answer, which takes time: a terminal that
+        // ended meanwhile holds nothing. The pool is read once either way: by the
+        // hold's word to the person, which is said only where it shows somewhere
+        // to go, or for the answer itself. A terminal that starts during that read
+        // is held by the ask (`follow_renewal`), as one that starts after it is.
+        let terminals = self.session_background_terminals().await;
+        if terminals > 0 {
+            self.tell_terminals_hold(&client, rt, turn, terminals).await;
+            return false;
+        }
+        rotation_target_in_sight(&client).await && self.sup.acting() && standing()
+    }
+
+    /// THE SESSION'S BACKGROUND TERMINALS: how many run now in the threads the thread manager
+    /// lists, as core keeps them (`CodexThread::list_background_terminals` over each thread
+    /// `ThreadManager::list_thread_ids` names: the primary, every other root thread, a
+    /// sub-agent's; it leaves out the internal ones, such as Guardian's, memory
+    /// consolidation's or a review's, so their terminals are not counted), which the move's
+    /// restart ends. The one reading every handoff path holds the usage
+    /// wall's move on ([`Self::quota_handoff_ready`], [`Self::session_leaves_account`],
+    /// `follow_renewal`). Not the TUI's footer count, which counts only the thread the TUI
+    /// shows, and nothing where no frame hands one; that count stays the record's frame fact
+    /// (`backgroundTerminals`, and the frame's `working`), which aterm's rest fence reads. A
+    /// thread that leaves the manager between its listing and its read runs none. No thread
+    /// manager (none was bound) counts none: no thread runs.
+    pub(super) async fn session_background_terminals(&self) -> usize {
+        #[cfg(test)]
+        if let Some(count) = *lock(&self.terminals_seam) {
+            return count;
+        }
+        let Some(manager) = lock(&self.thread_manager)
+            .clone()
+            .and_then(|weak| weak.upgrade())
+        else {
+            return 0;
+        };
+        let mut count = 0;
+        for id in manager.list_thread_ids().await {
+            if let Ok(thread) = manager.get_thread(id).await {
+                count += thread.list_background_terminals().await.len();
+            }
+        }
+        count
+    }
+
+    /// THE PERSON IS TOLD ONCE A WALL THAT THE MOVE WAITS FOR THE SESSION'S BACKGROUND
+    /// TERMINALS, `count` of them now, whichever path the terminals held
+    /// ([`Self::quota_handoff_ready`], [`Self::session_leaves_account`], `follow_renewal`):
+    /// the journal, and a warning through the host's event sink (the app server sends it to
+    /// the TUI as it does any extension's warning, as `/accounts use` says its refusal) in
+    /// the history of EACH ROOT THREAD THE AUTOPILOT KEEPS (the TUI's own, which it
+    /// registered). The wall and the move are the session's: every root thread runs on the
+    /// walled account, and the restart ends them all. And the host routes a warning to the
+    /// one thread it names: the TUI buffers one for a thread it does not show, unseen until
+    /// the person switches to it. Said in every root thread, it is in the history of
+    /// whichever root thread the person views, in any host, with no frame fact read; said
+    /// only in a held thread, it would wait unseen while the person views another. A
+    /// sub-agent's thread, which the person can view too, is never a root thread
+    /// (`adopt_sub_agent`), so it is not told. `primary` is the primary thread and `wall` its
+    /// walled turn (`accepted_turns` then): once for that wall, whichever thread was held.
+    ///
+    /// ONLY WHERE THE HOST'S POOL SHOWS ANOTHER ACCOUNT TO MOVE TO ([`rotation_target_in_sight`]
+    /// over `client`, the claim's connection, read here for every path), as the line says
+    /// one has room. The hold is kept with none, and costs nothing then: the ask it holds would
+    /// be answered `not-needed`. But a person told the move waits for their terminals would
+    /// stop a dev server for a move that never comes. Only the primary's question read the
+    /// pool before it told; the follow pass and another root thread's question, whose move is
+    /// live on the intent alone, told the same line with no read (the review of `af5f4fcc54`,
+    /// its first finding: a turn whose 429 named no reset ended on its own, the follow pass
+    /// made its intent from the usage wall alone, and the person was told with nowhere to
+    /// go). The read is made at each held question or pass until the person is told for this
+    /// wall, and at none after that.
+    async fn tell_terminals_hold(
+        &self,
+        client: &codex_alab_aterm::Client,
+        primary: &ThreadRt,
+        wall: u64,
+        count: usize,
+    ) {
+        if primary.terminals_hold_told.load(Ordering::SeqCst) == wall
+            || !rotation_target_in_sight(client).await
+            || primary.terminals_hold_told.swap(wall, Ordering::SeqCst) == wall
+        {
+            return;
+        }
+        self.sup.note(format!(
+            "{}: the usage wall's move to another account waits until the session's background \
+             terminals stop ({count} running), as the restart would end them",
+            primary.key
+        ));
+        let Some(events) = self.events.get() else {
+            return;
+        };
+        let shared = self.sup.shared();
+        let roots = self
+            .live_threads()
+            .into_iter()
+            .filter(|thread| {
+                !thread.stopped.load(Ordering::SeqCst) && shared.is_root_thread(&thread.key)
+            })
+            .map(|thread| thread.key.clone());
+        let mut told = std::collections::BTreeSet::new();
+        for thread in std::iter::once(primary.key.clone()).chain(roots) {
+            if told.insert(thread.clone()) {
+                events.emit_warning(codex_extension_api::ExtensionWarning {
+                    thread_id: thread,
+                    turn_id: None,
+                    message: MOVE_WAITS_FOR_TERMINALS.to_owned(),
+                });
+            }
+        }
+    }
+
+    /// THE HOST REFUSED THE ACCOUNT HANDOFF ASKED FOR `turn` in its closed word `word`
+    /// (`follow_renewal`): the point is kept and asked again at its recheck, as before, and
+    /// the journal says so once per word of the series, where the refusal was dropped with
+    /// no word. aterm answers `wall changed` to every ask under a record that does not rest,
+    /// so one that stands would otherwise be one line every five seconds.
+    fn note_handoff_refused(&self, rt: &ThreadRt, turn: &str, word: &str) {
+        if lock(&rt.handoff_refusals).record(turn, word) {
+            self.sup.note(format!(
+                "{}: the host refused the account handoff ({word}); the point is kept and \
+                 asked again",
+                rt.key
+            ));
+        }
+    }
+
+    /// Whether the record holds the usage wall's move of the thread `primary` away from
+    /// the login this process holds now: the intent `follow_renewal` publishes before it
+    /// asks the host (`usage-rotate@v1`), unbound or bound to a receipt. An intent whose
+    /// source is another login is not this process's to act on: the process the host
+    /// started on the destination account holds one until its recovered turn is
+    /// acknowledged.
+    fn usage_move_stands(&self, primary: &str) -> bool {
+        let Some(identity) = self.renewal_identity() else {
+            return false;
+        };
+        self.sup.shared().owed_act().is_some_and(|owed| {
+            owed.thread == primary
+                && owed.rule.as_deref() == Some(Purpose::WeeklyQuota.rule())
+                && owed.renewal.as_ref().is_some_and(|renewal| {
+                    renewal.purpose == Purpose::WeeklyQuota
+                        && !renewal.local
+                        && renewal.source() == (identity.account.as_str(), identity.user.as_str())
+                })
+        })
+    }
+
+    /// WHETHER THE SESSION IS LEAVING THE ACCOUNT THIS WALLED TURN WAITS ON: the answer to
+    /// a usage wall's handoff question for a root thread that is not the primary (a side
+    /// chat). Ending such a turn starts no move, so it waits its wall out in quota
+    /// recovery, looking for an earned reset every 30 seconds. But while it waits its turn
+    /// runs, the session's record says `busy`, and aterm moves no account under a busy
+    /// record: it refuses the primary thread's ask at `prepare`, in its preparation job, at
+    /// `commit` and before its signal. One side chat left open at the wall would hold the
+    /// primary's handoff off until the wall's reset.
+    ///
+    /// So the turn ends, on its own usage error, while a move is LIVE, and only then:
+    ///
+    /// - the record holds the primary thread's usage-wall move from this login
+    ///   ([`Self::usage_move_stands`]);
+    /// - codex-alab acts under its claim, and no upgrade's exec is under way;
+    /// - the primary thread's last pass of `follow_renewal` kept its point and either sent
+    ///   the host the ask (`prepare`) or holds the intent bound to the receipt the host
+    ///   granted ([`ThreadRt::follows_move`]).
+    ///
+    /// Neither the intent nor a kept point is enough. The intent stays on record when a
+    /// pass lets the point go (the host unread or no longer permitting the handoff),
+    /// through an Autopilot Off and a lost claim, and a wall that names no reset never
+    /// lapses it. And a pass keeps an unbound intent's point with no word to the host
+    /// whenever its checks before an act say wait (a person's hold, a draft, a popup or
+    /// queued input in the TUI, a person at the terminal, a `status` that cannot be read),
+    /// while a turn runs on the primary thread, while the session's background terminals
+    /// run, and when a read or a write of its own failed: nothing is asking the host then,
+    /// and nothing will until that lifts. Ending a turn for a move nobody is asking for
+    /// would give up its look for an earned reset for nothing, which is the one thing a
+    /// parked turn is still good for. A bound receipt is
+    /// the host's own grant, and its `commit` may have gone: the host then restarts the
+    /// session on the other account, under a record at rest only, so a kept bound point
+    /// counts whether or not this pass reached the host.
+    ///
+    /// A turn told no here is woken once the answer may be yes, and so is one whose looks
+    /// ended before they came here: each look of a waiting turn leaves word that a turn
+    /// waits as it begins ([`Self::walled_look_begins`]), and the primary's next pass that
+    /// leaves the move live, while codex-alab acts, sends the wake
+    /// ([`Self::note_move_followed`]).
+    ///
+    /// THE SESSION'S BACKGROUND TERMINALS HOLD IT TOO (gap 1 of the audit of 2026-11-14, as
+    /// its review amended it): while one runs in any thread
+    /// ([`Self::session_background_terminals`]) the move waits, as the restart would end it,
+    /// so this turn ending for the move would give up its look for an earned reset for a
+    /// move that is not coming yet. The answer is no; the person is told once a wall, where
+    /// the host's pool shows another account to move to (read over the claim's connection by
+    /// [`Self::tell_terminals_hold`]: the move is live on the intent alone, which no pool read
+    /// made); and the first look after the terminals end, with the move live again, is
+    /// answered yes.
+    ///
+    /// What it costs the turn: quota recovery asks this only after a look that found no
+    /// earned reset to redeem, so a credit is still spent first, and a turn that waits its
+    /// wall out ends on the same usage error at the reset anyway. Only a usage wall's move
+    /// counts; a lost login's (`login-rotate@v1`) is not claimed here. Advisory: no request
+    /// is sent, and the wall is not judged again for this thread (the intent is the
+    /// session's decision about that account's wall, and the host re-checks everything at
+    /// `prepare`). Memory reads, core's terminal count once they say leaving, and while the
+    /// terminals hold a wall the person was not yet told of, one read of the host's pool.
+    async fn session_leaves_account(&self, rt: &ThreadRt, primary: Option<&str>) -> bool {
+        let Some(primary) = primary else {
+            return false;
+        };
+        let Some(primary) = self.thread_rt(primary) else {
+            return false;
+        };
+        let leaving = !rt.stopped.load(Ordering::SeqCst)
+            && !rt.vanilla()
+            && !self.upgrade_requested.load(Ordering::SeqCst)
+            && self.sup.acting()
+            && self.usage_move_stands(&primary.key)
+            && !primary.stopped.load(Ordering::SeqCst)
+            && primary.follows_move.load(Ordering::SeqCst);
+        if !leaving {
+            return false;
+        }
+        let terminals = self.session_background_terminals().await;
+        if terminals > 0 {
+            if let Some(client) = self.sup.renewal_client() {
+                self.tell_terminals_hold(
+                    &client,
+                    &primary,
+                    primary.accepted_turns.load(Ordering::SeqCst),
+                    terminals,
+                )
+                .await;
+            }
+            return false;
+        }
+        let turn = rt.accepted_turns.load(Ordering::SeqCst);
+        if rt.move_end_told.swap(turn, Ordering::SeqCst) != turn {
+            self.sup.note(format!(
+                "{}: its walled turn ends; the session is leaving this account",
+                rt.key
+            ));
+        }
+        true
+    }
+
+    /// A LOOK OF A WALLED TURN OF ANOTHER ROOT THREAD BEGINS (`WallHandoff::look_begins`,
+    /// said at every look of quota recovery's wait, before it reads anything): leave word
+    /// that a turn waits ([`Autopilot::move_awaited`]) for the primary's next pass that
+    /// leaves its move live ([`Self::note_move_followed`]). At the look's start, not at its
+    /// question ([`Self::session_leaves_account`]): a look can end before it asks (a credit
+    /// list unread within a poll of the run's first unread one, a read that failed, an
+    /// attempt out of time), and that turn waits on the next live pass as much as one told
+    /// no. And before the look reads anything, so a pass that turns the answer to yes during
+    /// it finds the word and wakes the turn, which would otherwise wait out its own 30
+    /// seconds under a busy record. The primary thread's own looks leave none: its question
+    /// is its own ([`Self::quota_handoff_ready`]), and a pass of its move does not answer it.
+    pub(crate) fn walled_look_begins(&self, rt: &ThreadRt) {
+        if self.sup.shared().view().primary_thread.as_deref() != Some(rt.key.as_str()) {
+            self.move_awaited.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Record whether this pass of `follow_renewal` left `rt`'s handoff live
+    /// ([`ThreadRt::follows_move`]), and WAKE THE TURNS THAT WAIT ON THE ANSWER. A live pass,
+    /// with the usage wall's move from this login on record, is the moment another root
+    /// thread's walled turn may end ([`Self::session_leaves_account`]). A turn that waits
+    /// its wall out is told to look again now, where it would otherwise look at its next
+    /// poll, up to 30 seconds on, with the record busy and every ask refused meanwhile.
+    ///
+    /// The wake goes only when a look of such a turn began since the last one
+    /// ([`Self::walled_look_begins`]), whatever made the answer yes (the first ask, a hold
+    /// lifted, a claim taken again after an Autopilot Off), and whatever that look did: it
+    /// was told no, or it ended before it asked (its credit list unread). Neither a change
+    /// of the mark nor the question alone would do. The mark a pass left before an Off is
+    /// still set when codex-alab acts again, so a wake sent only when it turned from no to
+    /// yes would never come for a turn told no under the Off. And a turn whose looks since
+    /// the last wake all ended before the question asked nothing, so word left only by the
+    /// question would never come for it, at the move's first live pass or after an Off.
+    /// The pass has returned when this runs, so the turn's next question reads the mark set.
+    ///
+    /// Each conjunct saves backend reads, since a wake costs every waiting turn a usage
+    /// read and a credit list read: a pass with no look since the last wake wakes nobody
+    /// (every waiting turn looks after that wake anyway), and a pass for another handoff (a
+    /// login's own renewal, a lost login's move), or one while codex-alab does not act (a
+    /// bound receipt's point is kept then too), could only wake a turn to be told no again,
+    /// at every such pass. The word that a turn waits is spent only by a wake that goes.
+    pub(crate) fn note_move_followed(&self, rt: &ThreadRt, live: bool) {
+        rt.follows_move.store(live, Ordering::SeqCst);
+        if live
+            && self.sup.acting()
+            && self.usage_move_stands(&rt.key)
+            && self.move_awaited.swap(false, Ordering::SeqCst)
+        {
+            self.sup.shared().note_account_move();
+        }
     }
 
     /// THE USAGE WALL STAYS ON RECORD WHILE ITS HANDOFF IS ASKED FOR. This path owns
@@ -1048,7 +1669,12 @@ impl Autopilot {
     /// False only where a wall that should be on record could not be published;
     /// the caller retries before it asks the host. A point that holds no usage
     /// wall for the intent's turn (a process that restored none) carries nothing.
-    fn carry_asked_wall(&self, rt: &ThreadRt, owed: &OwedAct, generation: u64) -> bool {
+    fn carry_asked_wall(
+        &self,
+        rt: &ThreadRt,
+        owed: &OwedAct,
+        generation: codex_alab_core::session::AdmissionGeneration,
+    ) -> bool {
         let Some(renewal) = owed
             .renewal
             .as_ref()
@@ -1076,6 +1702,12 @@ impl Autopilot {
             // handoff was asked at, on the account the session is leaving. Once
             // it is reserved, a wall under the same id is the recovered turn's
             // own: a bound intent stands until that turn is acknowledged.
+            //
+            // The whole wall leaves, whatever its clock. A wait whose clock
+            // cannot be verified is kept where it is still this account's
+            // (`Shared::clear_recovery_intent`); this one is the left account's,
+            // and kept, the process on the destination would refuse it as an
+            // unverifiable provider wait and stand at it.
             if carried && renewal.turn.is_none() {
                 shared.set_recovery(None);
             }
@@ -1094,11 +1726,19 @@ impl Autopilot {
         // reset later, never before the wall's own.
         let now = clock();
         self.count_host_sleep(rt, now);
+        let sample = self.retry_clock_sample();
         let epoch = now_ms();
         let snapshot = lock(&rt.state).clone();
-        let Some(mut recovery) =
-            crate::recovery::capture_asked_wall(&rt.key, turn, &snapshot, now, epoch)
-        else {
+        let previous = shared.recovery();
+        let Some(mut recovery) = crate::recovery::capture_asked_wall(
+            &rt.key,
+            turn,
+            &snapshot,
+            now,
+            epoch,
+            sample.as_ref(),
+            previous.as_ref(),
+        ) else {
             return true;
         };
         if let RecoveryWall::Usage { quota, .. } = &mut recovery.wall {
@@ -1115,9 +1755,54 @@ impl Autopilot {
         published
     }
 
-    /// Returns true while this path owns the pending point. Failures retain its
+    /// [`Follow::Keeps`] while this path owns the pending point. Failures retain its
     /// durable intent and a bounded wake; no peer text is logged or displayed.
-    pub(super) async fn follow_renewal(self: &Arc<Self>, rt: &Arc<ThreadRt>) -> bool {
+    ///
+    /// A SEAL ENDS WITH THE FOLLOW THAT KEPT ITS POINT (review of 06dfcad367, finding 1). Every
+    /// way a pass lets the point go hands it to `evaluate`, and some leave the record's intent
+    /// bound to its receipt: a host whose policy no longer permits the handoff, a login back in
+    /// its own file, an identity that is neither end of the handoff, a scope no longer eligible.
+    /// Nothing then reads that receipt's status again, so the seal on the claim would stand for
+    /// as long as the claim did, and every act's checks, the very act the point went to among
+    /// them, would wait on it. The seal ends there instead ([`Supervisor::end_handoff_seal`]).
+    ///
+    /// WHETHER THE PASS LEFT THE HANDOFF LIVE is recorded apart from whether it kept the
+    /// point ([`Self::note_move_followed`]): many passes keep it and ask nothing. It is live
+    /// where the pass kept the point and either sent the host the ask this pass or holds
+    /// the intent bound to the receipt the host granted. An unbound point kept with no ask
+    /// (a person's hold, a draft, the session's background terminals, a read that failed) is
+    /// a move nobody is asking for.
+    pub(super) async fn follow_renewal(self: &Arc<Self>, rt: &Arc<ThreadRt>) -> Follow {
+        let asked = AtomicBool::new(false);
+        let mut checked = false;
+        let keeps = self.follow_renewal_point(rt, &asked, &mut checked).await;
+        if !keeps {
+            self.sup.end_handoff_seal(&rt.key);
+        }
+        let granted = || {
+            self.sup
+                .shared()
+                .owed_act()
+                .is_some_and(|owed| owed.thread == rt.key && receipt_bound(&owed))
+        };
+        self.note_move_followed(rt, keeps && (asked.load(Ordering::SeqCst) || granted()));
+        if keeps {
+            Follow::Keeps
+        } else {
+            Follow::Leaves { checked }
+        }
+    }
+
+    /// One pass of [`Self::follow_renewal`]: true while it keeps the point. `asked` is set
+    /// as the pass sends the host the ask (`prepare`) for an intent no receipt binds; every
+    /// other way out leaves it clear, a kept point included. `checked` is set once the pass
+    /// stands at a scope a renewal may be asked for ([`Follow::Leaves`]).
+    async fn follow_renewal_point(
+        self: &Arc<Self>,
+        rt: &Arc<ThreadRt>,
+        asked: &AtomicBool,
+        checked: &mut bool,
+    ) -> bool {
         let shared = self.sup.shared();
         if shared.view().primary_thread.as_deref() != Some(rt.key.as_str()) {
             return false;
@@ -1133,7 +1818,13 @@ impl Autopilot {
                 Ok(true) => {}
                 Ok(false) => return false,
                 Err(_) => {
-                    self.schedule(rt, clock() + RECHECK);
+                    // A bound receipt's point is not left a minute for one read that failed.
+                    let recheck = if receipt_bound(&pending) {
+                        BOUND_RECHECK
+                    } else {
+                        RECHECK
+                    };
+                    self.schedule(rt, clock() + recheck);
                     return true;
                 }
             }
@@ -1141,6 +1832,7 @@ impl Autopilot {
         if !self.eligible_renewal_scope(rt) {
             return false;
         }
+        *checked = true;
         let existing = shared
             .owed_act()
             .filter(|owed| owed.thread == rt.key && owed.renewal.is_some());
@@ -1156,13 +1848,6 @@ impl Autopilot {
         let Some(purpose) = purpose else {
             return false;
         };
-        // Quota preparation runs asynchronously in aterm and its observation
-        // expires after a minute. Consume a ready result promptly instead of
-        // making every native transition wait the ordinary policy-recheck period.
-        let recheck = match purpose {
-            Purpose::WeeklyQuota => Duration::from_secs(5),
-            Purpose::Login => RECHECK,
-        };
         if purpose == Purpose::WeeklyQuota
             && existing.is_none()
             && rt.quota_rotation_declined.load(Ordering::SeqCst)
@@ -1170,7 +1855,46 @@ impl Autopilot {
         {
             return false;
         }
-        let (client, policy) = match self.recovery_host(purpose).await {
+        // AN ASK FOR A LOST LOGIN'S MOVE NO RECEIPT BINDS IS BOUNDED, AND A VETO ENDS IT: no
+        // `commit` was sent for it, so the session is still on the account the wall belongs
+        // to, and the login wall's own path is all declining leaves.
+        if let Some(asked) = existing.as_ref().filter(|owed| {
+            owed.renewal.as_ref().is_some_and(|renewal| {
+                renewal.purpose == Purpose::LoginRotation && renewal.receipt.is_none()
+            })
+        }) {
+            let accepted = rt.accepted_turns.load(Ordering::SeqCst);
+            let turn = asked
+                .native_origin
+                .as_ref()
+                .map(|origin| origin.turn_id.as_str())
+                .unwrap_or_default();
+            if self.login_rotation_lapsed(rt, turn) {
+                let why = format!(
+                    "no receipt in {} s",
+                    self.timing.login_rotation_ask.as_secs()
+                );
+                return self.decline_login_rotation(rt, asked, accepted, &why).await;
+            }
+            if self.login_move_vetoed(rt) {
+                return self
+                    .decline_login_rotation(rt, asked, accepted, "codex's own refusal vetoes it")
+                    .await;
+            }
+        }
+        // A LOST LOGIN WITH NO INTENT YET MAY BE MOVED TO ANOTHER ACCOUNT where the host's
+        // policy reply says it moves one; otherwise, on that same reply, the login wall goes
+        // as it went before such a move existed.
+        let preferred: &[Purpose] =
+            if purpose == Purpose::Login && existing.is_none() && self.login_rotation_open(rt) {
+                &[Purpose::LoginRotation]
+            } else {
+                &[]
+            };
+        let (purpose, host) = self.first_recovery_host(preferred, purpose).await;
+        // Read after the host's reply, which may have made the purpose a lost login's move.
+        let recheck = point_recheck(purpose, existing.as_ref().is_some_and(receipt_bound));
+        let (client, policy) = match host {
             RecoveryHost::Permits(permitted) => {
                 if rt.bound_host_unread.swap(false, Ordering::SeqCst) {
                     self.sup.note(format!(
@@ -1205,12 +1929,17 @@ impl Autopilot {
             // an unbound point here would hold it past the wall's reset for as
             // long as the host stayed unread. Its intent stays on record, and the
             // next pass that reads the host asks again.
+            //
+            // A lost login's move is kept the same way, bound or not: the account it is on
+            // has no login to resume with, so `evaluate` would only leave the wall to a
+            // person while the host is unread, and the ask is bounded
+            // ([`Self::login_rotation_lapsed`]) without the host.
             RecoveryHost::Unread
-                if purpose == Purpose::WeeklyQuota
+                if purpose.moves_account()
                     && existing.as_ref().is_some_and(|owed| {
-                        owed.renewal
-                            .as_ref()
-                            .is_some_and(|renewal| renewal.receipt.is_some())
+                        owed.renewal.as_ref().is_some_and(|renewal| {
+                            renewal.receipt.is_some() || renewal.purpose == Purpose::LoginRotation
+                        })
                     }) =>
             {
                 if !rt.bound_host_unread.swap(true, Ordering::SeqCst) {
@@ -1223,6 +1952,26 @@ impl Autopilot {
                 self.schedule(rt, clock() + recheck);
                 return true;
             }
+            // A host that no longer moves a lost login declines an ask no receipt binds:
+            // the login wall's own path, which this host may still permit, is all that is
+            // left, and an intent kept on record would hold it off.
+            RecoveryHost::Refuses
+                if purpose == Purpose::LoginRotation
+                    && existing.as_ref().is_some_and(|owed| {
+                        owed.renewal
+                            .as_ref()
+                            .is_some_and(|renewal| renewal.receipt.is_none())
+                    }) =>
+            {
+                rt.bound_host_unread.store(false, Ordering::SeqCst);
+                let Some(asked) = existing.as_ref() else {
+                    return false;
+                };
+                let accepted = rt.accepted_turns.load(Ordering::SeqCst);
+                return self
+                    .decline_login_rotation(rt, asked, accepted, "the host no longer moves one")
+                    .await;
+            }
             // A reply that was read and forbids this recovery still releases the
             // point, receipt or not: a host with rotation (or renewal) switched off
             // will not finish the move, and the wall's own resume is what such a
@@ -1232,7 +1981,7 @@ impl Autopilot {
                 return false;
             }
         };
-        let generation = shared.upgrade_generation();
+        let generation = shared.admission_generation();
         let accepted = rt.accepted_turns.load(Ordering::SeqCst);
         let offs = rt.off_seen.load(Ordering::SeqCst);
         let owner_revision = self.request_owner_revision();
@@ -1243,7 +1992,7 @@ impl Autopilot {
                 && rt.off_seen.load(Ordering::SeqCst) == offs
                 && owner_revision.is_some()
                 && self.request_owner_revision() == owner_revision
-                && shared.upgrade_generation() == generation
+                && shared.admission_generation() == generation
                 && !self.upgrade_requested.load(Ordering::SeqCst)
                 && !rt.stopped.load(Ordering::SeqCst)
         };
@@ -1293,15 +2042,17 @@ impl Autopilot {
             owed.renewal
                 .as_ref()
                 .is_some_and(|renewal| !renewal.accepted)
-        }) && purpose == Purpose::Login
-            && self.login_for(rt).1.back
+        }) && matches!(purpose, Purpose::Login | Purpose::LoginRotation)
+            && self.login_for(rt, true).1.back
         {
             return false;
         }
         if owed.is_none() {
             let state = lock(&rt.state).clone();
             // A file renewed in place retains the existing, identity-checked watcher.
-            if purpose == Purpose::Login && self.login_for(rt).1.back {
+            if matches!(purpose, Purpose::Login | Purpose::LoginRotation)
+                && self.login_for(rt, true).1.back
+            {
                 return false;
             }
             let Some(identity) = self.renewal_identity() else {
@@ -1368,6 +2119,13 @@ impl Autopilot {
                 mode: Some(policy.autopilot.word().into()),
                 ..Default::default()
             });
+            if purpose == Purpose::LoginRotation {
+                self.sup.note(format!(
+                    "{}: the lost login may be moved to another signed-in account; the host is \
+                     asked to move it",
+                    rt.key
+                ));
+            }
         }
         let Some(mut owed) = owed else {
             return false;
@@ -1384,12 +2142,27 @@ impl Autopilot {
             return true;
         }
         // Reconfirm before the broker seals its claim authority. A second
-        // readiness call after Ready would mutate the very claim it sealed.
-        let readiness = match self.sup.ready_for_admission().await {
-            Ok(readiness) => readiness,
-            Err(_) => {
-                self.schedule(rt, clock() + recheck);
-                return true;
+        // readiness call after Ready would mutate the very claim it sealed, and
+        // that holds for the whole window after the commit too: the host's commit
+        // worker replays the sealed prepare against the claim's revision before it
+        // signals this process, and a re-confirm moves that revision. So a pass
+        // that finds a receipt bound sends no `meta set supervisor`: it reads the
+        // receipt's status over the claim's connection (which keeps the
+        // connection-bound claim held) until the host retires or consumes it, or
+        // ends this process. The recovered turn a committed receipt admits in the
+        // process the host started runs its own checks at its admission.
+        let bound_receipt = receipt_bound(&owed);
+        // The intent as it stands now, which this pass may have made or read again since.
+        let recheck = point_recheck(purpose, bound_receipt);
+        let pass = if bound_receipt {
+            Pass::Sealed(self.sup.admission_observation())
+        } else {
+            match self.sup.ready_for_admission().await {
+                Ok(readiness) => Pass::Confirmed(readiness),
+                Err(_) => {
+                    self.schedule(rt, clock() + recheck);
+                    return true;
+                }
             }
         };
         // Keep the original point durable before the first native request: the
@@ -1402,7 +2175,7 @@ impl Autopilot {
             self.schedule(rt, clock() + WRITE_THROUGH_RETRY);
             return true;
         }
-        if !self.sup.admission_fence_current(&readiness) || !current() {
+        if !pass.stands(&self.sup) || !current() {
             self.schedule(rt, clock() + recheck);
             return true;
         }
@@ -1446,6 +2219,31 @@ impl Autopilot {
         } else if let Some(id) = &renewal.receipt {
             account_broker::status(&client, renewal.purpose, id).await
         } else {
+            // THE SESSION'S BACKGROUND TERMINALS HOLD THE ASK (gap 1 of the audit of
+            // 2026-11-14, as its review amended it). The walled turn ended with none
+            // running, but one can start after it, in any thread: aterm's rest fence
+            // sees only the shown thread's, so an ask under a record at rest would be
+            // granted and the restart would end the terminal silently. While one runs the
+            // point is kept with no word to the host (the move is not live, so no other
+            // root thread's walled turn ends for it), the person is told once a wall where
+            // the host's pool shows somewhere to go (`tell_terminals_hold` reads it: this
+            // intent may stand on the usage wall alone, for a turn no yes ended), and the
+            // first pass after they end asks. A receipt already bound is the host's
+            // own grant, whose `commit` may have gone: its `status` is read as before.
+            if renewal.purpose == Purpose::WeeklyQuota {
+                let terminals = self.session_background_terminals().await;
+                if terminals > 0 {
+                    self.tell_terminals_hold(&client, rt, accepted, terminals)
+                        .await;
+                    self.schedule(rt, clock() + recheck);
+                    return true;
+                }
+            }
+            if renewal.purpose == Purpose::LoginRotation {
+                // The ask's span starts with its first ask in this process.
+                self.login_rotation_asked_since(rt, &wall);
+            }
+            asked.store(true, Ordering::SeqCst);
             account_broker::prepare(
                 &client,
                 renewal.purpose,
@@ -1458,11 +2256,39 @@ impl Autopilot {
             )
             .await
         };
-        if !self.sup.admission_fence_current(&readiness) || !current() {
+        if !pass.stands(&self.sup) || !current() {
             self.schedule(rt, clock() + recheck);
             return true;
         }
         let already_consumed = matches!(&outcome, Ok(Outcome::Consumed(_)));
+        // A LOST LOGIN'S MOVE THE HOST DEFINITELY DECLINES. Asked with no receipt bound: it has
+        // no account to move to (`not-needed`), knows no such verb, refuses the request or its
+        // wall or purpose, or answers nothing this reader can take. A bound receipt, whose
+        // `commit` may have gone, is declined only by the host retiring it. Every other
+        // answer is asked about again: an unbound ask within its bound, a bound one until
+        // the host retires or consumes it, as a usage wall's.
+        if purpose == Purpose::LoginRotation {
+            let why = match (&outcome, bound_receipt) {
+                (Ok(Outcome::NotNeeded), false) => {
+                    Some("the host has no account to move it to".to_owned())
+                }
+                (Ok(Outcome::Retired(receipt)), true) if bound(receipt, &owed) => {
+                    Some("the host retired its receipt".to_owned())
+                }
+                (Err(error), false) if account_broker::login_rotation_declined(error) => {
+                    Some(match error {
+                        codex_alab_aterm::Error::Refused(word) => {
+                            format!("the host refused: {word}")
+                        }
+                        _ => "the host's answer is unreadable".to_owned(),
+                    })
+                }
+                _ => None,
+            };
+            if let Some(why) = why {
+                return self.decline_login_rotation(rt, &owed, accepted, &why).await;
+            }
+        }
         match outcome {
             Ok(Outcome::NotNeeded) if purpose == Purpose::WeeklyQuota => {
                 rt.quota_rotation_declined.store(accepted, Ordering::SeqCst);
@@ -1511,12 +2337,19 @@ impl Autopilot {
                 ) {
                     return true;
                 }
+                // The host sealed the claim as this pass's readiness re-confirmed it:
+                // from the moment the record binds this receipt nothing re-confirms
+                // it again. A sealed pass that reads `ready` once more (its `commit`
+                // never reached the host) seals nothing new.
+                if let Pass::Confirmed(fence) = &pass {
+                    self.sup.seal_claim_for_handoff(fence, &rt.key, &receipt.id);
+                }
                 // The bound intent is written without the wall: `commit` follows
                 // only a record the other account's process can start from.
                 if shared.publish_renewal(generation, owed.clone())
                     && self.carry_asked_wall(rt, &owed, generation)
                     && write_through(shared).await
-                    && self.sup.admission_fence_current(&readiness)
+                    && pass.may_commit(&self.sup)
                     && current()
                 {
                     // The native service derives the command and revalidates identity,
@@ -1556,6 +2389,7 @@ impl Autopilot {
                         && write_through(shared).await
                         && confirmed_consumption(&client, &owed).await
                     {
+                        self.report_completion(rt, &owed, Seen::History(&items));
                         if shared.discard_renewal(&owed) {
                             let _ = write_through(shared).await;
                         }
@@ -1569,8 +2403,17 @@ impl Autopilot {
                     );
                 } else if native.turn_id == Some(wall.as_str())
                     && (!already_consumed || count > baseline_starts)
+                    // The process whose claim stands sealed for this handoff recovers nothing:
+                    // the admission would only wait on the seal, once core had reserved a turn
+                    // and written its settings for it. The host ends this process and starts
+                    // the one that recovers the turn; past the seal's end this one may.
+                    && !self.sup.claim_sealed()
+                    && self
+                        .recover_renewal(rt, thread, owed, Some(receipt))
+                        .await
                 {
-                    self.recover_renewal(rt, thread, owed, Some(receipt)).await;
+                    // Its next pass is its own: a refused admission's retry, or the TUI's wait.
+                    return true;
                 }
             }
             Ok(Outcome::Retired(receipt)) if bound(&receipt, &owed) => {
@@ -1588,6 +2431,10 @@ impl Autopilot {
                 }
             }
             Ok(Outcome::Waiting(Some(receipt))) if bound(&receipt, &owed) => {}
+            // A refusal grants nothing either; it is said once a series.
+            Err(codex_alab_aterm::Error::Refused(word)) => {
+                self.note_handoff_refused(rt, &wall, &word);
+            }
             // Invalid, stale and unavailable responses grant no execution. A
             // future same-file login can still be observed by the native watcher.
             _ => {}
@@ -1638,26 +2485,75 @@ impl Autopilot {
             return false;
         }
         if matches!(self.sup.ready().await, Ready::Go) && native.turn_id == Some(wall) {
+            // No receipt binds this intent: a refusal is journaled with its reason and
+            // schedules nothing, and the recheck below looks again.
             self.recover_renewal(rt, thread, owed, None).await;
         }
         self.schedule(rt, clock() + RECHECK);
         true
     }
 
+    /// Recover the original native turn under `owed` (and `receipt`, where one binds it): core
+    /// runs the admission below before it consumes any input. A start that did not go is
+    /// journaled with its reason. True where this scheduled the point's next pass itself,
+    /// which it does only under a bound receipt: after a refused admission and after a look
+    /// the TUI's own wait stopped ([`admission_retry`] paces both).
     async fn recover_renewal(
         self: &Arc<Self>,
         rt: &Arc<ThreadRt>,
         thread: Arc<CodexThread>,
         owed: OwedAct,
         receipt: Option<Receipt>,
-    ) {
+    ) -> bool {
         let Some(wall) = owed
             .native_origin
             .as_ref()
             .map(|origin| origin.turn_id.clone())
         else {
-            return;
+            return false;
         };
+        let bound = receipt.is_some();
+        // THE TUI'S OWN WAIT IS READ BEFORE CORE IS ASKED. A person's draft, queued input, a
+        // popup, an overlay or a key within the grace has the admission's readiness wait, and
+        // it needs neither the host nor core to say so: asked anyway, core reserved the turn
+        // and wrote its settings into the rollout at every look for as long as the draft stood.
+        // The look that reads it is paced as a refusal is: no frame's change wakes this point,
+        // so a wait scheduled at its own end (a draft's is RECHECK away) would leave a popup
+        // that closed a second later a minute to be seen, and a wait that does stand is looked
+        // at every RECHECK all the same. Never later than the wait's own end (a key's grace).
+        if let Some((until, why)) = self
+            .sup
+            .policy()
+            .and_then(|policy| self.sup.tui_wait(policy.human_grace))
+        {
+            let now = clock();
+            let (waits, news, stood) = {
+                let mut series = lock(&rt.admission_refusals);
+                AdmissionRefusals::record(&mut series, wall, why, true, now)
+            };
+            let again = admission_retry(waits, stood).min(until.saturating_duration_since(now));
+            if bound {
+                self.schedule(rt, now + again);
+            }
+            if news {
+                let again = if bound {
+                    format!("the next pass comes in {} ms", again.as_millis())
+                } else {
+                    "its own recheck looks again".to_owned()
+                };
+                tracing::info!(
+                    thread = %rt.key,
+                    %why,
+                    %again,
+                    "the recovered turn waits on the TUI; core is not asked"
+                );
+                self.sup.note(format!(
+                    "{}: the recovered turn waits ({why}); core is not asked, and {again}",
+                    rt.key
+                ));
+            }
+            return bound;
+        }
         let me = Arc::clone(self);
         let pending = owed.clone();
         let admission_rt = Arc::clone(rt);
@@ -1677,7 +2573,7 @@ impl Autopilot {
             let goal_runtime = goal_runtime.clone();
             Box::pin(async move {
                 let shared = me.sup.shared();
-                let generation = shared.upgrade_generation();
+                let generation = shared.admission_generation();
                 let owner_revision = me.request_owner_revision();
                 let policy = me.sup.policy();
                 let Some(client) = me.sup.renewal_client() else { return Err("renewal claim missing".into()); };
@@ -1717,7 +2613,7 @@ impl Autopilot {
                     || !matches!(me.sup.ready().await, Ready::Go)
                     || me.upgrade_requested.load(Ordering::SeqCst)
                     || me.sup.policy() != policy
-                    || shared.upgrade_generation() != generation
+                    || shared.admission_generation() != generation
                 {
                     return Err("renewal admission changed".into());
                 }
@@ -1739,7 +2635,7 @@ impl Autopilot {
                     || me.renewal_identity() != identity
                     || me.upgrade_requested.load(Ordering::SeqCst)
                     || me.sup.policy() != policy
-                    || shared.upgrade_generation() != generation
+                    || shared.admission_generation() != generation
                     || shared.owed_act().as_ref() != Some(&pending)
                 {
                     return Err("renewal changed during persistence".into());
@@ -1758,7 +2654,7 @@ impl Autopilot {
                     || me.renewal_identity() != identity
                     || me.upgrade_requested.load(Ordering::SeqCst)
                     || me.sup.policy() != policy
-                    || shared.upgrade_generation() != generation
+                    || shared.admission_generation() != generation
                     || shared.owed_act().as_ref() != Some(&pending)
                 { return Err("renewal admission changed".into()); }
                 let thread = me.thread(rt.id).await.ok_or("renewal thread unavailable")?;
@@ -1769,7 +2665,7 @@ impl Autopilot {
                     || me.request_owner_revision() != owner_revision
                     || me.renewal_identity() != identity
                     || me.upgrade_requested.load(Ordering::SeqCst)
-                    || me.sup.policy() != policy || shared.upgrade_generation() != generation
+                    || me.sup.policy() != policy || shared.admission_generation() != generation
                     || shared.owed_act().as_ref() != Some(&pending) {
                     return Err("renewal admission witness changed".into());
                 }
@@ -1787,6 +2683,7 @@ impl Autopilot {
                 Ok(())
             })
         }));
+        let refused_wall = wall.clone();
         let request = codex_protocol::turn_input::RecoverTurnRequest {
             prompt_cache_ttl: thread.recovery_prompt_cache_ttl(&wall),
             turn_id: wall,
@@ -1794,11 +2691,72 @@ impl Autopilot {
             trace: None,
             cyber_access_program: *lock(&rt.cyber_access_program),
         };
-        // Native refusal returns here before consuming input or starting work.
-        // Keep the same pending ID for the next bounded attempt.
-        let _ = thread
+        // Native refusal returns here before consuming input or starting work, with the
+        // admission's own reason (`alab-core/glue/renewal_admission.rs`). Keep the same
+        // pending ID for the next bounded attempt, and say why this one did not go: an
+        // unlogged refusal hid why the happy successor never reran its turn.
+        match thread
             .recover_turn_if_idle(codex_core::WithTurnExtensionData::new(request, init))
-            .await;
+            .await
+        {
+            Ok(codex_core::StartIfIdleSubmission::Started { .. }) => {
+                *lock(&rt.admission_refusals) = None;
+                false
+            }
+            // Core did not reserve the turn (a turn runs, plan mode, a drain): no admission
+            // was asked, so nothing lengthens the wait and the receipt's own recheck looks
+            // again.
+            Ok(codex_core::StartIfIdleSubmission::NotSubmitted { reason }) => {
+                let reason = format!("{reason:?}");
+                let (_, news, _) = {
+                    let mut series = lock(&rt.admission_refusals);
+                    AdmissionRefusals::record(&mut series, refused_wall, &reason, false, clock())
+                };
+                if news {
+                    tracing::info!(
+                        thread = %rt.key,
+                        %reason,
+                        "core did not take the recovered turn; its receipt's recheck looks again"
+                    );
+                    self.sup.note(format!(
+                        "{}: the recovered turn was not submitted ({reason}); its receipt's \
+                         recheck looks again",
+                        rt.key
+                    ));
+                }
+                false
+            }
+            Err(error) => {
+                let reason = error.to_string();
+                let (refusals, news, stood) = {
+                    let mut series = lock(&rt.admission_refusals);
+                    AdmissionRefusals::record(&mut series, refused_wall, &reason, true, clock())
+                };
+                let retry = bound.then(|| admission_retry(refusals, stood));
+                // Scheduled here, where the wait is decided, and before the journal says so:
+                // whoever reads the line finds the timer it names.
+                if let Some(retry) = retry {
+                    self.schedule(rt, clock() + retry);
+                }
+                if news {
+                    let again = retry.map_or_else(
+                        || "its own recheck looks again".to_owned(),
+                        |retry| format!("the next pass comes in {} ms", retry.as_millis()),
+                    );
+                    tracing::info!(
+                        thread = %rt.key,
+                        %reason,
+                        %again,
+                        "the recovered turn's admission was refused"
+                    );
+                    self.sup.note(format!(
+                        "{}: the recovered turn's admission was refused ({reason}); {again}",
+                        rt.key
+                    ));
+                }
+                retry.is_some()
+            }
+        }
     }
 }
 
@@ -1997,6 +2955,63 @@ mod tests {
                 "{disabled}"
             );
         }
+    }
+
+    /// A LOST LOGIN'S MOVE IS PERMITTED ONLY BY ITS OWN WORD (`codex_rotation_login=1`) beside
+    /// a moving `accounts` policy and the relaunch and resume switches: aterm 0.199.0's policy
+    /// (no such word) permits the usage wall's move and the same account's renewal as before,
+    /// and never this one. The word permits nothing else, and a host that renews logins
+    /// without it still renews.
+    #[test]
+    fn a_lost_logins_move_requires_its_own_word_and_a_moving_accounts_policy() {
+        let mut policy = codex_alab_aterm::policy::HarnessPolicy {
+            generation: 1,
+            effective: true,
+            why: "enabled".into(),
+            keys: std::collections::BTreeMap::from([
+                ("logins".into(), "renew".into()),
+                ("codex_rotation".into(), "1".into()),
+                ("accounts".into(), "wall".into()),
+                ("relaunch".into(), "true".into()),
+                ("resume_limits".into(), "true".into()),
+            ]),
+        };
+        // aterm 0.199.0.
+        assert!(!policy_allows_recovery(&policy, Purpose::LoginRotation));
+        assert!(policy_allows_recovery(&policy, Purpose::Login));
+        assert!(policy_allows_recovery(&policy, Purpose::WeeklyQuota));
+        policy.keys.insert(
+            codex_alab_aterm::account_recovery::LOGIN_ROTATION.into(),
+            "1".into(),
+        );
+        assert!(policy_allows_recovery(&policy, Purpose::LoginRotation));
+        for (key, off) in [
+            ("accounts", "off"),
+            ("relaunch", "false"),
+            ("resume_limits", "false"),
+            (codex_alab_aterm::account_recovery::LOGIN_ROTATION, "0"),
+        ] {
+            let mut changed = policy.clone();
+            changed.keys.insert(key.into(), off.into());
+            assert!(
+                !policy_allows_recovery(&changed, Purpose::LoginRotation),
+                "{key}={off}"
+            );
+        }
+        let mut quota_off = policy.clone();
+        quota_off.keys.remove("codex_rotation");
+        quota_off.keys.insert("logins".into(), "off".into());
+        assert!(policy_allows_recovery(&quota_off, Purpose::LoginRotation));
+        assert!(!policy_allows_recovery(&quota_off, Purpose::WeeklyQuota));
+        assert!(!policy_allows_recovery(&quota_off, Purpose::Login));
+        policy.effective = false;
+        assert!(!policy_allows_recovery(&policy, Purpose::LoginRotation));
+        // The ask's own bound: four minutes of awake time with no receipt.
+        assert_eq!(
+            Timing::default().login_rotation_ask,
+            Duration::from_secs(240)
+        );
+        assert_eq!(crate::decide::LOGIN_ROTATION_ASK, Duration::from_secs(240));
     }
 
     #[test]

@@ -13,11 +13,21 @@
 //! is answered, never before the harness starts, so no start-up time counts against it. All
 //! but one test name it an hour ahead and bring it by having the host sleep
 //! ([`Walled::host_sleeps`]); the awake case waits for a reset a few seconds after the 429.
+//!
+//! WHICH CLOCK A WALL IS HELD ON (2026-11-15). A captured wall carries the boot clock its
+//! process reads from its launch's native identity (`codex_alab_core::recovery_clock`). The
+//! harness records no launch, so the walls of [`walled`] carry none: a known wait whose clock
+//! cannot be verified, which `Shared::clear_recovery_intent` keeps, so only the handoff's own
+//! rule takes the asked wall off the record. A restored wall is honoured only on a clock this
+//! boot verifies, so the restart tests launch both processes as a real launch is recorded
+//! ([`walled_to_restart`], [`launch_on_boot_clock`]).
 
 use super::login_fixtures as fixtures;
 use super::renewal_admission::subscription_fixture;
 use super::*;
+use codex_alab_autopilot::supervisor::Ready;
 use codex_alab_core::session::Inherited;
+use codex_alab_core::session::Launch;
 use codex_alab_core::session::OwedAct;
 use codex_alab_core::session::Recovery;
 use codex_alab_core::session::RecoveryWall;
@@ -313,6 +323,54 @@ async fn walled_under(
     resumes: bool,
     grace: Duration,
 ) -> Walled {
+    walled_on(
+        policy,
+        resets_in_s,
+        held,
+        resumes,
+        grace,
+        /*boot_clock*/ false,
+    )
+    .await
+}
+
+/// [`walled`] on the boot clock ([`launch_on_boot_clock`]): its wall can be restored by the
+/// process after a restart ([`restarted`]).
+async fn walled_to_restart(resets_in_s: u64, held: bool, resumes: bool) -> Walled {
+    walled_on(
+        POLICY,
+        resets_in_s,
+        held,
+        resumes,
+        Duration::ZERO,
+        /*boot_clock*/ true,
+    )
+    .await
+}
+
+/// Record `shared`'s launch as a real one is (`codex_alab_tui::life`): on this process's own
+/// native identity, whose boot id binds the clock the walls it captures are held on.
+fn launch_on_boot_clock(shared: &Shared) {
+    let identity = codex_alab_tui::identity::current()
+        .unwrap_or_else(|err| panic!("this process's native identity: {err}"));
+    assert!(
+        shared.set_launch(Launch {
+            identity: Some(identity),
+            ..Default::default()
+        }),
+        "the launch is recorded once"
+    );
+}
+
+/// [`walled_under`], launched on the boot clock where `boot_clock` says so.
+async fn walled_on(
+    policy: &[(&str, &str)],
+    resets_in_s: u64,
+    held: bool,
+    resumes: bool,
+    grace: Duration,
+    boot_clock: bool,
+) -> Walled {
     let (login, identity, refresh) = subscription_fixture("rotation").await;
     // The harness's own sequence answers nothing: the handler below names the reset as it
     // answers the walled request, which no fixed reply can.
@@ -332,6 +390,9 @@ async fn walled_under(
         None,
     )
     .await;
+    if boot_clock {
+        launch_on_boot_clock(h.shared);
+    }
     // The record's writer, installed before anything is written through.
     let written = Arc::new(std::sync::Mutex::new(Vec::new()));
     let writes = Arc::clone(&written);
@@ -416,6 +477,15 @@ async fn walled_under(
             walled.h.fake.gated_requests(),
             std::slice::from_ref(&walled.prepare),
             "the ask names the walled turn and the login's hashed identity"
+        );
+        assert_eq!(
+            walled
+                .h
+                .shared
+                .recovery()
+                .map(|recovery| recovery.clock.is_some()),
+            Some(boot_clock),
+            "the asked wall is on record, on the boot clock only where the launch gives one"
         );
     } else {
         wait_until("the handoff is asked for", || walled.prepares() > 0).await;
@@ -608,6 +678,11 @@ fn a_bound_handoff_is_never_given_up_at_the_reset() {
         );
         // Only that wall is taken off the record: another turn's recovery is left alone.
         let another = Recovery {
+            clock: Some(codex_alab_core::recovery_clock::Anchor {
+                boot_id: "rotation-fixture-boot".into(),
+                continuous_ns: 0,
+                epoch_ms: now_ms(),
+            }),
             thread: walled.h.thread.clone(),
             turn_id: "a-later-turn".into(),
             point_at_ms: now_ms(),
@@ -735,6 +810,309 @@ fn the_asked_wall_leaves_the_record_before_commit_is_sent() {
     });
 }
 
+/// A COMMITTED HANDOFF NEVER RE-CONFIRMS THE CLAIM IT SEALED (2026-11-13, the weekly-quota
+/// smoke's diagnosis). aterm seals the handoff's native authority to the claim's revision
+/// when it answers `ready`, and moves that revision at every same-holder `meta set
+/// supervisor`. Its commit worker replays the sealed `prepare`, then signals this process. A
+/// follow pass about 10 ms after `commit` re-confirmed the claim, so every replay was refused,
+/// the source was never signalled, and the receipt retired at its deadline. From `commit`
+/// until the host ends the receipt no `meta set supervisor` goes out: not from the passes
+/// that ask about the receipt (two of them, five seconds apart, are waited for), not from a
+/// record renewal (the record's resume line moves meanwhile), and not from another act's
+/// checks, which wait instead. The claim stays held all the while. It is bound to its
+/// connection, which those passes keep using. The host then retires the receipt and the seal
+/// ends with it: the next `prepare` is sent after a fresh re-confirm (POSITIVE CONTROL).
+#[test]
+fn a_committed_handoff_never_reconfirms_the_claim_it_sealed() {
+    big_stack(|| async {
+        let walled = walled(3600, true, false).await;
+        let handoff = walled.bound().await;
+        let commit = format!(
+            "@{} {ROTATION} commit id={}",
+            walled.h.fake.sid(),
+            handoff.id
+        );
+        let committed = walled
+            .h
+            .fake
+            .requests()
+            .iter()
+            .position(|request| *request == commit)
+            .unwrap_or_else(|| panic!("commit was sent: {:?}", walled.h.fake.requests()));
+        let since_commit = || walled.h.fake.requests().split_off(committed);
+        let renewals = || {
+            since_commit()
+                .iter()
+                .filter(|request| request.contains(" meta set supervisor "))
+                .count()
+        };
+        let sup = walled.h.autopilot.supervisor();
+        // A record renewal is owed: the record's resume line moved.
+        walled.h.shared.note_resume_line();
+        let asked = walled.rotation_requests("status");
+        wait_until("two more passes ask about the receipt", || {
+            walled.rotation_requests("status") >= asked + 2
+        })
+        .await;
+        assert_eq!(
+            renewals(),
+            0,
+            "the sealed claim was re-confirmed after commit: {:#?}",
+            since_commit()
+        );
+        // Another act's checks, run in the window, wait.
+        let ready = sup.ready().await;
+        assert!(
+            matches!(
+                &ready,
+                Ready::Wait { why, .. } if why == "the claim stands sealed for an account handoff"
+            ),
+            "an act's checks under the sealed claim: {ready:?}"
+        );
+        assert_eq!(renewals(), 0, "{:#?}", since_commit());
+        // The claim is still held, by this process, on its connection.
+        let claim = walled
+            .h
+            .fake
+            .claim()
+            .unwrap_or_else(|| panic!("the claim lapsed during the handoff"));
+        assert_eq!(
+            (claim.proven_pid, claim.conn.is_some()),
+            (Some(std::process::id()), true),
+            "a connection-bound claim proven for this process: {claim:?}"
+        );
+        assert!(sup.acting(), "{:#?}", sup.journal());
+        assert_eq!(walled.bound_receipt(), Some(handoff.id.clone()));
+        assert_eq!(walled.prepares(), 1);
+        // The host retires the receipt: the seal ends with it.
+        walled.h.fake.reply_always(
+            &handoff.status,
+            &format!("OK {ROTATION} state=retired {}\n", handoff.receipt),
+        );
+        wait_until("the host is asked to prepare again", || {
+            walled.prepares() >= 2
+        })
+        .await;
+        let since = since_commit();
+        let reprepared = since
+            .iter()
+            .position(|request| request.contains(" codex-rotation prepare "))
+            .unwrap_or_else(|| panic!("the second prepare: {since:#?}"));
+        assert!(
+            since[..reprepared]
+                .iter()
+                .any(|request| request.contains(" meta set supervisor ")),
+            "POSITIVE CONTROL: the fresh prepare re-confirms the claim first: {since:#?}"
+        );
+    });
+}
+
+/// A RECEIPT ANSWERED `ready` AGAIN IS COMMITTED AGAIN ONLY UNDER THE CLAIM IT SEALED
+/// (2026-11-13). The fake answers `commit` with an `ERR`, so the host never took it. While the
+/// claim is the one the host sealed, a pass that reads `ready` sends `commit` again with no
+/// re-confirm before it. Once that claim is given back and taken again, aterm has moved the
+/// revision it sealed, and the seal goes with the old claim. The bound receipt is still read on
+/// the new claim, with no re-confirm for the reads, and the record's renewal goes again on it.
+/// A `ready` read then is not committed, though the new claim has been re-confirmed since,
+/// because the host's commit worker could only have every replay refused.
+#[test]
+fn a_receipt_ready_again_is_committed_again_only_under_the_claim_it_sealed() {
+    big_stack(|| async {
+        let walled = walled(3600, true, false).await;
+        let handoff = walled.bound().await;
+        let renewals = || {
+            walled
+                .h
+                .fake
+                .requests()
+                .iter()
+                .filter(|request| request.contains(" meta set supervisor "))
+                .count()
+        };
+        let sup = walled.h.autopilot.supervisor();
+        let sealed = renewals();
+        walled.h.fake.reply_always(
+            &handoff.status,
+            &format!("OK {ROTATION} state=ready {}\n", handoff.receipt),
+        );
+        wait_until("the receipt read ready again is committed again", || {
+            walled.rotation_requests("commit") >= 2
+        })
+        .await;
+        assert_eq!(
+            renewals(),
+            sealed,
+            "a re-confirm went with the second commit: {:#?}",
+            walled.h.fake.requests()
+        );
+        walled.h.fake.reply_always(
+            &handoff.status,
+            &format!("OK {ROTATION} state=waiting {}\n", handoff.receipt),
+        );
+        // The claim is given back and taken again.
+        walled.h.fake.set_status("autopilot", "off");
+        walled.h.fake.set_effective(false, "autopilot-off");
+        wait_until("the claim is given back", || {
+            !sup.held() && walled.h.fake.claim().is_none()
+        })
+        .await;
+        walled.h.fake.set_status("autopilot", "cruise");
+        walled.h.fake.set_effective(true, "enabled");
+        wait_until("the claim is taken again", || sup.acting()).await;
+        let retaken = renewals();
+        // The new claim is not re-confirmed for the bound receipt's reads, and they go on.
+        let asked = walled.rotation_requests("status");
+        wait_until("a pass reads the receipt on the new claim", || {
+            walled.rotation_requests("status") > asked
+        })
+        .await;
+        assert_eq!(renewals(), retaken, "{:#?}", walled.h.fake.requests());
+        walled.h.shared.note_resume_line();
+        wait_until("the record's renewal goes on the new claim", || {
+            renewals() > retaken
+        })
+        .await;
+        let committed = walled.rotation_requests("commit");
+        walled.h.fake.reply_always(
+            &handoff.status,
+            &format!("OK {ROTATION} state=ready {}\n", handoff.receipt),
+        );
+        let asked = walled.rotation_requests("status");
+        wait_until("two passes read the receipt ready", || {
+            walled.rotation_requests("status") >= asked + 2
+        })
+        .await;
+        assert_eq!(
+            walled.rotation_requests("commit"),
+            committed,
+            "committed under a claim the host did not seal: {:#?}",
+            walled.h.fake.requests()
+        );
+        assert_eq!(walled.bound_receipt(), Some(handoff.id));
+        assert_eq!(walled.resumes(), 0, "{:?}", walled.h.fake.acts());
+    });
+}
+
+/// The reason an act's checks give while a handoff has sealed the claim.
+const SEALED: &str = "the claim stands sealed for an account handoff";
+/// The journal's line when a follow lets a handoff's point go with its seal standing.
+const SEAL_LET_GO: &str =
+    "the account handoff's follow let its point go; the claim's seal for it ends";
+
+/// A HANDOFF'S SEAL ENDS WITH THE FOLLOW THAT LETS ITS POINT GO (review of 06dfcad367, finding
+/// 1). The host answers `ready`, codex-alab seals the claim, binds the receipt and sends
+/// `commit`. Then the person switches `codex_rotation` off: the next pass reads a policy that
+/// forbids the handoff and lets the point go, though the record's intent is still bound to the
+/// receipt, so nothing reads that receipt again and nothing retires it here. The point goes to
+/// the usage wall's own decision, whose resume (its reset brought by the host's sleep) has to
+/// re-confirm the claim. With the seal left standing every such act waited "sealed" until a
+/// person typed. It ends with the follow, the journal says so, and the wall's own resume is typed
+/// on the account the session is on.
+#[test]
+fn a_seal_ends_when_the_host_stops_permitting_the_handoff_and_the_wall_resumes() {
+    big_stack(|| async {
+        let walled = walled(3600, true, true).await;
+        walled.bound().await;
+        let sup = walled.h.autopilot.supervisor();
+        let ready = sup.ready().await;
+        assert!(
+            matches!(&ready, Ready::Wait { why, .. } if why == SEALED),
+            "POSITIVE CONTROL: the committed handoff has sealed the claim: {ready:?}"
+        );
+        walled.h.fake.set_policy_key("codex_rotation", "0");
+        walled.host_sleeps(Duration::from_secs(2 * 3600));
+        wait_until("the wall's own resume is typed", || {
+            walled.resumes() == 1 && walled.model.requests().len() == 2
+        })
+        .await;
+        assert!(journal_has(&walled.h, SEAL_LET_GO), "{:#?}", sup.journal());
+        assert_eq!(
+            walled.model.requests()[1]
+                .message_input_texts("user")
+                .last()
+                .cloned(),
+            Some(codex_alab_autopilot::words::LIMIT_CLEARED.to_string()),
+            "the wall's own resume, on the account the session is on"
+        );
+        assert_eq!(walled.prepares(), 1, "the handoff is not asked for again");
+    });
+}
+
+/// The journal's line when a seal reaches aterm's own deadline for the restart it sealed.
+const SEAL_DEADLINE: &str = "the claim's seal for an account handoff ended at aterm's deadline";
+
+/// A HANDOFF'S SEAL ENDS AT ATERM'S OWN DEADLINE FOR THE RESTART IT SEALED (review of
+/// 06dfcad367, finding 8). The host answers `committed` for the receipt and goes on answering
+/// it, but never ends this process. A committed receipt recovers nothing in the process it
+/// leaves, so the follow keeps the point and keeps asking about the receipt, and with no bound
+/// every act here would have waited on the seal for as long as that lasted. aterm replays the
+/// sealed restart only until its prepare's deadline, 120 s after its `ready`, so past that and a
+/// grace ([`codex_alab_autopilot::supervisor::HANDOFF_SEAL`], twelve seconds here) the seal ends:
+/// the journal says so, an act's checks re-confirm the claim again and go, and the follow still
+/// asks about the receipt, which stays bound. Nothing is typed for the walled turn.
+#[test]
+fn a_seal_ends_at_the_hosts_deadline_while_the_host_answers_committed() {
+    big_stack(|| async {
+        let walled = walled(3600, true, false).await;
+        let sup = walled.h.autopilot.supervisor();
+        let lasts = Duration::from_secs(12);
+        sup.set_handoff_seal(lasts);
+        let handoff = walled.bound().await;
+        let sealed = tokio::time::Instant::now();
+        walled.h.fake.reply_always(
+            &handoff.status,
+            &format!("OK {ROTATION} state=committed {}\n", handoff.receipt),
+        );
+        let renewals = || {
+            walled
+                .h
+                .fake
+                .requests()
+                .iter()
+                .filter(|request| request.contains(" meta set supervisor "))
+                .count()
+        };
+        let ready = sup.ready().await;
+        assert!(
+            matches!(&ready, Ready::Wait { why, .. } if why == SEALED),
+            "POSITIVE CONTROL: within its life the seal stands: {ready:?}"
+        );
+        let before = renewals();
+        let asked = walled.rotation_requests("status");
+        wait_until(
+            "the host is asked about the receipt and answers committed",
+            || walled.rotation_requests("status") > asked,
+        )
+        .await;
+        tokio::time::sleep_until(sealed + lasts).await;
+        assert_eq!(
+            renewals(),
+            before,
+            "the sealed claim was re-confirmed: {:#?}",
+            walled.h.fake.requests()
+        );
+        assert_eq!(sup.ready().await, Ready::Go, "{:#?}", sup.journal());
+        assert!(
+            renewals() > before,
+            "an act's checks re-confirm the claim again: {:#?}",
+            walled.h.fake.requests()
+        );
+        assert!(
+            journal_has(&walled.h, SEAL_DEADLINE),
+            "{:#?}",
+            sup.journal()
+        );
+        let asked = walled.rotation_requests("status");
+        wait_until("the follow still asks about the receipt", || {
+            walled.rotation_requests("status") > asked
+        })
+        .await;
+        assert_eq!(walled.bound_receipt(), Some(handoff.id));
+        assert_eq!(walled.resumes(), 0, "{:?}", walled.h.fake.acts());
+        assert_eq!(walled.model.requests().len(), 1);
+    });
+}
+
 /// A RECEIPT THE HOST RETIRES PUTS THE WALL BACK ON RECORD WITH THE UNBOUND INTENT (second
 /// review, 2026-11-12: the third place the wall is carried had no test). The host binds a
 /// receipt, then answers `retired` for it: the intent is unbound again, and the write that
@@ -841,7 +1219,7 @@ fn a_wall_the_recovered_turn_meets_is_not_the_bound_intents_to_remove() {
                 if let Some(renewal) = owed.renewal.as_mut() {
                     renewal.turn = Some(turn.clone());
                 }
-                assert!(shared.publish_renewal(shared.upgrade_generation(), owed));
+                assert!(shared.publish_renewal(shared.admission_generation(), owed));
             }
             let asked = walled.rotation_requests("status");
             wait_until("a pass asks about the receipt", || {
@@ -852,6 +1230,11 @@ fn a_wall_the_recovered_turn_meets_is_not_the_bound_intents_to_remove() {
         assert!(reserved(), "the reservation stands on record");
         // The wall the recovered turn met on the account it moved to.
         let met = Recovery {
+            clock: Some(codex_alab_core::recovery_clock::Anchor {
+                boot_id: "rotation-fixture-boot".into(),
+                continuous_ns: 0,
+                epoch_ms: now_ms(),
+            }),
             thread: walled.h.thread.clone(),
             turn_id: turn,
             point_at_ms: now_ms(),
@@ -1132,7 +1515,7 @@ fn a_wall_its_own_decision_left_stays_on_record_when_the_wait_is_switched_off() 
 #[test]
 fn a_handoff_declined_after_a_restart_and_left_to_a_person_leaves_no_wall_on_record() {
     big_stack(|| async {
-        let walled = walled(3600, true, false).await;
+        let walled = walled_to_restart(3600, true, false).await;
         let restarted = restarted_under(&walled, POLICY_NO_WAIT).await;
         assert!(
             restarted.shared.recovery().is_some(),
@@ -1247,7 +1630,8 @@ const PROBE_HELD: Duration = Duration::from_secs(30);
 /// is ([`Restarted`] says why that is a stand-in): the new process is given the record the
 /// old one held (its handoff intent and its recovery), and
 /// resumes the rollout on the same scratch login. Its first handoff request waits at its
-/// host's gate. The model is the first process's loopback mock.
+/// host's gate. The model is the first process's loopback mock. Both processes are launched
+/// on the boot clock, `walled` by [`walled_to_restart`].
 async fn restarted(walled: &Walled) -> Restarted {
     restarted_under(walled, POLICY).await
 }
@@ -1260,6 +1644,12 @@ async fn restarted_under(walled: &Walled, policy: &[(&str, &str)]) -> Restarted 
         .owed_act()
         .unwrap_or_else(|| panic!("the handoff intent is on record"));
     let recovery = walled.h.shared.recovery();
+    assert!(
+        recovery
+            .as_ref()
+            .is_none_or(|recovery| recovery.clock.is_some()),
+        "a wall restored after a restart needs the boot clock (walled_to_restart): {recovery:?}"
+    );
     let rollout = walled
         .h
         .test
@@ -1293,6 +1683,8 @@ async fn restarted_under(walled: &Walled, policy: &[(&str, &str)]) -> Restarted 
     // default the read timed out first and the scan went on after five seconds, not twelve.
     fake.gate("status");
     let shared: &'static Shared = Box::leak(Box::new(Shared::new()));
+    // The boot the first process's wall was captured on, as the same Mac's next launch reads it.
+    launch_on_boot_clock(shared);
     // What the record's writer seeds a same-pid image with, before any native work.
     shared.set_owed_act(Some(owed.clone()));
     shared.set_recovery(recovery.clone());
@@ -1418,7 +1810,7 @@ async fn restarted_under(walled: &Walled, policy: &[(&str, &str)]) -> Restarted 
 #[test]
 fn a_handoff_carried_across_a_restart_is_given_up_at_the_walls_reset() {
     big_stack(|| async {
-        let walled = walled(3600, true, true).await;
+        let walled = walled_to_restart(3600, true, true).await;
         let carried = walled
             .wall_on_record()
             .unwrap_or_else(|| panic!("an unbound intent carries its wall's reset"));
@@ -1498,7 +1890,7 @@ async fn resumed_after_restart(walled: &Walled, restarted: &Restarted, asked: us
 #[test]
 fn a_handoff_declined_after_a_restart_resumes_at_the_walls_reset() {
     big_stack(|| async {
-        let walled = walled(3600, true, true).await;
+        let walled = walled_to_restart(3600, true, true).await;
         let restarted = restarted(&walled).await;
         restarted
             .fake

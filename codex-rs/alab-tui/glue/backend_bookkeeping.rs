@@ -26,11 +26,29 @@ struct OwnedGoal {
     objective: String,
 }
 
+struct RuntimeRefresh {
+    backend: BackendId,
+    thread: codex_protocol::ThreadId,
+    transport: String,
+    generation: u64,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for RuntimeRefresh {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 #[derive(Default)]
 pub(super) struct State {
     seen: RefCell<HashMap<BackendId, HashSet<SeenTurn>>>,
     goals: RefCell<HashMap<String, Vec<OwnedGoal>>>,
     displayed: Cell<Option<BackendId>>,
+    runtime_status:
+        RefCell<HashMap<(BackendId, String), crate::chatwidget::alab_goal_runtime::State>>,
+    runtime_streams:
+        RefCell<HashMap<BackendId, crate::chatwidget::alab_goal_runtime::StreamFrontier>>,
+    runtime_refresh: RefCell<Option<RuntimeRefresh>>,
 }
 
 impl State {
@@ -42,7 +60,53 @@ impl State {
     }
 
     pub(super) fn displayed(&self, owner: BackendId) {
+        if self
+            .runtime_refresh
+            .borrow()
+            .as_ref()
+            .is_some_and(|refresh| refresh.backend != owner)
+        {
+            self.runtime_refresh.borrow_mut().take();
+        }
         self.displayed.set(Some(owner));
+    }
+
+    fn remember_runtime(
+        &self,
+        owner: BackendId,
+        update: &codex_app_server_protocol::AlabGoalRuntimeUpdatedNotification,
+    ) -> Option<Option<codex_app_server_protocol::AlabGoalRuntimeUpdatedNotification>> {
+        if update.reset {
+            return None;
+        }
+        let frontier = {
+            let mut streams = self.runtime_streams.borrow_mut();
+            let frontier = streams.entry(owner).or_default();
+            if !frontier.admit(update) {
+                return None;
+            }
+            frontier.clone()
+        };
+        let mut statuses = self.runtime_status.borrow_mut();
+        for ((backend, _), state) in statuses.iter() {
+            if *backend == owner {
+                state.constrain(&frontier);
+            }
+        }
+        let state = statuses
+            .entry((owner, update.thread_id.clone()))
+            .or_default();
+        state.bind(owner, Some(update.thread_id.as_str()));
+        state.observe(owner, update);
+        Some(state.current())
+    }
+
+    #[cfg(test)]
+    pub(super) fn runtime_refresh_pending(&self) -> bool {
+        self.runtime_refresh
+            .borrow()
+            .as_ref()
+            .is_some_and(|refresh| !refresh.task.is_finished())
     }
 
     pub(super) fn displayed_goal(&self, thread: &str, goal: Option<&str>) {
@@ -146,6 +210,9 @@ impl State {
     }
 
     pub(super) fn retain(&self, keep: impl Fn(&str) -> bool) {
+        self.runtime_status
+            .borrow_mut()
+            .retain(|(_, thread), _| keep(thread));
         let mut seen = self.seen.borrow_mut();
         for turns in seen.values_mut() {
             turns.retain(|(thread, _)| keep(thread));
@@ -154,6 +221,29 @@ impl State {
     }
 
     pub(super) fn stream(&self, owner: BackendId, event: &AppServerEvent) {
+        if matches!(
+            event,
+            AppServerEvent::Lagged { .. }
+                | AppServerEvent::Disconnected { .. }
+                | AppServerEvent::ThreadStreamDisconnected(_)
+        ) {
+            if self
+                .runtime_refresh
+                .borrow()
+                .as_ref()
+                .is_some_and(|refresh| refresh.backend == owner)
+            {
+                self.runtime_refresh.borrow_mut().take();
+            }
+            if let Some(frontier) = self.runtime_streams.borrow_mut().get_mut(&owner) {
+                frontier.disconnected();
+            }
+            for ((backend, _), state) in self.runtime_status.borrow().iter() {
+                if *backend == owner {
+                    state.disconnected(owner);
+                }
+            }
+        }
         match event {
             AppServerEvent::Lagged { .. } | AppServerEvent::Disconnected { .. } => {
                 self.release(owner, |_| true);
@@ -168,8 +258,34 @@ impl State {
                     });
                 }
                 ServerNotification::ThreadClosed(closed) => {
+                    if self
+                        .runtime_refresh
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|refresh| {
+                            refresh.backend == owner
+                                && refresh.thread.to_string() == closed.thread_id
+                        })
+                    {
+                        self.runtime_refresh.borrow_mut().take();
+                    }
+                    self.runtime_status
+                        .borrow_mut()
+                        .remove(&(owner, closed.thread_id.clone()));
                     self.release(owner, |(thread, _)| thread == &closed.thread_id);
                     self.goal(owner, &closed.thread_id, None);
+                }
+                ServerNotification::AlabGoalRuntimeUpdated(update) if update.reset => {
+                    self.runtime_streams
+                        .borrow_mut()
+                        .entry(owner)
+                        .or_default()
+                        .reset(update);
+                    for ((backend, _), state) in self.runtime_status.borrow().iter() {
+                        if *backend == owner {
+                            state.reset(owner, update);
+                        }
+                    }
                 }
                 ServerNotification::ThreadGoalCleared(cleared) => {
                     self.change_goal(owner, &cleared.thread_id, None, /*admitted*/ false);
@@ -195,8 +311,59 @@ pub(super) fn observe_goal(app: &App) {
     }
 }
 
+/// Restore only the latest native status for this displayed backend/thread, never
+/// a packet replayed from transcript history or another backend's colliding ID.
+pub(super) fn observe_runtime(app: &App) {
+    let Some(owner) = app.alab_backend_bookkeeping.displayed.get() else {
+        return;
+    };
+    let Some(thread) = app.chat_widget.thread_id() else {
+        return;
+    };
+    if app
+        .alab_backend_bookkeeping
+        .runtime_refresh
+        .borrow()
+        .as_ref()
+        .is_some_and(|refresh| refresh.backend != owner || refresh.thread != thread)
+    {
+        app.alab_backend_bookkeeping
+            .runtime_refresh
+            .borrow_mut()
+            .take();
+    }
+    app.chat_widget.alab_bind_goal_runtime_backend(owner);
+    let status = app
+        .alab_backend_bookkeeping
+        .runtime_status
+        .borrow()
+        .get(&(owner, thread.to_string()))
+        .and_then(crate::chatwidget::alab_goal_runtime::State::current);
+    if let Some(status) = status {
+        app.chat_widget.alab_observe_goal_runtime(&status);
+    } else {
+        app.chat_widget.alab_forget_goal_runtime_backend(owner);
+    }
+}
+
 /// Called only after the normal thread-routing admission accepted this notification.
 pub(super) fn routed(app: &App, owner: BackendId, notification: &ServerNotification) {
+    app.chat_widget.alab_bind_goal_runtime_backend(owner);
+    if let ServerNotification::AlabGoalRuntimeUpdated(update) = notification {
+        match app.alab_backend_bookkeeping.remember_runtime(owner, update) {
+            Some(Some(current)) => app.chat_widget.alab_observe_goal_runtime(&current),
+            Some(None)
+                if app
+                    .chat_widget
+                    .thread_id()
+                    .is_some_and(|thread| thread.to_string() == update.thread_id) =>
+            {
+                app.chat_widget.alab_forget_goal_runtime_backend(owner)
+            }
+            _ => {}
+        }
+        observe_runtime(app);
+    }
     if let ServerNotification::TurnStarted(started) = notification {
         app.alab_backend_bookkeeping
             .start(owner, &started.thread_id, &started.turn.id);
@@ -222,8 +389,67 @@ pub(super) fn parked(
     codex_alab_tui::upgrade::native_event();
     app.alab_backend_bookkeeping
         .stream(event.backend_id, &event.event);
+    if let AppServerEvent::ServerNotification(notification) = &event.event
+        && let ServerNotification::AlabGoalRuntimeUpdated(update) = notification.as_ref()
+        && codex_protocol::ThreadId::from_string(&update.thread_id)
+            .is_ok_and(|thread| app.backend_registry.owner(thread) == Some(event.backend_id))
+    {
+        app.alab_backend_bookkeeping
+            .remember_runtime(event.backend_id, update);
+    }
 }
 
 #[cfg(test)]
 #[path = "backend_bookkeeping_tests.rs"]
 mod tests;
+
+/// One request-only native goal read per reset/current widget. A newer reset,
+/// switch, loss or App drop cancels the superseded read; UI event draining never waits.
+pub(super) fn runtime_control(
+    app: &App,
+    session: &AppServerSession,
+    notification: &ServerNotification,
+) -> bool {
+    let ServerNotification::AlabGoalRuntimeUpdated(update) = notification else {
+        return false;
+    };
+    if !update.reset {
+        return false;
+    }
+    let backend = session.backend_id();
+    if app.alab_backend_bookkeeping.displayed.get() == Some(backend)
+        && app
+            .alab_backend_bookkeeping
+            .runtime_streams
+            .borrow()
+            .get(&backend)
+            .is_some_and(|frontier| frontier.host_matches(&update.transport))
+    {
+        app.chat_widget.alab_observe_goal_runtime(update);
+        if codex_alab_core::active()
+            && let Some(thread) = app.chat_widget.thread_id()
+        {
+            let mut refresh = app.alab_backend_bookkeeping.runtime_refresh.borrow_mut();
+            if !refresh.as_ref().is_some_and(|current| {
+                current.backend == backend
+                    && current.thread == thread
+                    && current.transport == update.transport
+                    && current.generation >= update.generation
+            }) {
+                refresh.take();
+                let mut request = session.request_view();
+                let task = tokio::spawn(async move {
+                    let _ = request.thread_goal_get(thread).await;
+                });
+                *refresh = Some(RuntimeRefresh {
+                    backend,
+                    thread,
+                    transport: update.transport.clone(),
+                    generation: update.generation,
+                    task,
+                });
+            }
+        }
+    }
+    true
+}

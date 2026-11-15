@@ -26,7 +26,9 @@ stage = ("query" if args == ["--version", "--verbose"] else
 record = {"args": args, "tree": tree, "stage": stage,
           "archive": os.environ.get("RUSTY_V8_ARCHIVE"),
           "binding": os.environ.get("RUSTY_V8_SRC_BINDING_PATH"),
-          "codex_home": os.environ.get("CODEX_HOME")}
+          "codex_home": os.environ.get("CODEX_HOME"),
+          "helpers": {key: value for key, value in os.environ.items()
+                      if key.startswith("CARGO_BIN_EXE_")}}
 with open(os.environ["ALAB_FAKE_CARGO_LOG"], "a") as stream:
     stream.write(json.dumps(record) + "\n")
 if stage == "query":
@@ -61,7 +63,9 @@ if stage == "metadata":
         raise SystemExit(73)
     packages = [package(name, directory, [binary_target(binary, directory, source)])
                 for binary, (name, directory, source) in providers.items()]
-    for directory, name in (("core", "codex-core"), ("network-proxy", "codex-network-proxy")):
+    for directory, name in (("core", "codex-core"), ("app-server", "codex-app-server"),
+                            ("alab-autopilot", "codex-alab-autopilot"),
+                            ("network-proxy", "codex-network-proxy")):
         packages.append(package(name, directory, [{"kind": ["lib"],
             "name": name.replace("-", "_"),
             "src_path": str(Path(tree) / "codex-rs" / directory / "src/lib.rs"), "test": True}]))
@@ -69,6 +73,9 @@ if stage == "metadata":
                       "target_directory": os.environ["CARGO_TARGET_DIR"],
                       "workspace_members": [item["id"] for item in packages], "packages": packages}))
 if stage == "build":
+    if os.environ.get("ALAB_FAKE_HELPER_FAILURE") == "host-build":
+        print("fixture host build failed", file=sys.stderr)
+        raise SystemExit(74)
     target = Path(os.environ["CARGO_TARGET_DIR"])
     selected = [args[index + 1] for index, arg in enumerate(args) if arg == "--bin"]
     selected_packages = [args[index + 1] for index, arg in enumerate(args) if arg == "-p"]
@@ -81,14 +88,21 @@ if stage == "build":
         executable.write_text("#!/bin/sh\nexit 0\n")
         executable.chmod(0o755)
         provider = package(name, directory, [binary_target(binary, directory, source)])
-        test_profile = (os.environ.get("ALAB_FAKE_HELPER_FAILURE") == "selection"
-                        and binary == "test_stdio_server")
+        failure = os.environ.get("ALAB_FAKE_HELPER_FAILURE")
+        test_profile = ((failure == "selection" and binary == "test_stdio_server")
+                        or (failure == "host-selection" and binary == "codex-code-mode-host"))
         print(json.dumps({"reason": "compiler-artifact", "package_id": provider["id"],
                           "manifest_path": provider["manifest_path"], "target": provider["targets"][0],
                           "profile": {"test": test_profile}, "executable": str(executable)}))
 if stage == "test":
-    for key in ("CARGO_BIN_EXE_test_stdio_server", "CARGO_BIN_EXE_codex-code-mode-host",
-                "CARGO_BIN_EXE_codex_code_mode_host"):
+    selected_packages = [args[index + 1] for index, arg in enumerate(args) if arg == "-p"]
+    required = []
+    if any(name in selected_packages for name in ("codex-core", "codex-app-server")):
+        required.append("CARGO_BIN_EXE_test_stdio_server")
+    if any(name in selected_packages for name in
+           ("codex-core", "codex-app-server", "codex-alab-autopilot")):
+        required += ["CARGO_BIN_EXE_codex-code-mode-host", "CARGO_BIN_EXE_codex_code_mode_host"]
+    for key in required:
         if not Path(os.environ.get(key, "/missing")).is_file():
             raise SystemExit("missing native helper override: " + key)
     print("test result: ok. 1 passed; 0 failed; 0 ignored")
@@ -116,7 +130,10 @@ print(json.dumps(result))
 '''
 
 
-@unittest.skipUnless(shutil.which("jq") and shutil.which("git"), "requires jq and git")
+@unittest.skipUnless(
+    shutil.which("jq") and shutil.which("git") and sys.version_info >= (3, 11),
+    "requires jq, git and a Python 3.11+ fixture interpreter",
+)
 class GateV8InputTests(unittest.TestCase):
     def setUp(self):
         # Retain every tiny fixture; there is deliberately no cleanup callback.
@@ -138,6 +155,8 @@ class GateV8InputTests(unittest.TestCase):
                     ("rmcp-client", "codex-rmcp-client", "src/bin/test_stdio_server.rs"),
                     ("code-mode-host", "codex-code-mode-host", "src/main.rs"),
                     ("core", "codex-core", "src/lib.rs"),
+                    ("app-server", "codex-app-server", "src/lib.rs"),
+                    ("alab-autopilot", "codex-alab-autopilot", "src/lib.rs"),
                     ("network-proxy", "codex-network-proxy", "src/lib.rs")):
                 package = tree / "codex-rs" / directory
                 (package / source).parent.mkdir(parents=True)
@@ -163,11 +182,15 @@ class GateV8InputTests(unittest.TestCase):
         self.lint = source[source.index("lint() {\n"):source.index("# lint_verdict <json>")]
         print("retained V8 wiring fixture:", self.base, file=sys.stderr)
 
-    def run_functions(self, unit=False, failure=None, helper_failure=None, proxy=False):
+    def run_functions(self, unit=False, failure=None, helper_failure=None, proxy=False,
+                      packages=None, tree_config=None):
         self.run = Path(tempfile.mkdtemp(prefix="run-", dir=self.base))
+        selected = list(packages or ["codex-core"])
+        if proxy:
+            selected.append("codex-network-proxy")
         script = ('set -euo pipefail\n. "$1/alab/lib.sh"\n. "$2/unit-tests.sh"\n'
-                  'cargo="$3"\n' + self.lint + '\npackages=(-p codex-core'
-                  + (' -p codex-network-proxy' if proxy else '') + ')\n')
+                  'cargo="$3"\n' + self.lint + '\npackages=('
+                  + ' '.join('-p ' + shlex.quote(package) for package in selected) + ')\n')
         if helper_failure:
             script += '''mktemp() {
   local allocated
@@ -178,11 +201,14 @@ class GateV8InputTests(unittest.TestCase):
 '''
         for tree in self.trees:
             command = "unit_tests" if unit else "lint"
-            script += f'{command} "{tree}" "{tree}/target"' + ("\n" if unit else ' -p codex-code-mode-host\n')
+            arguments = (' --config ' + shlex.quote(tree_config)) if tree_config else ''
+            script += f'{command} "{tree}" "{tree}/target"' + (arguments + "\n" if unit else ' -p codex-code-mode-host\n')
         environment = dict(self.environment,
                            ALAB_FAKE_CARGO_LOG=str(self.run / "cargo.jsonl"),
                            ALAB_FAKE_V8_LOG=str(self.run / "resolver.jsonl"),
                            ALAB_FAKE_TEMP_LOG=str(self.run / "temporaries"),
+                           **{"CARGO_BIN_EXE_codex-code-mode-host": "/stale-original-host",
+                              "CARGO_BIN_EXE_codex_code_mode_host": "/stale-alias-host"},
                            RUSTY_V8_ARCHIVE="/untrusted-ambient-archive",
                            RUSTY_V8_SRC_BINDING_PATH="/untrusted-ambient-binding")
         if failure:
@@ -223,6 +249,93 @@ class GateV8InputTests(unittest.TestCase):
             self.assertEqual((build["archive"], build["binding"]), (test["archive"], test["binding"]))
         for tree in self.trees:
             self.assertEqual(list((tree / "target").glob("alab-helpers.*")), [])
+
+    def test_standalone_autopilot_prepares_only_the_verified_host(self):
+        config = "paths = []"
+        process = self.run_functions(unit=True, packages=["codex-alab-autopilot"],
+                                     tree_config=config)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        calls = self.records("cargo.jsonl")
+        self.assertEqual([row["stage"] for row in calls], ["query", "metadata", "build", "test"] * 2)
+        self.assertEqual(len(self.records("resolver.jsonl")), 2)
+        for row in calls:
+            if row["stage"] != "query":
+                at = row["args"].index("--config")
+                self.assertEqual(row["args"][at + 1], config)
+            if row["stage"] == "build":
+                self.assertEqual([row["args"][at + 1] for at, value in enumerate(row["args"])
+                                  if value == "--bin"], ["codex-code-mode-host"])
+                self.assertNotIn("codex-cli", row["args"])
+                self.assertNotIn("codex-rmcp-client", row["args"])
+            if row["stage"] == "test":
+                host = str(Path(row["tree"]) / "target/fake helpers/codex-code-mode-host")
+                for alias in ("codex-code-mode-host", "codex_code_mode_host"):
+                    self.assertEqual(row["helpers"]["CARGO_BIN_EXE_" + alias], host)
+                self.assertNotIn("CARGO_BIN_EXE_test_stdio_server", row["helpers"])
+        for tree in self.trees:
+            self.assertFalse((tree / "target/fake helpers/test_stdio_server").exists())
+            self.assertEqual(list((tree / "target").glob("alab-helpers.*")), [])
+
+    def test_mixed_autopilot_suites_prepare_the_helper_union_once_in_either_order(self):
+        for other in ("codex-core", "codex-app-server"):
+            for packages in (["codex-alab-autopilot", other], [other, "codex-alab-autopilot"]):
+                with self.subTest(packages=packages):
+                    process = self.run_functions(unit=True, packages=packages)
+                    self.assertEqual(process.returncode, 0, process.stderr)
+                    calls = self.records("cargo.jsonl")
+                    self.assertEqual([row["stage"] for row in calls],
+                                     ["query", "metadata", "build", "test"] * 2)
+                    self.assertEqual(len(self.records("resolver.jsonl")), 2)
+                    for row in calls:
+                        if row["stage"] == "build":
+                            self.assertEqual([row["args"][at + 1] for at, value in enumerate(row["args"])
+                                              if value == "--bin"],
+                                             ["test_stdio_server", "codex-code-mode-host"])
+
+    def test_standalone_autopilot_host_failures_stop_before_library_tests(self):
+        for failure, status in (("metadata", 73), ("host-build", 74), ("host-selection", 1)):
+            with self.subTest(failure=failure):
+                process = self.run_functions(unit=True, packages=["codex-alab-autopilot"],
+                                             helper_failure=failure)
+                self.assertEqual(process.returncode, status, process.stderr)
+                calls = self.records("cargo.jsonl")
+                expected = ["query", "metadata"] + ([] if failure == "metadata" else ["build"])
+                self.assertEqual([row["stage"] for row in calls], expected)
+                self.assertTrue(all(row["tree"] == str(self.trees[0]) for row in calls))
+                self.assertEqual(list((self.trees[0] / "target").glob("alab-helpers.*")), [])
+        process = self.run_functions(unit=True, packages=["codex-alab-autopilot"], failure="resolver")
+        self.assertEqual(process.returncode, 42, process.stderr)
+        self.assertEqual([row["stage"] for row in self.records("cargo.jsonl")], ["query"])
+
+    def test_native_inputs_find_managed_python_without_an_override(self):
+        managed = self.base / "managed package" / "bin"
+        managed.mkdir(parents=True)
+        python = managed / "python3.14"
+        python.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
+        python.chmod(0o755)
+        self.environment.pop("ALAB_PYTHON")
+        self.environment["ATPKG_BIN"] = str(managed)
+        result = self.run_functions(unit=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.records("resolver.jsonl")), 2)
+
+    def test_native_inputs_keep_a_relative_override_across_the_tree_change(self):
+        python = self.base / "relative interpreter"
+        python.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
+        python.chmod(0o755)
+        self.environment["ALAB_PYTHON"] = os.path.relpath(python, Path.cwd())
+        # Public check/package entrypoints select Python before entering a tree.
+        selected = subprocess.run(
+            ["/bin/bash", "-c", '. "$1"; alab_python_311', "select-python",
+             str(ROOT / "alab/lib.sh")],
+            env=self.environment, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        self.assertTrue(Path(selected.stdout.strip()).is_absolute())
+        self.environment["ALAB_PYTHON"] = selected.stdout.strip()
+        result = self.run_functions(unit=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.records("resolver.jsonl")), 2)
 
     def test_plain_helper_failure_cleans_metadata_and_proxy_scratch(self):
         sentinel = self.home / "keep"

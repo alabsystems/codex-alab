@@ -5031,6 +5031,26 @@
           "properties": {
             "method": {
               "enum": [
+                "alab/thread/goal/runtimeUpdated"
+              ],
+              "title": "Alab/thread/goal/runtimeUpdatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AlabGoalRuntimeUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Alab/thread/goal/runtimeUpdatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/prediction/updated"
               ],
               "title": "Thread/prediction/updatedNotificationMethod",
@@ -7587,6 +7607,76 @@
         ],
         "type": "object"
       },
+      "AlabGoalPersistencePhase": {
+        "enum": [
+          "ready",
+          "writing",
+          "held"
+        ],
+        "type": "string"
+      },
+      "AlabGoalRuntimeUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "generation": {
+            "default": 0,
+            "description": "Ordered within one authenticated native host, across every thread.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "incarnation": {
+            "description": "Opaque native runtime incarnation. Its bytes are never compared for order.",
+            "type": "string"
+          },
+          "persistence": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AlabGoalPersistencePhase"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent on retirement; an older peer or unavailable runtime remains unknown."
+          },
+          "reset": {
+            "description": "Passive stream overflow invalidates observations, never goal/accounting state.",
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "sequence": {
+            "default": 0,
+            "description": "Assigned by the native server sink, ordered within that backend transport.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "transport": {
+            "description": "Exact native server-sink lifetime; reconnects to a new server cannot reuse its sequence.",
+            "type": "string"
+          },
+          "writesPending": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "incarnation",
+          "revision",
+          "threadId",
+          "transport",
+          "writesPending"
+        ],
+        "title": "AlabGoalRuntimeUpdatedNotification",
+        "type": "object"
+      },
       "AllowDenyRequirement": {
         "enum": [
           "allow",
@@ -9079,6 +9169,7 @@
               "modelNotFound",
               "policyCapacityUnavailable",
               "cyberPolicy",
+              "bioPolicy",
               "misalignmentPolicyViolation",
               "tooManyDenials",
               "internalServerError",

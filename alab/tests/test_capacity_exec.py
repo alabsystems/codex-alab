@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Andrew Yates
 # SPDX-License-Identifier: Apache-2.0
-"""The shared loopback model's Retry-After timing and header stamps, never a server or executable."""
+"""The shared model's timing and startup ownership, never a real server or executable."""
 import importlib.util
 import io
 import json
@@ -29,6 +29,53 @@ class CapacityExecTimingTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="capacity-header-timing-", dir=FIXTURE_PARENT))
         FIXTURES.append(str(self.root))
+
+    def assert_failed_start_closes(self, phase, error_type, close_fails=False):
+        probe = self.probe
+        server = mock.Mock(spec=("serve_forever", "server_close", "shutdown"))
+        thread = mock.Mock(spec=("start",))
+        original = error_type("thread startup failed")
+        if close_fails:
+            server.server_close.side_effect = OSError("listener close failed")
+        if phase == "start":
+            thread.start.side_effect = original
+        with mock.patch.object(probe.provider_fixture, "LoopbackHTTPServer", return_value=server), \
+                mock.patch.object(probe.threading, "Thread", return_value=thread) as construct:
+            if phase == "construct":
+                construct.side_effect = original
+            with self.assertRaises(error_type) as caught:
+                probe.serve(probe.Mock(False))
+        self.assertIs(caught.exception, original)
+        server.server_close.assert_called_once_with()
+        server.shutdown.assert_not_called()
+        if phase == "construct":
+            thread.start.assert_not_called()
+        else:
+            thread.start.assert_called_once_with()
+
+    def test_thread_startup_failures_close_the_bound_server(self):
+        for phase in ("construct", "start"):
+            for error_type in (RuntimeError, KeyboardInterrupt, SystemExit):
+                with self.subTest(phase=phase, error=error_type.__name__):
+                    self.assert_failed_start_closes(phase, error_type)
+
+    def test_cleanup_failure_preserves_the_startup_exception(self):
+        for phase in ("construct", "start"):
+            for error_type in (RuntimeError, KeyboardInterrupt, SystemExit):
+                with self.subTest(phase=phase, error=error_type.__name__):
+                    self.assert_failed_start_closes(phase, error_type, close_fails=True)
+
+    def test_successful_start_hands_the_server_and_thread_to_the_caller(self):
+        probe = self.probe
+        server = mock.Mock(spec=("serve_forever", "server_close", "shutdown"))
+        thread = mock.Mock(spec=("start",))
+        with mock.patch.object(probe.provider_fixture, "LoopbackHTTPServer", return_value=server), \
+                mock.patch.object(probe.threading, "Thread", return_value=thread) as construct:
+            self.assertEqual(probe.serve(probe.Mock(False)), (server, thread))
+        construct.assert_called_once_with(target=server.serve_forever, daemon=True)
+        thread.start.assert_called_once_with()
+        server.server_close.assert_not_called()
+        server.shutdown.assert_not_called()
 
     def test_missing_invalid_or_unbounded_header_timing_refuses(self):
         for label, values in [

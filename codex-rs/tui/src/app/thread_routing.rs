@@ -1132,10 +1132,17 @@ impl App {
                 _ => None,
             } == Some(&AppServerCodexErrorInfo::MisalignmentPolicyViolation);
         if misalignment_policy_violation && self.active_side_parent_thread_id() == Some(thread_id) {
-            if self.chat_widget.is_user_turn_pending_or_running() {
+            if self
+                .chat_widget
+                .config_ref()
+                .features
+                .enabled(Feature::MisalignmentReview) // ALAB(misalignment-review): passive findings do not interrupt side work.
+                && self.chat_widget.is_user_turn_pending_or_running()
+            {
                 self.chat_widget.submit_op(AppCommand::Interrupt);
             }
-            self.chat_widget.on_misalignment_policy_violation();
+            self.chat_widget
+                .on_side_thread_misalignment_policy_violation(); // ALAB(misalignment-review): passive child findings are display-only.
         }
         if matches!(
             notification,

@@ -203,6 +203,31 @@ async fn a_later_draft_or_clearing_it_cannot_reuse_an_old_ready_fence() {
     assert!(fixture.sup.admission_fence_current(&fixture.fence().await));
 }
 
+/// A TUI OR APP-SERVER EVENT LEAVES A READY FENCE STANDING (the TUI's 60 s usage reply,
+/// `RateLimitsLoaded`, among them: review of the happy successor that never reran its turn),
+/// though the live upgrade's scan counts it; a native fact the admission reads revokes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tui_event_leaves_a_ready_fence_and_a_native_fact_revokes_it() {
+    let fixture = Fixture::new().await;
+    let before = fixture.fence().await;
+    let scan = fixture.shared.upgrade_generation();
+    fixture.shared.invalidate_upgrade();
+    assert_ne!(
+        fixture.shared.upgrade_generation(),
+        scan,
+        "the scan counts it"
+    );
+    assert!(
+        fixture.sup.admission_fence_current(&before),
+        "an event the admission does not read"
+    );
+    fixture.shared.invalidate_native();
+    assert!(
+        !fixture.sup.admission_fence_current(&before),
+        "an untracked thread's lifecycle is a native fact"
+    );
+}
+
 #[test]
 fn only_authority_relevant_reader_events_invalidate_readiness() {
     let events = Arc::new(ClaimEvents::default());
@@ -239,4 +264,101 @@ fn only_authority_relevant_reader_events_invalidate_readiness() {
         1,
         "settling an event cannot restore the old epoch"
     );
+}
+
+/// A HANDOFF'S SEAL STANDS ONLY FOR ITS CLAIM AND THE RECEIPT ON RECORD (2026-11-13). While it
+/// stands, an act's checks wait instead of re-confirming the claim, and the record's renewal
+/// is not sent: either would move the revision aterm sealed the handoff to. It seals nothing
+/// before the record binds its receipt, nothing once the record names another receipt, and
+/// nothing on a claim taken again (whose revision aterm moved anyway), so a seal never
+/// outlives what it protects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_handoff_seal_stands_only_for_its_claim_and_the_receipt_on_record() {
+    let fixture = Fixture::new().await;
+    let sealed = "1".repeat(32);
+    let bind = |receipt: &str| {
+        fixture
+            .shared
+            .set_owed_act(Some(codex_alab_core::session::OwedAct {
+                thread: "admission-fixture".into(),
+                renewal: Some(codex_alab_core::session::AccountHandoff {
+                    purpose: codex_alab_core::account_handoff::Purpose::WeeklyQuota,
+                    destination: Some(codex_alab_core::account_handoff::Destination {
+                        account: "c".repeat(64),
+                        user: "d".repeat(64),
+                    }),
+                    openai_scope: true,
+                    local: false,
+                    account: "a".repeat(64),
+                    user: "b".repeat(64),
+                    receipt: Some(receipt.into()),
+                    turn: None,
+                    accepted: false,
+                    starts: 1,
+                    goal_id: None,
+                }),
+                ..Default::default()
+            }));
+    };
+    let renewals = || {
+        fixture
+            .fake
+            .requests()
+            .iter()
+            .filter(|request| request.contains(" meta set supervisor "))
+            .count()
+    };
+    let fence = fixture.fence().await;
+    fixture
+        .sup
+        .seal_claim_for_handoff(&fence, "admission-fixture", &sealed);
+    assert!(
+        !fixture.sup.claim_sealed(),
+        "no record binds the receipt yet"
+    );
+    bind(&sealed);
+    assert!(fixture.sup.claim_sealed());
+    let sent = renewals();
+    let ready = fixture.sup.ready().await;
+    assert!(
+        matches!(
+            &ready,
+            Ready::Wait { why, .. } if why == "the claim stands sealed for an account handoff"
+        ),
+        "an act's checks under the sealed claim: {ready:?}"
+    );
+    fixture.shared.note_resume_line();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        renewals(),
+        sent,
+        "the sealed claim was re-confirmed: {:?}",
+        fixture.fake.requests()
+    );
+    // The record names another receipt: nothing is sealed, and the renewal owed goes.
+    bind(&"2".repeat(32));
+    assert!(!fixture.sup.claim_sealed());
+    fixture.shared.note_resume_line();
+    wait("POSITIVE CONTROL: the owed record renewal goes", || {
+        renewals() > sent
+    })
+    .await;
+    assert_eq!(fixture.sup.ready().await, Ready::Go);
+    // Sealed again, then the claim is lost and taken again: the seal named the old claim.
+    bind(&sealed);
+    assert!(fixture.sup.claim_sealed());
+    fixture.fake.set_status("autopilot", "off");
+    fixture.fake.set_effective(false, "autopilot-off");
+    wait("the actual claim is released", || {
+        !fixture.sup.held() && fixture.fake.claim().is_none()
+    })
+    .await;
+    fixture.fake.set_status("autopilot", "cruise");
+    fixture.fake.set_effective(true, "enabled");
+    wait("the claim is taken again", || fixture.sup.acting()).await;
+    assert!(
+        !fixture.sup.claim_sealed(),
+        "a seal outlived the claim it sealed"
+    );
+    assert!(fixture.sup.admission_fence_current(&fixture.fence().await));
 }

@@ -217,6 +217,7 @@ fn start_safety_buffering_test_turn(
     let thread_id = ThreadId::new();
     let turn_id = "turn-safety-buffering";
     chat.thread_id = Some(thread_id);
+    chat.set_feature_enabled(Feature::SafetyRecourse, /*enabled*/ true);
     chat.submit_user_message(UserMessage::from("Explain the request"));
     let turn = next_submit_op(op_rx);
     assert_matches!(&turn, Op::UserTurn { .. });
@@ -316,6 +317,33 @@ fn open_safety_buffering_retry_confirmation(
 }
 
 #[tokio::test]
+async fn safety_buffering_retry_is_informational_by_default() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (thread_id, turn_id, _) = start_safety_buffering_test_turn(&mut chat, &mut op_rx);
+    chat.set_feature_enabled(Feature::SafetyRecourse, /*enabled*/ false);
+    chat.apply_external_edit("unsent draft".into());
+
+    chat.handle_server_notification(
+        ServerNotification::ModelSafetyBufferingUpdated(safety_buffering_notification(
+            thread_id,
+            turn_id,
+            Some("faster-model"),
+        )),
+        /*replay_kind*/ None,
+    );
+
+    assert!(chat.no_modal_or_popup_active());
+    assert!(chat.turn_lifecycle.agent_turn_running);
+    assert_eq!(chat.composer_text_with_pending(), "unsent draft");
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok()).all(|event| !matches!(
+            event,
+            AppEvent::ConfirmSafetyBufferedRetry { .. } | AppEvent::RetrySafetyBufferedTurn { .. }
+        ))
+    );
+}
+
+#[tokio::test]
 async fn safety_buffering_offers_one_retry_with_app_wording() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let mut preset = get_available_model(&chat, "gpt-5.5");
@@ -391,6 +419,39 @@ async fn safety_buffering_offers_one_retry_with_app_wording() {
         !render_bottom_popup(&chat, /*width*/ 80)
             .contains("Press enter to confirm or esc to go back")
     );
+}
+
+#[tokio::test]
+async fn safety_buffering_opt_out_dismisses_confirmation_and_rejects_stale_retry() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (thread_id, turn_id, turn) = start_safety_buffering_test_turn(&mut chat, &mut op_rx);
+    chat.handle_server_notification(
+        ServerNotification::ModelSafetyBufferingUpdated(safety_buffering_notification(
+            thread_id,
+            turn_id,
+            Some("faster-model"),
+        )),
+        /*replay_kind*/ None,
+    );
+    open_safety_buffering_retry_confirmation(&mut chat, &mut rx);
+
+    chat.set_feature_enabled(Feature::SafetyRecourse, /*enabled*/ false);
+
+    assert!(chat.no_modal_or_popup_active());
+    assert!(chat.turn_lifecycle.agent_turn_running);
+    assert!(!chat.safety_recourse_allows_buffered_retry());
+    chat.confirm_safety_buffered_retry(
+        thread_id,
+        turn_id.to_string(),
+        "faster-model".to_string(),
+        turn,
+        UserMessage::from("Explain the request"),
+    );
+    assert!(chat.no_modal_or_popup_active());
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).all(|event| !matches!(
+        event,
+        AppEvent::RetrySafetyBufferedTurn { .. }
+    )));
 }
 
 #[tokio::test]

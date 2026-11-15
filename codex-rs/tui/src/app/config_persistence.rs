@@ -881,6 +881,9 @@ impl App {
         for (feature, effective_enabled) in feature_updates_to_apply {
             self.chat_widget
                 .set_feature_enabled(feature, effective_enabled);
+            if feature == Feature::MisalignmentReview && !effective_enabled {
+                self.close_misalignment_review_overlay(); // ALAB(misalignment-review): opt-out dismisses the pager too.
+            }
         }
         if show_memory_enable_notice {
             self.chat_widget.add_memories_enable_notice();
@@ -1251,6 +1254,9 @@ impl App {
                 continue;
             }
             self.chat_widget.set_feature_enabled(*feature, enabled);
+            if *feature == Feature::MisalignmentReview && !enabled {
+                self.close_misalignment_review_overlay(); // ALAB(misalignment-review): effective opt-out dismisses the pager too.
+            }
         }
 
         if feature_updates

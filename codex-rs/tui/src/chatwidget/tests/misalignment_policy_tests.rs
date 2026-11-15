@@ -7,6 +7,7 @@ const ERROR_MESSAGE: &str = "Responses API returned misalignment_policy_violatio
 #[tokio::test]
 async fn misalignment_precaution_retires_voice_and_keeps_late_turn_blocked() {
     let (mut chat, _events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ true);
     let thread_id = ThreadId::new();
     chat.thread_id = Some(thread_id);
     handle_turn_started(&mut chat, "unsafe-turn");
@@ -49,6 +50,8 @@ async fn misalignment_precaution_retires_voice_and_keeps_late_turn_blocked() {
 #[tokio::test]
 async fn misalignment_policy_failure_stops_the_thread_and_renders_once() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ true);
+    chat.set_feature_enabled(Feature::SafetyRecourse, /*enabled*/ true);
     let thread_id = ThreadId::new();
     chat.thread_id = Some(thread_id);
     handle_turn_started(&mut chat, "turn-1");
@@ -173,6 +176,7 @@ async fn misalignment_policy_failure_stops_the_thread_and_renders_once() {
 #[tokio::test]
 async fn misalignment_turn_end_discards_history_search_and_question_drafts() {
     let (mut chat, _rx, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ true);
     let thread_id = ThreadId::new();
     chat.thread_id = Some(thread_id);
     handle_turn_started(&mut chat, "turn");
@@ -226,6 +230,63 @@ async fn misalignment_turn_end_discards_history_search_and_question_drafts() {
     assert!(ops.try_recv().is_err());
 }
 
+#[tokio::test]
+async fn misalignment_findings_are_non_interactive_by_default() {
+    let (mut chat, mut rx, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    assert!(!chat.config.features.enabled(Feature::MisalignmentReview));
+    chat.thread_id = Some(ThreadId::new());
+    handle_turn_started(&mut chat, "turn-1");
+    chat.queue_user_message(UserMessage::from("continue with other work"));
+    chat.bottom_pane
+        .set_composer_text("keep my draft".to_string(), Vec::new(), Vec::new());
+
+    chat.on_misalignment_error(Some("turn-1".to_string()), Some(review_details()));
+
+    assert!(!chat.has_misalignment_policy_violation());
+    assert!(chat.bottom_pane.composer_input_enabled());
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    assert_eq!(
+        chat.bottom_pane.composer_text_with_pending(),
+        "keep my draft"
+    );
+    assert!(chat.queued_user_message_texts().is_empty());
+    assert!(ops.try_recv().is_ok(), "queued work should be submitted");
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(rendered.contains("The agent proposed a change outside your instructions."));
+    assert!(rendered.contains("Server-suggested continuation (not submitted)"));
+    assert!(rendered.contains("Continue with the requested change only."));
+}
+
+#[tokio::test]
+async fn passive_parent_precaution_does_not_suppress_later_turn_findings() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    handle_turn_started(&mut chat, "turn-1");
+    chat.on_misalignment_policy_violation();
+    handle_turn_started(&mut chat, "turn-2");
+    assert!(chat.misalignment_policy_violation.is_none());
+    assert_eq!(chat.last_turn_id(), Some("turn-2"));
+    drain_insert_history(&mut rx);
+
+    chat.on_misalignment_error(Some("turn-2".to_string()), Some(review_details()));
+
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        rendered.contains("The agent proposed a change outside your instructions."),
+        "rendered history: {rendered}"
+    );
+}
+
 fn review_details() -> codex_app_server_protocol::MisalignmentErrorDetails {
     codex_app_server_protocol::MisalignmentErrorDetails {
         error_type: Some("new_category".to_string()),
@@ -255,8 +316,23 @@ fn select_review(
 #[tokio::test]
 async fn misalignment_review_requires_current_findings() {
     let (mut chat, mut rx, _) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ true);
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-1");
+    chat.on_misalignment_error(Some("turn-1".to_string()), Some(review_details()));
+    let review = select_review(&mut chat, &mut rx);
+
+    chat.set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ false);
+    assert!(!chat.is_current_misalignment_review(&review));
+    assert!(!chat.has_misalignment_policy_violation());
+    assert!(chat.bottom_pane.composer_input_enabled());
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    let mut disabled_update = review_details();
+    disabled_update.detailed_explanation = Some("Updated while disabled".to_string());
+    chat.on_misalignment_error(Some("turn-1".to_string()), Some(disabled_update));
+    chat.set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ true);
+    assert!(!chat.is_current_misalignment_review(&review));
+
     chat.on_misalignment_error(Some("turn-1".to_string()), Some(review_details()));
     let review = select_review(&mut chat, &mut rx);
     chat.show_misalignment_review_confirmation(Arc::clone(&review));

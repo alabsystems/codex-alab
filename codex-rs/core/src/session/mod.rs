@@ -1019,7 +1019,8 @@ impl Session {
                 .is_some();
         let enable_full_access_form_input = !root_capabilities_restricted
             && matches!(thread_source.as_ref(), Some(ThreadSource::User))
-            && client_mcp_extensions.contains(OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID);
+            && client_mcp_extensions.contains(OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID)
+            && codex_alab_core::execution::full_access_form_input(); // ALAB(execution): unanswerable MCP forms decline immediately instead of holding the turn
         let provider_auth = codex_model_provider::ProviderAuthContext {
             credentials: alab_assignment::capture_factory_manager(&auth_manager)?, // ALAB(accounts): publish the source-bound factory with upstream runtime auth before initializing any thread client.
             runtime_auth: configured_runtime.map(|runtime| (runtime, config.runtime_auth_mode)),

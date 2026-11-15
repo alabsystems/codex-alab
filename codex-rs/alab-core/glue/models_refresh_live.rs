@@ -37,7 +37,12 @@ pub(super) fn spawn_with_mode(
             } else {
                 RefreshStrategy::Online
             };
-            if let Err(err) = model_catalog.list_models(strategy).await {
+            let refresh = tokio::select! {
+                biased;
+                _ = worker_shutdown.cancelled() => break,
+                refresh = model_catalog.list_models(strategy) => refresh,
+            };
+            if let Err(err) = refresh {
                 tracing::warn!(error_kind = ?err.kind(), "model catalog refresh blocked by provider requirements");
             }
             drop(model_catalog);

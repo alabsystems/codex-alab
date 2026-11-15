@@ -5,7 +5,9 @@
 //! lifecycle for interactive and headless callers. Each purpose still uses its
 //! own host protocol and policy. This client adapter grants no execution authority.
 
+pub use crate::exec_selection::Asked as ExecAsked;
 pub use crate::exec_selection::Selection as ExecSelection;
+pub use crate::exec_selection::ask as ask_exec;
 pub use crate::exec_selection::prepare as prepare_exec;
 
 use crate::Client;
@@ -16,6 +18,7 @@ use codex_alab_core::account_handoff::AccountHandoff;
 use codex_alab_core::account_handoff::Purpose;
 use codex_alab_core::quota::SpentWall;
 use codex_alab_core::quota::SpentWindow;
+use codex_alab_core::wall_kind::WallKind;
 use std::time::Duration;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -48,6 +51,11 @@ impl Receipt {
     }
 }
 
+/// The policy word by which a host says it moves a session off a lost login to another
+/// account already signed in (`codex-login-rotation`; `alab/design/accounts-lost-login.md`).
+/// A host that prints no such word (aterm 0.199.0 among them) is never asked.
+pub const LOGIN_ROTATION: &str = "codex_rotation_login";
+
 /// Shared policy gate; a successful check alone does not authorize execution.
 pub fn policy_allows(policy: &crate::policy::HarnessPolicy, purpose: Purpose) -> bool {
     policy.effective
@@ -57,9 +65,32 @@ pub fn policy_allows(policy: &crate::policy::HarnessPolicy, purpose: Purpose) ->
                 policy.get("codex_rotation") == Some("1")
                     && matches!(policy.get("accounts"), Some("early" | "wall"))
             }
+            Purpose::LoginRotation => {
+                policy.get(LOGIN_ROTATION) == Some("1")
+                    && matches!(policy.get("accounts"), Some("early" | "wall"))
+            }
         }
         && policy.switch("relaunch")
         && policy.switch("resume_limits")
+}
+
+/// WHETHER A HOST'S ANSWER TO A LOST LOGIN'S MOVE IS A DEFINITE NO: it knows no such verb, it
+/// refused the request as invalid or for a native wall or purpose that is no longer the
+/// one asked about (none of which another ask can change), or it answered nothing this
+/// reader can take. Every other refusal (a hold, a claim or record in motion, capacity) and
+/// every transport failure is no answer yet, asked again.
+pub fn login_rotation_declined(error: &Error) -> bool {
+    match error {
+        Error::Refused(word) => matches!(
+            word.as_str(),
+            rotation::UNKNOWN_VERB
+                | "invalid request"
+                | "native wall changed"
+                | "wrong recovery purpose"
+        ),
+        Error::Malformed(_) => true,
+        _ => false,
+    }
 }
 
 /// The policy word by which a host says it also leaves a five-hour wall: the
@@ -103,6 +134,35 @@ pub fn leaves_wall(policy: &crate::policy::HarnessPolicy, wall: SpentWall, now: 
         }
 }
 
+/// The policy word by which a host says it leaves a wall its fresh usage read shows refusing
+/// ordinary use with no spent window to explain it: a workspace's credits or spend cap, spend
+/// control, a credit-only plan out of credits (gap 4 of `alab/PARALLEL-LOGINS.md`, aterm's step
+/// S2). A host that prints no such word answers `not-needed` at such a wall, so an exec run
+/// keeps its request at a workspace's wall only for a host that prints it
+/// ([`crate::exec_selection::ask`]).
+pub const ROTATION_REFUSAL: &str = "codex_rotation_refusal";
+
+/// Whether this host, by its own policy reply, leaves a wall of refused ordinary use
+/// ([`ROTATION_REFUSAL`] `=1`, beside the rotation policy itself).
+pub fn leaves_refusals(policy: &crate::policy::HarnessPolicy) -> bool {
+    policy_allows(policy, Purpose::WeeklyQuota) && policy.get(ROTATION_REFUSAL) == Some("1")
+}
+
+/// Whether this host, by its own policy reply, moves an exec run that stands at a wall of `kind`:
+/// an ordinary wall under the rotation policy ([`policy_allows`]), a workspace's wall only where
+/// the host also leaves refusals ([`leaves_refusals`]), and a model's own limit nowhere until a
+/// host can judge one (gap 4, steps S4 and S5). An exec run claims its tab for a move only where
+/// this holds ([`crate::exec_route::admit`]).
+pub fn leaves_exec_wall(policy: &crate::policy::HarnessPolicy, kind: &WallKind) -> bool {
+    if !kind.asked() {
+        false
+    } else if kind.host_kept() {
+        leaves_refusals(policy)
+    } else {
+        policy_allows(policy, Purpose::WeeklyQuota)
+    }
+}
+
 /// The bound a host's policy reply advertises for leaving a five-hour wall
 /// ([`FIVE_HOUR_HANDOFF`], a canonical count of seconds); `None` for a reply
 /// that prints no such word, or one this reader cannot take. A reply with no
@@ -136,13 +196,14 @@ impl From<renewal::Receipt> for Receipt {
     }
 }
 
-impl From<rotation::Receipt> for Receipt {
-    fn from(value: rotation::Receipt) -> Self {
+impl Receipt {
+    /// A move's receipt, for the purpose whose protocol answered it.
+    fn moved(value: rotation::Receipt, purpose: Purpose) -> Self {
         Self {
             id: value.id,
             thread: value.origin.thread,
             wall: value.origin.turn,
-            purpose: Purpose::WeeklyQuota,
+            purpose,
             identity: value.origin.identity,
             destination: value.destination,
         }
@@ -161,15 +222,17 @@ impl From<renewal::Outcome> for Outcome {
     }
 }
 
-impl From<rotation::Outcome> for Outcome {
-    fn from(value: rotation::Outcome) -> Self {
+impl Outcome {
+    /// A move's outcome, for the purpose whose protocol answered it.
+    fn moved(value: rotation::Outcome, purpose: Purpose) -> Self {
+        let receipt = |value| Receipt::moved(value, purpose);
         match value {
             rotation::Outcome::NotNeeded => Self::NotNeeded,
-            rotation::Outcome::Waiting(value) => Self::Waiting(value.map(Into::into)),
-            rotation::Outcome::Ready(value) => Self::Ready(value.into()),
-            rotation::Outcome::Committed(value) => Self::Committed(value.into()),
-            rotation::Outcome::Consumed(value) => Self::Consumed(value.into()),
-            rotation::Outcome::Retired(value) => Self::Retired(value.into()),
+            rotation::Outcome::Waiting(value) => Self::Waiting(value.map(receipt)),
+            rotation::Outcome::Ready(value) => Self::Ready(receipt(value)),
+            rotation::Outcome::Committed(value) => Self::Committed(receipt(value)),
+            rotation::Outcome::Consumed(value) => Self::Consumed(receipt(value)),
+            rotation::Outcome::Retired(value) => Self::Retired(receipt(value)),
         }
     }
 }
@@ -181,33 +244,37 @@ pub async fn prepare(
     wall: &str,
     identity: &renewal::Identity,
 ) -> Result<Outcome, Error> {
+    let origin = || rotation::Origin {
+        thread: thread.into(),
+        turn: wall.into(),
+        identity: identity.clone(),
+    };
+    let moved = |outcome| Outcome::moved(outcome, purpose);
     match purpose {
         Purpose::Login => client
             .renewal_prepare(thread, wall, identity)
             .await
             .map(Into::into),
-        Purpose::WeeklyQuota => client
-            .rotation_prepare(&rotation::Origin {
-                thread: thread.into(),
-                turn: wall.into(),
-                identity: identity.clone(),
-            })
-            .await
-            .map(Into::into),
+        Purpose::WeeklyQuota => client.rotation_prepare(&origin()).await.map(moved),
+        Purpose::LoginRotation => client.login_rotation_prepare(&origin()).await.map(moved),
     }
 }
 
 pub async fn status(client: &Client, purpose: Purpose, id: &str) -> Result<Outcome, Error> {
+    let moved = |outcome| Outcome::moved(outcome, purpose);
     match purpose {
         Purpose::Login => client.renewal_status(id).await.map(Into::into),
-        Purpose::WeeklyQuota => client.rotation_status(id).await.map(Into::into),
+        Purpose::WeeklyQuota => client.rotation_status(id).await.map(moved),
+        Purpose::LoginRotation => client.login_rotation_status(id).await.map(moved),
     }
 }
 
 pub async fn commit(client: &Client, purpose: Purpose, id: &str) -> Result<Outcome, Error> {
+    let moved = |outcome| Outcome::moved(outcome, purpose);
     match purpose {
         Purpose::Login => client.renewal_commit(id).await.map(Into::into),
-        Purpose::WeeklyQuota => client.rotation_commit(id).await.map(Into::into),
+        Purpose::WeeklyQuota => client.rotation_commit(id).await.map(moved),
+        Purpose::LoginRotation => client.login_rotation_commit(id).await.map(moved),
     }
 }
 
@@ -217,9 +284,27 @@ pub async fn consume(
     id: &str,
     turn: &str,
 ) -> Result<Outcome, Error> {
+    let moved = |outcome| Outcome::moved(outcome, purpose);
     match purpose {
         Purpose::Login => client.renewal_consume(id, turn).await.map(Into::into),
-        Purpose::WeeklyQuota => client.rotation_consume(id, turn).await.map(Into::into),
+        Purpose::WeeklyQuota => client.rotation_consume(id, turn).await.map(moved),
+        Purpose::LoginRotation => client.login_rotation_consume(id, turn).await.map(moved),
+    }
+}
+
+/// REPORT THAT A MOVE'S RESUMED TURN WAS SERVED ([`Client::rotation_complete`]). Only a usage
+/// wall's move puts a pool canary on its destination for the host to prove, so only
+/// [`Purpose::WeeklyQuota`] sends one; a same-account renewal and a lost login's move have
+/// nothing to prove and answer [`rotation::Completion::Unsupported`] without asking the host.
+pub async fn complete(
+    client: &Client,
+    purpose: Purpose,
+    id: &str,
+    turn: &str,
+) -> Result<rotation::Completion, Error> {
+    match purpose {
+        Purpose::WeeklyQuota => client.rotation_complete(id, turn).await,
+        Purpose::Login | Purpose::LoginRotation => Ok(rotation::Completion::Unsupported),
     }
 }
 
@@ -443,7 +528,7 @@ mod tests {
         let thread = "00000000-0000-0000-0000-000000000001";
         let wall = "00000000-0000-0000-0000-000000000002";
         let id = "1".repeat(32);
-        for purpose in [Purpose::Login, Purpose::WeeklyQuota] {
+        for purpose in [Purpose::Login, Purpose::WeeklyQuota, Purpose::LoginRotation] {
             let (protocol, command, reply) = match purpose {
                 Purpose::Login => (
                     "codex-renewal",
@@ -456,20 +541,27 @@ mod tests {
                         identity.account, identity.user
                     ),
                 ),
-                Purpose::WeeklyQuota => (
-                    "codex-rotation",
-                    format!(
-                        "codex-rotation prepare thread={thread} turn={wall} source_account={} source_user={}",
-                        identity.account, identity.user
-                    ),
-                    format!(
-                        "OK codex-rotation state=ready id={id} thread={thread} turn={wall} source_account={} source_user={} target_account={} target_user={}\n",
-                        identity.account,
-                        identity.user,
-                        "c".repeat(64),
-                        "d".repeat(64)
-                    ),
-                ),
+                Purpose::WeeklyQuota | Purpose::LoginRotation => {
+                    let verb = if purpose == Purpose::WeeklyQuota {
+                        "codex-rotation"
+                    } else {
+                        "codex-login-rotation"
+                    };
+                    (
+                        verb,
+                        format!(
+                            "{verb} prepare thread={thread} turn={wall} source_account={} source_user={}",
+                            identity.account, identity.user
+                        ),
+                        format!(
+                            "OK {verb} state=ready id={id} thread={thread} turn={wall} source_account={} source_user={} target_account={} target_user={}\n",
+                            identity.account,
+                            identity.user,
+                            "c".repeat(64),
+                            "d".repeat(64)
+                        ),
+                    )
+                }
             };
             host.reply_once(&format!("@{} {command}", host.sid()), &reply);
             let Outcome::Ready(receipt) = prepare(&client, purpose, thread, wall, &identity)
@@ -491,16 +583,220 @@ mod tests {
                     "c".repeat(64)
                 }
             );
-            let other = if purpose == Purpose::Login {
-                "codex-rotation"
-            } else {
-                "codex-renewal"
-            };
+            for other in ["codex-renewal", "codex-rotation", "codex-login-rotation"]
+                .into_iter()
+                .filter(|other| *other != protocol)
+            {
+                host.reply_once(
+                    &format!("@{} {protocol} status id={id}", host.sid()),
+                    &reply.replace(protocol, other),
+                );
+                assert!(
+                    matches!(
+                        status(&client, purpose, &id).await,
+                        Err(Error::Malformed(_))
+                    ),
+                    "{purpose:?} read {other}'s reply"
+                );
+            }
+            // Each purpose's commit and consume name its own verb.
             host.reply_once(
-                &format!("@{} {protocol} status id={id}", host.sid()),
-                &reply.replace(protocol, other),
+                &format!("@{} {protocol} commit id={id}", host.sid()),
+                &reply.replace("state=ready", "state=committed"),
             );
-            assert!(status(&client, purpose, &id).await.is_err());
+            assert!(matches!(
+                commit(&client, purpose, &id).await,
+                Ok(Outcome::Committed(receipt)) if receipt.purpose == purpose
+            ));
+        }
+    }
+
+    /// ONLY A USAGE WALL'S MOVE REPORTS ITS COMPLETION: a renewal and a lost login's move answer
+    /// unsupported and send nothing, whatever the id; a usage wall's move sends its one
+    /// `codex-rotation complete` line (which the fake, knowing no such verb, does not take).
+    #[tokio::test]
+    async fn only_a_usage_walls_move_reports_its_completion() {
+        let directory = tempfile::tempdir().expect("scratch host");
+        let host = crate::fake::FakeAterm::start(directory.path(), crate::fake::Mode::Current)
+            .await
+            .expect("host");
+        let client = Client::connect(host.endpoint(), crate::Options::default())
+            .await
+            .expect("client");
+        client.harness_policy().await.expect("policy");
+        client.claim().await.expect("claim");
+        let id = "1".repeat(32);
+        let turn = "00000000-0000-0000-0000-000000000002";
+        let before = host.requests();
+        for purpose in [Purpose::Login, Purpose::LoginRotation] {
+            for id in [id.as_str(), "not-a-receipt"] {
+                assert_eq!(
+                    complete(&client, purpose, id, turn).await.ok(),
+                    Some(rotation::Completion::Unsupported),
+                    "{purpose:?}"
+                );
+            }
+        }
+        assert_eq!(host.requests(), before, "nothing was sent");
+        assert_eq!(
+            complete(&client, Purpose::WeeklyQuota, &id, turn)
+                .await
+                .ok(),
+            Some(rotation::Completion::Unsupported)
+        );
+        let sent: Vec<_> = host.requests().split_off(before.len());
+        assert_eq!(
+            sent,
+            [format!(
+                "@{} codex-rotation complete id={id} turn={turn}",
+                host.sid()
+            )]
+        );
+    }
+
+    /// A LOST LOGIN'S MOVE IS ASKED ONLY OF A HOST THAT SAYS IT MOVES ONE: `codex_rotation_login=1`,
+    /// an `accounts` policy that moves sessions (`early` or `wall`), and the relaunch and resume
+    /// switches. aterm 0.199.0 prints no such word, so it is never asked; the usage wall's own
+    /// `codex_rotation` word is not that word, nor is it needed.
+    #[test]
+    fn a_login_rotation_is_asked_only_of_a_host_that_advertises_it() {
+        let login = |keys: &[(&str, &str)]| {
+            let mut policy = rotating(keys);
+            policy.keys.remove("codex_rotation");
+            policy
+        };
+        assert!(policy_allows(
+            &login(&[(LOGIN_ROTATION, "1")]),
+            Purpose::LoginRotation
+        ));
+        assert!(policy_allows(
+            &login(&[(LOGIN_ROTATION, "1"), ("accounts", "early")]),
+            Purpose::LoginRotation
+        ));
+        // aterm 0.199.0: no word. Its usage wall's rotation stays as it was.
+        assert!(!policy_allows(&rotating(&[]), Purpose::LoginRotation));
+        assert!(policy_allows(&rotating(&[]), Purpose::WeeklyQuota));
+        for keys in [
+            &[(LOGIN_ROTATION, "0")][..],
+            &[(LOGIN_ROTATION, "true")],
+            &[(LOGIN_ROTATION, "1"), ("accounts", "off")],
+            &[(LOGIN_ROTATION, "1"), ("accounts", "manual")],
+            &[(LOGIN_ROTATION, "1"), ("relaunch", "false")],
+            &[(LOGIN_ROTATION, "1"), ("resume_limits", "false")],
+        ] {
+            assert!(
+                !policy_allows(&login(keys), Purpose::LoginRotation),
+                "{keys:?}"
+            );
+        }
+        let mut accountless = login(&[(LOGIN_ROTATION, "1")]);
+        accountless.keys.remove("accounts");
+        assert!(!policy_allows(&accountless, Purpose::LoginRotation));
+        let mut ineffective = login(&[(LOGIN_ROTATION, "1")]);
+        ineffective.effective = false;
+        assert!(!policy_allows(&ineffective, Purpose::LoginRotation));
+        // The word moves no other purpose.
+        let only_login = login(&[(LOGIN_ROTATION, "1")]);
+        assert!(!policy_allows(&only_login, Purpose::WeeklyQuota));
+        assert!(!policy_allows(&only_login, Purpose::Login));
+    }
+
+    /// A WALL OF REFUSED ORDINARY USE IS LEFT ONLY BY A HOST THAT SAYS SO: `codex_rotation_refusal=1`
+    /// beside the rotation policy. Today's aterm prints no such word, so it leaves none.
+    #[test]
+    fn a_refused_wall_is_left_only_by_a_host_that_advertises_it() {
+        assert!(leaves_refusals(&rotating(&[(ROTATION_REFUSAL, "1")])));
+        assert!(!leaves_refusals(&rotating(&[])), "today's aterm");
+        for word in ["0", "true", "", "01", " 1"] {
+            assert!(
+                !leaves_refusals(&rotating(&[(ROTATION_REFUSAL, word)])),
+                "{word:?}"
+            );
+        }
+        // The word is no rotation policy of its own: each key rotation needs.
+        for (key, off) in [
+            ("codex_rotation", "0"),
+            ("accounts", "off"),
+            ("relaunch", "false"),
+            ("resume_limits", "false"),
+        ] {
+            let mut host = rotating(&[(ROTATION_REFUSAL, "1")]);
+            host.keys.insert(key.into(), off.into());
+            assert!(!leaves_refusals(&host), "{key}={off}");
+        }
+        let mut standby = rotating(&[(ROTATION_REFUSAL, "1")]);
+        standby.effective = false;
+        assert!(!leaves_refusals(&standby));
+        // It moves nothing else.
+        let only = rotating(&[(ROTATION_REFUSAL, "1")]);
+        assert!(!policy_allows(&only, Purpose::LoginRotation));
+        assert_eq!(five_hour_bound(&only), None);
+        // An exec run's wall, by kind: an ordinary one under the rotation policy alone, a
+        // workspace's only with the word, a model's own limit under none.
+        use codex_alab_core::wall_kind::Workspace;
+        let credits = WallKind::Workspace(Workspace::MemberCreditsDepleted);
+        let model = WallKind::Limit("codex_other".into());
+        let today = rotating(&[]);
+        assert!(leaves_exec_wall(&today, &WallKind::Ordinary));
+        assert!(!leaves_exec_wall(&today, &credits), "today's aterm");
+        assert!(!leaves_exec_wall(&today, &model));
+        assert!(leaves_exec_wall(&only, &WallKind::Ordinary));
+        assert!(leaves_exec_wall(&only, &credits));
+        assert!(!leaves_exec_wall(&only, &model));
+        let mut off = rotating(&[(ROTATION_REFUSAL, "1")]);
+        off.keys.insert("codex_rotation".into(), "0".into());
+        for kind in [&WallKind::Ordinary, &credits, &model] {
+            assert!(!leaves_exec_wall(&off, kind), "{kind:?}");
+        }
+    }
+
+    /// A DEFINITE NO, OR NO ANSWER YET: a host that knows no such verb, an invalid request, a
+    /// native wall or purpose that is no longer the one asked about, or an unreadable answer is
+    /// a decline; a hold, a record or claim in motion, capacity and every transport failure are
+    /// asked again.
+    #[test]
+    fn only_a_definite_answer_declines_a_login_rotation() {
+        for word in [
+            rotation::UNKNOWN_VERB,
+            "invalid request",
+            "native wall changed",
+            "wrong recovery purpose",
+        ] {
+            assert!(
+                login_rotation_declined(&Error::Refused(word.into())),
+                "{word}"
+            );
+        }
+        assert!(login_rotation_declined(&Error::Malformed(
+            "unreadable".into()
+        )));
+        for word in rotation::REFUSALS
+            .iter()
+            .copied()
+            .chain([rotation::OTHER])
+            .filter(|word| {
+                !matches!(
+                    *word,
+                    "invalid request" | "native wall changed" | "wrong recovery purpose"
+                )
+            })
+        {
+            assert!(
+                !login_rotation_declined(&Error::Refused(word.into())),
+                "{word}"
+            );
+        }
+        for error in [
+            Error::Unanswered,
+            Error::Closed,
+            Error::Busy {
+                line: "ERR busy".into(),
+                retry_ms: None,
+            },
+            Error::Io(std::io::Error::other("unreachable")),
+            Error::BadRequest("no claim".into()),
+        ] {
+            assert!(!login_rotation_declined(&error), "{error}");
         }
     }
 }

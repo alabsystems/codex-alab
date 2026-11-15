@@ -103,11 +103,15 @@ impl Manifest {
     }
 }
 
-pub async fn supported(client: &Client) -> bool {
-    client
-        .on_self("codex-exec-handoff tree-info")
-        .await
-        .is_ok_and(|reply| reply.status.trim() == "OK codex-exec-handoff tree-contract=1")
+/// Whether this aterm serves exec tree contract 1, read as [`super::supported`] reads the
+/// exec contract.
+pub async fn supported(client: &Client) -> Result<bool, Error> {
+    super::served(
+        client,
+        "codex-exec-handoff tree-info",
+        "OK codex-exec-handoff tree-contract=1",
+    )
+    .await
 }
 
 /// Publish the exact source members and capsule digest before execute.
@@ -303,7 +307,7 @@ mod tests {
             &format!("{prefix} tree-info"),
             "OK codex-exec-handoff tree-contract=1\n",
         );
-        assert!(supported(&client).await);
+        assert!(supported(&client).await.unwrap());
         let bind_command = format!(
             "{prefix} bind-tree id={} cap={} manifest={}",
             grant.ticket.id,

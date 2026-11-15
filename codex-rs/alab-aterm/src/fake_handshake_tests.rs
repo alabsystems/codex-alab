@@ -134,6 +134,9 @@ async fn fake() -> (tempfile::TempDir, FakeAterm) {
     (directory, fake)
 }
 
+#[path = "fake_gate_tests.rs"]
+mod gate_tests;
+
 fn stages(fake: &FakeAterm) -> Vec<HandshakeStage> {
     fake.handshake_events()
         .events

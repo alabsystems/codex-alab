@@ -355,29 +355,57 @@ mod completion_tests {
 #[cfg(unix)]
 mod unix {
     use super::*;
-    use codex_alab_core::account_handoff::Purpose;
+    use codex_alab_core::exec_wall::Verdict;
+    use codex_alab_core::wall_kind::WallKind;
     use codex_app_server_client::alab_native_accounts::Client;
     use codex_app_server_client::alab_native_accounts::account_recovery;
     use codex_app_server_client::alab_native_accounts::exec_capsule;
     use codex_app_server_client::alab_native_accounts::exec_grant;
-    use codex_app_server_client::alab_native_accounts::renewal::Identity;
+    use codex_app_server_client::alab_native_accounts::exec_route;
     use codex_app_server_client::alab_native_accounts::rotation::Origin;
     use std::time::Duration;
 
     const ENV: &str = "ATERM_CODEX_EXEC_HANDOFF";
 
-    async fn native() -> Option<Client> {
-        let connection = Client::connect_self().await;
-        tracing::debug!(target: "codex_alab_exec_handoff", connected = matches!(connection, Ok(Some(_))), "locating native host");
-        let client = connection.ok()??;
-        client.harness_policy().await.ok()?;
-        let supported =
-            exec_grant::supported(&client).await && exec_grant::tree::supported(&client).await;
-        tracing::debug!(target: "codex_alab_exec_handoff", supported, policy_present = client.policy().is_some(), "read native handoff contract");
-        if !supported {
-            return None;
+    /// No move will come at host-kept wall `kind` of root turn `root`: the run ends at its next
+    /// refusal there, with the provider's own message, so no line says that it waits
+    /// (`codex_alab_core::exec_wall`). With no root turn nothing is recorded, and an unanswered
+    /// wall ends at its second refusal all the same.
+    fn decline(watch: &codex_core::ExecQuotaWatch, root: Option<&str>, kind: &WallKind) {
+        tracing::debug!(target: "codex_alab_exec_handoff", ?kind, "host-kept wall declined");
+        if let Some(root) = root {
+            watch.decide(root, kind, Verdict::Declined);
         }
-        account_recovery::policy_allows(&client.policy()?, Purpose::WeeklyQuota).then_some(client)
+    }
+
+    /// The tab's host, its exec contracts and a policy that moves exec runs, with no claim:
+    /// what every reconnect of an operation in flight needs.
+    async fn native() -> Option<Client> {
+        let reached = exec_route::reach_self().await;
+        tracing::debug!(target: "codex_alab_exec_handoff", reached = reached.is_ok(), route = ?reached.as_ref().err(), "reaching native host");
+        reached.ok()
+    }
+
+    /// Tell `route` once for `key`'s wall, then wait for the wall to move or for the route's
+    /// own clock. A route that settles the wall waits for another wall only.
+    async fn no_route(
+        latch: &mut exec_route::Latch,
+        key: &exec_route::Wall,
+        route: exec_route::NoRoute,
+        watch: &mut codex_core::ExecQuotaWatch,
+    ) -> Result<(), &'static str> {
+        tracing::debug!(target: "codex_alab_exec_handoff", ?route, "exec account move unavailable");
+        if let Some(line) = latch.note(key, &route) {
+            exec_route::tell(&line);
+        }
+        let closed = |_| "exec quota observation closed";
+        match route.again() {
+            None => watch.changed().await.map_err(closed),
+            Some(again) => tokio::select! {
+                changed = watch.changed() => changed.map_err(closed),
+                _ = tokio::time::sleep(again) => Ok(()),
+            },
+        }
     }
 
     pub(super) async fn run(
@@ -393,6 +421,8 @@ mod unix {
             .await
             .map_err(|_| "exec quota observation unavailable")?;
         let mut connection: Option<Client> = None;
+        // One line per wall, keyed on its source and root turn (CONTRACT §1.1, "The line").
+        let mut latch = exec_route::Latch::default();
         tracing::debug!(target: "codex_alab_exec_handoff", "exec quota watch ready");
         loop {
             let wall = watch.borrow().clone();
@@ -400,32 +430,112 @@ mod unix {
             if let Some(wall) = wall
                 && wall.current()
             {
-                let Some(codex_alab_core::renewal::RequestAuth::ChatGpt { account, user }) =
-                    wall.source()
-                else {
+                let kind = wall.kind().clone();
+                // A model's own limit is asked of no host until one can judge that limit (gap 4,
+                // S5): the run waits out its reset with no claim and no line, as before S3, when
+                // such a wall published no observation.
+                if !kind.asked() {
+                    if let Some(client) = connection.take() {
+                        client.close();
+                    }
                     watch
                         .changed()
                         .await
                         .map_err(|_| "exec quota observation closed")?;
                     continue;
+                }
+                // A workspace's wall keeps the run only while its host says a move may come.
+                let kept = kind.host_kept();
+                let source = match wall.source() {
+                    Some(codex_alab_core::renewal::RequestAuth::ChatGpt { account, user }) => {
+                        exec_route::Source::login(&account, &user)
+                    }
+                    Some(codex_alab_core::renewal::RequestAuth::OpenAiApiKey) => {
+                        exec_route::Source::NotChatGpt
+                    }
+                    None => {
+                        watch
+                            .changed()
+                            .await
+                            .map_err(|_| "exec quota observation closed")?;
+                        continue;
+                    }
+                };
+                // A child cannot invent a recoverable root turn.
+                let root_options = watch.root_options().await;
+                let key = exec_route::Wall::new(
+                    source,
+                    root_options
+                        .as_ref()
+                        .map(|options| options.turn().to_owned()),
+                );
+                if latch.settled(&key) {
+                    // Nothing this run can see changes this wall's outcome: ask nothing more.
+                    if kept {
+                        decline(
+                            &watch,
+                            root_options
+                                .as_ref()
+                                .map(codex_core::ExecRecoveryOptions::turn),
+                            &kind,
+                        );
+                    }
+                    if let Some(client) = connection.take() {
+                        client.close();
+                    }
+                    watch
+                        .changed()
+                        .await
+                        .map_err(|_| "exec quota observation closed")?;
+                    continue;
+                }
+                let (identity, root_options) = match (key.identity(), root_options) {
+                    (Ok(identity), Some(root_options)) => (identity, root_options),
+                    (identity, root_options) => {
+                        if let Some(client) = connection.take() {
+                            client.close();
+                        }
+                        if kept {
+                            decline(
+                                &watch,
+                                root_options
+                                    .as_ref()
+                                    .map(codex_core::ExecRecoveryOptions::turn),
+                                &kind,
+                            );
+                            watch
+                                .changed()
+                                .await
+                                .map_err(|_| "exec quota observation closed")?;
+                            continue;
+                        }
+                        let route = identity.err().unwrap_or(exec_route::NoRoute::NoRootTurn);
+                        no_route(&mut latch, &key, route, &mut watch).await?;
+                        continue;
+                    }
                 };
                 if connection.as_ref().is_none_or(|client| !client.is_open()) {
-                    connection = match native().await {
-                        Some(client) if client.claim().await.is_ok() && client.holds_claim() => {
-                            Some(client)
+                    connection = None;
+                    match exec_route::admit_self(&kind).await {
+                        Ok(client) => connection = Some(client),
+                        // No host reached is no host looking for a destination, and a policy
+                        // that leaves no such wall takes no claim for one.
+                        Err(_) if kept => {
+                            decline(&watch, Some(root_options.turn()), &kind);
+                            watch
+                                .changed()
+                                .await
+                                .map_err(|_| "exec quota observation closed")?;
+                            continue;
                         }
-                        _ => None,
-                    };
+                        Err(exec_route::Miss::Route(route)) => {
+                            no_route(&mut latch, &key, route, &mut watch).await?;
+                            continue;
+                        }
+                        Err(exec_route::Miss::Transient) => {}
+                    }
                 }
                 if let Some(client) = connection.clone() {
-                    let Some(identity) = Identity::from_native(&account, &user) else {
-                        return Ok(());
-                    };
-                    let Some(root_options) = watch.root_options().await else {
-                        // A child cannot invent a recoverable root turn.
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        continue;
-                    };
                     if root_options.thread() != thread || !wall.current() {
                         continue;
                     }
@@ -434,12 +544,39 @@ mod unix {
                         turn: root_options.turn().into(),
                         identity,
                     };
-                    let selection = account_recovery::prepare_exec(&client, &origin).await;
+                    let asked = account_recovery::ask_exec(&client, &origin, &kind).await;
+                    if kept && let Some(verdict) = asked.verdict() {
+                        if verdict == Verdict::Declined {
+                            decline(&watch, Some(&origin.turn), &kind);
+                            watch
+                                .changed()
+                                .await
+                                .map_err(|_| "exec quota observation closed")?;
+                            continue;
+                        }
+                        watch.decide(&origin.turn, &kind, verdict);
+                    }
+                    let account_recovery::ExecAsked::Answered(selection) = asked else {
+                        // Only a host-kept wall goes unasked here, and it was declined above.
+                        watch
+                            .changed()
+                            .await
+                            .map_err(|_| "exec quota observation closed")?;
+                        continue;
+                    };
                     tracing::debug!(target: "codex_alab_exec_handoff", selected = matches!(selection, Ok(account_recovery::ExecSelection::Selected { .. })), failed = selection.is_err(), "read native account selection");
+                    if matches!(selection, Ok(account_recovery::ExecSelection::NotNeeded)) {
+                        no_route(&mut latch, &key, exec_route::NoRoute::NotNeeded, &mut watch)
+                            .await?;
+                        continue;
+                    }
                     if let Ok(account_recovery::ExecSelection::Selected { destination, .. }) =
                         selection
                         && wall.current()
                     {
+                        // While armed or reserving, a kept wait does not end on its timer: its
+                        // retry would end the observation this grant needs.
+                        let _grant = watch.hold_grant(&origin.turn);
                         let checkpoint =
                             serde_json::to_value(Checkpoint::new(root_options, worktree.clone()))
                                 .map_err(|_| "exec checkpoint encoding failed")?;
@@ -523,7 +660,7 @@ mod unix {
                 }
                 tokio::select! {
                     changed = watch.changed() => { changed.map_err(|_| "exec quota observation closed")?; }
-                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    _ = tokio::time::sleep(exec_route::RETRY) => {}
                 }
             } else {
                 if let Some(client) = connection.take() {

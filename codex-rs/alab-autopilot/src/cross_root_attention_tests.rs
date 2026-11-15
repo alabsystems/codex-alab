@@ -451,6 +451,7 @@ fn a_retired_idle_evaluators_off_epoch_cannot_clear_replacement_recovery() {
                 h.autopilot.sup.offs()
             );
             let recovery = codex_alab_core::session::Recovery {
+                clock: crate::recovery::test_clock(0),
                 thread: fresh.key().into(),
                 turn_id: "replacement-failure".into(),
                 point_at_ms: now_ms(),
@@ -676,12 +677,12 @@ fn a_stopped_roots_late_need_is_refused() {
                 .await;
             h.autopilot
                 .sup
-                .needs(&["the signing key password".to_string()], 7)
+                .needs(&["the signing permission".to_string()], 7)
                 .await;
             upgrade_handoff_tests::wait_for_supervisor(|| needs(&h).is_some()).await;
             assert_eq!(
                 needs(&h).as_deref(),
-                Some("Codex needs you: the signing key password \u{2014} carrying on"),
+                Some("Codex needs you: the signing permission \u{2014} carrying on"),
                 "{:?}",
                 h.autopilot.sup.journal()
             );
@@ -798,6 +799,7 @@ fn reloaded_root_identity_fences_old_starts_completions_stops_and_writers() {
                 .attention_for(&fresh, "wall", Some("wall: the fresh instance".into()))
                 .await;
             let recovery = codex_alab_core::session::Recovery {
+                clock: crate::recovery::test_clock(0),
                 thread: fresh.key().into(),
                 turn_id: fresh_turn.level_id().into(),
                 point_at_ms: now_ms(),
@@ -928,6 +930,7 @@ fn a_retired_evaluators_act_ack_preserves_replacement_recovery_and_pace() {
                 })
                 .await;
             let recovery = codex_alab_core::session::Recovery {
+                clock: crate::recovery::test_clock(0),
                 thread: fresh.key().into(),
                 turn_id: fresh_turn.level_id().into(),
                 point_at_ms: now_ms(),

@@ -1,7 +1,7 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! A provider's in-turn capacity wait must survive a witnessed crash relaunch.
+//! A provider's in-turn retry wait must survive a witnessed crash relaunch.
 
 use crate::Autopilot;
 use crate::Supervisor;
@@ -80,7 +80,21 @@ fn native_shutdown_when_the_terminal_goes_away_keeps_the_capacity_deadline() {
     run(Phase::Signal(libc::SIGHUP));
 }
 
+#[test]
+fn an_opaque_bad_request_wait_survives_the_busy_crash_record() {
+    run_response(Phase::Active, true);
+}
+
+#[test]
+fn native_shutdown_keeps_an_opaque_bad_requests_provider_deadline() {
+    run_response(Phase::Signal(libc::SIGTERM), true);
+}
+
 fn run(phase: Phase) {
+    run_response(phase, false);
+}
+
+fn run_response(phase: Phase, opaque: bool) {
     std::thread::Builder::new()
         .stack_size(16 << 20)
         .spawn(move || {
@@ -91,7 +105,7 @@ fn run(phase: Phase) {
                 .build()
                 .expect("owned test runtime")
                 .block_on(async {
-                    tokio::time::timeout(Duration::from_secs(60), capacity_crash(phase))
+                    tokio::time::timeout(Duration::from_secs(60), capacity_crash(phase, opaque))
                         .await
                         .expect("capacity crash test hang detector");
                 });
@@ -101,7 +115,7 @@ fn run(phase: Phase) {
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 }
 
-async fn capacity_crash(phase: Phase) {
+async fn capacity_crash(phase: Phase, opaque: bool) {
     codex_alab_core::activate();
     let scratch = tempfile::tempdir().expect("scratch record and control socket");
     let fake = FakeAterm::start(scratch.path(), Mode::Current)
@@ -120,23 +134,30 @@ async fn capacity_crash(phase: Phase) {
     });
     let mut builder = ExtensionRegistryBuilder::<Config>::new();
     let autopilot = Autopilot::new(sup, None, None, Timing::default(), |_| true);
+    autopilot.set_retry_clock(crate::recovery::test_clock_read());
     autopilot.register(&mut builder);
     let server = responses::start_mock_server().await;
     let mock = responses::mount_response_once(
         &server,
-        ResponseTemplate::new(503)
+        ResponseTemplate::new(if opaque { 400 } else { 503 })
             .insert_header("Retry-After", "3600")
-            .set_body_json(serde_json::json!({"error": {
+            .set_body_json(if opaque {
+                serde_json::json!({"detail": "Bad Request"})
+            } else {
+                serde_json::json!({"error": {
                 "code": "server_is_overloaded",
                 "message": "The selected model is at capacity."
-            }})),
+                }})
+            }),
     )
     .await;
     let test = test_codex()
         .with_extensions(Arc::new(builder.build()))
-        .with_config(|config| {
+        .with_config(move |config| {
             config.model_provider.request_max_retries = Some(0);
-            config.model_provider.stream_max_retries = Some(0);
+            // Overload owns an unbounded capacity wait. The opaque 400 uses
+            // the ordinary bounded stream retry, whose in-flight wait must persist too.
+            config.model_provider.stream_max_retries = Some(u64::from(opaque));
         })
         .build(&server)
         .await
@@ -326,9 +347,11 @@ async fn capacity_crash(phase: Phase) {
             &items,
             &retry,
             matches!(phase, Phase::Signal(_)),
+            Some(&crate::recovery::test_sample(epoch)),
             now,
-            epoch
-        ),
+            &crate::decide::Timing::default()
+        )
+        .restored(),
         "the native rollout still ends at the waiting turn"
     );
     let decision = decide(&state, &policy, &Timing::default(), now, Duration::ZERO);

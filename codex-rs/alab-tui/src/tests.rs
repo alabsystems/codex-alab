@@ -5,6 +5,7 @@ use codex_config::types::NotificationMethod;
 use codex_config::types::OtelExporterKind;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
+use codex_core::config::ConfigOverrides;
 use codex_features::Feature;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
@@ -63,6 +64,8 @@ async fn packaged_defaults_reach_the_config() {
         Feature::SkillSearch,
         Feature::ImageGeneration,
         Feature::ToolSuggest,
+        Feature::SkillMcpDependencyInstall,
+        Feature::UnboundedConnectionRetries,
     ] {
         assert!(
             !config.features.enabled(feature),
@@ -78,6 +81,14 @@ async fn packaged_defaults_reach_the_config() {
     assert!(!config.tui_auto_recap, "automatic recaps");
     // The aterm-only `[tui]` keys hold inside aterm, and upstream's own values everywhere else.
     let in_aterm = codex_alab_core::inside_aterm();
+    assert_eq!(config.bypass_hook_trust, in_aterm, "native hook execution");
+    assert!(
+        !config
+            .startup_warnings
+            .iter()
+            .any(|warning| warning.contains("--dangerously-bypass-hook-trust")),
+        "the native default does not emit the explicit CLI bypass warning"
+    );
     assert_eq!(
         config.disable_paste_burst, in_aterm,
         "aterm's typed input submits, inside aterm only"
@@ -212,6 +223,24 @@ async fn aterm_permission_defaults_preserve_explicit_cli_choices() {
         config.legacy_sandbox_policy(),
         SandboxPolicy::ReadOnly { .. }
     ));
+}
+
+#[tokio::test]
+async fn hook_trust_bypass_preserves_an_explicit_disable() {
+    codex_alab_core::activate();
+    let home = tempfile::tempdir().unwrap_or_else(|err| panic!("scratch CODEX_HOME: {err}"));
+    let config = ConfigBuilder::default()
+        .loader_overrides(codex_config::LoaderOverrides::without_managed_config_for_tests())
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .harness_overrides(ConfigOverrides {
+            bypass_hook_trust: Some(false),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .unwrap_or_else(|err| panic!("config: {err}"));
+    assert!(!config.bypass_hook_trust);
 }
 
 /// `[tui] alab_progress` is ALab's own key: codex reads it without a word (upstream's `[tui]`

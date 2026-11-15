@@ -46,6 +46,8 @@ pub use child_suspension::ExecPreparedChild;
 
 #[path = "exec_ephemeral_history.rs"]
 pub(crate) mod ephemeral;
+#[path = "goal_tool_completion.rs"]
+pub(crate) mod goal_tool_completion;
 pub use super::input_queue::exec_input_state::ExecInputBatch;
 pub use super::input_queue::exec_input_state::ExecInputSnapshot;
 pub use super::input_queue::exec_input_state::PreparedExecIdleInput;

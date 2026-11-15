@@ -199,3 +199,7 @@ path = "../alab-core"
 # ALAB(weekly-reset): redeem earned resets within the original sampler.
 [dependencies.codex-alab-quota-recovery]
 path = "../alab-quota-recovery"
+
+# ALAB(kimi): supply native model metadata without writing a user catalog.
+[dependencies.codex-alab-kimi]
+path = "../alab-kimi"

@@ -13,7 +13,7 @@ use super::upgrade_handoff_tests::native_test;
 use super::upgrade_handoff_tests::wait_for_supervisor;
 use super::*;
 
-const HANG: Duration = Duration::from_secs(60);
+const HANG: Duration = super::upgrade_handoff_tests::NATIVE_HANG;
 
 /// The sentence aterm's jobs board names a stalled background call with.
 const STALLED: &str = "a background call (pid 51240) has made no progress for 6 min";

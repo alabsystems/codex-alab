@@ -313,6 +313,7 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
 }
 
 pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
+    super::alab_exec_recovery_options::goal_tool_completion::close(sess); // ALAB(goal-completion): fence dispatch admission before stopping its producers.
     super::alab_assignment::runtime_stopping(sess); // ALAB(accounts): stop configuration admission before producer teardown.
     if let Some(reporting) = &sess.outcome_reporting {
         reporting.handoffs.close();
@@ -364,6 +365,8 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     sess.services.mcp_runtime.shutdown().await;
 
     sess.drain_code_mode_messages().await;
+
+    super::alab_exec_recovery_options::goal_tool_completion::settle_thread(sess).await; // ALAB(goal-completion): retained callbacks finish before goal owners and persistence writers retire.
 
     crate::hook_runtime::run_session_end_hooks(sess).await;
     emit_thread_stop_lifecycle(sess).await;

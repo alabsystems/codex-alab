@@ -104,6 +104,7 @@ impl App {
                 }
             }
             AppServerEvent::ServerNotification(notification) => {
+                if super::alab_backend_bookkeeping::runtime_control(self, app_server_client, notification.as_ref()) { return; } // ALAB(storage-status): one asynchronous native resync after passive stream reset; never await its DB read in the UI.
                 if let ServerNotificationThreadTarget::Thread(thread_id) =
                     server_notification_thread_target(notification.as_ref())
                     && !self

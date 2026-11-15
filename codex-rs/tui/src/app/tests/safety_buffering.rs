@@ -239,6 +239,8 @@ async fn safety_recourse_handles_a_policy_block() -> Result<()> {
         .await?;
         let selected_model = "gpt-5.1";
         app.chat_widget.set_model(selected_model);
+        app.chat_widget
+            .set_feature_enabled(Feature::SafetyRecourse, /*enabled*/ true);
         submit_prompt(&mut app, "Blocked original prompt");
         app.submit_thread_op(&mut server, source_id, next_user_turn_event(&mut events))
             .await?;
@@ -835,6 +837,7 @@ async fn run_safety_retry(
         codex_home.path().join("config.toml"),
         format!(
             r#"
+suppress_unstable_features_warning = true
 model = "{CURRENT_MODEL}"
 model_provider = "{MODEL_PROVIDER_ID}"
 model_catalog_json = {model_catalog_path}
@@ -848,6 +851,7 @@ stream_max_retries = 0
 
 [features]
 goals = true
+safety_recourse = true
 {instant_interrupt_config}
 "#,
             server.uri()
@@ -879,6 +883,10 @@ goals = true
         .features
         .enable(Feature::Goals)
         .expect("test config should allow goals");
+    app.config
+        .features
+        .enable(Feature::SafetyRecourse)
+        .expect("test config should allow safety recourse");
 
     if scenario == SafetyRetryScenario::PendingPermissions {
         app.config

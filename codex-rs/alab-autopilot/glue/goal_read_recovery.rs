@@ -91,3 +91,57 @@ mod tests {
         ));
     }
 }
+
+/// Failures which prove an additive SQLite transaction did not commit. Generic
+/// I/O errors, cancelled acknowledgements and display strings confer no replay.
+pub fn write_definitely_uncommitted(error: &anyhow::Error) -> bool {
+    for source in error.chain() {
+        if let Some(error) = source.downcast_ref::<libsqlite3_sys::Error>() {
+            return matches!(
+                error.code,
+                libsqlite3_sys::ErrorCode::DatabaseBusy
+                    | libsqlite3_sys::ErrorCode::DatabaseLocked
+                    | libsqlite3_sys::ErrorCode::DiskFull
+            );
+        }
+        if let Some(error) = source.downcast_ref::<sqlx::Error>() {
+            return match error {
+                sqlx::Error::PoolTimedOut
+                | sqlx::Error::PoolClosed
+                | sqlx::Error::InvalidSavePointStatement => true,
+                sqlx::Error::Database(database) => database
+                    .code()
+                    .and_then(|code| code.parse::<i32>().ok())
+                    .is_some_and(|code| matches!(code & 0xff, 5 | 6 | 13)),
+                _ => false,
+            };
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+
+    #[test]
+    fn additive_replay_requires_typed_noncommit_evidence() {
+        for code in [5, 6, 13, 5 | (2 << 8)] {
+            assert!(write_definitely_uncommitted(&anyhow::Error::from(
+                libsqlite3_sys::Error::new(code)
+            )));
+        }
+        for code in [1, 8, 10, 11, 14, 26] {
+            assert!(!write_definitely_uncommitted(&anyhow::Error::from(
+                libsqlite3_sys::Error::new(code)
+            )));
+        }
+        assert!(write_definitely_uncommitted(&anyhow::Error::from(
+            sqlx::Error::InvalidSavePointStatement
+        )));
+        assert!(!write_definitely_uncommitted(&anyhow::anyhow!("disk full")));
+        assert!(!write_definitely_uncommitted(&anyhow::Error::from(
+            sqlx::Error::Io(std::io::Error::from(std::io::ErrorKind::Other))
+        )));
+    }
+}

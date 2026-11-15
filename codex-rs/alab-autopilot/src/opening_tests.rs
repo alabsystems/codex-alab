@@ -836,7 +836,7 @@ async fn a_turn_begun_in_a_vanilla_spell_ends_as_the_threads_newest() {
 /// took down (vanilla gives back a held claim) stays down while the point still stands.
 #[tokio::test]
 async fn a_resume_under_vanilla_reads_its_books_once_codex_alab_looks_again() {
-    let reply = "Stage 1 is in.\nNEEDS YOU: the prod API key";
+    let reply = "Stage 1 is in.\nNEEDS YOU: the prod API grant";
     let history = persons_history(reply, 20 * 60 * 1000);
     for case in [
         "resumed under vanilla",
@@ -879,7 +879,7 @@ async fn a_resume_under_vanilla_reads_its_books_once_codex_alab_looks_again() {
         let raised: &[&str] = if case == "an Off took the set down" {
             &[]
         } else {
-            &["the prod API key"]
+            &["the prod API grant"]
         };
         assert_eq!(state.needs.standing, raised, "{case}: {state:?}");
     }

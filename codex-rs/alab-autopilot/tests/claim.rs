@@ -803,7 +803,7 @@ fn mail_turn(id: u64, off: u64) -> codex_alab_core::mail::MailTurn {
     codex_alab_core::mail::MailTurn {
         id,
         off,
-        from: "s-lead@n-lab".to_string(),
+        from: "t00000000ab@n-lab".to_string(),
         kind: "task".to_string(),
         text: format!("Inbox: task @{off}"),
     }
@@ -838,7 +838,7 @@ async fn a_mail_turn_that_ends_passive_is_receipted_and_reported_once_codex_alab
     wait_until("suspended", || h.sup.standby().is_some()).await;
     let (id, off) = h
         .fake
-        .deliver("s-lead@n-lab", "task", "agent", "Run the tests.");
+        .deliver("t00000000ab@n-lab", "task", "agent", "Run the tests.");
     let read = read_mail(&h, off).await;
     assert!(
         read.as_ref().is_ok_and(|m| m.id == id),
@@ -875,7 +875,9 @@ async fn a_mail_turn_that_ends_passive_is_receipted_and_reported_once_codex_alab
     // ends owes its receipt and report until the claim is taken again.
     h.fake.set_effective(false, "autopilot-off");
     wait_until("given back", || !h.sup.held() && h.fake.claim().is_none()).await;
-    let (id2, off2) = h.fake.deliver("s-lead@n-lab", "task", "agent", "Again.");
+    let (id2, off2) = h
+        .fake
+        .deliver("t00000000ab@n-lab", "task", "agent", "Again.");
     assert_eq!(
         read_mail(&h, off2).await,
         Err("no proven aterm claim".to_string())
@@ -1020,7 +1022,7 @@ async fn a_hold_read_after_a_standby_lifts_the_standby() {
     wait_go(&h.sup).await;
     h.fake.set_effective(false, "suspended");
     wait_until("suspended", || h.sup.standby().is_some()).await;
-    let (id, off) = h.fake.deliver("s-lead@n-lab", "task", "agent", "go");
+    let (id, off) = h.fake.deliver("t00000000ab@n-lab", "task", "agent", "go");
     h.sup
         .receipt(
             mail_turn(id, off),

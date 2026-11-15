@@ -62,7 +62,7 @@ struct Fixture {
 impl Fixture {
     async fn new(server: &wiremock::MockServer) -> Self {
         codex_alab_core::activate();
-        let late = Arc::new(late_goal::LateGoal::default());
+        let late = Arc::new(late_goal::LateGoal::with_event_sink(None));
         let mut registry = ExtensionRegistryBuilder::<Config>::new();
         late.register(&mut registry);
         let test = test_codex()

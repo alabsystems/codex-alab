@@ -13,6 +13,9 @@ checks. --resource-stop opts source builds into exit 75 when disk admission or
 observation stops the command; existing package clients retain exit 1 there.
 --inherit-fds preserves a compiler caller's inheritable descriptors; it is
 refused for cache guardians, whose existing descriptor policy stays in place.
+--result-file optionally records a normal command's normalized status only after
+the existing guardian retires its owned group; inherited-timeout records retain
+their separate raw-status format. Neither record is source qualification.
 """
 
 import errno
@@ -548,6 +551,77 @@ def run_inherited(argv, *, timeout, result_file=None):
         return code if code >= 0 else 128 - code
 
 
+def run_recorded(argv, *, result_file, disk_floor=None, inherit_fds=False):
+    """Claim a fresh receipt before launch; complete it only after run() retires.
+
+    The status has run()'s existing signal normalization, not a raw wait status.
+    An empty, absent or incomplete receipt establishes no completed outcome.
+    The owned group excludes descendants which deliberately escape that group.
+    This observes the supervised command, not the receipt writer's eventual exit.
+    """
+    path = Path(result_file)
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    descriptor = None
+    claimed = None
+    try:
+        descriptor = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                             | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        claimed = os.fstat(descriptor)
+        code = run(argv, disk_floor=disk_floor, inherit_fds=inherit_fds)
+        current = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (claimed.st_dev, claimed.st_ino):
+            raise RuntimeError("command completion receipt was replaced after its claim")
+        data = json.dumps({"schema": 1, "kind": "guardian-command-completion",
+                           "completed": True, "argv": list(argv),
+                           "normalized_exit_status": code,
+                           "cleanup_scope": "owned command process group"},
+                          ensure_ascii=True).encode() + b"\n"
+        # Raw writes cannot reflush a buffered complete record after invalidation.
+        while data:
+            written = os.write(descriptor, data)
+            if written == 0:
+                raise OSError(errno.EIO, "zero-length command completion receipt write")
+            data = data[written:]
+        os.fsync(descriptor)
+        os.fsync(parent)
+        # Close inside the publication guard too: a close failure must invalidate
+        # even fully written JSON. Do not retry a descriptor consumed by close.
+        finished, descriptor = descriptor, None
+        os.close(finished)
+        finished, parent = parent, None
+        os.close(finished)
+        return code
+    except BaseException as error:
+        def note(cleanup_error):
+            if hasattr(error, "add_note"):
+                error.add_note(f"completion receipt invalidation failed: {cleanup_error}")
+
+        if descriptor is not None:
+            try:
+                os.ftruncate(descriptor, 0)
+            except OSError as invalidation_error:
+                note(invalidation_error)
+        if claimed is not None:
+            try:
+                current = os.stat(path.name if parent is not None else path,
+                                  dir_fd=parent, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) == (claimed.st_dev, claimed.st_ino):
+                    os.unlink(path.name if parent is not None else path, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+            except OSError as invalidation_error:
+                # A permanent/hostile filesystem may also refuse invalidation.
+                # Keep that limitation and the original failure; never return 0.
+                note(invalidation_error)
+        for remaining in (descriptor, parent):
+            if remaining is not None:
+                try:
+                    os.close(remaining)
+                except OSError as close_error:
+                    note(close_error)
+        raise
+
+
 def main():
     argv = sys.argv[1:]
     lockfile = None
@@ -585,7 +659,7 @@ def main():
     if argv[:1] == ["--"]:
         argv = argv[1:]
     if not argv:
-        print("usage: command_guard.py [--cache-lock FILE] "
+        print("usage: command_guard.py [--cache-lock FILE] [--result-file FILE] "
               "[--min-free-gib N --disk-path PATH ...] -- COMMAND [ARG ...]", file=sys.stderr)
         return 2
     try:
@@ -598,8 +672,8 @@ def main():
             if len(argv) < 4 or argv[2] != "--":
                 raise ValueError("inherited-group timeout requires SECONDS -- COMMAND")
             return run_inherited(argv[3:], timeout=float(argv[1]), result_file=result_file)
-        if result_file is not None:
-            raise ValueError("--result-file requires --inherited-group-timeout")
+        if result_file is not None and lockfile is not None:
+            raise ValueError("--result-file cannot record a cache guardian")
         if package_repo is not None and lockfile is None:
             raise ValueError("--package-source-repo requires --cache-lock")
         if inherit_fds and lockfile is not None:
@@ -618,6 +692,9 @@ def main():
                     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                         print(f"alab: package cache maintenance deferred after producer retirement: {error}",
                               file=sys.stderr)
+        if result_file is not None:
+            return run_recorded(argv, result_file=result_file, disk_floor=disk_floor,
+                                inherit_fds=inherit_fds)
         if inherit_fds:
             return run(argv, disk_floor=disk_floor, inherit_fds=True)
         return run(argv) if disk_floor is None else run(argv, disk_floor=disk_floor)

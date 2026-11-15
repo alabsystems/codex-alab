@@ -17,7 +17,10 @@
 //! screen at once ([`Supervisor::want_needs`]); and the live upgrade carries a paced act owed
 //! across its re-exec instead of waiting on it ([`crate::upgrade`]).
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -29,6 +32,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use codex_alab_core::quota::SpentWall;
 use codex_alab_core::session::LastTurn;
 use codex_alab_core::session::now_ms;
 use codex_core::CodexThread;
@@ -51,6 +55,8 @@ use codex_extension_api::ThreadReadyInput;
 use codex_extension_api::ThreadResumeInput;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ThreadStopInput;
+use codex_extension_api::ToolCallOutcome;
+use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolPayload;
@@ -66,6 +72,7 @@ use codex_goal_extension::GoalServiceError;
 use codex_goal_extension::GoalSetRequest;
 use codex_goal_extension::GoalTokenBudgetUpdate;
 use codex_protocol::ThreadId;
+use codex_protocol::auth::RefreshTokenFailedReason;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::items::TurnItem;
@@ -86,6 +93,8 @@ use codex_alab_aterm::account_recovery as account_broker;
 mod renewal_follow;
 
 use crate::approval;
+use crate::credential_need;
+use crate::credential_need::CredentialRead;
 use crate::decide;
 use crate::decide::Act;
 use crate::decide::LoginRead;
@@ -111,6 +120,8 @@ use crate::words;
 
 /// How the autopilot reads the host's sleep ([`codex_alab_core::wake::read`], or a test's).
 pub(crate) type WakeRead = Arc<dyn Fn() -> Option<codex_alab_core::wake::Reading> + Send + Sync>;
+type RetryClockRead =
+    Arc<dyn Fn() -> Option<codex_alab_core::recovery_clock::Sample> + Send + Sync>;
 
 /// Every submission's `client_id` starts so (`alab-autopilot-<n>`): a `UserMessage` with
 /// another `client_id` is a person's turn.
@@ -262,15 +273,37 @@ pub struct ThreadRt {
     /// the goal, so upstream's `turn-error` stop is the wall's, never a person's or the model's.
     /// The wall's try resumes it ([`GoalStop::Wall`]). The record carries it
     /// ([`codex_alab_core::session::Pace::wall_goal`]): the image after a re-exec and aterm's
-    /// relaunch bind it again ([`Autopilot::seed_pace`]), as the stop they would otherwise read
+    /// relaunch bind it again ([`Autopilot::seed_pace_from`]), as the stop they would otherwise read
     /// as a person's is the wall's this process saw (the forever-persist lane, item a).
     wall_goal: Mutex<Option<codex_alab_core::session::WallGoal>>,
+    /// A positively observed model block, recovered only through the same goal.
+    model_blocked_goal: Mutex<Option<codex_alab_core::model_goal_stops::Binding>>,
+    /// Carried provenance awaits readable history before it can authorize recovery.
+    model_goal_import: Mutex<model_blocked_goal::PendingImport>,
     quota_request: Mutex<Option<(QuotaIdentity, u64)>>,
     auth_wall_scope: Mutex<Option<Arc<codex_alab_core::renewal::AuthRequestScope>>>,
     auth_observation: Mutex<Option<Arc<AuthWallObservation>>>,
     renewal_ack_retry: Mutex<Option<Arc<renewal_follow::RenewalAckRetry>>>,
+    /// A USAGE WALL'S MOVE REPORTS ITS RESUMED TURN SERVED (`codex-rotation complete`,
+    /// `renewal_follow`'s `report_completion`): what the last turn this process stopped showed
+    /// at its stop, and the one report per receipt, with whether the host recorded it. Memory
+    /// only.
+    completion: Mutex<renewal_follow::completion::Completions>,
+    /// THE REASON THE LAST TURN ERROR GAVE FOR CODEX'S REFUSED REFRESH (the lost-login move):
+    /// upstream's `CodexErrorDetails::RefreshTokenFailed`, which its public category drops
+    /// (`Unauthorized`). Set at every turn error, `None` for any other error. Codex-alab's own
+    /// reading may only veto a move to another account ([`login::refusal_vetoes_move`]).
+    login_refusal: Mutex<Option<RefreshTokenFailedReason>>,
     /// A non-weekly wall keeps ordinary quota recovery until the next native start.
     quota_rotation_declined: AtomicU64,
+    /// THE LOST LOGIN'S MOVE WAS DECLINED FOR THE TURNS ACCEPTED SO FAR (`accepted_turns` then):
+    /// the host answered no, or no answer came within [`decide::Timing::login_rotation_ask`],
+    /// so this login wall goes the way it does without a move until the next native start.
+    login_rotation_declined: AtomicU64,
+    /// When this process first asked for the lost login's move of the named turn
+    /// ([`decide::Timing::login_rotation_ask`] bounds an ask no receipt binds). Memory only: a
+    /// restarted process asks for its own span.
+    login_rotation_asked: Mutex<Option<(String, Instant)>>,
     /// THE USAGE WALL ON RECORD IS AN ASKED HANDOFF'S, named by its turn: the rotation ask
     /// put it there, or found it there after a restart, beside an intent no receipt binds
     /// (`carry_asked_wall`), and no decision at the point left it. Once the intent is
@@ -286,6 +319,33 @@ pub struct ThreadRt {
     /// A bound weekly handoff's point is being kept while the host cannot be read
     /// (`follow_renewal`): set so the journal says so once, and once more when it reads.
     bound_host_unread: AtomicBool,
+    /// THE LAST PASS OF THE ACCOUNT HANDOFF'S FOLLOW LEFT THIS THREAD'S HANDOFF LIVE
+    /// (`follow_renewal`, which sets and clears it): it kept the point, and either sent the
+    /// host the ask (`prepare`) or holds the intent bound to the receipt the host granted.
+    /// Neither an intent on record nor a kept point says that. A pass that lets the point go
+    /// (the host unread, or no longer permitting the handoff) leaves its intent standing;
+    /// and a pass keeps an unbound point without a word to the host whenever its checks
+    /// before an act say wait (a person's hold, a draft or queued input, a person at the
+    /// terminal, an unreadable `status`), a turn runs on the thread, the session's background
+    /// terminals run (a usage wall's ask), or a read or a write of its own failed. Read for
+    /// the primary thread by another root thread's walled turn, which ends for a move that is
+    /// live and for no other (`session_leaves_account`). Memory only.
+    follows_move: AtomicBool,
+    /// The turn of this thread (`accepted_turns` then) whose end for the session's move the
+    /// journal has told (`session_leaves_account`): once a turn.
+    move_end_told: AtomicU64,
+    /// The walled turn of this thread, the primary (`accepted_turns` then; `u64::MAX` for
+    /// none), whose move the person was told waits for the session's background terminals
+    /// (`renewal_follow`'s `tell_terminals_hold`): once a wall, whichever thread's question or
+    /// pass the terminals held. Memory only.
+    terminals_hold_told: AtomicU64,
+    /// The host's refusals of this thread's account handoff the journal told, for the ask
+    /// series of one asked turn (`renewal_follow`'s `note_handoff_refused`). Memory only.
+    handoff_refusals: Mutex<renewal_follow::HandoffRefusals>,
+    /// The walled turn whose recovered admissions core refused in a row (`renewal_follow`'s
+    /// `recover_renewal`): each makes the next pass wait longer, up to the bound receipt's
+    /// own recheck, and its reason is said once. Memory only.
+    admission_refusals: Mutex<Option<renewal_follow::AdmissionRefusals>>,
     /// Known original association, including a positively standalone turn.
     auth_wall_goal_origin: Mutex<Option<Option<String>>>,
     id: ThreadId,
@@ -400,6 +460,14 @@ pub struct ThreadRt {
             tokio::sync::oneshot::Receiver<()>,
         )>,
     >,
+    /// Pause after a rejected resume's final snapshot, before its recheck is published.
+    #[cfg(test)]
+    before_changed_goal_recheck: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     /// Pause after an act passed every check and was booked, just before native core starts its
     /// turn.
     #[cfg(test)]
@@ -487,6 +555,8 @@ static LOGIN_WATCHES: AtomicU64 = AtomicU64::new(0);
 /// waiting on it.
 struct Timer {
     generation: u64,
+    /// When it looks again ([`ThreadRt::timer_due`]).
+    at: Instant,
     handle: JoinHandle<()>,
     owes: Option<TrackedOwed>,
 }
@@ -707,6 +777,9 @@ impl Drop for UpgradeAttempt<'_> {
 #[path = "upgrade_handoff_tests.rs"]
 mod upgrade_handoff_tests;
 
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+pub(crate) use self::upgrade_handoff_tests::native_test;
+
 #[cfg(test)]
 #[path = "wake_settle_handoff_tests.rs"]
 mod wake_settle_handoff_tests;
@@ -806,6 +879,12 @@ mod resume_needs_custody_tests;
 #[path = "off_needs_custody_tests.rs"]
 mod off_needs_custody_tests;
 
+#[path = "model_blocked_goal.rs"]
+mod model_blocked_goal;
+#[cfg(test)]
+#[path = "model_blocked_goal_tests.rs"]
+mod model_blocked_goal_tests;
+
 #[cfg(test)]
 #[path = "goal_attention_custody_tests.rs"]
 mod goal_attention_custody_tests;
@@ -869,13 +948,24 @@ impl ThreadRt {
             quota_wall: Mutex::new(None),
             human_goal_recovery: Mutex::new(None),
             wall_goal: Mutex::new(None),
+            model_blocked_goal: Mutex::new(None),
+            model_goal_import: Mutex::new(model_blocked_goal::PendingImport::default()),
             quota_request: Mutex::new(None),
             auth_wall_scope: Mutex::new(None),
             auth_observation: Mutex::new(None),
             renewal_ack_retry: Mutex::new(None),
+            completion: Mutex::default(),
+            login_refusal: Mutex::new(None),
             quota_rotation_declined: AtomicU64::new(u64::MAX),
+            login_rotation_declined: AtomicU64::new(u64::MAX),
+            login_rotation_asked: Mutex::new(None),
             asked_wall: Mutex::new(None),
             bound_host_unread: AtomicBool::new(false),
+            follows_move: AtomicBool::new(false),
+            move_end_told: AtomicU64::new(0),
+            terminals_hold_told: AtomicU64::new(u64::MAX),
+            handoff_refusals: Mutex::new(renewal_follow::HandoffRefusals::default()),
+            admission_refusals: Mutex::new(None),
             auth_wall_goal_origin: Mutex::new(None),
             id,
             key: id.to_string(),
@@ -922,6 +1012,8 @@ impl ThreadRt {
             #[cfg(test)]
             before_submit: Mutex::new(None),
             #[cfg(test)]
+            before_changed_goal_recheck: Mutex::new(None),
+            #[cfg(test)]
             before_start: Mutex::new(None),
             #[cfg(test)]
             before_ready: Mutex::new(None),
@@ -943,6 +1035,12 @@ impl ThreadRt {
             return true;
         }
         !codex_alab_core::active()
+    }
+
+    /// Whether the last pass of the handoff's follow left this thread's handoff live
+    /// ([`Self::follows_move`]; tests read it).
+    pub fn move_live(&self) -> bool {
+        self.follows_move.load(Ordering::SeqCst)
     }
 
     /// Put this thread alone in (or out of) the vanilla experience (tests).
@@ -1088,6 +1186,12 @@ impl ThreadRt {
         lock(&self.state).clone()
     }
 
+    /// The reason the last turn error gave for codex's refused refresh (tests read it).
+    #[cfg(test)]
+    pub(crate) fn login_refusal(&self) -> Option<RefreshTokenFailedReason> {
+        *lock(&self.login_refusal)
+    }
+
     pub fn key(&self) -> &str {
         &self.key
     }
@@ -1117,9 +1221,20 @@ impl ThreadRt {
             .map(|retry| retry.attempts.load(Ordering::SeqCst))
     }
 
+    /// The receipt of the usage wall's move whose resumed turn this process reported served,
+    /// and whether the host recorded the report (tests).
+    pub fn completion_reported(&self) -> Option<(String, bool)> {
+        lock(&self.completion).reported()
+    }
+
     /// Whether a timer is pending.
     pub fn timer_pending(&self) -> bool {
         lock(&self.timer).is_some()
+    }
+
+    /// When the pending timer looks again, if one is pending (tests).
+    pub fn timer_due(&self) -> Option<Instant> {
+        lock(&self.timer).as_ref().map(|timer| timer.at)
     }
 
     /// The paced act the pending timer waits for, or the one a timer that fired is about to
@@ -1261,6 +1376,12 @@ struct TrackData {
     /// THE TURN RAN A TOOL ([`TurnEnd::ran_tools`], `on_tool_start`): ruling F's real work.
     ran_tools: bool,
     wall: Option<Wall>,
+    /// THE WALL A HOST'S YES ENDED THE TURN AT: the creditless usage wall quota recovery asked
+    /// the turn's handoff about ([`codex_alab_core::quota::WallHandoff`]), as the walled
+    /// request's own usage read named it, set when the answer was yes. A yes ends that request
+    /// on its 429, so the turn's error stands at this wall, with the read's reset whatever the
+    /// 429 named ([`handed_off_wall`]; gap 6 of the audit of 2026-11-14).
+    handoff_wall: Option<SpentWall>,
     /// The route of the network wall the turn met ([`netwatch::route_at_wall`]).
     route: Option<netwatch::Route>,
     /// The login as codex held it when the turn met a login wall ([`login::Baseline`]).
@@ -1275,6 +1396,10 @@ struct TrackData {
     /// THE PERSON'S HAND WAS NOT READ as their message arrived (no connection yet, or the read
     /// past its bound): read again at the turn's end ([`Autopilot::finish`]; edges-6).
     hand_unread: bool,
+    /// THE TURN MET AN ERROR (`on_turn_error`), whatever [`classify`] made of it: a usage wall's
+    /// resumed turn that met one is not reported served on its destination
+    /// (`renewal_follow`'s `report_completion`).
+    error_seen: bool,
 }
 
 /// THE TURN'S EARLIER WORDS (aterm's `turn_said`, [`TurnEnd::earlier`]): every agent message
@@ -1355,6 +1480,22 @@ pub struct Autopilot {
     upgrade_relook: AtomicBool,
     /// The TUI was asked to leave for the upgrade's exec: nothing more is typed here.
     upgrade_requested: AtomicBool,
+    /// A LOOK OF A WALLED TURN OF ANOTHER ROOT THREAD BEGAN (`walled_look_begins`) since the
+    /// turns that wait a usage wall out were last woken for the primary thread's move
+    /// (`note_move_followed`). Such a turn looks again only every 30 seconds, and holds the
+    /// record busy meanwhile; this is how the pass that next leaves the move live knows to
+    /// wake it, whatever turned the answer to yes (a first ask, a hold lifted, a claim taken
+    /// again), and whether or not the turn's last look came to ask whether the session is
+    /// leaving its account (`session_leaves_account`): a look that finds the credit list
+    /// unread ends before that question. It is set as the look begins, before it reads
+    /// anything, so a pass during any part of the look is not missed. With no look since the
+    /// last wake a pass wakes nobody: every waiting turn looks after that wake anyway, and a
+    /// wake costs every waiting turn a usage read and a credit list read. Memory only.
+    move_awaited: AtomicBool,
+    /// The host's sink for what the person should see in a thread's history (a warning), as
+    /// the registry this Autopilot was registered in carries it ([`Self::register`]); unset
+    /// until then, and nothing is shown.
+    events: std::sync::OnceLock<Arc<dyn codex_extension_api::ExtensionEventSink>>,
     /// THE LIVE UPGRADE'S ROUND OF NOTICES under aterm's `upgrade_ask` ([`upgrade_ask`];
     /// amended 2026-10-28 after the parity sweep, gap 27): the process's, as the upgrade is.
     /// Locked last: a turn's end hears under the thread list, and nothing else is locked while
@@ -1378,18 +1519,27 @@ pub struct Autopilot {
     /// ([`Self::set_auth_manager`]).
     #[cfg(test)]
     auth_seam: Mutex<Option<Arc<codex_login::AuthManager>>>,
+    /// Run on the kept veto's own thread just before it is written
+    /// ([`Self::before_refusal_keep`]): a test sees what this runtime does meanwhile.
+    #[cfg(test)]
+    before_refusal_keep: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// THE HOST'S SLEEP as this process reads it ([`codex_alab_core::wake::read`]; a test's own,
     /// [`Self::set_wake_read`]): each decision reads it ([`ThreadState::slept_to`],
     /// [`ThreadState::woke`]), and each pending timer counts the time slept toward its deadline.
     wake: Mutex<WakeRead>,
+    retry_clock: Mutex<RetryClockRead>,
     /// The upgrade's facts as a test sets them ([`Self::set_upgrade_facts`]): a test reaches
     /// the before-every-act checks with no thread manager or captured command line.
     #[cfg(test)]
     facts_seam: Mutex<Option<upgrade::UpgradeFacts>>,
+    /// The session's background terminals as a test sets them ([`Self::set_session_terminals`]):
+    /// a test reaches the usage wall's handoff with no thread manager.
+    #[cfg(test)]
+    terminals_seam: Mutex<Option<usize>>,
     /// A resumed thread's history as a test sets it ([`Self::set_history`]): a test reaches
     /// the resume scan's restore with no thread manager.
     #[cfg(test)]
-    history_seam: Mutex<Option<Vec<codex_history::RolloutItem>>>,
+    history_seam: Mutex<Option<Result<Vec<codex_history::RolloutItem>, String>>>,
     #[cfg(test)]
     before_upgrade_restore: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
@@ -1412,6 +1562,20 @@ pub struct Autopilot {
     /// `GoalService::set_thread_goal` returns this error, the goal unchanged.
     #[cfg(any(test, debug_assertions))]
     goal_set_refusal: Mutex<Option<String>>,
+    /// THE CREDENTIAL WANTS THIS SESSION RESOLVED ([`credential_need::resolve`]): each looked up
+    /// in the registry, or filed, once.
+    credentials: Mutex<BTreeMap<String, credential_need::Resolution>>,
+    /// The point (thread key, point time) each want's lookup last failed at: tried again only at
+    /// another point ([`Self::credentials_for`]).
+    credentials_failed_at: Mutex<HashMap<String, (String, Option<Instant>)>>,
+    /// The points whose lookup runs ([`Self::look_up_credentials`]): each decided once it answers.
+    credentials_looking: Mutex<HashSet<(String, Option<Instant>)>>,
+    /// One lookup at a time, so two threads' points never file one want twice.
+    credentials_turn: tokio::sync::Semaphore,
+    /// The `aterm` credential wants are resolved through ([`Self::resolve_credentials_through`]);
+    /// none (every test's autopilot, unless it names a stand-in) resolves nothing, and the
+    /// worker is told to file each want itself.
+    secrets_program: Mutex<Option<PathBuf>>,
 }
 
 impl Autopilot {
@@ -1422,6 +1586,7 @@ impl Autopilot {
         timing: Timing,
         gate: SourceGate,
     ) -> Arc<Autopilot> {
+        let shared = sup.shared();
         Arc::new_cyclic(|me| Autopilot {
             me: me.clone(),
             sup,
@@ -1445,6 +1610,8 @@ impl Autopilot {
             before_upgrade_take: Mutex::new(None),
             upgrade_relook: AtomicBool::new(false),
             upgrade_requested: AtomicBool::new(false),
+            move_awaited: AtomicBool::new(false),
+            events: std::sync::OnceLock::new(),
             ask: Mutex::new(upgrade_ask::Round::default()),
             owed_spent: AtomicBool::new(false),
             newer_aterm_told: AtomicBool::new(false),
@@ -1454,9 +1621,18 @@ impl Autopilot {
             login_wakes: AtomicU64::new(0),
             #[cfg(test)]
             auth_seam: Mutex::new(None),
+            #[cfg(test)]
+            before_refusal_keep: Mutex::new(None),
             wake: Mutex::new(Arc::new(codex_alab_core::wake::read)),
+            retry_clock: Mutex::new(Arc::new(move || {
+                codex_alab_core::recovery_clock::Sample::read(
+                    shared.launch().and_then(|launch| launch.identity.as_ref()),
+                )
+            })),
             #[cfg(test)]
             facts_seam: Mutex::new(None),
+            #[cfg(test)]
+            terminals_seam: Mutex::new(None),
             #[cfg(test)]
             history_seam: Mutex::new(None),
             #[cfg(test)]
@@ -1469,7 +1645,129 @@ impl Autopilot {
             recovery_write_budget: Mutex::new(WRITE_THROUGH_BUDGET),
             #[cfg(any(test, debug_assertions))]
             goal_set_refusal: Mutex::new(None),
+            credentials: Mutex::new(BTreeMap::new()),
+            credentials_failed_at: Mutex::new(HashMap::new()),
+            credentials_looking: Mutex::new(HashSet::new()),
+            credentials_turn: tokio::sync::Semaphore::new(1),
+            secrets_program: Mutex::new(None),
         })
+    }
+
+    /// Resolve the workers' credential wants through `program` (`aterm secrets ls --json`,
+    /// `aterm secrets need <want>`): the codex binary's `aterm`, or a test's stand-in.
+    pub fn resolve_credentials_through(&self, program: PathBuf) {
+        *lock(&self.secrets_program) = Some(program);
+    }
+
+    /// THE CREDENTIAL LINES OF `rt`'S POINT AS THIS SESSION RESOLVED THEM
+    /// ([`credential_need::read_of`]), with the point they were read at; `None` while their
+    /// lookup runs. A want this session has not settled, and whose lookup did not fail at this
+    /// point already, is looked up off the decision ([`Self::look_up_credentials`]), whose answer
+    /// decides the point again. Nothing is asked where the point names no credential line, or no
+    /// program resolves them ([`Self::resolve_credentials_through`]): the worker files each.
+    fn credentials_for(
+        self: &Arc<Self>,
+        rt: &Arc<ThreadRt>,
+    ) -> Option<(Option<Instant>, CredentialRead)> {
+        let (at, lines) = {
+            let state = lock(&rt.state);
+            let lines = state
+                .point
+                .as_ref()
+                .map(TurnEnd::credential_lines)
+                .unwrap_or_default();
+            (state.point_at(), lines)
+        };
+        let wants = credential_need::host_wants(&lines);
+        let program = lock(&self.secrets_program).clone();
+        let (Some(program), false) = (program, wants.is_empty()) else {
+            return Some((at, CredentialRead::NotAsked));
+        };
+        let point = (rt.key.clone(), at);
+        let open: Vec<String> = {
+            let known = lock(&self.credentials);
+            let failed_at = lock(&self.credentials_failed_at);
+            wants
+                .iter()
+                .filter(|w| {
+                    !known
+                        .get(*w)
+                        .is_some_and(credential_need::Resolution::settled)
+                        && failed_at.get(*w) != Some(&point)
+                })
+                .cloned()
+                .collect()
+        };
+        if open.is_empty() {
+            return Some((
+                at,
+                credential_need::read_of(&wants, &lock(&self.credentials)),
+            ));
+        }
+        if lock(&self.credentials_looking).insert(point.clone()) {
+            self.sup.note(format!(
+                "{}: looking up credential wants {}; deciding once they answer",
+                rt.key,
+                open.join(", ")
+            ));
+            self.look_up_credentials(rt, program, point, open);
+        }
+        None
+    }
+
+    /// THE LOOKUP OF `open` FOR `point`, off the decision (each `aterm secrets` call takes up to
+    /// its bound): every want of them still unsettled looked up, or filed, one lookup at a time,
+    /// each answer in the journal; then the thread decides again.
+    fn look_up_credentials(
+        self: &Arc<Self>,
+        rt: &Arc<ThreadRt>,
+        program: PathBuf,
+        point: (String, Option<Instant>),
+        open: Vec<String>,
+    ) {
+        let me = Arc::clone(self);
+        let rt = Arc::clone(rt);
+        tokio::spawn(async move {
+            if let Ok(_turn) = me.credentials_turn.acquire().await {
+                let mut known = lock(&me.credentials).clone();
+                let open: Vec<String> = open
+                    .into_iter()
+                    .filter(|w| {
+                        !known
+                            .get(w)
+                            .is_some_and(credential_need::Resolution::settled)
+                    })
+                    .collect();
+                credential_need::resolve(&program, &open, &mut known).await;
+                for want in &open {
+                    let how = match known.get(want) {
+                        Some(credential_need::Resolution::Held(entries)) => format!(
+                            "held as {}",
+                            entries
+                                .iter()
+                                .map(|e| e.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        Some(credential_need::Resolution::Filed) => "filed".to_string(),
+                        Some(credential_need::Resolution::Failed(why)) => {
+                            lock(&me.credentials_failed_at).insert(want.clone(), point.clone());
+                            format!("not filed: {why}")
+                        }
+                        None => continue,
+                    };
+                    me.sup
+                        .note(format!("{}: credential want {want}: {how}", rt.key));
+                }
+                *lock(&me.credentials) = known;
+            }
+            lock(&me.credentials_looking).remove(&point);
+            if rt.stopped.load(Ordering::SeqCst) {
+                return;
+            }
+            rt.ask_again();
+            me.evaluate(rt).await;
+        });
     }
 
     /// Have every goal resume's `GoalService::set_thread_goal` fail with `why` (`None`: as
@@ -1507,6 +1805,16 @@ impl Autopilot {
     fn wake_reading(&self) -> Option<codex_alab_core::wake::Reading> {
         let read = lock(&self.wake).clone();
         read()
+    }
+
+    fn retry_clock_sample(&self) -> Option<codex_alab_core::recovery_clock::Sample> {
+        let read = lock(&self.retry_clock).clone();
+        read()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_retry_clock(&self, read: RetryClockRead) {
+        *lock(&self.retry_clock) = read;
     }
 
     /// Hold the actual wall route read after classification (tests only).
@@ -1620,6 +1928,68 @@ impl Autopilot {
         self.auth_manager()?.auth_mode()
     }
 
+    /// Have `before` run on the kept veto's own thread just before the next veto is written
+    /// ([`Self::note_login_refusal`]; tests only).
+    #[cfg(test)]
+    pub(crate) fn before_refusal_keep(&self, before: impl FnOnce() + Send + 'static) {
+        *lock(&self.before_refusal_keep) = Some(Box::new(before));
+    }
+
+    /// THE TURN ERROR'S REFRESH REFUSAL (the lost-login move): its reason is remembered for the
+    /// thread, `None` for any other error, and a reason that is not `Expired` is kept as a
+    /// veto for the refused token, where codex holds that same refusal for the login it caches
+    /// ([`login::keep_refusal`]), so a process after a restart still declines the move.
+    ///
+    /// Keeping it is blocking filesystem work (the veto folder made and pruned, the file and
+    /// the folder synced), so it runs on tokio's blocking pool, never on the runtime thread
+    /// this turn error came on. The turn's end waits for it at most [`WRITE_THROUGH_BUDGET`],
+    /// as for the session record: the veto then stands on disk before a host that ends this
+    /// process after the turn could end it. Past that the write goes on by itself, and
+    /// nothing in this process waits for it: the turn's own reason, set first, and the refusal
+    /// codex holds for its cached login already veto the move here.
+    async fn note_login_refusal(&self, rt: &ThreadRt, details: &CodexErrorDetails) {
+        let reason = match details {
+            CodexErrorDetails::RefreshTokenFailed(error) => Some(error.reason),
+            _ => None,
+        };
+        *lock(&rt.login_refusal) = reason;
+        let Some(reason) = reason.filter(|reason| *reason != RefreshTokenFailedReason::Expired)
+        else {
+            return;
+        };
+        let Some(manager) = self.auth_manager() else {
+            return;
+        };
+        let sup = Arc::clone(&self.sup);
+        let key = rt.key.clone();
+        #[cfg(test)]
+        let before = lock(&self.before_refusal_keep).take();
+        let keep = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(before) = before {
+                before();
+            }
+            if login::keep_refusal(&manager, reason) {
+                sup.note(format!(
+                    "{key}: codex's refresh of this login was refused for good ({reason:?}); \
+                     the session is not moved to another account for it"
+                ));
+            }
+        });
+        let _ = tokio::time::timeout(WRITE_THROUGH_BUDGET, keep).await;
+    }
+
+    /// WHETHER CODEX-ALAB'S OWN READING FORBIDS MOVING THIS THREAD'S SESSION OFF ITS LOST LOGIN
+    /// ([`login::refusal_vetoes_move`]): the last turn error's reason, the refusal codex holds
+    /// for the cached login, and a veto an earlier process kept for its token.
+    pub(super) fn login_move_vetoed(&self, rt: &ThreadRt) -> bool {
+        let turn = *lock(&rt.login_refusal);
+        let manager = self.auth_manager();
+        let held = manager.as_deref().and_then(login::refusal_held);
+        let kept = manager.as_deref().and_then(login::refusal_kept);
+        login::refusal_vetoes_move(turn, held, kept)
+    }
+
     /// How many looks the lost logins' watches took so far ([`Self::watch_login`]): a test
     /// waits for looks to have passed before it says nothing came of them (the end-to-end
     /// tests' seam, so debug builds only).
@@ -1642,8 +2012,15 @@ impl Autopilot {
     /// on its file armed while codex-alab acts and no turn of the thread runs
     /// ([`Self::watch_login`]), and whether the login came back ([`login::Baseline::read`],
     /// which reads codex's cache, never a store), with the point it was read at. The default at
-    /// any other point.
-    fn login_for(self: &Arc<Self>, rt: &Arc<ThreadRt>) -> (Option<Instant>, LoginRead) {
+    /// any other point. `renewal_checked`: the read is a decision's whose follow of the wall
+    /// already stood at a scope a renewal may be asked for ([`renewal_follow::Follow::Leaves`],
+    /// or the follow itself reading), which the watch it arms then counts as checked; false for
+    /// a read no decision makes (a recovered turn's admission).
+    pub(crate) fn login_for(
+        self: &Arc<Self>,
+        rt: &Arc<ThreadRt>,
+        renewal_checked: bool,
+    ) -> (Option<Instant>, LoginRead) {
         let observing = self.observe_auth_wall(rt);
         if !self.eligible_login_scope(rt) && !observing {
             return (None, LoginRead::default());
@@ -1687,7 +2064,7 @@ impl Autopilot {
             ));
         }
         if let Some((point, token, baseline, seen)) = arm {
-            self.watch_login(rt, manager, point, token, baseline, seen);
+            self.watch_login(rt, manager, point, token, baseline, seen, renewal_checked);
         }
         let (point, read) = read;
         (
@@ -1713,6 +2090,23 @@ impl Autopilot {
     /// (`on_reach_edge`), and the watch says so once that look is over. It ends with the point,
     /// the thread, this autopilot, at a passive spell (an Off, a standby, an unproven claim) and
     /// at a turn's start; the next decision at the point arms the next.
+    ///
+    /// THE ORIGINAL PROFILE, ONCE KNOWN, IS CHECKED ONCE. A wall whose cached login was missing
+    /// is only observed until the profile it was asked under reads known again, and the thread
+    /// then looks again so the wall's follow can ask the host to renew it. `renewal_checked`
+    /// says the decision that armed this watch already stood at that profile known
+    /// ([`renewal_follow::Follow::Leaves`]), so the watch owes it a look only once it has read
+    /// unknown and then known again. A watch that began as if nothing had been checked decided
+    /// the point a second time behind the decision that armed it, at its first wake past the
+    /// stat (the initial one where a login file exists, milliseconds later): that pass asked
+    /// the host to `prepare` again at once, and the follow's own recheck was not the next ask
+    /// (aterm's fixture smoke, 2026-11-13: the wall's first ask sent twice 12 to 23 ms apart,
+    /// for a move and for a renewal alike). The login's return is not seeded: every watch says
+    /// it once, a login renewed before the watch first ran among them.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the armed watch's whole state, handed over once"
+    )]
     fn watch_login(
         self: &Arc<Self>,
         rt: &Arc<ThreadRt>,
@@ -1721,9 +2115,16 @@ impl Autopilot {
         token: u64,
         baseline: login::Baseline,
         mut last: Option<login::Stat>,
+        renewal_checked: bool,
     ) {
         let file = baseline.file().to_path_buf();
         let mut folder = login::FolderWatch::of(&file);
+        // Subscribed before the journal says the watch stands and before its task is spawned:
+        // a sign-in codex makes in this process from here on wakes the watch. Subscribed in the
+        // task, one made before the task first ran was taken as already seen, and waited for
+        // the next look (`codexs_own_change_alone_delivers_the_renewed_login` under load).
+        let mut changes = manager.auth_change_state_receiver();
+        changes.borrow_and_update();
         self.sup.note(format!(
             "{}: the lost login's file is watched while the wall stands",
             rt.key
@@ -1741,11 +2142,9 @@ impl Autopilot {
                 Folder(Option<bool>),
                 Look,
             }
-            let mut changes = manager.auth_change_state_receiver();
-            changes.borrow_and_update();
             let mut next_look = tokio::time::Instant::now() + look;
             let mut was_back = false;
-            let mut was_known_profile = false;
+            let mut was_known_profile = renewal_checked;
             // Reconcile a file already present when the watch starts. Re-reading
             // identical attempted credentials cannot advance the manager's
             // credential generation. Only a selected file store qualifies;
@@ -1912,19 +2311,38 @@ impl Autopilot {
         }
     }
 
-    fn restore_quota_scope(&self, rt: &ThreadRt, scope: Option<&codex_alab_core::quota::Scope>) {
+    /// THE RESTORED WALL'S QUOTA BINDING: the record's scope bound to the login this process
+    /// runs under, as a wall seen now. Its bucket and its witnessed ordinary-usage denial say
+    /// what the wall needs; the binding's account says whose read can answer it. Only an
+    /// accepted read of that login, started after this binding in its owner generation, can
+    /// wake the wait ([`codex_alab_core::quota::Quota::restored`]); a read that denies the
+    /// bucket keeps it, and the reset the wall restored stays the latest it can resume.
+    ///
+    /// A restart on ANOTHER login binds that login too (audit of 2026-11-14, gap 3): aterm's
+    /// `/accounts use` and `/accounts auto` restart the session on its conversation under the
+    /// login moved to, and the relaunch restores the wall the old login met. Bound to nothing,
+    /// no read of the new login woke it (the quota waker wakes only a bound thread), and the
+    /// session waited out the old login's reset, up to a week, after the person's explicit
+    /// move to an account with room.
+    ///
+    /// Whether it bound a login other than the scope's (its account and native user): the
+    /// rung the record's pace carried is the old login's then, and the caller starts the
+    /// wall's ladder over ([`ThreadState::restart_wall_ladder`]; the review of gap 3,
+    /// finding 1: the new login's first permitting read waited out the old login's back-off).
+    fn restore_quota_scope(
+        &self,
+        rt: &ThreadRt,
+        scope: Option<&codex_alab_core::quota::Scope>,
+    ) -> bool {
         *lock(&rt.quota_wall) = None;
         *lock(&rt.quota_request) = None;
         let Some(scope) = scope.filter(|scope| scope.valid()) else {
-            return;
+            return false;
         };
-        let Some(identity) = self.quota_identity().filter(|identity| {
-            identity.account == scope.account
-                && identity.user.is_some()
-                && identity.user == scope.user
-        }) else {
-            return;
+        let Some(identity) = self.quota_identity() else {
+            return false;
         };
+        let moved = identity.account != scope.account || identity.user != scope.user;
         let generation = self.sup.shared().quota().select_owner(
             &identity.account,
             identity.user.as_deref(),
@@ -1941,8 +2359,10 @@ impl Autopilot {
                 clock(),
             )
             .map(|wall| wall.with_ordinary_retry(scope.ordinary_retry, scope.ordinary_denied));
+        let bound = wall.is_some();
         *lock(&rt.quota_request) = Some((identity.clone(), generation));
         *lock(&rt.quota_wall) = wall.map(|wall| QuotaWall { wall, identity });
+        moved && bound
     }
 
     fn quota_scope(&self, rt: &ThreadRt) -> Option<codex_alab_core::quota::Scope> {
@@ -1987,7 +2407,12 @@ impl Autopilot {
     /// Have the resume scan read `items` as every resumed thread's history (tests).
     #[cfg(test)]
     pub(crate) fn set_history(&self, items: Vec<codex_history::RolloutItem>) {
-        *lock(&self.history_seam) = Some(items);
+        *lock(&self.history_seam) = Some(Ok(items));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_history_error(&self, why: &str) {
+        *lock(&self.history_seam) = Some(Err(why.to_owned()));
     }
 
     /// THE CARRIED WALL'S ROUTE (B2): a network wall a recovery restored, whose route the
@@ -2017,10 +2442,24 @@ impl Autopilot {
         *lock(&self.facts_seam) = facts;
     }
 
+    /// Have the usage wall's handoff count `count` background terminals in the session
+    /// instead of core's (tests; `renewal_follow`'s `session_background_terminals`).
+    #[cfg(test)]
+    pub(crate) fn set_session_terminals(&self, count: Option<usize>) {
+        *lock(&self.terminals_seam) = count;
+    }
+
     /// Set this instance's recovery-write hang detector (tests).
     #[cfg(test)]
     pub(crate) fn set_recovery_write_budget(&self, budget: Duration) {
         *lock(&self.recovery_write_budget) = budget;
+    }
+
+    /// One pass of the account handoff's follow for `rt`, as a decision at its point runs
+    /// it (`follow_renewal`): whether it kept the point (tests).
+    #[cfg(test)]
+    pub(crate) async fn follow_renewal_for_test(self: &Arc<Self>, rt: &Arc<ThreadRt>) -> bool {
+        matches!(self.follow_renewal(rt).await, renewal_follow::Follow::Keeps)
     }
 
     /// Mark the upgrade's exec under way, as a request that went does (tests; the end-to-end
@@ -2030,8 +2469,10 @@ impl Autopilot {
         self.upgrade_requested.store(on, Ordering::SeqCst);
     }
 
-    /// Register every contributor on `builder`.
+    /// Register every contributor on `builder`, and keep the host's event sink that registry
+    /// carries (the first one this Autopilot is registered in).
     pub fn register(self: &Arc<Self>, builder: &mut ExtensionRegistryBuilder<Config>) {
+        let _ = self.events.set(builder.event_sink());
         builder.thread_lifecycle_contributor(Arc::clone(self) as _);
         builder.turn_lifecycle_contributor(Arc::clone(self) as _);
         builder.approval_review_contributor(Arc::clone(self) as _);
@@ -2087,11 +2528,21 @@ impl Autopilot {
     /// Keep synchronous publications with the instance that owns this registration.
     /// A stopped or replaced evaluator may still owe its actual act's remote receipt.
     fn with_current_runtime<T>(&self, rt: &ThreadRt, publish: impl FnOnce() -> T) -> Option<T> {
+        self.with_current_runtime_and_threads(rt, |_| publish())
+    }
+
+    /// Retain the registration lock through nested local publications without
+    /// reacquiring it. A copied thread list cannot stand in for this guard.
+    fn with_current_runtime_and_threads<T>(
+        &self,
+        rt: &ThreadRt,
+        publish: impl FnOnce(&MutexGuard<'_, Vec<Weak<ThreadRt>>>) -> T,
+    ) -> Option<T> {
         let kept = lock(&self.threads);
         if rt.stopped.load(Ordering::SeqCst) || !Self::current_runtime(&kept, rt) {
             return None;
         }
-        Some(publish())
+        Some(publish(&kept))
     }
 
     fn current_runtime(kept: &[Weak<ThreadRt>], rt: &ThreadRt) -> bool {
@@ -2157,8 +2608,16 @@ impl Autopilot {
         });
         let me = Arc::downgrade(self);
         let mut claims = self.sup.claims();
+        let mut model_goals = self.sup.shared().model_goal_watch();
         tokio::spawn(async move {
-            while claims.changed().await.is_ok() {
+            loop {
+                let changed = tokio::select! {
+                    changed = claims.changed() => changed,
+                    changed = model_goals.changed() => changed,
+                };
+                if changed.is_err() {
+                    return;
+                }
                 let Some(me) = me.upgrade() else {
                     return;
                 };
@@ -2555,6 +3014,17 @@ impl Autopilot {
         if self.upgrade_requested.load(Ordering::SeqCst)
             || !shared.is_root_thread(&rt.key)
             || !shared.displays(&rt.key)
+            // The original goal must resume before another notice can be delivered.
+            // Keep the upgrade round pending instead of falsely booking its notice.
+            || lock(&rt.model_blocked_goal).as_ref().is_some_and(|binding| {
+                self.model_epoch_current(rt.id, &binding.epoch)
+            })
+            || {
+                let pending = lock(&rt.model_goal_import);
+                pending.goal.is_some() && pending.lease.as_ref().is_some_and(|lease| {
+                    self.model_epoch_current(rt.id, lease)
+                })
+            }
         {
             return None;
         }
@@ -3160,9 +3630,10 @@ impl Autopilot {
             ));
             return;
         }
-        if self.follow_renewal(&rt).await {
-            return;
-        }
+        let renewal_checked = match self.follow_renewal(&rt).await {
+            renewal_follow::Follow::Keeps => return,
+            renewal_follow::Follow::Leaves { checked } => checked,
+        };
         // WHETHER A LEAD WAITS ON THE SESSION (`@self task`), read once before the decision's
         // authority and state are taken: its first short done claims and questions wait no
         // back-off, and Land's hold is quiet.
@@ -3193,6 +3664,29 @@ impl Autopilot {
             ));
             return;
         }
+        // Goal custody is independent of a resume scan's obsolete turn/pacing state.
+        // Read it even without a point, so a transient unread rollout can recover.
+        let accepted_before_history = rt.accepted_turns.load(Ordering::SeqCst);
+        if let Err(error) = self.restore_model_goal_stop(&rt).await {
+            self.sup.note(format!(
+                "{}: model goal provenance awaits readable history: {error}",
+                rt.key
+            ));
+            let _ = self.with_current_runtime(&rt, || {
+                if rt.accepted_turns.load(Ordering::SeqCst) == accepted_before_history
+                    && !self.sup.shared().turn_running_on(&rt.key)
+                {
+                    self.arm_timer(&rt, clock() + RECHECK, None);
+                }
+            });
+            self.sync_record_owed();
+            return;
+        }
+        // The point's credential lines, resolved on the one path (never a person's need): a
+        // lookup owed runs off the decision, and its answer decides the point again.
+        let Some((credentials_at, credentials)) = self.credentials_for(&rt) else {
+            return;
+        };
         let accepted_at_decision = rt.accepted_turns.load(Ordering::SeqCst);
         let offs_at_decision = rt.off_seen.load(Ordering::SeqCst);
         let mut now = clock();
@@ -3217,12 +3711,12 @@ impl Autopilot {
         let reach = self.reach_for(&rt);
         // The lost login at the point's login wall, read from codex's own cache (its watch armed
         // while codex-alab acts).
-        let (login_at, login) = self.login_for(&rt);
+        let (login_at, login) = self.login_for(&rt, renewal_checked);
         // THE LIVE UPGRADE'S NOTICE, where one is due (`upgrade_ask`; amended 2026-10-28 after
         // the parity sweep, gap 27), read before the state is held: it goes first at a clean
         // point, and the decisions after a probe or a reach's ask read it too.
         let upgrade_notice = self.upgrade_notice_for(&rt, &policy);
-        let mut recovery_generation = self.sup.shared().upgrade_generation();
+        let mut recovery_generation = self.sup.shared().admission_generation();
         // A PERSON'S HOLD OVER AUTOPILOT OFF keeps the claim and, in the policy, the word before
         // it, while the word they chose is Off: Cruise takes back no exchange the Off left
         // (`ThreadState::observe_mode_under`; review of gap 32, finding 9).
@@ -3239,6 +3733,11 @@ impl Autopilot {
                 login
             } else {
                 LoginRead::default()
+            };
+            state.credentials = if state.point_at() == credentials_at {
+                credentials
+            } else {
+                CredentialRead::NotAsked
             };
             state.managed = managed;
             state.upgrade_notice = upgrade_notice;
@@ -3292,7 +3791,7 @@ impl Autopilot {
                 return;
             }
             now = clock();
-            recovery_generation = self.sup.shared().upgrade_generation();
+            recovery_generation = self.sup.shared().admission_generation();
             let policy_current = self.sup.policy().as_ref() == Some(&policy);
             let point_moved;
             decision = {
@@ -3372,6 +3871,33 @@ impl Autopilot {
                     rt.key
                 ));
                 return;
+            }
+        }
+        // Repository cleanliness proves that code landed, not that the original
+        // goal was completed. A positively bound model stop still owes its paced
+        // native continuation, with all ordinary policy and input checks.
+        let mut model_blocked_goal = None;
+        if decision.act == Act::Landed && self.sup.acting() {
+            match self.current_model_binding(&rt).await {
+                Ok(Some(bound)) => {
+                    model_blocked_goal = Some(bound);
+                    decision = decide::continue_original_goal(
+                        &decision_state,
+                        &policy,
+                        &self.timing,
+                        now,
+                        rt.jitter,
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.sup.note(format!(
+                        "{}: could not read the model-blocked goal before landing; recovery waits: {error}",
+                        rt.key
+                    ));
+                    self.recheck_decided_wait(&rt, &authority);
+                    return;
+                }
             }
         }
         if decision.act.needs_hand()
@@ -3564,6 +4090,25 @@ impl Autopilot {
             }
             _ => None,
         };
+        if model_blocked_goal.is_none()
+            && matches!(
+                decision.act,
+                Act::Type { .. } | Act::Compact | Act::ResumeLimit { .. }
+            )
+            && self.sup.acting()
+        {
+            match self.current_model_binding(&rt).await {
+                Ok(bound) => model_blocked_goal = bound,
+                Err(error) => {
+                    self.sup.note(format!(
+                        "{}: could not read the model-blocked goal; recovery waits: {error}",
+                        rt.key
+                    ));
+                    self.recheck_decided_wait(&rt, &authority);
+                    return;
+                }
+            }
+        }
         if wall_goal.is_some() {
             self.sup.note(format!(
                 "{}: the goal a turn error blocked is the wall's stop; its try resumes it",
@@ -3579,6 +4124,7 @@ impl Autopilot {
         if matches!(decision.act, Act::Type { .. } | Act::Compact)
             && human_goal_resume.is_none()
             && wall_goal.is_none()
+            && model_blocked_goal.is_none()
             && !matches!(decision.act, Act::Type { rule, .. } if rule == words::RULE_LOGIN_BACK)
             && self.sup.acting()
             && let Some(thread) = self.thread(rt.id).await
@@ -3802,7 +4348,8 @@ impl Autopilot {
             Act::Type { rule, ref text }
                 if rule != words::RULE_LIMIT_RESUME
                     && human_goal_resume.is_none()
-                    && wall_goal.is_none() =>
+                    && wall_goal.is_none()
+                    && model_blocked_goal.is_none() =>
             {
                 let started = self
                     .submit(&rt, &thread, &authority, &decision, rule, text.clone())
@@ -3827,14 +4374,16 @@ impl Autopilot {
                 // an idle thread at once) or after it: the record stays busy until it does
                 // (CONTRACT §4). `resume_goal` books the try before that turn can begin.
                 let awaited = shared.await_turn(&rt.key, ACT_TURN_WAIT);
-                let stop = match &wall_goal {
-                    Some(goal) => GoalStop::Wall(goal, &act),
-                    None => GoalStop::Usage(human_goal_resume.as_ref()),
+                let stop = match (&model_blocked_goal, &wall_goal) {
+                    (Some(goal), _) => GoalStop::ModelBlocked(goal, &act),
+                    (_, Some(goal)) => GoalStop::Wall(goal, &act),
+                    _ => GoalStop::Usage(human_goal_resume.as_ref()),
                 };
                 // The words a goal that is gone types instead: the wall's own try, else the
                 // usage window's resume.
                 let rule = match (&wall_goal, &act) {
                     (Some(_), Act::Type { rule, .. }) => *rule,
+                    (None, Act::Type { rule, .. }) if model_blocked_goal.is_some() => *rule,
                     _ => words::RULE_LIMIT_RESUME,
                 };
                 match self
@@ -3846,7 +4395,9 @@ impl Autopilot {
                         self.sup
                             .record_act(
                                 rule,
-                                if wall_goal.is_some() {
+                                if model_blocked_goal.is_some() {
+                                    "resumed the original goal after the model blocked it"
+                                } else if wall_goal.is_some() {
                                     "resumed the goal a turn error blocked, at the wall's try"
                                 } else if human_goal_resume.is_some() {
                                     "resumed the same goal after a successful human Cruise turn"
@@ -3883,15 +4434,21 @@ impl Autopilot {
                         // owns the pace, or none does and the try is typed.
                         if authority.current(&self, &rt)
                             && (wall_goal.is_some()
+                                || model_blocked_goal.is_some()
                                 || goal_status(&thread, rt.id).await
                                     == Some(codex_state::ThreadGoalStatus::UsageLimited))
                             && authority.current(&self, &rt)
                         {
-                            if wall_goal.is_some() {
-                                lock(&rt.wall_goal).take();
-                                self.sync_pace(&rt);
+                            #[cfg(test)]
+                            if let Some((entered, release)) =
+                                { lock(&rt.before_changed_goal_recheck).take() }
+                            {
+                                let _ = entered.send(());
+                                let _ = release.await;
                             }
-                            self.schedule(&rt, clock());
+                            // A rejected decision does not identify a binding to
+                            // retire. The next healthy goal read decides custody.
+                            self.recheck_decided_at(&rt, &authority, clock());
                         }
                     }
                     GoalResume::NotLimited => {
@@ -3906,7 +4463,11 @@ impl Autopilot {
                         // which stop did not lift, and it is tried again later.
                         shared.cancel_await(awaited);
                         self.wait_over(&rt).await;
-                        let told = if wall_goal.is_some() {
+                        let told = if model_blocked_goal.is_some() {
+                            format!(
+                                "goal: recovery of the model's block failed ({why}); it is tried again"
+                            )
+                        } else if wall_goal.is_some() {
                             wall_goal_resume_failed(&why)
                         } else {
                             goal_resume_failed(&why)
@@ -3920,7 +4481,10 @@ impl Autopilot {
                 // A goal may have taken the thread while the ready/record checks awaited; the
                 // goal a turn error blocked at this full context is the wall's stop, and the
                 // compaction goes past it (its continuation resumes the goal).
-                if wall_goal.is_none() && self.goal_owns_pace(&rt, &thread, &authority).await {
+                if wall_goal.is_none()
+                    && model_blocked_goal.is_none()
+                    && self.goal_owns_pace(&rt, &thread, &authority).await
+                {
                     return;
                 }
                 #[cfg(test)]
@@ -3938,6 +4502,7 @@ impl Autopilot {
                         &authority,
                         goal_runtime.as_deref(),
                         wall_goal.as_ref(),
+                        model_blocked_goal.as_ref(),
                     )
                     .await
                 else {
@@ -3986,10 +4551,10 @@ impl Autopilot {
             Act::Nothing | Act::Landed | Act::Probe | Act::Attention { .. } => {}
         }
         // A wall's try moved its ladder (or a refused act put it back).
-        let _ = self.with_current_runtime(&rt, || {
-            self.sync_pace(&rt);
+        let _ = self.with_current_runtime_and_threads(&rt, |kept| {
+            self.sync_pace_from(kept, &rt);
             if lock(&rt.state).point.is_none() {
-                self.clear_recovery(&rt.key);
+                self.clear_recovery_intent(&rt.key);
             }
         });
         // A land act began Land's hold or nudged it (or a refused act put it back).
@@ -4145,12 +4710,22 @@ impl Autopilot {
         }
     }
 
+    fn clear_recovery_intent(&self, thread: &str) {
+        let shared = self.sup.shared();
+        if shared
+            .recovery()
+            .is_some_and(|recovery| recovery.thread == thread)
+        {
+            shared.clear_recovery_intent();
+        }
+    }
+
     async fn sync_recovery(
         &self,
         rt: &ThreadRt,
         decision: &decide::Decision,
         snapshot: &ThreadState,
-        generation: u64,
+        generation: codex_alab_core::session::AdmissionGeneration,
     ) -> bool {
         let shared = self.sup.shared();
         let view = shared.view();
@@ -4160,13 +4735,27 @@ impl Autopilot {
         let Some(turn_id) = snapshot.point_turn_id.as_deref() else {
             return true;
         };
+        if snapshot.retry_clock_refused.is_some() {
+            return true;
+        }
         // Sample monotonic first: a pause before the epoch read can only extend
         // the serialized deadline, never shorten its original lower bound.
         let now = clock();
+        let sample = self.retry_clock_sample();
         let epoch = now_ms();
         let measured = matches!(*lock(&rt.net), Some(netwatch::Route::Direct(_)));
-        let mut recovery =
-            crate::recovery::capture(&rt.key, turn_id, snapshot, decision, measured, now, epoch);
+        let previous = shared.recovery();
+        let mut recovery = crate::recovery::capture(
+            &rt.key,
+            turn_id,
+            snapshot,
+            decision,
+            measured,
+            now,
+            epoch,
+            sample.as_ref(),
+            previous.as_ref(),
+        );
         if let Some(codex_alab_core::session::Recovery {
             wall:
                 codex_alab_core::session::RecoveryWall::Usage { quota, .. }
@@ -4222,6 +4811,10 @@ impl Autopilot {
     /// wall again. So `decision`, attention at the point of `turn_id` with no intent
     /// standing, takes it off. Only a wall the ask marked ([`ThreadRt::asked_wall`]): the
     /// record's writer carries the change at its next write.
+    ///
+    /// Whatever its clock: the record then holds what attention at an unasked usage wall
+    /// leaves, nothing. A wall whose clock was refused at a restart is not this path's:
+    /// [`Self::sync_recovery`] leaves such a point before it is called.
     fn drop_asked_wall_left_to_a_person(
         &self,
         rt: &ThreadRt,
@@ -4341,11 +4934,20 @@ impl Autopilot {
 
     /// An unread goal may recheck only the native point that needed the read.
     fn recheck_decided_wait(self: &Arc<Self>, rt: &Arc<ThreadRt>, authority: &DecisionAuthority) {
+        self.recheck_decided_at(rt, authority, clock() + RECHECK);
+    }
+
+    fn recheck_decided_at(
+        self: &Arc<Self>,
+        rt: &Arc<ThreadRt>,
+        authority: &DecisionAuthority,
+        at: Instant,
+    ) {
         if self.with_current_runtime(rt, || {
             if !authority.current(self, rt) {
                 return false;
             }
-            self.arm_timer(rt, clock() + RECHECK, None);
+            self.arm_timer(rt, at, None);
             true
         }) == Some(true)
         {
@@ -4592,6 +5194,7 @@ impl Autopilot {
         authority: &DecisionAuthority,
         runtime: Option<&'a codex_goal_extension::GoalRuntimeHandle>,
         wall_goal: Option<&codex_alab_core::session::WallGoal>,
+        model_goal: Option<&codex_alab_core::model_goal_stops::Binding>,
     ) -> Result<Option<tokio::sync::SemaphorePermit<'a>>, ()> {
         let permit = match runtime {
             Some(runtime) => match runtime.alab_automatic_input_permit().await {
@@ -4624,6 +5227,14 @@ impl Autopilot {
                 .wall_goal_standing(thread, rt.id, bound.clone())
                 .await
                 .is_some()
+        {
+            return Ok(permit);
+        }
+        if let Some(bound) = model_goal
+            && self
+                .model_goal_standing(thread, rt.id, bound.clone())
+                .await
+                .is_ok_and(|current| current.is_some())
         {
             return Ok(permit);
         }
@@ -4792,7 +5403,7 @@ impl Autopilot {
         let Ok(goal_permit) = (if auth_goal {
             Ok(None)
         } else {
-            self.goal_admission(rt, thread, authority, goal_runtime.as_deref(), None)
+            self.goal_admission(rt, thread, authority, goal_runtime.as_deref(), None, None)
                 .await
         }) else {
             return false;
@@ -5009,6 +5620,14 @@ impl Autopilot {
                 GoalStop::Wall(bound, _) => {
                     same_wall_goal(bound, current, self.sup.shared().person_goal_stops(&rt.key))
                 }
+                GoalStop::ModelBlocked(bound, _) => {
+                    self.model_epoch_current(rt.id, &bound.epoch)
+                        && same_wall_goal(
+                            &bound.goal,
+                            current,
+                            self.sup.shared().person_goal_stops(&rt.key),
+                        )
+                }
             };
         let original = match (db.thread_goals().get_thread_goal(rt.id).await, stop) {
             (Ok(Some(goal)), GoalStop::Usage(_))
@@ -5021,9 +5640,19 @@ impl Autopilot {
             {
                 goal
             }
+            (Ok(Some(goal)), GoalStop::ModelBlocked(bound, _))
+                if self.model_epoch_current(rt.id, &bound.epoch)
+                    && same_wall_goal(
+                        &bound.goal,
+                        &goal,
+                        self.sup.shared().person_goal_stops(&rt.key),
+                    ) =>
+            {
+                goal
+            }
             (Ok(_), GoalStop::Usage(Some(_))) => return GoalResume::Stopped,
             (Ok(_), GoalStop::Usage(None)) => return GoalResume::NotLimited,
-            (Ok(_), GoalStop::Wall(..)) => return GoalResume::NotNow,
+            (Ok(_), GoalStop::Wall(..) | GoalStop::ModelBlocked(..)) => return GoalResume::NotNow,
             (Err(error), _) => {
                 return GoalResume::Failed(format!("could not read the goal: {error}"));
             }
@@ -5035,12 +5664,33 @@ impl Autopilot {
         }
         let origin = match stop {
             GoalStop::Usage(origin) => origin,
-            GoalStop::Wall(..) => None,
+            GoalStop::Wall(..) | GoalStop::ModelBlocked(..) => None,
         };
         let policy = match stop {
-            GoalStop::Wall(_, Act::Type { rule, text })
-                if *rule == words::RULE_POLICY_CONTINUE =>
-            {
+            GoalStop::ModelBlocked(_, act) => {
+                let mut prompt = match act {
+                    Act::Type { text, .. } | Act::ResumeLimit { text } => text
+                        .strip_suffix(words::POLICY_BOUNDARY)
+                        .unwrap_or(text)
+                        .trim_end()
+                        .to_owned(),
+                    _ => String::new(),
+                };
+                if !prompt.ends_with(words::MODEL_BLOCKED_GOAL_CONTINUE) {
+                    if !prompt.is_empty() {
+                        prompt.push_str("\n\n");
+                    }
+                    prompt.push_str(words::MODEL_BLOCKED_GOAL_CONTINUE);
+                }
+                if lock(&rt.state).policy_continued
+                    || matches!(act, Act::Type { rule, .. } if *rule == words::RULE_POLICY_CONTINUE)
+                {
+                    prompt.push_str("\n\n");
+                    prompt.push_str(words::POLICY_BOUNDARY);
+                }
+                Some(prompt)
+            }
+            GoalStop::Wall(_, Act::Type { rule, text }) if *rule == words::RULE_POLICY_CONTINUE => {
                 Some(text.clone())
             }
             _ => None,
@@ -5070,69 +5720,80 @@ impl Autopilot {
         // GoalService runs this future under the runtime's mutation permit, after any
         // earlier person's set has finished. Its initial read above is no authority to
         // reactivate a goal that was paused, replaced or edited while the permit waited.
-        let result = goals
-            .set_thread_goal(&db, request, async {
-                let current = db
-                    .thread_goals()
-                    .get_thread_goal(rt.id)
-                    .await
-                    .map_err(|error| {
-                        GoalServiceError::Internal(format!("could not recheck the goal: {error}"))
-                    })?;
-                if !current
-                    .as_ref()
-                    .is_some_and(|goal| stopped_here(&original, goal))
-                    || !authority.current(self, rt)
-                {
-                    changed = true;
-                    return Err(GoalServiceError::InvalidRequest(
-                        "the goal or native decision changed during the resume".into(),
-                    ));
-                }
-                if current.as_ref().is_some_and(|goal| {
-                    goal.token_budget
-                        .is_some_and(|budget| goal.tokens_used >= budget)
-                }) {
-                    budget_stopped = true;
-                    return Err(GoalServiceError::InvalidRequest(
-                        "the goal budget is exhausted".into(),
-                    ));
-                }
-                if let Some(wait) = self
-                    .inherited_wait(rt)
-                    .map(|until| {
-                        (
-                            until,
-                            "the resumed automatic intent is settling after startup or sleep",
-                        )
-                    })
-                    .or_else(|| self.sup.tui_wait(authority.policy.human_grace))
-                {
-                    tui_wait = Some(wait);
-                    return Err(GoalServiceError::InvalidRequest(
-                        "new TUI input holds automatic goal resume".into(),
-                    ));
-                }
-                before = Some(lock(&rt.state).clone());
-                {
-                    let mut state = lock(&rt.state);
-                    match stop {
-                        GoalStop::Usage(_) => state.goal_resumed(clock(), &self.timing),
-                        // The wall's try, taken by the goal's own turn: its ladder climbs.
-                        GoalStop::Wall(_, act) => {
-                            state.wall_goal_resumed(act, clock(), &self.timing);
-                        }
+        let instruction = async {
+            let current = db
+                .thread_goals()
+                .get_thread_goal(rt.id)
+                .await
+                .map_err(|error| {
+                    GoalServiceError::Internal(format!("could not recheck the goal: {error}"))
+                })?;
+            if !current
+                .as_ref()
+                .is_some_and(|goal| stopped_here(&original, goal))
+                || !authority.current(self, rt)
+            {
+                changed = true;
+                return Err(GoalServiceError::InvalidRequest(
+                    "the goal or native decision changed during the resume".into(),
+                ));
+            }
+            if current.as_ref().is_some_and(|goal| {
+                goal.token_budget
+                    .is_some_and(|budget| goal.tokens_used >= budget)
+            }) {
+                budget_stopped = true;
+                return Err(GoalServiceError::InvalidRequest(
+                    "the goal budget is exhausted".into(),
+                ));
+            }
+            if let Some(wait) = self
+                .inherited_wait(rt)
+                .map(|until| {
+                    (
+                        until,
+                        "the resumed automatic intent is settling after startup or sleep",
+                    )
+                })
+                .or_else(|| self.sup.tui_wait(authority.policy.human_grace))
+            {
+                tui_wait = Some(wait);
+                return Err(GoalServiceError::InvalidRequest(
+                    "new TUI input holds automatic goal resume".into(),
+                ));
+            }
+            before = Some(lock(&rt.state).clone());
+            {
+                let mut state = lock(&rt.state);
+                match stop {
+                    GoalStop::Usage(_) => state.goal_resumed(clock(), &self.timing),
+                    // The wall's try, taken by the goal's own turn: its ladder climbs.
+                    GoalStop::Wall(_, act) | GoalStop::ModelBlocked(_, act) => {
+                        state.wall_goal_resumed(act, clock(), &self.timing);
                     }
-                    state.stamp_land_hold(now_ms());
                 }
-                self.sync_pace(rt);
-                // The try is booked: a store a test has fail returns its error here, as a
-                // goal write that fails after this record does, the goal unchanged.
-                self.goal_set_fault()
-            })
-            .await;
+                state.stamp_land_hold(now_ms());
+            }
+            self.sync_pace(rt);
+            // The try is booked: a store a test has fail returns its error here, as a
+            // goal write that fails after this record does, the goal unchanged.
+            self.goal_set_fault()
+        };
+        let result = match stop {
+            GoalStop::ModelBlocked(bound, _) => {
+                goals
+                    .alab_resume_model_goal(&db, request, &bound.epoch, instruction)
+                    .await
+            }
+            _ => goals.set_thread_goal(&db, request, instruction).await,
+        };
         match result {
             Ok(outcome) => {
+                // Retire only this exact stop before runtime effects can begin a
+                // new turn and publish a different model block of the same goal.
+                if let GoalStop::ModelBlocked(bound, _) = stop {
+                    self.retire_model_goal_stop(rt, bound);
+                }
                 self.tell_land(rt);
                 outcome
                     .apply_runtime_effects_with_policy(goals, policy)
@@ -5146,6 +5807,12 @@ impl Autopilot {
                 }
             }
             Err(e) => {
+                if before.is_none()
+                    && let GoalStop::ModelBlocked(bound, _) = stop
+                    && !self.model_epoch_current(rt.id, &bound.epoch)
+                {
+                    return GoalResume::NotNow;
+                }
                 if let Some((until, why)) = tui_wait {
                     return GoalResume::TuiHeld { until, why };
                 }
@@ -5158,9 +5825,9 @@ impl Autopilot {
                 if let Some(before) = before {
                     // The needs come back on the menu bar outside the thread list's lock, which
                     // showing them takes.
-                    let unwritten = self.with_current_runtime(rt, || {
+                    let unwritten = self.with_current_runtime_and_threads(rt, |kept| {
                         let unwritten = authority.restore_if_unanswered(rt, before);
-                        self.sync_pace(rt);
+                        self.sync_pace_from(kept, rt);
                         unwritten
                     });
                     if unwritten == Some(true) {
@@ -5532,6 +6199,7 @@ impl Autopilot {
         });
         let timer = Timer {
             generation,
+            at,
             handle,
             owes,
         };
@@ -5614,7 +6282,7 @@ impl Autopilot {
         };
         #[cfg(test)]
         let items = match lock(&self.history_seam).clone() {
-            Some(items) => Ok(items),
+            Some(items) => items,
             None => items,
         };
         Some(Books { accepted, items })
@@ -5692,7 +6360,7 @@ impl Autopilot {
                 };
                 #[cfg(test)]
                 let history = match lock(&self.history_seam).clone() {
-                    Some(items) => Ok(items),
+                    Some(items) => items,
                     None => history,
                 };
                 if let Err(why) = &history {
@@ -5703,6 +6371,9 @@ impl Autopilot {
                 // A carried network wall whose route the process before measured: read that
                 // route again once the point is restored, so the wait measures it (B2).
                 let mut rearm = false;
+                // Sample before registration/native publication locks. Their wait can only
+                // extend a restored lower bound when paired with the later Instant below.
+                let retry_sample = self.retry_clock_sample();
                 let applied = {
                     // Registration owns the native boundary, as start and completion do.
                     // Never reacquire it from bookkeeping inside that boundary.
@@ -5719,7 +6390,7 @@ impl Autopilot {
                             run_hook(hook);
                         }
                         self.seed_workdir(&rt);
-                        self.seed_pace(&rt, history.as_deref().ok());
+                        self.seed_pace_from(&kept, &rt, history.as_deref().ok());
                         // An unread history is no proof the session never worked: its first turn's
                         // end here is past its opening (`ThreadRt::books_read`).
                         let Ok(items) = history else {
@@ -5805,33 +6476,38 @@ impl Autopilot {
                             clock(),
                             |state| {
                                 if let Some(recovery) = recovery {
-                                    // Restore in the opposite sampling order: a pause before the
-                                    // monotonic read can only extend an absolute deadline.
-                                    let epoch = now_ms();
                                     let now = clock();
                                     let restored = crate::recovery::restore(
                                         state,
                                         &items,
                                         &recovery,
+                                        retry_sample.as_ref(),
                                         now,
-                                        epoch,
                                         &self.timing,
                                     );
-                                    if !restored {
+                                    if restored == crate::recovery::Outcome::Unmatched {
                                         self.clear_recovery(&rt.key);
-                                    } else if let codex_alab_core::session::RecoveryWall::Usage { quota, .. }
+                                    } else if restored == crate::recovery::Outcome::RefusedClock {
+                                        let mut refused = recovery.clone();
+                                        refused.clock = None;
+                                        shared.set_recovery(Some(refused));
+                                    } else if restored.restored()
+                                        && let codex_alab_core::session::RecoveryWall::Usage { quota, .. }
                                         | codex_alab_core::session::RecoveryWall::Entitlement { quota } = &recovery.wall
+                                        && self.restore_quota_scope(&rt, quota.as_ref())
                                     {
-                                        self.restore_quota_scope(&rt, quota.as_ref());
+                                        // Bound to another login: the carried rung was the
+                                        // old login's tries, and the new one starts its own.
+                                        state.restart_wall_ladder();
                                     }
-                                    rearm = restored
+                                    rearm = restored.restored()
                                         && (crate::recovery::rearms(&recovery)
                                             || matches!(
                                                 recovery.wall,
                                                 codex_alab_core::session::RecoveryWall::Usage { .. }
                                                     | codex_alab_core::session::RecoveryWall::Entitlement { .. }
                                             ));
-                                    restored
+                                    restored.handled()
                                 } else {
                                     self.clear_recovery(&rt.key);
                                     false
@@ -5852,25 +6528,31 @@ impl Autopilot {
                             .flatten()
                             .filter(|retry| retry.thread == rt.key);
                         if let Some(retry) = in_flight {
-                            let epoch = now_ms();
                             let now = clock();
                             let restored = crate::in_flight_retry::restore(
                                 &mut state,
                                 &items,
                                 &retry,
                                 signal_teardown,
+                                retry_sample.as_ref(),
                                 now,
-                                epoch,
+                                &self.timing,
                             );
-                            if restored {
-                                reading = self.wake_reading();
-                                state.asleep_mark = reading.map(|reading| reading.asleep);
+                            if restored.handled() {
+                                if restored.restored() {
+                                    reading = self.wake_reading();
+                                    state.asleep_mark = reading.map(|reading| reading.asleep);
+                                }
                                 if shared
                                     .view()
                                     .primary_thread
                                     .as_deref()
                                     .is_none_or(|primary| primary == rt.key)
                                 {
+                                    let mut retry = retry;
+                                    if restored == crate::recovery::Outcome::RefusedClock {
+                                        retry.clock = None;
+                                    }
                                     shared.set_in_flight_retry(Some(retry));
                                 }
                             } else if shared
@@ -5924,7 +6606,7 @@ impl Autopilot {
                             // Still down in this image: its record says so in turn.
                             self.sup.shared().set_needs_off(needs_off);
                         }
-                        self.sync_pace(&rt);
+                        self.sync_pace_from(&kept, &rt);
                         self.sync_owed_from(&kept);
                         resume_note = Some(format!(
                             "{}: resumed (task={task}, relaunched={relaunched}, owed={})",
@@ -6059,7 +6741,11 @@ impl Autopilot {
     /// The park under the thread list held: `None` where the thread is stopped or no longer
     /// current, else whether it parked at an Off now (or took a vanilla spell in), so its caller
     /// owes the record a write once it lets the list go.
-    fn park_if_off_from(&self, kept: &[Weak<ThreadRt>], rt: &ThreadRt) -> Option<bool> {
+    fn park_if_off_from(
+        &self,
+        kept: &MutexGuard<'_, Vec<Weak<ThreadRt>>>,
+        rt: &ThreadRt,
+    ) -> Option<bool> {
         self.park_with(kept, rt, None)
     }
 
@@ -6067,7 +6753,7 @@ impl Autopilot {
     /// vanilla spell covered ([`Self::unwatched_books`]).
     fn park_with(
         &self,
-        kept: &[Weak<ThreadRt>],
+        kept: &MutexGuard<'_, Vec<Weak<ThreadRt>>>,
         rt: &ThreadRt,
         books: Option<Books>,
     ) -> Option<bool> {
@@ -6129,8 +6815,10 @@ impl Autopilot {
             }
             self.tell_land_from(kept, rt);
             // The done checks start again: the record the caller writes next says so.
-            self.sync_pace(rt);
-            self.clear_recovery(&rt.key);
+            self.sync_pace_from(kept, rt);
+            if lock(&rt.state).retry_clock_refused.is_none() {
+                self.clear_recovery_intent(&rt.key);
+            }
             // The needs the books leave standing go on the menu bar at once (or come off it).
             if rewatched {
                 self.surface_needs_from(kept, rt);
@@ -6429,7 +7117,26 @@ impl Autopilot {
     /// resume read it (`None`: unread): the wall's goal is bound again only where it shows no
     /// person's stop of the goal since the walled turn began
     /// ([`crate::resume_history::person_goal_stop_since`]).
+    #[cfg(test)]
     pub(crate) fn seed_pace(&self, rt: &ThreadRt, history: Option<&[codex_history::RolloutItem]>) {
+        let kept = lock(&self.threads);
+        self.seed_pace_from(&kept, rt, history);
+    }
+
+    /// The resume scan retains its native boundary and registration through this seed.
+    fn seed_pace_from(
+        &self,
+        kept: &MutexGuard<'_, Vec<Weak<ThreadRt>>>,
+        rt: &ThreadRt,
+        history: Option<&[codex_history::RolloutItem]>,
+    ) {
+        if rt.stopped.load(Ordering::SeqCst) || !Self::current_runtime(kept, rt) {
+            return;
+        }
+        self.stage_model_goal_stop(rt);
+        if let Some(items) = history {
+            self.seed_model_goal_stop(rt, items);
+        }
         let shared = self.sup.shared();
         if let Some(pace) = shared
             .pace(&rt.key)
@@ -6536,7 +7243,7 @@ impl Autopilot {
             // typed count whatever this image has accepted since.
             state.seed_acts(&typed, clock(), &self.timing);
         }
-        self.sync_pace(rt);
+        self.sync_pace_from(kept, rt);
     }
 
     /// THE RECORD CARRIES THE THREAD'S PACE ([`codex_alab_core::session::Pace`]): its short
@@ -6547,8 +7254,29 @@ impl Autopilot {
     /// the point ([`ThreadState::esc_carried`]) and the goal a turn error blocked at its wall
     /// ([`wall_goal_after`]), so the image after a re-exec, or aterm's relaunch after a crash,
     /// backs off, spends the hour's budget, says the landing, holds for the person's Esc and
-    /// resumes the wall's goal as this process would have ([`Self::seed_pace`]).
+    /// resumes the wall's goal as this process would have ([`Self::seed_pace_from`]).
     pub(crate) fn sync_pace(&self, rt: &ThreadRt) {
+        let kept = lock(&self.threads);
+        self.sync_pace_from(&kept, rt);
+    }
+
+    fn sync_pace_from(&self, kept: &MutexGuard<'_, Vec<Weak<ThreadRt>>>, rt: &ThreadRt) {
+        if rt.stopped.load(Ordering::SeqCst) || !Self::current_runtime(kept, rt) {
+            return;
+        }
+        self.stage_model_goal_stop(rt);
+        let binding = lock(&rt.model_blocked_goal).clone();
+        let model_blocked_goal = binding
+            .filter(|binding| self.model_epoch_current(rt.id, &binding.epoch))
+            .map(|binding| binding.goal)
+            .or_else(|| {
+                let pending = lock(&rt.model_goal_import);
+                pending
+                    .lease
+                    .as_ref()
+                    .filter(|lease| self.model_epoch_current(rt.id, lease))
+                    .and_then(|_| pending.goal.clone())
+            });
         let pace = {
             let state = lock(&rt.state);
             let now = clock();
@@ -6622,6 +7350,7 @@ impl Autopilot {
                         turn: turn.to_string(),
                     }),
                 wall_goal: lock(&rt.wall_goal).clone(),
+                model_blocked_goal,
             }
         };
         self.sup.shared().set_pace(&rt.key, pace);
@@ -6811,6 +7540,9 @@ impl Autopilot {
             }
             // The goal a turn error blocked at this point's wall, or the one the autopilot's own
             // compaction carries to its continuation.
+            // Committed model-stop custody belongs to the goal, not this turn.
+            // Goal mutations and successful reactivation retire it explicitly;
+            // a reply, an interrupt or relaunch teardown cannot erase it.
             let carried = lock(&rt.wall_goal).take();
             *lock(&rt.wall_goal) = wall_goal_after(
                 carried,
@@ -6874,7 +7606,7 @@ impl Autopilot {
         if self.sup.keep_held_for(&rt.key, held_arm) {
             self.sup.show_held_later();
         }
-        self.sync_pace(rt);
+        self.sync_pace_from(&kept, rt);
         self.sync_owed_from(&kept);
         self.surface_needs_from(&kept, rt);
         // THE ROUND HEARS THE ROOT THREAD'S LATEST REPLY (`upgrade_ask`; gap 27; aterm's
@@ -7000,7 +7732,20 @@ pub(crate) fn resume_bound_with(
     if crate::resume_history::worked(items, source) {
         state.seed_worked();
     }
+    let refused_origin = state.native_origin.clone();
     state.native_origin = crate::owed_origin::origin(&native);
+    if state.retry_clock_refused.as_ref().is_some_and(|turn| {
+        !same_retry_wait(turn, refused_origin.as_ref(), state.native_origin.as_ref())
+    }) {
+        let refused = state.retry_clock_refused.take();
+        if state.point_turn_id == refused {
+            state.point = None;
+            state.point_turn_id = None;
+            state.recovery_not_before = None;
+            state.carry_on_not_before = None;
+            state.wall = None;
+        }
+    }
     if (relaunched || owed.is_some()) && !off_still_down(items, needs_off) {
         state.restore_needs(history_needs(items));
     }
@@ -7023,6 +7768,9 @@ pub(crate) fn resume_bound_with(
     // A validated recovery already supplies the exact failed point. A provisional
     // fatal would erase its carried wall ladder before the real wall replaces it.
     let recovered = restore_recovery(state);
+    if state.retry_clock_refused.is_some() {
+        policy_owed = None;
+    }
     if task && !recovered && !wall_try {
         crate::resume_history::restore_terminal(state, items, source, at);
         // Keep the native Policy point even if a later mode revokes this owed act.
@@ -7078,15 +7826,43 @@ pub(crate) fn rewatch_bound(
     needs_off: u64,
     at: Instant,
 ) -> bool {
+    let refused = state.retry_clock_refused.clone();
+    let refused_origin = state.native_origin.clone();
     state.unwatched();
     let stands = crate::resume_history::restore_end(state, items, at);
     state.native_origin = crate::owed_origin::origin(&crate::resume_history::latest(items));
+    state.retry_clock_refused = None;
+    if refused.as_ref().is_some_and(|turn| {
+        same_retry_wait(turn, refused_origin.as_ref(), state.native_origin.as_ref())
+    }) {
+        state.retry_clock_refused = refused;
+        state.carry_on = false;
+        state.owed = None;
+    }
     state.needs = if off_still_down(items, needs_off) {
         decide::Needs::default()
     } else {
         history_needs(items)
     };
     stands
+}
+
+fn same_retry_wait(
+    turn: &str,
+    previous: Option<&codex_alab_core::session::NativeOrigin>,
+    current: Option<&codex_alab_core::session::NativeOrigin>,
+) -> bool {
+    use codex_alab_core::session::NativePhase;
+    current.is_none_or(|current| {
+        current.turn_id == turn
+            && !matches!(
+                (previous.map(|origin| &origin.phase), &current.phase),
+                (
+                    Some(NativePhase::Running | NativePhase::Interrupted),
+                    NativePhase::Complete | NativePhase::Aborted
+                )
+            )
+    })
 }
 
 /// Whether the needs a resumed thread's history leaves standing are the set an Off took down
@@ -7470,6 +8246,8 @@ enum GoalStop<'a> {
     Usage(Option<&'a codex_state::ThreadGoal>),
     /// A turn error's at the wall this try answers ([`wall_goal_after`]), booked as that try.
     Wall(&'a codex_alab_core::session::WallGoal, &'a Act),
+    /// The model's successful native block, challenged at the next paced act.
+    ModelBlocked(&'a codex_alab_core::model_goal_stops::Binding, &'a Act),
 }
 
 /// What resuming a usage-limited goal at the reset came to.
@@ -7980,6 +8758,30 @@ fn jitter_for(key: &str, max: Duration) -> Duration {
     Duration::from_millis(hasher.finish() % max_ms)
 }
 
+/// A usage window that resets at `reset` (a moment of real time, or none named): the reset
+/// on this process's clock, and the words it is told in.
+fn usage_wall(reset: Option<&chrono::DateTime<chrono::Utc>>) -> Wall {
+    Wall::Usage {
+        reset_at: reset.map(|at| {
+            let wait_ms = at
+                .timestamp_millis()
+                .saturating_sub(i64::try_from(now_ms()).unwrap_or(i64::MAX));
+            clock() + Duration::from_millis(u64::try_from(wait_ms).unwrap_or(0))
+        }),
+        reset_label: reset.map(|at| at.with_timezone(&chrono::Local).format("%H:%M").to_string()),
+    }
+}
+
+/// THE USAGE WALL OF A TURN A HOST'S YES ENDED ([`TrackData::handoff_wall`]): the wall the
+/// host was asked about, with the reset the walled request's own usage read named, whatever
+/// the 429 named (none, the window's own, or another moment: quota recovery offers the wall
+/// on the read alone). The bound on asking the host (`rotation_ask_lapsed`) and the wall's own
+/// resume, which is all a declined or lapsed ask leaves, then run on the moment the host
+/// judged. A read whose reset no clock names leaves the 429's wall.
+fn handed_off_wall(read: SpentWall) -> Option<Wall> {
+    chrono::DateTime::from_timestamp(read.resets_at, 0).map(|at| usage_wall(Some(&at)))
+}
+
 /// The wall a terminal turn error names (CONTRACT §5 rows API/stream, usage, context,
 /// login), or `None` for an error that is no wall.
 pub fn classify(
@@ -8025,19 +8827,7 @@ pub fn classify(
     Some(match error {
         CodexErrorInfo::ContextWindowExceeded => Wall::Context { auto_compact },
         CodexErrorInfo::UsageLimitExceeded => match details {
-            CodexErrorDetails::UsageLimitReached(e) => {
-                let reset = e.resets_at.as_ref();
-                Wall::Usage {
-                    reset_at: reset.map(|at| {
-                        let wait_ms = at
-                            .timestamp_millis()
-                            .saturating_sub(i64::try_from(now_ms()).unwrap_or(i64::MAX));
-                        clock() + Duration::from_millis(u64::try_from(wait_ms).unwrap_or(0))
-                    }),
-                    reset_label: reset
-                        .map(|at| at.with_timezone(&chrono::Local).format("%H:%M").to_string()),
-                }
-            }
+            CodexErrorDetails::UsageLimitReached(e) => usage_wall(e.resets_at.as_ref()),
             CodexErrorDetails::QuotaExceeded | CodexErrorDetails::UsageNotIncluded => {
                 Wall::Entitlement
             }
@@ -8050,12 +8840,11 @@ pub fn classify(
             why: "the session's token budget is spent".to_string(),
         },
         CodexErrorInfo::Unauthorized => Wall::Login,
-        CodexErrorInfo::CyberPolicy => Wall::Policy,
+        CodexErrorInfo::CyberPolicy
+        | CodexErrorInfo::BioPolicy
+        | CodexErrorInfo::MisalignmentPolicyViolation => Wall::Policy,
         CodexErrorInfo::InferenceHookDenied => Wall::Fatal {
             why: "the workspace inference hook denied this request; automatic retry and fallback are stopped".to_string(),
-        },
-        CodexErrorInfo::BioPolicy | CodexErrorInfo::MisalignmentPolicyViolation => Wall::Fatal {
-            why: "the model's usage policy refused the turn".to_string(),
         },
         CodexErrorInfo::InvalidPrompt | CodexErrorInfo::BadRequest => Wall::Fatal {
             why: "the API refused the request as invalid".to_string(),
@@ -8193,7 +8982,7 @@ impl ThreadLifecycleContributor<Config> for Autopilot {
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if codex_alab_core::active() {
-                self.sup.shared().invalidate_upgrade();
+                self.sup.shared().invalidate_native();
             }
             if !(codex_alab_core::active() || codex_alab_core::is_alab_binary()) {
                 return;
@@ -8304,6 +9093,7 @@ impl ThreadLifecycleContributor<Config> for Autopilot {
                 return;
             };
             rt.resumed.store(true, Ordering::SeqCst);
+            self.stage_model_goal_stop(&rt);
             if let Some(owed) = self
                 .sup
                 .shared()
@@ -8343,7 +9133,7 @@ impl ThreadLifecycleContributor<Config> for Autopilot {
     fn on_thread_stop<'a>(&'a self, input: ThreadStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if codex_alab_core::active() {
-                self.sup.shared().invalidate_upgrade();
+                self.sup.shared().invalidate_native();
             }
             if input.thread_store.get::<SubAgentOf>().is_some() {
                 lock(&self.sub_agents).remove(input.thread_store.level_id());
@@ -8411,7 +9201,7 @@ impl TurnLifecycleContributor for Autopilot {
             let Some(rt) = Self::rt(input.thread_store) else {
                 Self::skipped_turn(input.thread_store, input.turn_store).await;
                 if codex_alab_core::active() {
-                    shared.invalidate_upgrade();
+                    shared.invalidate_native();
                 }
                 return;
             };
@@ -8468,15 +9258,27 @@ impl TurnLifecycleContributor for Autopilot {
                 let started = shared.turn_started(&rt.key, input.turn_store.level_id());
                 let retry_thread = rt.key.clone();
                 let retry_turn = input.turn_store.level_id().to_owned();
+                let retry_clock = lock(&self.retry_clock).clone();
                 input.turn_store.insert(codex_alab_core::capacity::InFlightRetryObserver::new(move |deadline| {
                 let changed = match deadline {
                     Some(deadline) => {
                         let now = clock();
+                        let sample = retry_clock();
                         let epoch = now_ms();
+                        let previous = shared.in_flight_retry().filter(|old| {
+                            old.thread == retry_thread && old.turn_id == retry_turn
+                        });
+                        let (clock, epoch) = crate::recovery::capture_clock(
+                            sample.as_ref(),
+                            epoch,
+                            previous.as_ref().and_then(|old| old.clock.as_ref()),
+                        );
+                        let encoded = crate::recovery::checked_epoch_of(deadline, now, epoch);
                         shared.publish_in_flight_retry(codex_alab_core::session::InFlightRetry {
                             thread: retry_thread.clone(),
                             turn_id: retry_turn.clone(),
-                            not_before_ms: crate::recovery::epoch_of(deadline, now, epoch),
+                            not_before_ms: encoded.unwrap_or_else(|| crate::recovery::epoch_of(deadline, now, epoch)),
+                            clock: clock.filter(|_| encoded.is_some()),
                         })
                     }
                     None => shared.clear_in_flight_retry(&retry_thread, &retry_turn),
@@ -8487,28 +9289,55 @@ impl TurnLifecycleContributor for Autopilot {
                     tracing::warn!(thread = %retry_thread, turn = %retry_turn, "could not persist in-turn provider retry pacing");
                 }
             }));
-                // A creditless usage wall (a spent week, or a spent five-hour window the
-                // 429 itself names) ends this turn on its usage error only while account
-                // rotation would follow it (`follow_renewal`) and the host says it leaves
-                // that wall; otherwise the sampler keeps polling for an earned reset. Weak
-                // owners: the turn's store must not keep the autopilot or its thread alive.
+                let track = input.turn_store.get_or_init(TurnTrack::default);
+                // A creditless usage wall (a spent week, or a spent five-hour window beside a
+                // usable week) ends this turn on its usage error only while account rotation
+                // would follow it (`follow_renewal`) and the host says it leaves that wall;
+                // otherwise the sampler keeps polling for an earned reset. A yes is kept in
+                // the turn's facts as the wall the turn ends at ([`TrackData::handoff_wall`]).
+                // Weak owners: the turn's store must not keep the autopilot or its thread
+                // alive, nor the handoff it holds the turn's facts.
+                //
+                // The sampler asks every 30 seconds, and its turn keeps the record busy
+                // between two questions. The session's move to another account is the one
+                // answer that can turn to yes with no word from the sampler's own thread
+                // (`session_leaves_account`), so the watch on it has the sampler ask again
+                // when the move's intent comes onto the record, and at the primary
+                // thread's next pass that leaves the move live after a look of a waiting
+                // turn began, whether or not that look came to ask (`note_move_followed`).
                 let handoff_owner = self.me.clone();
                 let handoff_thread = Arc::downgrade(&rt);
-                input
-                    .turn_store
-                    .insert(codex_alab_core::quota::WallHandoff::new(move |wall| {
+                let handoff_track = Arc::downgrade(&track);
+                let (looks_owner, looks_thread) = (self.me.clone(), Arc::downgrade(&rt));
+                input.turn_store.insert(
+                    codex_alab_core::quota::WallHandoff::new(move |wall| {
                         let owner = handoff_owner.clone();
                         let thread = handoff_thread.clone();
+                        let track = handoff_track.clone();
                         async move {
                             let (Some(me), Some(rt)) = (owner.upgrade(), thread.upgrade()) else {
                                 return false;
                             };
-                            me.quota_handoff_ready(&rt, wall).await
+                            let ready = me.quota_handoff_ready(&rt, wall).await;
+                            // Kept in the same poll the yes is returned in, so the request
+                            // that ends on it always finds it at the turn's error.
+                            if ready && let Some(track) = track.upgrade() {
+                                lock(&track.0).handoff_wall = Some(wall);
+                            }
+                            ready
                         }
-                    }));
+                    })
+                    .waking(shared.account_move_watch())
+                    .hearing_looks(move || {
+                        if let (Some(me), Some(rt)) =
+                            (looks_owner.upgrade(), looks_thread.upgrade())
+                        {
+                            me.walled_look_begins(&rt);
+                        }
+                    }),
+                );
                 let accepted_turns = rt.accepted_turns.fetch_add(1, Ordering::SeqCst) + 1;
                 lock(&rt.inherited_settle).take();
-                let track = input.turn_store.get_or_init(TurnTrack::default);
                 {
                     let mut data = lock(&track.0);
                     data.started = Some(clock());
@@ -8742,7 +9571,7 @@ impl TurnLifecycleContributor for Autopilot {
                         self.tell_land_from(&kept, &rt);
                         // The done checks start again (and the cut act goes): a process after
                         // this one, should this turn not end here, takes up none of them.
-                        self.sync_pace(&rt);
+                        self.sync_pace_from(&kept, &rt);
                         self.sync_owed_from(&kept);
                         self.surface_needs_from(&kept, &rt);
                         if self.sup.shared().is_root_thread(&rt.key) {
@@ -8782,13 +9611,14 @@ impl TurnLifecycleContributor for Autopilot {
     fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(rt) = Self::rt(input.thread_store) {
+                Self::note_turn_stop(&rt, input.turn_store);
                 self.acknowledge_renewal_at_stop(&rt, input.turn_store)
                     .await;
                 self.finish(&rt, input.turn_store, None).await;
             } else {
                 Self::skipped(input.thread_store);
                 if codex_alab_core::active() {
-                    self.sup.shared().invalidate_upgrade();
+                    self.sup.shared().invalidate_native();
                 }
             }
         })
@@ -8824,7 +9654,7 @@ impl TurnLifecycleContributor for Autopilot {
             } else {
                 Self::skipped(input.thread_store);
                 if codex_alab_core::active() {
-                    self.sup.shared().invalidate_upgrade();
+                    self.sup.shared().invalidate_native();
                 }
             }
         })
@@ -8835,12 +9665,14 @@ impl TurnLifecycleContributor for Autopilot {
             let Some(rt) = Self::rt(input.thread_store) else {
                 return;
             };
+            lock(&input.turn_store.get_or_init(TurnTrack::default).0).error_seen = true;
             let auto_compact = !rt.token_budget
                 && input
                     .thread_store
                     .get::<codex_core::compact::AutoCompactionDisabled>()
                     .is_none();
             let mut wall = classify(&input.error, input.error_details, auto_compact);
+            self.note_login_refusal(&rt, input.error_details).await;
             *lock(&rt.quota_wall) = match input.error_details {
                 CodexErrorDetails::UsageLimitReached(error) => {
                     error.rate_limits.as_ref().and_then(|limits| {
@@ -8873,6 +9705,30 @@ impl TurnLifecycleContributor for Autopilot {
             };
             let wall_reading = self.wake_reading();
             let track = input.turn_store.get_or_init(TurnTrack::default);
+            // A TURN A HOST'S YES ENDED STANDS AT THE WALL THE HOST WAS ASKED ABOUT, its
+            // reset the usage read's, not the 429's (gap 6 of the audit of 2026-11-14).
+            // What the 429 named is kept in the journal beside the read's: whether a live
+            // 429 names the window's own reset is not otherwise recorded anywhere.
+            let answered = lock(&track.0).handoff_wall;
+            if matches!(wall, Some(Wall::Usage { .. }))
+                && let Some(read) = answered
+                && let Some(handed_off) = handed_off_wall(read)
+            {
+                let named = match input.error_details {
+                    CodexErrorDetails::UsageLimitReached(error) => error
+                        .resets_at
+                        .map(|at| format!("the 429 named {}", at.timestamp())),
+                    _ => None,
+                };
+                self.sup.note(format!(
+                    "{}: the turn ended on the host's yes; its usage wall resets at the usage \
+                     read's {} ({})",
+                    rt.key,
+                    read.resets_at,
+                    named.as_deref().unwrap_or("the 429 named no reset")
+                ));
+                wall = Some(handed_off);
+            }
             if matches!(wall, Some(Wall::Policy))
                 && (!lock(&track.0).saw_regular_input
                     || lock(&rt.state).compacting
@@ -9078,6 +9934,10 @@ impl ToolLifecycleContributor for Autopilot {
         }
         Box::pin(std::future::ready(()))
     }
+
+    fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(async move { self.model_goal_tool_finish(input).await })
+    }
 }
 
 impl ApprovalReviewContributor for Autopilot {
@@ -9170,3 +10030,11 @@ impl ApprovalReviewContributor for Autopilot {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "goal_persistence_tests.rs"]
+mod goal_persistence_tests;
+
+#[cfg(test)]
+#[path = "goal_retained_usage_tests.rs"]
+mod goal_retained_usage_tests;

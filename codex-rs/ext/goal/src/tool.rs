@@ -31,8 +31,11 @@ use crate::spec::create_get_goal_tool;
 use crate::spec::create_update_goal_tool;
 use crate::steering::GOAL_OBJECTIVE_CONTEXT;
 
+#[path = "../../../alab-autopilot/glue/goal_persistence_tool.rs"] mod alab_persistence; // ALAB(storage): dispatched usage owns its commit bookkeeping independently of tool cancellation.
+
 #[derive(Clone)]
 pub(crate) struct GoalToolExecutor {
+    pub(crate) alab_runtime: Option<GoalRuntimeHandle>, // ALAB(storage): tool mutations share the native goal permit with explicit changes.
     pub(crate) execution_allowed: bool,
     kind: GoalToolKind,
     thread_id: ThreadId,
@@ -88,6 +91,7 @@ impl GoalToolExecutor {
         metrics: GoalMetrics,
     ) -> Self {
         Self {
+            alab_runtime: None, // ALAB(storage): extension binds the actual runtime before exposing tools.
             kind: GoalToolKind::Get,
             execution_allowed: true,
             thread_id,
@@ -110,6 +114,7 @@ impl GoalToolExecutor {
         max_goal_token_budget: Option<i64>,
     ) -> Self {
         Self {
+            alab_runtime: Some(runtime.clone()), // ALAB(storage): creation drains the original goal before replacing it.
             kind: GoalToolKind::Create(thread_manager),
             execution_allowed: true,
             thread_id: runtime.thread_id(),
@@ -131,6 +136,7 @@ impl GoalToolExecutor {
         metrics: GoalMetrics,
     ) -> Self {
         Self {
+            alab_runtime: None, // ALAB(storage): extension binds the actual runtime before exposing tools.
             kind: GoalToolKind::Update,
             execution_allowed: true,
             thread_id,
@@ -220,6 +226,7 @@ impl GoalToolExecutor {
         validate_goal_budget(request.token_budget, self.max_goal_token_budget)
             .map_err(FunctionCallError::RespondToModel)?;
 
+        let mut alab_mutation = self.alab_prepare_create().await?; // ALAB(storage): preserve retained usage before creating a new goal.
         let goal = self
             .state_db
             .thread_goals()
@@ -237,6 +244,7 @@ impl GoalToolExecutor {
                         .to_string(),
                 )
             })?;
+        alab_mutation.commit(); // ALAB(storage): acknowledge only this persisted fresh-goal intent.
         fill_empty_thread_preview_if_possible(self.state_db.as_ref(), self.thread_id, &goal).await;
         let turn_id = self
             .accounting_state
@@ -277,6 +285,7 @@ impl GoalToolExecutor {
             ));
         }
 
+        let mut alab_stop = self.alab_prepare_stop().await?; // ALAB(storage): failed stop intent holds continuation; explicit mutations cannot interleave accounting and status.
         self.account_active_goal_progress(
             match args.status {
                 ThreadGoalStatus::Complete => codex_state::GoalAccountingMode::ActiveOrComplete,
@@ -325,6 +334,7 @@ impl GoalToolExecutor {
         let goal = protocol_goal_from_state(goal);
         let turn_id = self.accounting_state.clear_current_turn_goal();
         self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
+        alab_stop.commit_stop(&goal, &invocation.turn_id, &invocation.call_id); // ALAB(storage): acknowledge the persisted stop and retain exact model-block provenance.
         goal_response(
             Some(goal),
             if args.status == ThreadGoalStatus::Complete {
@@ -351,6 +361,7 @@ impl GoalToolExecutor {
         event_id: &str,
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) -> Result<Option<ThreadGoal>, FunctionCallError> {
+        if codex_alab_core::active() && !codex_alab_core::goal_persistence::owns_current_write() { return self.alab_owned_active_progress(mode, event_id, budget_limited_goal_disposition).await; } // ALAB(storage): the dispatched write owns native baseline finalization.
         let Some(turn_id) = self.accounting_state.current_turn_id() else {
             return Ok(None);
         };
@@ -363,12 +374,13 @@ impl GoalToolExecutor {
                     "goal progress accounting semaphore closed: {err}"
                 ))
             })?;
+        if codex_alab_core::active() && !self.accounting_state.alab_persistence.permits_write() { return Err(FunctionCallError::RespondToModel("goal usage remains held after an ambiguous write".to_owned())); } // ALAB(storage): a queued writer rechecks after the previous outcome is published.
         let Some(snapshot) = self.accounting_state.progress_snapshot(turn_id.as_str()) else {
             return Ok(None);
         };
         let previous_status = self
             .current_goal_status_for_metrics(Some(snapshot.expected_goal_id.as_str()))
-            .await?;
+            .await.inspect_err(|_| { codex_alab_core::goal_persistence::definitely_rolled_back(); })?; // ALAB(storage): metrics-read failure precedes the additive write.
         let outcome = self
             .state_db
             .thread_goals()
@@ -381,6 +393,7 @@ impl GoalToolExecutor {
             )
             .await
             .map_err(|err| {
+                if codex_state::alab_goal_read_recovery::write_definitely_uncommitted(&err) { codex_alab_core::goal_persistence::definitely_rolled_back(); } else if codex_alab_core::active() { self.accounting_state.alab_persistence.block_ambiguous(); } // ALAB(storage): preserve typed rollback knowledge before the model-visible error.
                 FunctionCallError::RespondToModel(format!("failed to account goal progress: {err}"))
             })?;
         Ok(match outcome {
@@ -408,7 +421,7 @@ impl GoalToolExecutor {
                 );
                 Some(goal)
             }
-            codex_state::GoalAccountingOutcome::Unchanged(_) => None,
+            codex_state::GoalAccountingOutcome::Unchanged(goal) => { self.accounting_state.alab_retain_rejected_progress(&snapshot.expected_goal_id, goal.as_ref()).map_err(FunctionCallError::RespondToModel)?; None }, // ALAB(storage): retain positive usage if the original goal refuses this accounting mode or identity.
         })
     }
 

@@ -25,7 +25,7 @@ use rustls::ClientConfig;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
-use tokio_tungstenite::MaybeTlsStream;
+use crate::dialer::alab_handshake::GuardedStream as MaybeTlsStream; // ALAB(recovery): retain negotiation and frame tails around bounded rejection reads.
 use tokio_tungstenite::WebSocketStream as TungsteniteStream;
 use tokio_tungstenite::tungstenite::Error as WebSocketError;
 use tokio_tungstenite::tungstenite::Message;
@@ -34,6 +34,8 @@ use tokio_tungstenite::tungstenite::handshake::client::Response;
 use tokio_tungstenite::tungstenite::http::Uri;
 use tokio_tungstenite::tungstenite::http::header::COOKIE;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+
+pub use crate::dialer::alab_handshake::{RejectionBodyOutcome, RejectionMetadata}; // ALAB(recovery): typed header-time advice survives error conversion.
 
 /// Recovers a deterministic policy denial from Tungstenite's I/O error boundary.
 /// Callers must preserve this distinction when deciding whether to retry.

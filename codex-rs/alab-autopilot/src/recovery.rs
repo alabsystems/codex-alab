@@ -10,11 +10,113 @@ use crate::decide::ThreadState;
 use crate::decide::Timing;
 use crate::decide::TurnEnd;
 use crate::decide::Wall;
+use codex_alab_core::recovery_clock::Anchor;
+use codex_alab_core::recovery_clock::Sample;
 use codex_alab_core::session::Recovery;
 use codex_alab_core::session::RecoveryWall;
 use codex_history::RolloutItem;
 use std::time::Duration;
 use std::time::Instant;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    Unmatched,
+    Restored,
+    RefusedClock,
+}
+
+impl Outcome {
+    pub(crate) fn restored(self) -> bool {
+        self == Self::Restored
+    }
+
+    pub(crate) fn handled(self) -> bool {
+        self != Self::Unmatched
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_sample(epoch: u64) -> Sample {
+    Sample {
+        boot_id: "autopilot-fixture-boot".into(),
+        continuous_ns: epoch.checked_mul(1_000_000).expect("fixture epoch fits"),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_clock(epoch: u64) -> Option<Anchor> {
+    test_sample(epoch).anchor(epoch)
+}
+
+#[cfg(test)]
+pub(crate) fn test_clock_read() -> std::sync::Arc<dyn Fn() -> Option<Sample> + Send + Sync> {
+    let epoch = codex_alab_core::session::now_ms();
+    let start = crate::supervisor::clock();
+    std::sync::Arc::new(move || {
+        let elapsed = crate::supervisor::clock().saturating_duration_since(start);
+        Some(test_sample(
+            epoch
+                .checked_add(u64::try_from(elapsed.as_millis()).unwrap())
+                .unwrap(),
+        ))
+    })
+}
+
+/// A compatible origin keeps the record stable even when the wall clock changes.
+pub(crate) fn capture_clock(
+    sample: Option<&Sample>,
+    epoch: u64,
+    previous: Option<&Anchor>,
+) -> (Option<Anchor>, u64) {
+    let Some(sample) = sample else {
+        return (None, epoch);
+    };
+    let clock = previous
+        .filter(|clock| clock.epoch_at(sample).is_some())
+        .cloned()
+        .or_else(|| sample.anchor(epoch));
+    let epoch = clock
+        .as_ref()
+        .and_then(|clock| clock.epoch_at(sample))
+        .unwrap_or(epoch);
+    (clock, epoch)
+}
+
+pub(crate) fn refuse_clock(
+    state: &mut ThreadState,
+    turn_id: &str,
+    now: Instant,
+    timing: &Timing,
+) -> Outcome {
+    let origin = state.native_origin.clone();
+    state.observe_turn_end(
+        TurnEnd {
+            at: now,
+            by_autopilot: false,
+            by_person: false,
+            text: None,
+            earlier: None,
+            questions: false,
+            worked: Duration::ZERO,
+            wall: Some(Wall::Fatal {
+                why: "the saved provider wait has no verifiable boot clock".into(),
+            }),
+            aborted: false,
+            ran_tools: false,
+            restored: true,
+        },
+        timing,
+    );
+    state.point_turn_id = Some(turn_id.to_owned());
+    state.native_origin = origin;
+    state.carry_on = false;
+    state.owed = None;
+    state.landed = false;
+    state.landing = false;
+    state.carrying = false;
+    state.retry_clock_refused = Some(turn_id.to_owned());
+    Outcome::RefusedClock
+}
 
 pub(crate) fn epoch_of(at: Instant, now: Instant, epoch: u64) -> u64 {
     if at > now {
@@ -32,6 +134,19 @@ pub(crate) fn epoch_of(at: Instant, now: Instant, epoch: u64) -> u64 {
     }
 }
 
+pub(crate) fn checked_epoch_of(at: Instant, now: Instant, epoch: u64) -> Option<u64> {
+    if at > now {
+        let wait = at.duration_since(now);
+        let millis = u64::try_from(wait.as_millis()).ok()?;
+        let rounded = millis
+            .checked_add(u64::from(!wait.subsec_nanos().is_multiple_of(1_000_000)))?
+            .checked_add(1)?;
+        epoch.checked_add(rounded)
+    } else {
+        epoch.checked_sub(u64::try_from(now.duration_since(at).as_millis()).ok()?)
+    }
+}
+
 pub(crate) fn instant_of(ms: u64, now: Instant, epoch: u64) -> Option<Instant> {
     if ms >= epoch {
         now.checked_add(Duration::from_millis(ms - epoch))
@@ -46,6 +161,7 @@ pub(crate) fn instant_of(ms: u64, now: Instant, epoch: u64) -> Option<Instant> {
 /// The recovery intent a wall's `decision` at `state`'s failed point leaves, where it can be
 /// decided again; `measured` where the wall's route was measured (a network wall's,
 /// [`RecoveryWall::Network`]).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn capture(
     thread: &str,
     turn_id: &str,
@@ -54,8 +170,19 @@ pub(crate) fn capture(
     measured: bool,
     now: Instant,
     epoch: u64,
+    sample: Option<&Sample>,
+    previous: Option<&Recovery>,
 ) -> Option<Recovery> {
     let point = state.point.as_ref().filter(|point| !point.aborted)?;
+    let previous = previous.filter(|old| old.thread == thread && old.turn_id == turn_id);
+    let (clock, epoch) = capture_clock(sample, epoch, previous.and_then(|old| old.clock.as_ref()));
+    let mut representable = true;
+    let mut encode = |at| {
+        checked_epoch_of(at, now, epoch).unwrap_or_else(|| {
+            representable = false;
+            epoch_of(at, now, epoch)
+        })
+    };
     let wall = match (&point.wall, &decision.act) {
         // The blind retry, or the measured return's act (a check that holds it back leaves
         // the blind retry in the record's `owed`, and the point is decided again here).
@@ -98,7 +225,7 @@ pub(crate) fn capture(
             RecoveryWall::Server {
                 what: what.clone(),
                 cut_off: *cut_off,
-                retry_at_ms: retry_at.map(|at| epoch_of(at, now, epoch)),
+                retry_at_ms: retry_at.map(&mut encode),
             }
         }
         (
@@ -108,17 +235,20 @@ pub(crate) fn capture(
             }),
             Act::ResumeLimit { .. },
         ) => RecoveryWall::Usage {
-            reset_at_ms: reset_at.map(|at| epoch_of(at, now, epoch)),
+            reset_at_ms: reset_at.map(&mut encode),
             reset_label: reset_label.clone(),
             quota: None,
         },
         _ => return None,
     };
+    let point_at_ms = encode(point.at);
+    let not_before_ms = encode(decision.not_before.unwrap_or(now).max(point.at));
     Some(Recovery {
         thread: thread.to_owned(),
         turn_id: turn_id.to_owned(),
-        point_at_ms: epoch_of(point.at, now, epoch),
-        not_before_ms: epoch_of(decision.not_before.unwrap_or(now).max(point.at), now, epoch),
+        point_at_ms,
+        not_before_ms,
+        clock: clock.filter(|_| representable),
         by_autopilot: point.by_autopilot,
         by_person: point.by_person,
         wall,
@@ -137,6 +267,8 @@ pub(crate) fn capture_asked_wall(
     state: &ThreadState,
     now: Instant,
     epoch: u64,
+    sample: Option<&Sample>,
+    previous: Option<&Recovery>,
 ) -> Option<Recovery> {
     let point = state.point.as_ref().filter(|point| !point.aborted)?;
     if state.point_turn_id.as_deref() != Some(turn_id) {
@@ -149,16 +281,26 @@ pub(crate) fn capture_asked_wall(
     else {
         return None;
     };
-    let point_at_ms = epoch_of(point.at, now, epoch);
+    let previous = previous.filter(|old| old.thread == thread && old.turn_id == turn_id);
+    let (clock, epoch) = capture_clock(sample, epoch, previous.and_then(|old| old.clock.as_ref()));
+    let point_at_ms = checked_epoch_of(point.at, now, epoch);
+    let mut representable = point_at_ms.is_some();
+    let reset_at_ms = reset_at.map(|at| {
+        let encoded = checked_epoch_of(at, now, epoch);
+        representable &= encoded.is_some();
+        encoded.unwrap_or_else(|| epoch_of(at, now, epoch))
+    });
+    let point_at_ms = point_at_ms.unwrap_or_else(|| epoch_of(point.at, now, epoch));
     Some(Recovery {
         thread: thread.to_owned(),
         turn_id: turn_id.to_owned(),
         point_at_ms,
         not_before_ms: point_at_ms,
+        clock: clock.filter(|_| representable),
         by_autopilot: point.by_autopilot,
         by_person: point.by_person,
         wall: RecoveryWall::Usage {
-            reset_at_ms: reset_at.map(|at| epoch_of(at, now, epoch)),
+            reset_at_ms,
             reset_label: reset_label.clone(),
             quota: None,
         },
@@ -212,15 +354,19 @@ pub(crate) fn restore(
     state: &mut ThreadState,
     items: &[RolloutItem],
     recovery: &Recovery,
+    sample: Option<&Sample>,
     now: Instant,
-    epoch: u64,
     timing: &Timing,
-) -> bool {
+) -> Outcome {
     if !state.task || !current_failed_turn(items, recovery) {
-        return false;
+        return Outcome::Unmatched;
     }
-    let Some(not_before) = instant_of(recovery.not_before_ms, now, epoch) else {
-        return false;
+    let convert = |ms| recovery.clock.as_ref()?.instant_of(ms, sample?, now);
+    let Some(not_before) = convert(recovery.not_before_ms) else {
+        return refuse_clock(state, &recovery.turn_id, now, timing);
+    };
+    let Some(point_at) = convert(recovery.point_at_ms) else {
+        return refuse_clock(state, &recovery.turn_id, now, timing);
     };
     let wall = match &recovery.wall {
         RecoveryWall::Network { what, .. } => Wall::Network { what: what.clone() },
@@ -235,8 +381,8 @@ pub(crate) fn restore(
             cut_off: *cut_off,
             retry_at: match retry_at_ms {
                 Some(ms) => {
-                    let Some(at) = instant_of(*ms, now, epoch) else {
-                        return false;
+                    let Some(at) = convert(*ms) else {
+                        return refuse_clock(state, &recovery.turn_id, now, timing);
                     };
                     Some(at)
                 }
@@ -250,8 +396,8 @@ pub(crate) fn restore(
         } => Wall::Usage {
             reset_at: match reset_at_ms {
                 Some(ms) => {
-                    let Some(at) = instant_of(*ms, now, epoch) else {
-                        return false;
+                    let Some(at) = convert(*ms) else {
+                        return refuse_clock(state, &recovery.turn_id, now, timing);
                     };
                     Some(at)
                 }
@@ -262,7 +408,7 @@ pub(crate) fn restore(
     };
     state.observe_turn_end(
         TurnEnd {
-            at: instant_of(recovery.point_at_ms, now, epoch).unwrap_or(now),
+            at: point_at,
             by_autopilot: recovery.by_autopilot,
             by_person: recovery.by_person,
             text: None,
@@ -278,7 +424,7 @@ pub(crate) fn restore(
     );
     state.recovery_not_before = Some(not_before);
     state.point_turn_id = Some(recovery.turn_id.clone());
-    true
+    Outcome::Restored
 }
 
 #[cfg(test)]

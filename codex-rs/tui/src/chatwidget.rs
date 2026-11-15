@@ -579,6 +579,7 @@ pub(crate) struct ChatWidget {
     token_usage_pending: bool,
     // Status and polling use account usage reads; response streams may identify meters differently.
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
+    alab_goal_runtime: alab_goal_runtime::State, // ALAB(storage-status): exact-backend passive runtime observation.
     alab_allowance: alab_allowance::State, // ALAB(interface): widget-local account usage history and reset-credit details.
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
@@ -2198,3 +2199,5 @@ pub(crate) mod tests;
 #[path = "../../alab-tui/glue/pet_layout.rs"] mod alab_pet_layout; // ALAB(interface): the pet has a reserved dock beside the whole bottom pane
 #[path = "../../alab-tui/glue/task_terminals.rs"] mod alab_tasks; // ALAB(tasks): expose current terminal summaries without duplicating runtime state
 #[path = "../../alab-tui/glue/allowance.rs"] mod alab_allowance; // ALAB(interface): retain accepted native quota and reset-credit observations.
+
+#[path = "../../alab-tui/glue/goal_runtime_status.rs"] pub(crate) mod alab_goal_runtime; // ALAB(storage-status): live admission informs status only.

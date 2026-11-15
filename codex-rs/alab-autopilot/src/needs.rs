@@ -1977,7 +1977,7 @@ fn needs_lines_by(tail: &str, by: &NoneWords<'_>, join: Join) -> NeedLines {
             continue;
         }
         // A fixed instruction cut just before the token is no need. A first-row
-        // `and` alone proves no cut: `and the release credential` is a real need.
+        // `and` alone proves no cut: `and the release permission` is a real need.
         if need_rest(row).is_some_and(|rest| cut_instruction(rest, &rows[i + 1..])) {
             i += 1;
             continue;
@@ -2125,8 +2125,9 @@ pub(crate) fn sanitized(need: &str) -> String {
     cut
 }
 
-/// What the report `tail` names only a person can give, each need one line
-/// (module header): sanitized, each once, in the order written. Empty where
+/// What the report `tail` names after a `NEEDS YOU:` head, each need one line
+/// (module header): the grammar's read, credential lines among them
+/// ([`persons_needs`] leaves those out); sanitized, each once, in the order written. Empty where
 /// it names none, or says none stands ([`says_no_needs`]); a head whose words
 /// sanitize empty (`NEEDS YOU: ***`, `NEEDS YOU: \u{200B}`) still names
 /// [`UNREAD_NEED`], as a bare head with nothing under it does.
@@ -2144,6 +2145,26 @@ pub fn needs_you(tail: &str) -> Vec<String> {
         out.push(UNREAD_NEED.to_string());
     }
     out
+}
+
+/// What the report `tail` names only a person can give ([`needs_you`]): a line that asks for a
+/// credential is no person's ([`crate::credential_need`]); it is in [`credential_needs`]. Every
+/// reader of the worker's needs reads this, never the grammar's whole read: the standing set and
+/// `harness_needs`, a landing's clean defense, a yield's needs leg, a landed wake.
+#[must_use]
+pub fn persons_needs(tail: &str) -> Vec<String> {
+    let mut needs = needs_you(tail);
+    needs.retain(|need| !crate::credential_need::is_credential(need));
+    needs
+}
+
+/// The `NEEDS YOU:` lines of `tail` that ask for a credential, which codex-alab resolves on the
+/// secrets path instead of showing them to a person ([`crate::credential_need::wants_of`]).
+#[must_use]
+pub fn credential_needs(tail: &str) -> Vec<String> {
+    let mut needs = needs_you(tail);
+    needs.retain(|need| crate::credential_need::is_credential(need));
+    needs
 }
 
 /// Whether `tail` says no need stands: a `NEEDS YOU: nothing` (or `none`)

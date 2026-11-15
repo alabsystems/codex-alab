@@ -10,33 +10,33 @@
 
 fn main() {
     rust_nightly();
-    // ALAB(toolchain): Infallible can be an alias of ! on newer compilers. Test the
-    // actual types instead of tying this compatibility boundary to a version string.
+    // ALAB(toolchain): Probe language behavior instead of tying compatibility boundaries to
+    // version strings. Keep the probes declaration-only: Trust verifies function bodies even in
+    // compiler probes.
     println!("cargo:rustc-check-cfg=cfg(infallible_is_never)");
     println!("cargo:rustc-check-cfg=cfg(stable_never_type)");
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    // ALAB(toolchain): enable the feature only when this compiler still needs it.
-    let stable_probe = output.join("stable_never_type.rs");
-    std::fs::write(&stable_probe, "pub fn identity(value: !) -> ! { value }\n").unwrap();
-    if std::process::Command::new(std::env::var_os("RUSTC").unwrap())
-        .arg("--crate-type=lib")
-        .arg("--emit=metadata")
-        .arg("--out-dir")
-        .arg(&output)
-        .arg(stable_probe)
-        .output()
-        .unwrap()
-        .status
-        .success()
-    {
+    let stable_never_type = probe(
+        &output,
+        "never_type_stable.rs",
+        "const _: Option<!> = None;\n",
+    );
+    if stable_never_type {
         println!("cargo:rustc-cfg=stable_never_type");
     }
-    let probe = output.join("infallible_is_never.rs");
-    std::fs::write(
-        &probe,
-        "#![feature(never_type)]\npub fn alias(value: std::convert::Infallible) -> ! { value }\n",
-    )
-    .unwrap();
+    let alias_source = if stable_never_type {
+        "const _: Option<!> = None::<std::convert::Infallible>;\n"
+    } else {
+        "#![feature(never_type)]\nconst _: Option<!> = None::<std::convert::Infallible>;\n"
+    };
+    if probe(&output, "infallible_is_never.rs", alias_source) {
+        println!("cargo:rustc-cfg=infallible_is_never");
+    }
+}
+
+fn probe(output: &std::path::Path, name: &str, source: &str) -> bool {
+    let probe = output.join(name);
+    std::fs::write(&probe, source).unwrap();
     let result = std::process::Command::new(std::env::var_os("RUSTC").unwrap())
         .arg("--crate-type=lib")
         .arg("--emit=metadata")
@@ -45,9 +45,7 @@ fn main() {
         .arg(probe)
         .output()
         .unwrap();
-    if result.status.success() {
-        println!("cargo:rustc-cfg=infallible_is_never");
-    }
+    result.status.success()
 }
 
 fn rust_nightly() {

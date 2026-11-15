@@ -266,8 +266,12 @@ class GoldenReplyTests(unittest.TestCase):
     def test_the_committed_files_are_exactly_what_the_fixture_generates(self):
         expected = provider.golden()
         self.assertEqual(sorted(expected), ["consume-no-credit.json", "credits-empty.json",
-            "refusal-five-hour-wall.json", "refusal-weekly-wall.json",
-            "usage-five-hour-wall.json", "usage-healthy.json", "usage-weekly-wall.json"])
+            "refusal-credit-only.json", "refusal-five-hour-wall.json", "refusal-model-limit.json",
+            "refusal-reserve.json", "refusal-spend-cap.json", "refusal-usage-not-included.json",
+            "refusal-weekly-wall.json", "refusal-workspace-credits.json",
+            "usage-credit-only.json", "usage-five-hour-reached.json", "usage-five-hour-wall.json",
+            "usage-healthy.json", "usage-model-limit.json", "usage-spend-control.json",
+            "usage-weekly-wall.json", "usage-workspace-credits.json"])
         self.assertEqual(sorted(path.name for path in provider.GOLDEN_DIR.iterdir()), sorted(expected))
         for name, body in expected.items():
             with self.subTest(name=name):
@@ -378,7 +382,6 @@ class RefusalTests(unittest.TestCase):
             "a fractional reset": changed(lambda reply: reply["body"]["error"].update(resets_at=87400.5)),
             "a reset that is not the spent window's": changed(
                 lambda reply: reply["body"]["error"].update(resets_at=87401)),
-            "no reset beside spent windows": changed(lambda reply: reply["body"]["error"].pop("resets_at")),
             "an unknown reached type": changed(
                 lambda reply: reply["headers"].update({"x-codex-rate-limit-reached-type": "usage_limit_reached"})),
             "a limit whose windows are not sent": changed(
@@ -412,6 +415,13 @@ class RefusalTests(unittest.TestCase):
         del bare["body"]["error"]["resets_at"]
         provider.check("refusal", bare)
         provider.check("refusal", provider.refusal(self.usage, "spent", headers={}))
+        # A body that names no reset beside spent windows is a usage limit that names none,
+        # as the client decodes it: a live 429 at a five-hour wall may (gap 6 of the audit
+        # of 2026-11-14, five-hour-wall-far-unnamed). `names_reset` builds it; its headers
+        # still state the windows and their resets.
+        unnamed = changed(lambda reply: reply["body"]["error"].pop("resets_at"))
+        self.assertEqual(provider.check("refusal", unnamed),
+                         provider.refusal(self.usage, "spent", names_reset=False))
 
     def test_an_account_with_no_spent_window_has_no_wall_to_refuse_at(self):
         healthy = provider.usage("account", "user", week_used=99, session_used=99, allowed=True, now=1000)
@@ -443,6 +453,287 @@ class RefusalTests(unittest.TestCase):
         body = json.loads(data)
         self.assertEqual((body["error"]["type"], body["error"]["plan_type"]), ("usage_limit_reached", "pro"))
         provider.check("refusal", {"status": code, "headers": record["responseHeaders"], "body": body})
+
+
+class WallKindTests(unittest.TestCase):
+    """The walls outside the ordinary bucket's spent window, in the shapes upstream decodes.
+
+    Each golden reading states its wall by one signal: whether a real read at a workspace
+    wall also carries the others is not known (alab/PARALLEL-LOGINS.md, gap 4).
+    """
+
+    def setUp(self):
+        self.golden = provider.golden()
+
+    def reading(self, name):
+        return copy.deepcopy(self.golden[f"usage-{name}.json"])
+
+    def spent(self, bucket):
+        return [bucket[name]["used_percent"] for name in ("primary_window", "secondary_window")
+                if bucket.get(name) is not None and bucket[name]["used_percent"] >= 100]
+
+    def test_each_reading_states_its_wall_by_one_signal(self):
+        spend = self.reading("spend-control")
+        self.assertEqual((spend["plan_type"], spend["rate_limit"]["allowed"]), ("team", False))
+        self.assertEqual(self.spent(spend["rate_limit"]), [])
+        self.assertEqual(spend["spend_control"], {"reached": True, "individual_limit": {
+            "source": "workspace_spend_controls", "limit": "25000", "used": "25000", "remaining": "0",
+            "used_percent": 100, "remaining_percent": 0,
+            "reset_after_seconds": provider.SPEND_RESET_SECONDS,
+            "reset_at": provider.GOLDEN_NOW + provider.SPEND_RESET_SECONDS}})
+        self.assertNotIn("rate_limit_reached_type", spend)
+
+        credits = self.reading("workspace-credits")
+        self.assertEqual(credits["rate_limit_reached_type"], {"type": "workspace_member_credits_depleted"})
+        self.assertEqual((credits["rate_limit"]["allowed"], self.spent(credits["rate_limit"])), (False, []))
+        self.assertNotIn("spend_control", credits)
+
+        only = self.reading("credit-only")
+        self.assertEqual(only["rate_limit"], {"allowed": False, "limit_reached": True})
+        self.assertEqual(only["credits"], {"has_credits": False, "unlimited": False, "balance": "0"})
+        self.assertEqual(only["plan_type"], provider.GOLDEN_CREDIT_PLAN)
+
+        model = self.reading("model-limit")
+        self.assertTrue(model["rate_limit"]["allowed"])
+        self.assertEqual(self.spent(model["rate_limit"]), [])
+        [entry] = model["additional_rate_limits"]
+        self.assertEqual((entry["limit_name"], entry["metered_feature"], entry["normal_model_slug"]),
+                         ("codex_other", "codex_other", None))
+        self.assertEqual((entry["rate_limit"]["allowed"], entry["rate_limit"]["limit_reached"]), (False, True))
+        self.assertEqual(entry["rate_limit"]["primary_window"], provider.window(
+            100, provider.SESSION_WINDOW_SECONDS, 7200, provider.GOLDEN_NOW))
+
+        reached = self.reading("five-hour-reached")
+        self.assertEqual(reached["rate_limit_reached_type"], {"type": "rate_limit_reached"})
+        self.assertEqual(reached["rate_limit"]["primary_window"], provider.window(
+            100, provider.SESSION_WINDOW_SECONDS, 300, provider.GOLDEN_NOW))
+        self.assertLess(reached["rate_limit"]["secondary_window"]["used_percent"], 100)
+
+    def test_each_wall_kinds_refusal_is_the_refusal_of_its_reading(self):
+        spend_reset = provider.GOLDEN_NOW + provider.SPEND_RESET_SECONDS
+        walls = {
+            "workspace-credits": ("workspace-credits", {"reached": "workspace_member_credits_depleted"}, None),
+            "spend-cap": ("spend-control", {"reached": "workspace_member_usage_limit_reached",
+                                            "resets_at": spend_reset}, spend_reset),
+            "credit-only": ("credit-only", {}, None),
+            "model-limit": ("model-limit", {"limit": "codex_other"}, provider.GOLDEN_NOW + 7200),
+        }
+        for wall, (reading, options, resets_at) in walls.items():
+            with self.subTest(wall=wall):
+                reply = self.golden[f"refusal-{wall}.json"]
+                usage = self.golden[f"usage-{reading}.json"]
+                self.assertEqual(reply, provider.refusal(usage, reply["body"]["error"]["message"], **options))
+                self.assertEqual(reply["body"]["error"].get("resets_at"), resets_at)
+                self.assertEqual(reply["body"]["error"]["plan_type"], usage["plan_type"])
+                self.assertEqual(reply["headers"]["x-codex-active-limit"], options.get("limit", "codex"))
+                self.assertEqual(reply["headers"]["x-codex-rate-limit-reached-type"],
+                                 options.get("reached", "rate_limit_reached"))
+        # A 429 carries no spend control: no header of it exists for the client to read.
+        self.assertFalse([key for key in self.golden["refusal-spend-cap.json"]["headers"] if "spend" in key])
+        # The model limit's 429 states both families, and its body the named one's reset.
+        headers = self.golden["refusal-model-limit.json"]["headers"]
+        self.assertEqual((headers["x-codex-other-primary-used-percent"], headers["x-codex-other-limit-name"],
+                          headers["x-codex-primary-used-percent"]), ("100", "codex_other", "20"))
+        # The credit-only 429 states the balance and no window.
+        headers = self.golden["refusal-credit-only.json"]["headers"]
+        self.assertEqual({key: value for key, value in headers.items() if "credits" in key}, {
+            "x-codex-credits-has-credits": "false", "x-codex-credits-unlimited": "false",
+            "x-codex-credits-balance": "0"})
+        self.assertFalse([key for key in headers if key.endswith("-used-percent")])
+        # Reserve: the ordinary bucket and Reserve's own limit both spent, Reserve named.
+        reserve = provider.reserve_usage(*provider.GOLDEN_SOURCE, now=provider.GOLDEN_NOW)
+        reply = self.golden["refusal-reserve.json"]
+        self.assertEqual(reply, provider.refusal(reserve, "Fixture reserve limit reached",
+                                                 limit="base_model_inference"))
+        self.assertEqual((reply["headers"]["x-base-model-inference-limit-name"],
+                          reply["headers"]["x-base-model-inference-primary-window-minutes"],
+                          reply["headers"]["x-codex-secondary-used-percent"],
+                          reply["body"]["error"]["resets_at"]),
+                         ("gpt-reserve", "10080", "100", provider.GOLDEN_NOW + 2 * 86400))
+        # A plan that does not include the usage: no header, no reset.
+        self.assertEqual(self.golden["refusal-usage-not-included.json"], {"status": 429, "headers": {},
+            "body": {"error": {"type": "usage_not_included", "plan_type": "team",
+                               "message": "Fixture usage not included"}}})
+
+    def test_a_refusal_needs_the_wall_its_reading_states(self):
+        model = self.reading("model-limit")
+        # The ordinary bucket of a model-limit reading has room: no ordinary wall.
+        with self.assertRaisesRegex(provider.FixtureFault, "states no spent window"):
+            provider.refusal(model, "spent")
+        with self.assertRaisesRegex(provider.FixtureFault, "names no limit 'codex_pro'"):
+            provider.refusal(model, "spent", limit="codex_pro")
+        with self.assertRaisesRegex(provider.FixtureFault, "an ordinary wall's reset"):
+            provider.refusal(self.reading("weekly-wall"), "spent", resets_at=1)
+        # A windowless bucket refuses by its verdict alone, never while it allows use.
+        only = self.reading("credit-only")
+        self.assertNotIn("resets_at", provider.refusal(only, "spent")["body"]["error"])
+        only["rate_limit"]["allowed"] = True
+        with self.assertRaisesRegex(provider.FixtureFault, "states no spent window"):
+            provider.refusal(only, "spent")
+        # A workspace's wall is no window's, and names a reset only when one is given.
+        healthy = self.golden["usage-healthy.json"]
+        reply = provider.refusal(healthy, "spent", reached="workspace_owner_credits_depleted")
+        self.assertNotIn("resets_at", reply["body"]["error"])
+        provider.check("refusal", reply)
+        reply = provider.refusal(healthy, "spent", reached="workspace_owner_usage_limit_reached", resets_at=5)
+        self.assertEqual(provider.check("refusal", reply)["body"]["error"]["resets_at"], 5)
+        # A refusal that names no reset names none at either kind of wall, and is given none.
+        for reading, options in ((self.reading("weekly-wall"), {}),
+                                 (healthy, {"reached": "workspace_owner_credits_depleted"})):
+            reply = provider.check("refusal", provider.refusal(reading, "spent", names_reset=False, **options))
+            self.assertNotIn("resets_at", reply["body"]["error"])
+        with self.assertRaisesRegex(provider.FixtureFault, "names no reset is given one"):
+            provider.refusal(healthy, "spent", reached="workspace_owner_usage_limit_reached", resets_at=5,
+                             names_reset=False)
+
+    def test_a_wall_kind_reading_the_client_would_misread_is_refused_here(self):
+        def changed(name, edit):
+            body = self.reading(name)
+            edit(body)
+            return body
+
+        def control(body):
+            return body["spend_control"]
+
+        def limit(body):
+            return body["spend_control"]["individual_limit"]
+
+        def entry(body):
+            return body["additional_rate_limits"][0]
+        refused = {
+            "spend control without its verdict": changed("spend-control", lambda body: control(body).pop("reached")),
+            "a textual spend-control verdict": changed(
+                "spend-control", lambda body: control(body).update(reached="true")),
+            "a spend control that is no object": changed("spend-control", lambda body: body.update(spend_control=[])),
+            "a numeric cap": changed("spend-control", lambda body: limit(body).update(limit=25000)),
+            "a cap without its spend": changed("spend-control", lambda body: limit(body).pop("used")),
+            "a fractional cap percent": changed("spend-control", lambda body: limit(body).update(used_percent=99.5)),
+            "a cap without its reset": changed("spend-control", lambda body: limit(body).pop("reset_at")),
+            "a numeric cap source": changed("spend-control", lambda body: limit(body).update(source=1)),
+            "a reached type the client drops": changed(
+                "workspace-credits", lambda body: body["rate_limit_reached_type"].update(type="usage_limit_reached")),
+            "a reached type with no word": changed("workspace-credits", lambda body: body.update(
+                rate_limit_reached_type={})),
+            "a bare reached word": changed("workspace-credits", lambda body: body.update(
+                rate_limit_reached_type="workspace_member_credits_depleted")),
+            "a windowless reading without credits": changed("credit-only", lambda body: body.pop("credits")),
+            "a textual credit flag": changed("credit-only", lambda body: body["credits"].update(has_credits="false")),
+            "credits without unlimited": changed("credit-only", lambda body: body["credits"].pop("unlimited")),
+            "a numeric balance": changed("credit-only", lambda body: body["credits"].update(balance=0)),
+            "credits that are no object": changed("credit-only", lambda body: body.update(credits=False)),
+            "additional limits that are no list": changed("model-limit", lambda body: body.update(
+                additional_rate_limits=entry(body))),
+            "a limit without its feature": changed("model-limit", lambda body: entry(body).pop("metered_feature")),
+            "a limit without its name": changed("model-limit", lambda body: entry(body).update(limit_name="")),
+            "a feature named as it is not normalized": changed(
+                "model-limit", lambda body: entry(body).update(metered_feature="Codex-Other")),
+            "the ordinary bucket as another limit": changed(
+                "model-limit", lambda body: entry(body).update(metered_feature="codex")),
+            "a limit without its verdict": changed(
+                "model-limit", lambda body: entry(body)["rate_limit"].pop("allowed")),
+            "a limit's window without its reset distance": changed("model-limit", lambda body: entry(
+                body)["rate_limit"]["primary_window"].pop("reset_after_seconds")),
+            "a numeric normal model": changed("model-limit", lambda body: entry(body).update(normal_model_slug=5)),
+        }
+        for name, body in refused.items():
+            with self.subTest(name=name):
+                with self.assertRaises(provider.FixtureFault):
+                    provider.check("usage", body)
+        with self.assertRaisesRegex(provider.FixtureFault,
+                                    r"additional_rate_limits\[0\]\.rate_limit\.primary_window\.reset_after_seconds"):
+            provider.check("usage", refused["a limit's window without its reset distance"])
+        # What the decoder leaves optional, or null, stays optional.
+        accepted = {
+            "no individual limit": changed("spend-control", lambda body: control(body).update(individual_limit=None)),
+            "a cap with no source": changed("spend-control", lambda body: limit(body).pop("source")),
+            "null spend control": changed("spend-control", lambda body: body.update(spend_control=None)),
+            "a null reached type": changed("workspace-credits", lambda body: body.update(rate_limit_reached_type=None)),
+            "an unbalanced credit": changed("credit-only", lambda body: body["credits"].update(balance=None)),
+            "message estimates": changed("credit-only", lambda body: body["credits"].update(
+                approx_local_messages=[1, 2], approx_cloud_messages=None)),
+            "null additional limits": changed("model-limit", lambda body: body.update(additional_rate_limits=None)),
+            "no additional limit": changed("model-limit", lambda body: body.update(additional_rate_limits=[])),
+            "a limit with no verdict object": changed("model-limit", lambda body: entry(body).update(rate_limit=None)),
+            "a named normal model": changed(
+                "model-limit", lambda body: entry(body).update(normal_model_slug="gpt-5.5")),
+            "no normal model": changed("model-limit", lambda body: entry(body).pop("normal_model_slug")),
+            "a windowed reading with credits": changed("weekly-wall", lambda body: body.update(
+                credits=provider.credit_balance(has_credits=True, balance="9.99"))),
+        }
+        for name, body in accepted.items():
+            with self.subTest(name=name):
+                provider.check("usage", body)
+
+    def test_a_wall_kind_refusal_the_client_would_misread_is_refused_here(self):
+        def changed(name, edit):
+            reply = copy.deepcopy(self.golden[f"refusal-{name}.json"])
+            edit(reply)
+            return reply
+
+        def headers(reply):
+            return reply["headers"]
+        refused = {
+            "a blank limit name": changed("model-limit", lambda reply: headers(reply).update(
+                {"x-codex-other-limit-name": " "})),
+            "an active limit in capitals": changed("model-limit", lambda reply: headers(reply).update(
+                {"x-codex-active-limit": "Codex_Other"})),
+            "an active limit spelt as its header family": changed("model-limit", lambda reply: headers(reply).update(
+                {"x-codex-active-limit": "codex-other"})),
+            "a named limit whose windows are not spent": changed("model-limit", lambda reply: headers(reply).update(
+                {"x-codex-other-primary-used-percent": "99"})),
+            "the ordinary bucket's reset for the named limit's": changed("model-limit", lambda reply: reply["body"][
+                "error"].update(resets_at=int(headers(reply)["x-codex-secondary-reset-at"]))),
+            "a named limit's window without its length": changed("model-limit", lambda reply: headers(reply).pop(
+                "x-codex-other-primary-window-minutes")),
+            "a named limit's percent that is no number": changed("model-limit", lambda reply: headers(reply).update(
+                {"x-codex-other-secondary-used-percent": "most"})),
+            "the reserve limit named whose windows are not sent": changed("reserve", lambda reply: [headers(reply).pop(
+                f"x-base-model-inference-primary-{part}") for part in ("used-percent", "window-minutes", "reset-at")]),
+            "a credit flag the client reads as none": changed("credit-only", lambda reply: headers(reply).update(
+                {"x-codex-credits-has-credits": "no"})),
+            "one credit flag alone": changed(
+                "credit-only", lambda reply: headers(reply).pop("x-codex-credits-unlimited")),
+            "a balance without its flags": changed("credit-only", lambda reply: [headers(reply).pop(
+                f"x-codex-credits-{name}") for name in ("has-credits", "unlimited")]),
+            "a workspace word the client drops": changed("workspace-credits", lambda reply: headers(reply).update(
+                {"x-codex-rate-limit-reached-type": "workspace_credits_depleted"})),
+            "a textual cap reset": changed("spend-cap", lambda reply: reply["body"]["error"].update(
+                resets_at=str(reply["body"]["error"]["resets_at"]))),
+            "a numeric error code": changed("spend-cap", lambda reply: reply["body"]["error"].update(code=429)),
+        }
+        for name, reply in refused.items():
+            with self.subTest(name=name):
+                with self.assertRaises(provider.FixtureFault):
+                    provider.check("refusal", reply)
+        # A workspace's wall is no window's: its windows need not be spent, nor its reset theirs.
+        for name in ("workspace-credits", "spend-cap"):
+            with self.subTest(name=name):
+                reply = self.golden[f"refusal-{name}.json"]
+                self.assertTrue([value for key, value in reply["headers"].items()
+                                 if key.endswith("-used-percent") and value != "100"])
+                provider.check("refusal", reply)
+        provider.check("refusal", changed("workspace-credits", lambda reply: reply["body"]["error"].update(
+            code="workspace_credits_depleted")))
+
+    def test_a_plan_that_does_not_include_the_usage_is_its_own_kind_of_refusal(self):
+        reply = self.golden["refusal-usage-not-included.json"]
+        self.assertIs(provider.check("entitlement", reply), reply)
+        with self.assertRaisesRegex(provider.FixtureFault, "error.type is not usage_limit_reached"):
+            provider.check("refusal", reply)
+        with self.assertRaisesRegex(provider.FixtureFault, "error.type is not usage_not_included"):
+            provider.check("entitlement", self.golden["refusal-weekly-wall.json"])
+        for name, edit in (
+                ("another status", lambda reply: reply.update(status=403)),
+                ("a plan no account has", lambda reply: reply["body"]["error"].update(plan_type="platinum")),
+                ("a fractional reset", lambda reply: reply["body"]["error"].update(resets_at=1.5)),
+                ("no headers object", lambda reply: reply.pop("headers"))):
+            with self.subTest(name=name):
+                changed = copy.deepcopy(reply)
+                edit(changed)
+                with self.assertRaises(provider.FixtureFault):
+                    provider.check("entitlement", changed)
+        provider.check("entitlement", {"status": 429, "headers": {}, "body": {"error": {
+            "type": "usage_not_included"}}})
 
 
 class ServedReplyTests(unittest.TestCase):
@@ -575,6 +866,36 @@ class LimitHeaderTests(unittest.TestCase):
         ordinary = provider.limit_headers(body)
         self.assertEqual(sorted(set(headers) - set(ordinary)),
                          ["x-codex-active-limit", "x-codex-rate-limit-reached-type"])
+
+    def test_every_other_limit_and_credit_header_is_one_the_client_reads(self):
+        windows = (CODEX_RS / "codex-api/src/rate_limits.rs").read_text()
+        protocol = (CODEX_RS / "protocol/src/protocol.rs").read_text()
+        golden = provider.golden()
+        # Another limit's family is "x-" and its id with "-" for "_", and its name sits beside
+        # its windows (`parse_rate_limit_for_limit`).
+        self.assertIn(".replace('_', \"-\")", windows)
+        self.assertIn('let limit_name_header = format!("{prefix}-limit-name");', windows)
+        self.assertEqual(provider.header_family("codex_other"), "x-codex-other")
+        self.assertEqual(provider.header_family("base_model_inference"), "x-base-model-inference")
+        for name, family in (("model-limit", "x-codex-other"), ("reserve", "x-base-model-inference")):
+            with self.subTest(name=name):
+                headers = golden[f"refusal-{name}.json"]["headers"]
+                named = sorted(key for key in headers if key.startswith(family + "-"))
+                self.assertEqual([key.removeprefix(family) for key in named if "limit-name" not in key],
+                                 sorted(f"-{window}-{part}" for window in ("primary", "secondary")
+                                        for part in ("used-percent", "window-minutes", "reset-at")
+                                        if f"{family}-{window}-used-percent" in headers))
+                self.assertIn(f"{family}-limit-name", named)
+                for key in named:
+                    self.assertIn('format!("{prefix}' + key.removeprefix(family) + '")', windows)
+        # The credit balance is read from fixed names, whichever limit is named.
+        credits = [key for key in golden["refusal-credit-only.json"]["headers"] if "credits" in key]
+        self.assertEqual(sorted(credits), ["x-codex-credits-balance", "x-codex-credits-has-credits",
+                                           "x-codex-credits-unlimited"])
+        for key in credits:
+            self.assertIn(f'"{key}"', windows)
+        for word in ("workspace_member_credits_depleted", "workspace_member_usage_limit_reached"):
+            self.assertIn(f'"{word}" => Ok(Self::', protocol)
 
     def test_the_source_is_healthy_until_the_provider_has_refused_it(self):
         for options in ({}, {"all_exhausted": True}, {"chain": True}):

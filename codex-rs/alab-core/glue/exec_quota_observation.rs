@@ -8,10 +8,15 @@ use super::ExecRecoveryOptions;
 use crate::CodexThread;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use codex_alab_core::exec_wall::ExecWalls;
+use codex_alab_core::exec_wall::GrantHold;
+use codex_alab_core::exec_wall::Verdict;
+use codex_alab_core::quota::ExecQuotaMember;
 use codex_alab_core::quota::HeadlessExec;
 use codex_alab_core::renewal::AuthAttempt;
 use codex_alab_core::renewal::AuthRequestScope;
 use codex_alab_core::renewal::RequestAuth;
+use codex_alab_core::wall_kind::WallKind;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
@@ -23,6 +28,7 @@ use tokio::sync::watch;
 pub struct ExecQuotaWatch {
     receiver: watch::Receiver<Option<Arc<ExecQuotaWall>>>,
     root: Weak<Session>,
+    events: Arc<Events>,
 }
 
 impl std::ops::Deref for ExecQuotaWatch {
@@ -63,6 +69,19 @@ impl ExecQuotaWatch {
             &task.turn_context,
         ))
     }
+
+    /// The host's verdict for wall `kind` of root turn `root` (gap 4, step S3): whether this
+    /// tree's requests keep waiting at such a wall ([`ExecWalls::keep`]). Only a host-kept wall
+    /// reads it.
+    pub fn decide(&self, root: &str, kind: &WallKind, verdict: Verdict) {
+        self.events.walls.decide(root, kind, verdict);
+    }
+
+    /// Hold a grant for root turn `root`, armed or reserving, until the hold drops: meanwhile a
+    /// kept wait does not end on its timer, so its observation, which the grant needs, stays.
+    pub fn hold_grant(&self, root: &str) -> GrantHold {
+        self.events.walls.hold(root)
+    }
 }
 
 /// Volatile evidence tied to one actual request attempt. It is deliberately
@@ -72,6 +91,7 @@ pub struct ExecQuotaWall {
     scope: Weak<AuthRequestScope>,
     attempt: AuthAttempt,
     active: AtomicBool,
+    kind: WallKind,
 }
 
 impl std::fmt::Debug for ExecQuotaWall {
@@ -79,6 +99,7 @@ impl std::fmt::Debug for ExecQuotaWall {
         f.debug_struct("ExecQuotaWall")
             .field("thread", &self.options.thread())
             .field("turn", &self.options.turn())
+            .field("kind", &self.kind)
             .field("current", &self.current())
             .finish_non_exhaustive()
     }
@@ -87,6 +108,11 @@ impl std::fmt::Debug for ExecQuotaWall {
 impl ExecQuotaWall {
     pub fn options(&self) -> &ExecRecoveryOptions {
         &self.options
+    }
+
+    /// The bucket the observed request's wall stands in, a model's own limit by its limit id.
+    pub fn kind(&self) -> &WallKind {
+        &self.kind
     }
 
     /// Must be rechecked before using an observation after an await.
@@ -112,16 +138,39 @@ impl ExecQuotaWall {
     }
 }
 
+/// The exec tree's observations, and its host-kept walls. Each exec member's turn carries it
+/// ([`bind`]), so the quota retry, which sees no session, reads the tree's keep state.
 #[derive(Default)]
 pub(crate) struct Events {
     current: watch::Sender<Option<Arc<ExecQuotaWall>>>,
-    walls: std::sync::Mutex<Vec<Arc<ExecQuotaWall>>>,
+    observed: std::sync::Mutex<Vec<Arc<ExecQuotaWall>>>,
+    walls: Arc<ExecWalls>,
 }
 
 impl Events {
+    /// How long a refusal at host-kept wall `kind` waits before its retry ([`ExecWalls::keep`]).
+    /// An exec handoff runtime is subscribed while one holds this tree's watch.
+    pub(crate) fn keep(
+        &self,
+        kind: &WallKind,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        self.walls
+            .keep(kind, self.current.receiver_count() > 0, now)
+    }
+
+    pub(crate) fn walls(&self) -> &Arc<ExecWalls> {
+        &self.walls
+    }
+
+    /// A runtime's subscription to the tree's current observation.
+    pub(crate) fn subscribe(&self) -> watch::Receiver<Option<Arc<ExecQuotaWall>>> {
+        self.current.subscribe()
+    }
+
     fn insert(&self, wall: Arc<ExecQuotaWall>) {
         let mut walls = self
-            .walls
+            .observed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         walls.retain(|old| {
@@ -136,16 +185,23 @@ impl Events {
 
     fn remove(&self, wall: &Arc<ExecQuotaWall>) {
         let mut walls = self
-            .walls
+            .observed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         walls.retain(|old| !Arc::ptr_eq(old, wall));
         self.refresh(&mut walls);
     }
 
+    /// Publish the live observation the runtime acts on: the latest of the most pressing kind
+    /// ([`precedence`]), so a member's wait at another kind of wall never hides an ordinary one.
     fn refresh(&self, walls: &mut Vec<Arc<ExecQuotaWall>>) {
         walls.retain(|wall| wall.current());
-        let next = walls.last().cloned();
+        // `min_by_key` keeps the first of equals: reversed, the latest.
+        let next = walls
+            .iter()
+            .rev()
+            .min_by_key(|wall| precedence(&wall.kind))
+            .cloned();
         self.current.send_if_modified(|current| {
             let same = match (&*current, &next) {
                 (None, None) => true,
@@ -159,6 +215,26 @@ impl Events {
                 true
             }
         });
+    }
+}
+
+/// Which live observation the exec runtime acts on, lowest first. The tree's watch carries one,
+/// and the runtime asks its host about that one only:
+/// - an ordinary wall, whose ask no policy word gates and which waits to its reset whatever the
+///   answer, comes first;
+/// - then a host-kept wall ([`WallKind::host_kept`]), asked only where the policy leaves one. The
+///   ask is the same `prepare`, and a move takes the whole tree. While an ordinary wall stands, a
+///   host-kept wall of the same tree gets no verdict of its own: unless a grant for the root turn
+///   is held, it ends at its second refusal, as an unanswered one does
+///   (`codex_alab_core::exec_wall`);
+/// - last a model's own limit, which no host is asked about ([`WallKind::asked`]).
+fn precedence(kind: &WallKind) -> u8 {
+    if !kind.asked() {
+        2
+    } else if kind.host_kept() {
+        1
+    } else {
+        0
     }
 }
 
@@ -180,55 +256,92 @@ impl CodexThread {
     pub fn watch_exec_quota(&self) -> Option<ExecQuotaWatch> {
         let data = self.thread_extension_data();
         data.get::<HeadlessExec>()?;
+        let events = self
+            .session
+            .services
+            .local_agent_runtime
+            .exec_quota_events();
         Some(ExecQuotaWatch {
-            receiver: self
-                .session
-                .services
-                .local_agent_runtime
-                .exec_quota_events()
-                .current
-                .subscribe(),
+            receiver: events.subscribe(),
             root: Arc::downgrade(&self.session),
+            events,
         })
     }
 }
 
-pub(crate) fn publish(sess: &Session, turn: &TurnContext) -> Option<WaitLease> {
+/// Whether this turn's quota waits are the exec host's: the root's own turn, or a tree member's.
+fn exec_member(sess: &Session, turn: &TurnContext) -> bool {
+    let data = &sess.services.thread_extension_data;
+    (turn.extension_data.get::<HeadlessExec>().is_some() && data.get::<HeadlessExec>().is_some())
+        || (turn.extension_data.get::<ExecQuotaMember>().is_some()
+            && data.get::<ExecQuotaMember>().is_some())
+}
+
+/// Give an exec member's turn its tree's observations and host-kept walls, before its first
+/// request, and name the root's own turn as the tree's root turn: a new one starts the walls over.
+/// An exec review's own turn, which only its delegate samples for, is bound as its task begins
+/// (`exec_review_stream.rs` `begin`): it is the root turn [`ExecQuotaWatch::root_options`] names.
+pub(crate) fn bind(sess: &Session, turn: &TurnContext) {
+    if !codex_alab_core::active() || !exec_member(sess, turn) {
+        return;
+    }
+    let events = sess.services.local_agent_runtime.exec_quota_events();
+    if turn.extension_data.get::<HeadlessExec>().is_some()
+        && sess
+            .services
+            .thread_extension_data
+            .get::<HeadlessExec>()
+            .is_some()
+        && !turn.session_source.is_non_root_agent()
+    {
+        events.walls.root_turn(&turn.sub_id);
+    }
+    if turn.extension_data.get::<Events>().is_none() {
+        turn.extension_data.insert_arc(events);
+    }
+}
+
+pub(crate) fn publish(sess: &Session, turn: &TurnContext, kind: WallKind) -> Option<WaitLease> {
     let scope = turn.extension_data.get::<AuthRequestScope>();
     tracing::debug!(target: "codex_alab_exec_handoff",
         turn_exec = turn.extension_data.get::<HeadlessExec>().is_some(),
         thread_exec = sess.services.thread_extension_data.get::<HeadlessExec>().is_some(),
         scope_present = scope.is_some(),
         scope_eligible = scope.as_ref().is_some_and(|scope| scope.eligible(&turn.sub_id)),
+        ?kind,
         "observing quota wait");
-    let data = &sess.services.thread_extension_data;
-    if !(turn.extension_data.get::<HeadlessExec>().is_some()
-        && data.get::<HeadlessExec>().is_some())
-        && !(turn
-            .extension_data
-            .get::<codex_alab_core::quota::ExecQuotaMember>()
-            .is_some()
-            && data
-                .get::<codex_alab_core::quota::ExecQuotaMember>()
-                .is_some())
-    {
+    if !exec_member(sess, turn) {
         return None;
     }
     let scope = turn.extension_data.get::<AuthRequestScope>()?;
-    if !scope.eligible(&turn.sub_id) {
+    observe(
+        sess.services.local_agent_runtime.exec_quota_events(),
+        &scope,
+        ExecRecoveryOptions::from_context(sess.thread_id, turn),
+        kind,
+    )
+}
+
+/// Publish the wait of the request `scope` admits, at a wall of `kind`, for as long as the lease.
+fn observe(
+    events: Arc<Events>,
+    scope: &Arc<AuthRequestScope>,
+    options: ExecRecoveryOptions,
+    kind: WallKind,
+) -> Option<WaitLease> {
+    if !scope.eligible(options.turn()) {
         return None;
     }
     let attempt = scope.snapshot();
-    if !matches!(attempt.auth, Some(RequestAuth::ChatGpt { .. })) {
-        return None;
-    }
-    let options = ExecRecoveryOptions::from_context(sess.thread_id, turn);
-    let events = sess.services.local_agent_runtime.exec_quota_events();
+    // Any attempted login is observed: the handoff controller moves only a ChatGPT one and
+    // tells an exec run with another kind of login, once, why it waits (CONTRACT §1.1).
+    attempt.auth.as_ref()?;
     let wall = Arc::new(ExecQuotaWall {
         options,
-        scope: Arc::downgrade(&scope),
+        scope: Arc::downgrade(scope),
         attempt,
         active: AtomicBool::new(true),
+        kind,
     });
     let current = wall.current();
     tracing::debug!(target: "codex_alab_exec_handoff", current, "quota observation prepared");
@@ -254,24 +367,148 @@ mod tests {
     use codex_alab_core::renewal::record_auth_attempt;
     use codex_protocol::ThreadId;
 
+    fn options(scope: &Arc<AuthRequestScope>) -> ExecRecoveryOptions {
+        ExecRecoveryOptions {
+            direct_only_tool_namespaces: None,
+            prompt_cache_ttl: None,
+            thread: ThreadId::new(),
+            turn: scope.turn.clone(),
+            review: false,
+            schema: None,
+            service_tier: None,
+            cyber_access_program: None,
+            helper_choice: None,
+            step: super::super::tests::saved().step,
+        }
+    }
+
     fn wall(scope: &Arc<AuthRequestScope>) -> Arc<ExecQuotaWall> {
         Arc::new(ExecQuotaWall {
-            options: ExecRecoveryOptions {
-                direct_only_tool_namespaces: None,
-                prompt_cache_ttl: None,
-                thread: ThreadId::new(),
-                turn: scope.turn.clone(),
-                review: false,
-                schema: None,
-                service_tier: None,
-                cyber_access_program: None,
-                helper_choice: None,
-                step: super::super::tests::saved().step,
-            },
+            options: options(scope),
             scope: Arc::downgrade(scope),
             attempt: scope.snapshot(),
             active: AtomicBool::new(true),
+            kind: WallKind::Ordinary,
         })
+    }
+
+    /// AN OBSERVATION CARRIES ITS WALL'S KIND, a model's own limit by its limit id, so the
+    /// runtime can tell what to ask (gap 4, step S3): every usage limit a run waits on is
+    /// published, not only the ordinary bucket's.
+    #[test]
+    fn an_observation_carries_its_walls_kind_and_limit() {
+        use codex_alab_core::wall_kind::Workspace;
+        let (scope, _owner) = scope();
+        let events = Arc::new(Events::default());
+        let receiver = events.current.subscribe();
+        for kind in [
+            WallKind::Limit("codex_other".into()),
+            WallKind::Workspace(Workspace::MemberUsageLimitReached),
+            WallKind::Ordinary,
+        ] {
+            let lease = observe(Arc::clone(&events), &scope, options(&scope), kind.clone())
+                .expect("a live request's wait is observed");
+            let observed = receiver.borrow().clone().expect("published");
+            assert_eq!(observed.kind(), &kind);
+            assert!(format!("{observed:?}").contains(&format!("{kind:?}")));
+            drop(lease);
+            assert!(receiver.borrow().is_none());
+        }
+        // A request that is no longer the turn's own is not observed, whatever its kind.
+        let stale = Arc::new(AuthRequestScope::new(
+            "another-turn".into(),
+            None,
+            1,
+            4,
+            || true,
+        ));
+        assert!(observe(events, &stale, options(&scope), WallKind::Ordinary).is_none());
+    }
+
+    /// THE VERDICT IS THE TREE'S AND STARTS OVER AT A NEW WALL: one decided at the root's
+    /// observation keeps a child's wait at the same kind of wall too, through the child's own
+    /// handle on the tree's runtime; a new root turn, or another kind, has none; and no runtime
+    /// subscribed means no host-kept wait at all.
+    #[test]
+    fn the_verdict_is_shared_across_the_exec_tree_and_resets_at_a_new_wall() {
+        use codex_alab_core::exec_wall::UNKNOWN_RESET_WAIT;
+        use codex_alab_core::wall_kind::Workspace;
+        let runtime = crate::agent::LocalAgentControl::default().runtime;
+        let root = runtime.exec_quota_events();
+        let child = runtime.exec_quota_events();
+        let now = std::time::Instant::now();
+        let credits = WallKind::Workspace(Workspace::MemberCreditsDepleted);
+        root.walls().root_turn("root-turn");
+        assert_eq!(root.keep(&credits, now), None, "no runtime subscribed");
+        let receiver = root.current.subscribe();
+        assert_eq!(child.keep(&credits, now), Some(UNKNOWN_RESET_WAIT));
+        // The child's first wait is the tree's first wait at this wall.
+        child.walls().waited(&credits, now);
+        assert_eq!(
+            root.keep(&credits, now),
+            None,
+            "unanswered after the first wait"
+        );
+        // The runtime answers through the root's watch; the child's next refusal is kept.
+        root.walls().decide("root-turn", &credits, Verdict::Keep);
+        assert_eq!(child.keep(&credits, now), Some(UNKNOWN_RESET_WAIT));
+        assert_eq!(root.keep(&credits, now), Some(UNKNOWN_RESET_WAIT));
+        // Another kind of wall has its own first wait and no verdict yet.
+        let cap = WallKind::Workspace(Workspace::MemberUsageLimitReached);
+        child.walls().waited(&cap, now);
+        assert_eq!(child.keep(&cap, now), None);
+        assert_eq!(child.keep(&credits, now), Some(UNKNOWN_RESET_WAIT));
+        // A new root turn starts over.
+        child.walls().root_turn("next-turn");
+        assert_eq!(root.walls().verdict(&credits), Verdict::Unknown);
+        root.walls().waited(&credits, now);
+        assert_eq!(child.keep(&credits, now), None);
+        drop(receiver);
+        root.walls().decide("next-turn", &credits, Verdict::Keep);
+        assert_eq!(child.keep(&credits, now), None, "the runtime is gone");
+        // Another tree shares nothing.
+        let other = crate::agent::LocalAgentControl::default()
+            .runtime
+            .exec_quota_events();
+        assert_eq!(other.walls().verdict(&credits), Verdict::Unknown);
+    }
+
+    /// A HELD GRANT KEEPS A KEPT WAIT'S OBSERVATION LIVE PAST ITS TIMER: a retry would end it, and
+    /// the runtime cancels a grant whose observation ended. Letting the grant go ends the wait
+    /// and then the observation.
+    #[tokio::test(start_paused = true)]
+    async fn an_armed_grant_is_not_cancelled_by_a_kept_waits_timer() {
+        use codex_alab_core::exec_wall::UNKNOWN_RESET_WAIT;
+        let (scope, _owner) = scope();
+        let events = Arc::new(Events::default());
+        events.walls().root_turn("root-turn");
+        let lease = WaitLease {
+            events: Arc::clone(&events),
+            wall: wall(&scope),
+        };
+        let observed = Arc::clone(&lease.wall);
+        events.insert(Arc::clone(&observed));
+        let hold = events.walls.hold("root-turn");
+        let waiting = {
+            let events = Arc::clone(&events);
+            tokio::spawn(async move {
+                let _lease = lease;
+                events
+                    .walls()
+                    .kept_wait(tokio::time::sleep(UNKNOWN_RESET_WAIT))
+                    .await;
+            })
+        };
+        tokio::time::sleep(UNKNOWN_RESET_WAIT * 3).await;
+        assert!(!waiting.is_finished());
+        assert!(observed.current(), "the grant's observation stands");
+        drop(hold);
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("the wait ends with the grant")
+            .expect("the wait");
+        assert!(!observed.current());
+        assert!(events.current.borrow().is_none());
     }
 
     fn scope() -> (Arc<AuthRequestScope>, Arc<()>) {
@@ -370,6 +607,75 @@ mod tests {
             &root
         ));
         drop(root_lease);
+        assert!(events.current.borrow().is_none());
+    }
+
+    /// AN ORDINARY WALL STAYS THE RUNTIME'S WHILE A MEMBER WAITS AT ANOTHER KIND (gap 4, step
+    /// S3): the runtime asks its host about the watch's observation only, and asks nothing at a
+    /// model's own limit, so a member's later wait there, or at a workspace's wall, must neither
+    /// hide the root's ordinary wait nor wake the runtime. Each more pressing wall takes the
+    /// watch as it comes, and among one kind the latest is current, as before.
+    #[test]
+    fn an_ordinary_wall_stays_current_while_a_member_waits_at_another_kind() {
+        use codex_alab_core::wall_kind::Workspace;
+        let events = Arc::new(Events::default());
+        let mut runtime = events.current.subscribe();
+        let current = || {
+            events
+                .current
+                .borrow()
+                .clone()
+                .expect("published")
+                .kind()
+                .clone()
+        };
+        let scopes = [scope(), scope(), scope(), scope()];
+        let at = |index: usize, kind: &WallKind| {
+            let scope = &scopes[index].0;
+            observe(Arc::clone(&events), scope, options(scope), kind.clone())
+                .expect("a live request's wait is observed")
+        };
+        let model = WallKind::Limit("codex_other".into());
+        let credits = WallKind::Workspace(Workspace::MemberCreditsDepleted);
+
+        let ordinary = at(0, &WallKind::Ordinary);
+        runtime.borrow_and_update();
+        let limit = at(1, &model);
+        assert_eq!(
+            current(),
+            WallKind::Ordinary,
+            "a model's limit hides nothing"
+        );
+        assert!(!runtime.has_changed().unwrap(), "nor wakes the runtime");
+        let workspace = at(2, &credits);
+        assert_eq!(current(), WallKind::Ordinary, "nor does a workspace's wall");
+        assert!(!runtime.has_changed().unwrap());
+        drop(ordinary);
+        assert_eq!(
+            current(),
+            credits,
+            "a workspace's wall before a model's limit"
+        );
+        drop(workspace);
+        assert_eq!(current(), model);
+
+        // The other order: each more pressing wall takes the watch.
+        let workspace = at(2, &credits);
+        assert_eq!(current(), credits);
+        let ordinary = at(0, &WallKind::Ordinary);
+        assert_eq!(current(), WallKind::Ordinary);
+        // Among one kind, the latest.
+        let latest = at(3, &WallKind::Ordinary);
+        assert!(Arc::ptr_eq(
+            events.current.borrow().as_ref().unwrap(),
+            &latest.wall
+        ));
+        drop(latest);
+        assert!(Arc::ptr_eq(
+            events.current.borrow().as_ref().unwrap(),
+            &ordinary.wall
+        ));
+        drop((ordinary, workspace, limit));
         assert!(events.current.borrow().is_none());
     }
 

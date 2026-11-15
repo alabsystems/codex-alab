@@ -266,12 +266,20 @@ def serve(mock):
             self.wfile.write(data)
 
     server = provider_fixture.LoopbackHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    try:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+    except BaseException as error:
+        # Startup has not transferred the listener to the caller. shutdown()
+        # could wait forever if serve_forever never started.
+        try:
+            server.server_close()
+        finally:
+            raise error
     return server, thread
 
 
-def configure(root, port):
+def configure(root, port, *, stream_max_retries=0):
     config = f'''model = "{MODEL}"
 model_provider = "capacity-smoke"
 approval_policy = "never"
@@ -284,7 +292,7 @@ base_url = "http://127.0.0.1:{port}/v1"
 wire_api = "responses"
 requires_openai_auth = false
 request_max_retries = 0
-stream_max_retries = 0
+stream_max_retries = {stream_max_retries}
 '''
     with (root / "codex-home/config.toml").open("x") as handle:
         handle.write(config)

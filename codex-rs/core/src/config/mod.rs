@@ -3496,9 +3496,9 @@ impl Config {
             additional_writable_roots,
             workspace_roots: workspace_roots_override,
         } = overrides;
-        let bypass_hook_trust = bypass_hook_trust.unwrap_or_default();
+        let bypass_hook_trust = bypass_hook_trust.unwrap_or_else(codex_alab_core::execution::bypass_hook_trust); // ALAB(execution): enabled hooks run inside aterm without another consent screen
 
-        if bypass_hook_trust {
+        if bypass_hook_trust && !codex_alab_core::execution::bypass_hook_trust() { // ALAB(execution): only an explicit bypass outside native policy warns
             startup_warnings.push(
                 "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."
                     .to_string(),
@@ -4332,7 +4332,7 @@ impl Config {
         let review_model = override_review_model.or(cfg.review_model);
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
-        let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
+        let model_catalog = codex_alab_kimi::model_catalog(codex_alab_core::active(), &model_provider_id, load_model_catalog(cfg.model_catalog_json.clone())?)?; // ALAB(kimi): native catalog only when no explicit catalog wins
 
         let log_dir = cfg
             .log_dir

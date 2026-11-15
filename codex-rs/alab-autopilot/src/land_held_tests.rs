@@ -154,8 +154,8 @@ fn a_land_acts_yield_names_what_held_it() {
     s.observe_turn_end(
         ours(
             at,
-            "Nothing left: merged, but the lexer is not landed.\nNEEDS YOU: the signing key \
-             password",
+            "Nothing left: merged, but the lexer is not landed.\nNEEDS YOU: the signing \
+             permission",
             10 * MIN,
         ),
         &t,

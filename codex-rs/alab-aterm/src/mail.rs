@@ -263,30 +263,27 @@ pub fn receipts_due(
 }
 
 /// Where a reply to `from` (an `inbox` row's sender, decoded) is posted, as aterm's bridge
-/// routes a `to=` (`aterm-link` `resolve_to`): a session sender (`s-<sid>` or
-/// `s-<sid>@n-<node>`, as rows print it) only as `@s-<sid>[@n-<node>]`, a bare principal
+/// routes a `to=` (`aterm-link` `resolve_to`): a canonical tab ID, optionally followed by
+/// `@n-<node>`, only as `@<tab>[@n-<node>]`, a bare principal
 /// (`h-…`, `a-…`, `n-…`) as it is. `None` for anything the bridge would retire as
 /// unroutable, though the local `post` would still answer `OK`.
 pub fn reply_to(from: &str) -> Option<String> {
     let session = from.strip_prefix('@').unwrap_or(from);
-    if session.starts_with("s-") {
-        let (sid, node) = match session.split_once('@') {
-            Some((sid, node)) => (sid, Some(node)),
-            None => (session, None),
-        };
+    let (sid, node) = match session.split_once('@') {
+        Some((sid, node)) => (sid, Some(node)),
+        None => (session, None),
+    };
+    if crate::locate::valid_sid(sid) {
         let node_ok = node.is_none_or(|n| n.starts_with("n-") && principal(n));
-        return (principal(sid) && node_ok).then(|| format!("@{session}"));
+        return node_ok.then(|| format!("@{session}"));
     }
     (!from.starts_with('@') && principal(from)).then(|| from.to_string())
 }
 
-/// aterm's principal grammar (`aterm-link` `subject::is_principal`): a class prefix (`s-`,
-/// `n-`, `h-`, `a-`), then 1 to 32 of `[a-z0-9-]`.
+/// A non-session principal: a class prefix (`n-`, `h-`, `a-`), then 1 to 32 of
+/// `[a-z0-9-]`. Session addresses use the canonical tab ID parser separately.
 fn principal(p: &str) -> bool {
-    let Some(name) = ["s-", "n-", "h-", "a-"]
-        .iter()
-        .find_map(|c| p.strip_prefix(c))
-    else {
+    let Some(name) = ["n-", "h-", "a-"].iter().find_map(|c| p.strip_prefix(c)) else {
         return false;
     };
     (1..=32).contains(&name.len())
@@ -359,22 +356,32 @@ mod tests {
 
     #[test]
     fn a_reply_goes_where_the_bridge_routes_it() {
-        // A session sender as rows print it (`from=s-x%40n-y`, decoded): only `@`-led routes.
-        assert_eq!(reply_to("s-lead@n-lab").as_deref(), Some("@s-lead@n-lab"));
-        assert_eq!(reply_to("s-lead").as_deref(), Some("@s-lead"));
-        assert_eq!(reply_to("@s-lead@n-lab").as_deref(), Some("@s-lead@n-lab"));
+        // A session sender as rows print it (`from=t0000000001%40n-lab`, decoded).
+        assert_eq!(
+            reply_to("t0000000001@n-lab").as_deref(),
+            Some("@t0000000001@n-lab")
+        );
+        assert_eq!(reply_to("t0000000001").as_deref(), Some("@t0000000001"));
+        assert_eq!(
+            reply_to("@t0000000001@n-lab").as_deref(),
+            Some("@t0000000001@n-lab")
+        );
         assert_eq!(reply_to("h-andrew").as_deref(), Some("h-andrew"));
         assert_eq!(reply_to("a-ci").as_deref(), Some("a-ci"));
+        assert_eq!(reply_to("n-lab").as_deref(), Some("n-lab"));
         for from in [
             "",
             "s-",
-            "s-Lead@n-lab",
-            "s-lead@lab",
-            "s-lead@n-",
+            "s-lead",
+            "s-cafe@n-lab",
+            "t000000000i",
+            "t000000000I@n-lab",
+            "t0000000001@lab",
+            "t0000000001@n-",
             "h-andrew@n-lab",
             "@h-andrew",
             "andrew",
-            "s-lead@n-lab@n-x",
+            "t0000000001@n-lab@n-x",
             &format!("h-{}", "a".repeat(33)),
         ] {
             assert_eq!(reply_to(from), None, "{from}");

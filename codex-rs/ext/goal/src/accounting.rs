@@ -18,6 +18,7 @@ use tokio::sync::SemaphorePermit;
 
 #[derive(Debug)]
 pub(crate) struct GoalAccountingState {
+    pub(crate) alab_persistence: std::sync::Arc<codex_alab_core::goal_persistence::State>, // ALAB(storage): failed writes hold automatic continuation without dropping usage.
     inner: Mutex<GoalAccountingInner>,
     progress_accounting_lock: Semaphore,
     // Serialize turn-start accounting with stopping a deferred interrupted turn.
@@ -97,7 +98,7 @@ impl GoalAccountingState {
         let turn_id = turn_id.into();
         let mut inner = self.inner();
         if let Some(interrupted) = inner.interrupted_turn_id.take() {
-            inner.turns.remove(&interrupted);
+            if !codex_alab_core::active() || self.alab_persistence.permits_admission() { inner.turns.remove(&interrupted); } // ALAB(storage): a new person turn cannot discard unflushed interrupted usage.
             inner.consecutive_empty_turns = 0;
         }
         inner.current_turn_id = Some(turn_id.clone());
@@ -109,6 +110,8 @@ impl GoalAccountingState {
             ),
         );
     }
+
+    pub(crate) fn alab_retained_turn_ids(&self) -> Vec<String> { self.inner().turns.keys().cloned().collect() } // ALAB(storage): explicit mutation drains every retained turn before replacing the goal.
 
     pub(crate) fn current_turn_id(&self) -> Option<String> {
         self.inner().current_turn_id.clone()
@@ -482,7 +485,7 @@ impl GoalAccountingState {
             // it never waits for the goal-state permit held by automatic admission.
             inner.current_turn_id = None;
             inner.interrupted_turn_id = Some(turn_id.to_string());
-        } else {
+        } else if !codex_alab_core::active() || self.alab_persistence.permits_admission() { // ALAB(storage): retain failed older turns until explicitly accounted.
             inner.turns.remove(turn_id);
         }
     }
@@ -540,6 +543,7 @@ impl GoalAccountingState {
 impl Default for GoalAccountingState {
     fn default() -> Self {
         Self {
+            alab_persistence: std::sync::Arc::default(), // ALAB(storage): runtime and goal tools share one persistence barrier.
             inner: Mutex::new(GoalAccountingInner::default()),
             progress_accounting_lock: Semaphore::new(/*permits*/ 1),
             turn_start_lock: Semaphore::new(/*permits*/ 1),
@@ -692,3 +696,5 @@ fn should_clear_active_goal(
 
 #[path = "../../../alab-autopilot/glue/goal_accounting_clock.rs"]
 mod alab_clock; // ALAB(goal-clock): capture and adopt idle data without exporting accounting internals.
+
+#[path = "../../../alab-autopilot/glue/goal_accounting_persistence.rs"] mod alab_storage; // ALAB(storage): terminal native liveness retires independently of retained failed usage.

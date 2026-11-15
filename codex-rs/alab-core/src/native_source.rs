@@ -101,8 +101,10 @@ impl Preload {
     pub fn validate(&self, attempt: &crate::native_preload::Body) -> io::Result<()> {
         self.source.validate()?;
         attempt.validate()?;
-        if self.source.operation != attempt.operation || self.sequence != attempt.sequence
-            || !valid_hex(&self.registration, 32) {
+        if self.source.operation != attempt.operation
+            || self.sequence != attempt.sequence
+            || !valid_hex(&self.registration, 32)
+        {
             return Err(unavailable());
         }
         Ok(())
@@ -172,15 +174,18 @@ impl std::fmt::Debug for ReadyReceipt {
 }
 
 pub type ReadyFuture<'a> = Pin<Box<dyn Future<Output = io::Result<ReadyReceipt>> + Send + 'a>>;
-pub type ResampleFuture<'a> = Pin<Box<dyn Future<Output = io::Result<crate::native_preload::Resample>> + Send + 'a>>;
+pub type ResampleFuture<'a> =
+    Pin<Box<dyn Future<Output = io::Result<crate::native_preload::Resample>> + Send + 'a>>;
 
 /// An authenticated negative source observation grants no readiness.
 pub enum ReboundReadyOutcome {
     Ready(crate::native_preload::Ready),
     SourceChanged,
 }
-pub type ReboundReadyFuture<'a> = Pin<Box<dyn Future<Output = io::Result<ReboundReadyOutcome>> + Send + 'a>>;
-pub type OwnedReadyFuture<'a> = Pin<Box<dyn Future<Output = io::Result<crate::native_preload::Ready>> + Send + 'a>>;
+pub type ReboundReadyFuture<'a> =
+    Pin<Box<dyn Future<Output = io::Result<ReboundReadyOutcome>> + Send + 'a>>;
+pub type OwnedReadyFuture<'a> =
+    Pin<Box<dyn Future<Output = io::Result<crate::native_preload::Ready>> + Send + 'a>>;
 
 pub type MemberFuture<'a> = Pin<Box<dyn Future<Output = io::Result<Arc<dyn Member>>> + Send + 'a>>;
 pub type PreloadFuture<'a> = Pin<Box<dyn Future<Output = io::Result<Preload>> + Send + 'a>>;
@@ -245,37 +250,84 @@ pub trait Member: Send + Sync {
     }
     fn id(&self) -> &str;
     /// Local transport replacement is a negative fence, never native readiness.
-    fn work_incarnation(&self) -> u64 { 0 }
+    fn work_incarnation(&self) -> u64 {
+        0
+    }
     /// Existing-only metadata recovery. It cannot allocate or make a source Ready.
-    fn reconcile_work(&self) -> UnitFuture<'_> { Box::pin(async { Ok(()) }) }
+    fn reconcile_work(&self) -> UnitFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
     /// Physical rebound completion is distinct from historical READY correlation.
-    fn rebound_ready_owned<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _registration: &'a str, _loaded: &'a Loaded) -> ReboundReadyFuture<'a> {
+    fn rebound_ready_owned<'a>(
+        &'a self,
+        _attempt: &'a crate::native_preload::Body,
+        _registration: &'a str,
+        _loaded: &'a Loaded,
+    ) -> ReboundReadyFuture<'a> {
         Box::pin(async { Err(unavailable()) })
     }
     /// Source-only constructor recovery. It never creates HTTP/use admission.
-    fn rebound_preload_owned<'a>(&'a self, _attempt: &'a crate::native_preload::Body) -> PreloadFuture<'a> {
+    fn rebound_preload_owned<'a>(
+        &'a self,
+        _attempt: &'a crate::native_preload::Body,
+    ) -> PreloadFuture<'a> {
         Box::pin(async { Err(unavailable()) })
     }
-    fn preload_owned<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _borrow: Option<&'a Borrow>) -> PreloadFuture<'a> {
+    fn preload_owned<'a>(
+        &'a self,
+        _attempt: &'a crate::native_preload::Body,
+        _borrow: Option<&'a Borrow>,
+    ) -> PreloadFuture<'a> {
         Box::pin(async { Err(unavailable()) })
     }
-    fn preload_owned_use<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _use_receipt: &'a crate::native_source_use::UseReceipt) -> PreloadFuture<'a> {
+    fn preload_owned_use<'a>(
+        &'a self,
+        _attempt: &'a crate::native_preload::Body,
+        _use_receipt: &'a crate::native_source_use::UseReceipt,
+    ) -> PreloadFuture<'a> {
         Box::pin(async { Err(unavailable()) })
     }
-    fn resample_owned<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _previous: &'a crate::native_preload::Predecessor, _borrow: Option<&'a Borrow>) -> ResampleFuture<'a> {
+    fn resample_owned<'a>(
+        &'a self,
+        _attempt: &'a crate::native_preload::Body,
+        _previous: &'a crate::native_preload::Predecessor,
+        _borrow: Option<&'a Borrow>,
+    ) -> ResampleFuture<'a> {
         Box::pin(async { Err(unavailable()) })
     }
-    fn resample_owned_use<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _previous: &'a crate::native_preload::Predecessor, _use_receipt: &'a crate::native_source_use::UseReceipt) -> ResampleFuture<'a> {
+    fn resample_owned_use<'a>(
+        &'a self,
+        _attempt: &'a crate::native_preload::Body,
+        _previous: &'a crate::native_preload::Predecessor,
+        _use_receipt: &'a crate::native_source_use::UseReceipt,
+    ) -> ResampleFuture<'a> {
         Box::pin(async { Err(unavailable()) })
     }
-    fn ready_owned<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _registration: &'a str, _loaded: &'a Loaded) -> OwnedReadyFuture<'a> {
+    fn ready_owned<'a>(
+        &'a self,
+        _attempt: &'a crate::native_preload::Body,
+        _registration: &'a str,
+        _loaded: &'a Loaded,
+    ) -> OwnedReadyFuture<'a> {
         Box::pin(async { Err(unavailable()) })
     }
-    fn ready_owned_use<'a>(&'a self, _attempt: &'a crate::native_preload::Body, _registration: &'a str, _loaded: &'a Loaded, _use_receipt: &'a crate::native_source_use::UseReceipt) -> OwnedReadyFuture<'a> {
+    fn ready_owned_use<'a>(
+        &'a self,
+        _attempt: &'a crate::native_preload::Body,
+        _registration: &'a str,
+        _loaded: &'a Loaded,
+        _use_receipt: &'a crate::native_source_use::UseReceipt,
+    ) -> OwnedReadyFuture<'a> {
         Box::pin(async { Err(unavailable()) })
     }
 
-    fn preload<'a>(&'a self, _operation: &'a str, _borrow: Option<&'a Borrow>) -> PreloadFuture<'a> { Box::pin(async { Err(unavailable()) }) }
+    fn preload<'a>(
+        &'a self,
+        _operation: &'a str,
+        _borrow: Option<&'a Borrow>,
+    ) -> PreloadFuture<'a> {
+        Box::pin(async { Err(unavailable()) })
+    }
     fn ready<'a>(
         &'a self,
         operation: &'a str,

@@ -80,8 +80,8 @@ impl Harness {
     }
 }
 
-const NEED: &str = "the deploy token";
-const NEED_TEXT: &str = "Codex needs you: the deploy token — carrying on";
+const NEED: &str = "the deploy approval";
+const NEED_TEXT: &str = "Codex needs you: the deploy approval — carrying on";
 const STOPPED: &str = "stopped: the command needs a credential";
 
 /// A non-effective owner can free a real slot without changing the effective
@@ -245,7 +245,7 @@ async fn refused_off_cleanup_parks_until_a_fresh_claim_reconciles() {
         h.sup.attention_retry_at().is_none(),
         "unheld deadline is parked"
     );
-    assert!(h.sup.want_needs(&["a new signing key".to_string()], 9));
+    assert!(h.sup.want_needs(&["a new signing approval".to_string()], 9));
     let requests = h.fake.requests();
     tokio::time::pause();
     tokio::time::advance(2 * super::ATTENTION_RETRY).await;
@@ -273,7 +273,7 @@ async fn refused_off_cleanup_parks_until_a_fresh_claim_reconciles() {
         && h.sup.needs_key() == 9
         && h.sup.lock().needs_retry.is_none()
         && h.fake.attention().get("needs").map(String::as_str)
-            == Some("Codex needs you: a new signing key — carrying on"))
+            == Some("Codex needs you: a new signing approval — carrying on"))
     {
         assert!(
             std::time::Instant::now() < deadline,
@@ -286,7 +286,7 @@ async fn refused_off_cleanup_parks_until_a_fresh_claim_reconciles() {
     assert_eq!(h.sup.needs_key(), 9);
     assert_eq!(
         h.fake.attention().get("needs").map(String::as_str),
-        Some("Codex needs you: a new signing key — carrying on")
+        Some("Codex needs you: a new signing approval — carrying on")
     );
     assert!(h.sup.lock().needs_retry.is_none());
     let requests = h.fake.requests();

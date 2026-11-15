@@ -41,6 +41,10 @@ pub(super) fn filter<S: Subscriber>(initial: Targets) -> impl Filter<S> + Send +
 }
 
 #[cfg(test)]
+#[path = "test_child_process.rs"]
+mod test_child_process;
+
+#[cfg(test)]
 mod tests {
     use tracing_subscriber::prelude::*;
 
@@ -78,18 +82,18 @@ mod tests {
                 "{}::installed_feedback_filter_follows_live_mode_at_the_same_callsite",
                 module_path!().split_once("::").unwrap().1
             );
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name])
-                .env(CHILD, "1")
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", &name]).env(CHILD, "1");
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(super::test_child_process::run(
+                    child,
+                    std::time::Duration::from_secs(30),
+                ))
+                .unwrap_or_else(|failure| panic!("{name}: {failure}"))
+                .assert_test_success(&name);
             return;
         }
         codex_alab_core::activate();

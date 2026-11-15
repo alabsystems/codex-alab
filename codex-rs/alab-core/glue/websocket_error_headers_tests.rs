@@ -7,8 +7,8 @@ use super::*;
 use crate::api_bridge::map_api_error;
 use codex_protocol::error::CodexErrorDetails;
 use serde_json::json;
-use std::process::Command;
 use std::process::Stdio;
+use tokio::process::Command;
 
 const CHILD: &str = "ALAB_WS_HEADER_TEST_CHILD";
 const COMPLETE: &str = "ALAB_WS_HEADER_BOUNDARY_OK";
@@ -18,14 +18,10 @@ fn isolated(case: &str) -> std::io::Result<()> {
     let (_, module) = module_path!()
         .split_once("::")
         .unwrap_or_else(|| panic!("test crate prefix"));
+    let name = format!("{module}::active_header_boundary_child");
     let mut command = Command::new(std::env::current_exe()?);
     command
-        .args([
-            "--exact",
-            &format!("{module}::active_header_boundary_child"),
-            "--nocapture",
-            "--test-threads=1",
-        ])
+        .args(["--exact", &name, "--nocapture", "--test-threads=1"])
         .env_clear()
         .env(CHILD, case)
         .stdin(Stdio::null());
@@ -34,15 +30,17 @@ fn isolated(case: &str) -> std::io::Result<()> {
             command.env(key, value);
         }
     }
-    let output = command.output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "isolated {case} failed: {stdout}\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(stdout.contains(&format!("{COMPLETE}:{case}")), "{stdout}");
-    assert!(stdout.contains("1 passed; 0 failed"), "{stdout}");
+    let expected_marker = format!("{COMPLETE}:{case}\n");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(crate::test_child_process::run_with_stdout_marker(
+            command,
+            Duration::from_secs(60),
+            Some(&expected_marker),
+        ))
+        .unwrap_or_else(|failure| panic!("isolated {case}: {failure}"))
+        .assert_test_success(&name);
     assert!(!codex_alab_core::active());
     Ok(())
 }
@@ -376,6 +374,61 @@ async fn policy_capacity_keeps_typed_advice_and_permanent_status_precedence() {
     }
 }
 
+fn opaque_handshake_keeps_its_body_and_provider_deadline(active: bool) {
+    assert_eq!(codex_alab_core::active(), active);
+    for status in [StatusCode::BAD_REQUEST, StatusCode::FORBIDDEN] {
+        for (body, opaque) in [
+            (r#"{"detail":"Bad Request"}"#, true),
+            (r#"["Bad Request"]"#, false),
+            (r#"{"error":{"code":"invalid_prompt"}}"#, false),
+            (r#"{"detail":"Bad Request","code":"denied"}"#, false),
+        ] {
+            let response = http::Response::builder()
+                .status(status)
+                .header("retry-after", "7")
+                .header("x-request-id", "req_handshake-1")
+                .body(Some(body.as_bytes().to_vec()))
+                .unwrap();
+            let before = Instant::now();
+            let api_error = map_ws_error(
+                WsError::Http(Box::new(response)),
+                &Url::parse("wss://example.test/responses").unwrap(),
+            );
+            let after = Instant::now();
+            let ApiError::Transport(TransportError::Http {
+                body: preserved_body,
+                headers,
+                ..
+            }) = &api_error
+            else {
+                panic!("handshake HTTP failure lost its response: {api_error:?}");
+            };
+            assert_eq!(preserved_body.as_deref(), Some(body));
+            assert_eq!(headers.as_ref().unwrap()["x-request-id"], "req_handshake-1");
+            let error = map_api_error(api_error);
+            let retry = active && status == StatusCode::BAD_REQUEST && opaque;
+            if status == StatusCode::BAD_REQUEST {
+                assert_eq!(error.retry_delay(1).is_some(), retry);
+            } else {
+                assert_eq!(error.http_status_code_value(), Some(status.as_u16()));
+            }
+            assert_eq!(
+                matches!(error.details(), CodexErrorDetails::Stream(_)),
+                retry
+            );
+            let deadline = error.retry_after().unwrap().deadline();
+            assert!(deadline >= before + Duration::from_secs(7));
+            assert!(deadline <= after + Duration::from_secs(7));
+        }
+    }
+}
+
+#[test]
+fn opaque_websocket_handshake_uses_the_shared_http_recovery_boundary() -> std::io::Result<()> {
+    opaque_handshake_keeps_its_body_and_provider_deadline(false);
+    isolated("opaque-handshake")
+}
+
 #[test]
 fn policy_capacity_websocket_errors_keep_their_type_advice_and_refusal_boundaries()
 -> std::io::Result<()> {
@@ -430,6 +483,201 @@ fn inactive_headers_keep_the_upstream_strict_parser() {
     }
 }
 
+fn active_nested_correlation_header_matrix() {
+    assert!(codex_alab_core::active());
+    let nested = json!({
+        "x-request-id":"req_nested-primary", "x-oai-request-id":"req_nested-alias",
+        "cf-ray":"ray_nested", "retry-after":"7",
+        "authorization":"Bearer private-nested-auth",
+        "x-openai-authorization-error":"private-nested-authorization-error",
+        "x-error-json":"private-nested-error-json", "x-unrelated":"private-nested-header"
+    });
+    for (primary, alias) in [
+        ("req_outer-primary", "req_outer-alias"),
+        ("invalid outer primary", "req_outer-alias"),
+        ("req_outer-primary", "invalid outer alias"),
+    ] {
+        let outer = json!({
+            "X-Request-ID":primary, "X-OAI-Request-ID":alias,
+            "CF-Ray":"ray_outer", "Retry-After":"11",
+            "authorization":"Bearer private-outer-auth",
+            "x-openai-authorization-error":"private-outer-authorization-error",
+            "x-error-json":"private-outer-error-json", "x-unrelated":"private-outer-header"
+        });
+        let expected = json_headers_to_http_headers(outer.as_object().unwrap());
+        assert_eq!(
+            alab_error_headers::http_headers(outer.as_object(), Some(&nested)),
+            Some(expected),
+            "a valid outer primary or alias preserves every existing outer entry"
+        );
+    }
+
+    for (outer, expected) in [
+        (
+            json!({}),
+            json!({"x-request-id":"req_nested-primary", "cf-ray":"ray_nested"}),
+        ),
+        (
+            json!({"x-request-id":"req_outer"}),
+            json!({"x-request-id":"req_outer", "cf-ray":"ray_nested"}),
+        ),
+        (
+            json!({"cf-ray":"ray_outer"}),
+            json!({"x-request-id":"req_nested-primary", "cf-ray":"ray_outer"}),
+        ),
+        (
+            json!({"x-request-id":"invalid outer primary", "x-oai-request-id":"invalid outer alias", "cf-ray":"invalid outer ray"}),
+            json!({"x-request-id":"req_nested-primary", "x-oai-request-id":"invalid outer alias", "cf-ray":"ray_nested"}),
+        ),
+    ] {
+        assert_eq!(
+            alab_error_headers::http_headers(outer.as_object(), Some(&nested)),
+            Some(json_headers_to_http_headers(expected.as_object().unwrap())),
+            "request and ray fallbacks are independent; only selected IDs are copied"
+        );
+    }
+
+    let alias = json!({
+        "X-Request-Id":"invalid nested primary",
+        "X-OAI-Request-ID":"req_nested-alias", "CF-Ray":"ray_nested",
+        "authorization":"Bearer private-nested-auth", "retry-after":"7"
+    });
+    assert_eq!(
+        alab_error_headers::http_headers(None, Some(&alias)),
+        Some(json_headers_to_http_headers(
+            json!({"x-request-id":"req_nested-alias", "cf-ray":"ray_nested"})
+                .as_object()
+                .unwrap()
+        )),
+        "a mixed-case nested alias supplies only the canonical selected request ID"
+    );
+
+    let mixed_case = json!({
+        "X-Request-ID":"req_upper", "x-request-id":"req_lower",
+        "CF-Ray":"ray_upper", "cf-ray":"ray_lower",
+        "authorization":"Bearer private-nested-auth"
+    });
+    let normalized = json_headers_to_http_headers(mixed_case.as_object().unwrap());
+    let mut expected = http::HeaderMap::new();
+    expected.insert("x-request-id", normalized["x-request-id"].clone());
+    expected.insert("cf-ray", normalized["cf-ray"].clone());
+    assert_eq!(
+        alab_error_headers::http_headers(None, Some(&mixed_case)),
+        Some(expected),
+        "case collisions follow the shared converter's final normalized values"
+    );
+    let collided_primary = json!({
+        "X-Request-ID":"req_earlier-primary", "x-request-id":"invalid final primary",
+        "X-OAI-Request-ID":"req_nested-alias"
+    });
+    assert_eq!(
+        json_headers_to_http_headers(collided_primary.as_object().unwrap())["x-request-id"],
+        "invalid final primary"
+    );
+    assert_eq!(
+        alab_error_headers::http_headers(None, Some(&collided_primary)),
+        Some(json_headers_to_http_headers(
+            json!({"x-request-id":"req_nested-alias"})
+                .as_object()
+                .unwrap()
+        )),
+        "never select an earlier valid case variant ahead of the converter's final value"
+    );
+
+    for (request, ray, expected_request, expected_ray) in [
+        (json!(42), json!(true), "42", "true"),
+        (json!(false), json!(17), "false", "17"),
+    ] {
+        let headers = json!({"x-request-id":request, "cf-ray":ray});
+        let actual = alab_error_headers::http_headers(None, Some(&headers)).unwrap();
+        assert_eq!(actual.len(), 2);
+        assert_eq!(actual["x-request-id"], expected_request);
+        assert_eq!(actual["cf-ray"], expected_ray);
+    }
+
+    let empty = json!({});
+    for value in [
+        json!(null),
+        json!([]),
+        json!({"private":"nested object"}),
+        json!(""),
+        json!("contains spaces"),
+        json!("has.period"),
+        json!("has/slash"),
+        json!("has:colon"),
+        json!("contains\nnewline"),
+        json!("contains\rcarriage-return"),
+        json!("non-ascii-é"),
+        json!("x".repeat(129)),
+    ] {
+        let headers = json!({
+            "x-request-id":value, "x-oai-request-id":value, "cf-ray":value,
+            "authorization":"Bearer private-nested-auth", "retry-after":"7"
+        });
+        assert_eq!(alab_error_headers::http_headers(None, Some(&headers)), None);
+        assert_eq!(
+            alab_error_headers::http_headers(empty.as_object(), Some(&headers)),
+            Some(http::HeaderMap::new()),
+            "invalid nested IDs cannot replace the presence of an empty outer map"
+        );
+    }
+    let boundary = "x".repeat(128);
+    let headers = json!({"x-request-id":boundary, "cf-ray":boundary});
+    let actual = alab_error_headers::http_headers(None, Some(&headers)).unwrap();
+    assert_eq!(actual.len(), 2);
+    assert_eq!(actual["x-request-id"], boundary);
+    assert_eq!(actual["cf-ray"], boundary);
+
+    assert_eq!(alab_error_headers::http_headers(None, None), None);
+    assert_eq!(
+        alab_error_headers::http_headers(empty.as_object(), None),
+        Some(http::HeaderMap::new())
+    );
+    for malformed in [
+        json!(null),
+        json!([]),
+        json!(false),
+        json!(42),
+        json!("private"),
+    ] {
+        assert_eq!(
+            alab_error_headers::http_headers(None, Some(&malformed)),
+            None
+        );
+        assert_eq!(
+            alab_error_headers::http_headers(empty.as_object(), Some(&malformed)),
+            Some(http::HeaderMap::new())
+        );
+    }
+}
+
+#[test]
+fn nested_error_correlation_header_fallback_preserves_outer_metadata() -> std::io::Result<()> {
+    isolated("correlation-headers")
+}
+
+#[test]
+fn inactive_nested_error_headers_keep_outer_conversion_only() {
+    assert!(!codex_alab_core::active());
+    let nested = json!({"x-request-id":"req_nested", "cf-ray":"ray_nested", "retry-after":"7"});
+    for outer in [
+        json!(null),
+        json!({}),
+        json!({
+            "X-Request-ID":42, "CF-Ray":true, "Retry-After":"11",
+            "authorization":"Bearer private-outer-auth", "x-unrelated":"private-outer-header",
+            "invalid header name":"ignored", "x-array":["ignored"], "x-null":null
+        }),
+    ] {
+        let expected = outer.as_object().map(json_headers_to_http_headers);
+        assert_eq!(
+            alab_error_headers::http_headers(outer.as_object(), Some(&nested)),
+            expected,
+            "inactive behavior is exactly the original outer-only conversion"
+        );
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn active_header_boundary_child() {
     let Ok(case) = std::env::var(CHILD) else {
@@ -447,6 +695,8 @@ async fn active_header_boundary_child() {
         "policy-capacity" => {
             policy_capacity_keeps_typed_advice_and_permanent_status_precedence().await
         }
+        "opaque-handshake" => opaque_handshake_keeps_its_body_and_provider_deadline(true),
+        "correlation-headers" => active_nested_correlation_header_matrix(),
         other => panic!("unexpected isolated case: {other}"),
     }
     println!("{COMPLETE}:{case}");

@@ -468,17 +468,20 @@ fn a_quiet_session_moves_with_no_notice_under_upgrade_ask() {
                     "{what}: {facts:?}"
                 );
                 h.rt.with_state(quiet);
-                // The word the quiet state stands under, read once it stands.
+                // The word the quiet state stands under, read once it stands: the answer text
+                // set with it says the stored policy is the one this moved, which the word
+                // alone does not where the session already stood under it.
                 if let Some(word) = word {
                     let want = crate::decide::Mode::of_word(word);
+                    // The fake escapes what it is given: the policy stores this as written.
+                    let text = format!("Pick%20one%20{word}.");
                     h.fake.set_status("autopilot", word);
-                    h.fake
-                        .set_policy_key("answer_text", &format!("Pick%20one%20{word}."));
+                    h.fake.set_policy_key("answer_text", &text);
                     wait_for_supervisor(|| {
-                        h.autopilot
-                            .sup
-                            .policy()
-                            .is_some_and(|policy| Some(policy.autopilot) == want)
+                        h.autopilot.sup.policy().is_some_and(|policy| {
+                            Some(policy.autopilot) == want
+                                && policy.answer_text.as_deref() == Some(text.as_str())
+                        })
                     })
                     .await;
                 }

@@ -409,6 +409,7 @@ impl App {
         self.account_email_request_id = None;
         self.file_search.on_user_query(String::new());
         self.bind_backend_workspace(destination, cwd);
+        self.chat_widget.alab_bind_goal_runtime_backend(destination.backend_id()); // ALAB(storage-status): switching backend retires any old passive hold before drawing.
         self.alab_backend_bookkeeping.displayed(destination.backend_id()); // ALAB(turns): bind goals to the authenticated destination before either create or resume draws its widget.
         self.model_catalog = Arc::new(
             ModelCatalog::new(bootstrap.available_models)

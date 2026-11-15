@@ -367,16 +367,28 @@ async fn initial_log(root: &Path, pin: &str, reads: &Reads) -> Option<(u64, u32)
     let text = String::from_utf8(bytes).ok()?;
     let mut lines = text.lines();
     let line = lines.next()?;
-    if lines.next().is_some() || reflog_time(line) != Some(changed.0) {
+    if lines.next().is_some() {
         return None;
     }
+    let initial = initial_bound(reflog_time(line)?, changed)?;
     let (meta, why) = line.split_once('\t')?;
     let mut fields = meta.split_whitespace();
     (fields.next()? == "0".repeat(pin.len())
         && fields.next()? == pin
         && why == format!("reset: moving to {pin}"))
-    .then_some(changed)
+    .then_some(initial)
 }
+
+fn initial_bound(recorded: u64, changed: (u64, u32)) -> Option<(u64, u32)> {
+    // Git records whole seconds before writing the reflog. A delayed write can
+    // cross a second boundary, but must not license tags created after the
+    // recorded initialization second. Retain the finer ctime bound when earlier.
+    (recorded > 0 && recorded <= changed.0).then_some(changed.min((recorded, 999_999_999)))
+}
+
+#[cfg(test)]
+#[path = "repo_cargo_copy_tests.rs"]
+mod tests;
 
 async fn database_read(database: &Path, args: &[&str], reads: &Reads) -> Option<String> {
     let git_dir = format!("--git-dir={}", database.to_str()?);

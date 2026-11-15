@@ -7,11 +7,15 @@ use std::collections::BTreeMap;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::ffi::OsString;
+use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -19,6 +23,9 @@ type Result<T> = std::result::Result<T, String>;
 
 #[derive(Deserialize)]
 struct State {
+    target_dir: String,
+    diagnostics_root: String,
+    diagnostics_root_identity: [u64; 2],
     mode: String,
     rounds: u64,
     libraries: Vec<Library>,
@@ -31,6 +38,7 @@ struct Library {
     binary: String,
     cwd: String,
     snapshot: [u64; 5],
+    diagnostics_dirs: Vec<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -97,6 +105,146 @@ fn snapshot(path: &Path) -> Result<[u64; 5]> {
         u64::try_from(timestamp).map_err(io)?,
         u64::try_from(change_timestamp).map_err(io)?,
     ])
+}
+
+fn directory(path: &Path) -> Result<File> {
+    require(path.is_absolute(), "diagnostics target is not absolute")?;
+    // SAFETY: the static path is NUL-terminated; successful open owns one FD.
+    let descriptor = unsafe {
+        libc::open(
+            c"/".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    require(
+        descriptor >= 0,
+        "could not open diagnostics filesystem root",
+    )?;
+    // SAFETY: descriptor was just opened successfully and has one owner.
+    let mut parent = unsafe { File::from_raw_fd(descriptor) };
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => parent = directory_at(&parent, name.as_bytes())?,
+            _ => return Err("diagnostics path is not canonical".to_owned()),
+        }
+    }
+    Ok(parent)
+}
+
+fn directory_at(parent: &File, name: &[u8]) -> Result<File> {
+    let name = CString::new(name).map_err(io)?;
+    // SAFETY: parent owns a live directory FD and name is NUL-terminated.
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(format!(
+            "could not open diagnostics directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: descriptor was just opened successfully and has one owner.
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+fn directory_identity(file: &File) -> Result<[u64; 2]> {
+    let metadata = file.metadata().map_err(io)?;
+    require(metadata.is_dir(), "diagnostics path is not a directory")?;
+    Ok([metadata.dev(), metadata.ino()])
+}
+
+fn diagnostics(
+    state: &State,
+    library: &Library,
+    binary: &Path,
+    round: u64,
+    selected: bool,
+) -> Result<Option<(PathBuf, [u64; 2])>> {
+    let target = Path::new(&state.target_dir);
+    let inherited = std::env::var_os("CARGO_TARGET_DIR")
+        .ok_or("native Cargo did not supply its diagnostics target")?;
+    require(
+        Path::new(&inherited) == target
+            && target.canonicalize().map_err(io)? == target
+            && binary.starts_with(target),
+        "unit-test diagnostics target does not match native Cargo",
+    )?;
+    let target_directory = directory(target)?;
+    let root = Path::new(&state.diagnostics_root);
+    require(
+        root.parent() == Some(target)
+            && root
+                .file_name()
+                .is_some_and(|name| name.as_bytes().starts_with(b"alab-unit-diagnostics.")),
+        "unit-test diagnostics root escapes its prepared target",
+    )?;
+    let root_name = root.file_name().ok_or("missing diagnostics root name")?;
+    let root_directory = directory_at(&target_directory, root_name.as_bytes())?;
+    require(
+        directory_identity(&root_directory)? == state.diagnostics_root_identity,
+        "unit-test diagnostics root changed after preparation",
+    )?;
+    require(
+        library.key.len() == 64
+            && library
+                .key
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            && library.diagnostics_dirs.len() as u64 == state.rounds,
+        "invalid prepared diagnostics library or rounds",
+    )?;
+    let leaf = format!("library-{}-round-{round}", library.key);
+    let expected = root.join(&leaf);
+    let prepared = library
+        .diagnostics_dirs
+        .get(usize::try_from(round).map_err(io)?)
+        .ok_or("missing prepared diagnostics round")?;
+    if !selected {
+        require(
+            prepared.is_none(),
+            "unselected round has a diagnostics leaf",
+        )?;
+        return Ok(None);
+    }
+    require(
+        prepared.as_deref() == expected.to_str(),
+        "diagnostics leaf differs from preparation",
+    )?;
+    let name = CString::new(leaf).map_err(io)?;
+    // SAFETY: root_directory is anchored and name contains one prepared leaf component.
+    let created = unsafe { libc::mkdirat(root_directory.as_raw_fd(), name.as_ptr(), 0o700) };
+    if created != 0 {
+        return Err(format!(
+            "could not exclusively create diagnostics leaf: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let leaf_directory = directory_at(&root_directory, name.as_bytes())?;
+    Ok(Some((expected, directory_identity(&leaf_directory)?)))
+}
+
+fn bind_diagnostics(path: Option<&Path>) -> Result<()> {
+    let value = path
+        .map(|path| CString::new(path.as_os_str().as_bytes()).map_err(io))
+        .transpose()?;
+    // SAFETY: the native C entrypoint has no other threads or Rust runtime;
+    // name/value are live NUL-terminated strings. Change only this runner-owned
+    // diagnostic variable, preserving Cargo's signals, descriptors and process.
+    let result = unsafe {
+        match value.as_ref() {
+            Some(value) => libc::setenv(c"ALAB_UNIT_DIAGNOSTICS_DIR".as_ptr(), value.as_ptr(), 1),
+            None => libc::unsetenv(c"ALAB_UNIT_DIAGNOSTICS_DIR".as_ptr()),
+        }
+    };
+    require(
+        result == 0,
+        "could not bind native unit-test diagnostics environment",
+    )
 }
 
 /// Copy C's argv without initializing Rust's process or argument runtime.
@@ -181,6 +329,14 @@ fn execute(arguments: Vec<OsString>) -> Result<()> {
             "isolated comparisons cannot replace their original selectors",
         )?;
     }
+    let diagnostics = diagnostics(
+        &state,
+        library,
+        &binary,
+        round,
+        state.mode == "record" || copy.is_some(),
+    )?;
+    bind_diagnostics(diagnostics.as_ref().map(|(path, _)| path.as_path()))?;
     let mut helpers = BTreeMap::new();
     for (name, value) in std::env::vars_os() {
         if name.as_bytes().starts_with(b"CARGO_BIN_EXE_") {
@@ -200,6 +356,8 @@ fn execute(arguments: Vec<OsString>) -> Result<()> {
         "cwd": cwd, "pid": std::process::id(), "parent_pid": parent_pid,
         "process_group": process_group, "session": session, "mode": state.mode,
         "round": round, "copy_key": copy.map(|copy| &copy.key), "helpers": helpers,
+        "diagnostics_dir": diagnostics.as_ref().map(|(path, _)| path),
+        "diagnostics_identity": diagnostics.as_ref().map(|(_, identity)| identity),
     });
     {
         let path = state_dir.join(format!("library-{}-{round}.json", library.key));
@@ -247,7 +405,8 @@ fn execute(arguments: Vec<OsString>) -> Result<()> {
         .collect::<Vec<_>>();
     pointers.push(std::ptr::null());
     // SAFETY: both the executable and each argument are live NUL-terminated
-    // strings, and pointers ends in NULL. execv retains the inherited environment
+    // strings, and pointers ends in NULL. execv retains the Cargo environment
+    // with only its prepared diagnostics variable bound above,
     // and never returns on success. No Rust Command signal/descriptor edits occur.
     unsafe { libc::execv(executable.as_ptr(), pointers.as_ptr()) };
     Err(format!(

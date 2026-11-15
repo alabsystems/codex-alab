@@ -53,7 +53,7 @@ fn explicit_status_off_revokes_a_prepared_act_even_if_stale_on_policy_returns() 
             }
             let requested = !received_responses_requests(&h._server).await.is_empty();
             Autopilot::cancel_timer(&h.rt).await;
-            h.test.codex.shutdown_and_wait().await.expect("native shutdown");
+            h.shutdown_and_export().await.expect("native shutdown");
             eprintln!("prepared Off observation: ready={ready:?}, stale_on_restored={stale_on_restored}, revoked={revoked}, accepted={accepted}, requested={requested}");
             assert!(stale_on_restored, "the control must recreate the same active policy");
             assert!(ready != Ready::Go && revoked && !accepted && !requested);
@@ -93,11 +93,7 @@ fn explicit_status_off_prevents_native_submit_before_the_policy_event() {
                 let quiet_off =
                     !h.autopilot.sup.acting() && !h.autopilot.sup.held() && !h.rt.timer_pending();
                 Autopilot::cancel_timer(&h.rt).await;
-                h.test
-                    .codex
-                    .shutdown_and_wait()
-                    .await
-                    .expect("native shutdown");
+                h.shutdown_and_export().await.expect("native shutdown");
                 if off {
                     assert!(
                         quiet_off,
@@ -265,11 +261,7 @@ fn the_final_submit_check_rejects_changed_policy_and_superseding_native_input() 
                         assert!(!h.fake.acts().iter().any(|act| act == words::RULE_CONTINUE));
                     }
                 }
-                h.test
-                    .codex
-                    .shutdown_and_wait()
-                    .await
-                    .expect("native shutdown");
+                h.shutdown_and_export().await.expect("native shutdown");
             }
         })
         .await

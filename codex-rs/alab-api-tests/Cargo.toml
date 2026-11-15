@@ -1,0 +1,29 @@
+# Copyright 2026 Andrew Yates
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "codex-alab-api-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "codex_alab_api_tests"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+codex-alab-core = { path = "../alab-core" }
+codex-api = { workspace = true }
+codex-http-client = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "test-util", "time"] }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "=0.3.22"

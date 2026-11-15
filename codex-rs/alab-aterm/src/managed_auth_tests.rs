@@ -1,6 +1,9 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
+#[path = "../../alab-core/glue/test_child_process.rs"]
+mod test_child_process;
+
 use super::*;
 use crate::fake::FakeAterm;
 use crate::fake::Mode;
@@ -125,28 +128,29 @@ fn endpoint_and_install_remain_available_when_the_interface_is_off() -> io::Resu
     let graph = root.path().join("aterm/graph");
     std::fs::create_dir_all(&graph)?;
     std::fs::write(
-        graph.join("s-cafe"),
+        graph.join("t0pe7873g64"),
         format!("sock {}\n", root.path().join("fixture.sock").display()),
     )?;
     let local = module_path!().split_once("::").unwrap().1;
-    let output = std::process::Command::new(std::env::current_exe()?)
-        .args([
-            "--exact",
-            &format!("{local}::interface_off_child"),
-            "--nocapture",
-        ])
+    let name = format!("{local}::interface_off_child");
+    let mut child = tokio::process::Command::new(std::env::current_exe()?);
+    child
+        .args(["--exact", &name, "--nocapture"])
         .env_clear()
         .env("ALAB_MANAGED_AUTH_OFF_CHILD", "1")
         .env("XDG_RUNTIME_DIR", root.path())
-        .env(crate::locate::SELF_SID_ENV, "s-cafe")
-        .env("PATH", "/usr/bin:/bin")
-        .output()?;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("MANAGED_AUTH_OFF_COMPLETE"));
+        .env(crate::locate::SELF_SID_ENV, "t0pe7873g64")
+        .env("PATH", "/usr/bin:/bin");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(test_child_process::run_with_stdout_marker(
+            child,
+            Duration::from_secs(30),
+            Some("MANAGED_AUTH_OFF_COMPLETE\n"),
+        ))
+        .unwrap_or_else(|failure| panic!("{name}: {failure}"))
+        .assert_test_success(&name);
     Ok(())
 }
 
@@ -163,7 +167,10 @@ fn interface_off_child() {
     codex_alab_core::set_enhanced(false);
     assert!(!codex_alab_core::active());
     assert!(Endpoint::from_env().is_none());
-    assert_eq!(Endpoint::managed_auth_from_env().unwrap().sid, "s-cafe");
+    assert_eq!(
+        Endpoint::managed_auth_from_env().unwrap().sid,
+        "t0pe7873g64"
+    );
     install();
     println!("MANAGED_AUTH_OFF_COMPLETE");
 }

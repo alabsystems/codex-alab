@@ -1,0 +1,20 @@
+{
+  "body": {
+    "error": {
+      "message": "Fixture workspace credits depleted",
+      "plan_type": "team",
+      "type": "usage_limit_reached"
+    }
+  },
+  "headers": {
+    "x-codex-active-limit": "codex",
+    "x-codex-primary-reset-at": "1800003600",
+    "x-codex-primary-used-percent": "20",
+    "x-codex-primary-window-minutes": "300",
+    "x-codex-rate-limit-reached-type": "workspace_member_credits_depleted",
+    "x-codex-secondary-reset-at": "1800086400",
+    "x-codex-secondary-used-percent": "10",
+    "x-codex-secondary-window-minutes": "10080"
+  },
+  "status": 429
+}

@@ -1789,3 +1789,5 @@ mod tests {
         );
     }
 }
+
+#[path = "../../alab-autopilot/glue/goal_status_outgoing.rs"] mod alab_goal_status_outgoing; // ALAB(storage-status): actual native enqueue acknowledgement, never inferred from a swallowed send error.

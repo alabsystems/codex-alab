@@ -9,7 +9,7 @@ use super::upgrade_handoff_tests::wait_for_supervisor;
 use super::*;
 use core_test_support::responses;
 
-const HANG: Duration = Duration::from_secs(60);
+const HANG: Duration = super::upgrade_handoff_tests::NATIVE_HANG;
 
 struct StartGate(
     Mutex<

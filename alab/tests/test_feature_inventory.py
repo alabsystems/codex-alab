@@ -49,6 +49,14 @@ class InventoryTests(unittest.TestCase):
                     self.assertIn(
                         'example: policy_files must be a list of nonempty strings', errors)
 
+    def test_lifecycle_requires_a_named_string(self):
+        for lifecycle in (None, True, 1, 1.0, [], {}, ['active'], {'name': 'active'}, ''):
+            with self.subTest(lifecycle=lifecycle):
+                errors = feature_inventory.validate(
+                    self.policy_catalog(lifecycle), set(), Path('.'),
+                    path_exists=lambda _path: True)
+                self.assertIn('example: invalid lifecycle', errors)
+
     def test_policy_files_are_optional_or_empty_for_every_lifecycle(self):
         for lifecycle in ('active', 'retiring', 'retired'):
             for fields in ({}, {'policy_files': []}):
@@ -173,6 +181,20 @@ class CommittedInventoryTests(unittest.TestCase):
                 result = self.inventory()
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn('unsupported inventory schema', result.stderr)
+                self.assertNotIn('ownership complete:', result.stdout)
+
+    def test_committed_lifecycle_types_report_validation_failure(self):
+        path = self.repo / 'alab/features.toml'
+        original = path.read_text()
+        for lifecycle in ('[]', '{ name = "active" }', 'true', '1', '1.0'):
+            with self.subTest(lifecycle=lifecycle):
+                path.write_text(original.replace(
+                    'lifecycle = "active"', f'lifecycle = {lifecycle}', 1))
+                self.commit('invalid lifecycle type')
+                result = self.inventory()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('example: invalid lifecycle', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
                 self.assertNotIn('ownership complete:', result.stdout)
 
     def assert_exact_topic_ownership(self, topic, other_owner, *, hook=None):

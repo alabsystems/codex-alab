@@ -51,27 +51,41 @@ pub fn start(
     start_request(member, request)
 }
 pub(crate) fn start_target_open(
-    member: Arc<dyn Member>, destination: Arc<dyn crate::native_target::Destination>,
-    open_operation: String, request: Retirement,
+    member: Arc<dyn Member>,
+    destination: Arc<dyn crate::native_target::Destination>,
+    open_operation: String,
+    request: Retirement,
 ) -> io::Result<Receipt> {
     request.validate()?;
-    if request.preload_operation.is_some() { return Err(unavailable()); }
-    let state = Arc::new(State { closed: AtomicBool::new(false), changed: Notify::new() });
-    let actor = state.clone();
-    tokio::runtime::Handle::try_current().map_err(|_| unavailable())?.spawn(async move {
-        loop {
-            if destination.retire_open(&request.operation, &open_operation, Some(member.id())).await
-                .is_ok_and(|receipt| receipt.assignment() == destination.context().assignment()
-                    && receipt.operation() == request.operation
-                    && receipt.open_operation() == open_operation
-                    && receipt.member() == Some(member.id())) {
-                actor.closed.store(true, Ordering::Release);
-                actor.changed.notify_waiters();
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        }
+    if request.preload_operation.is_some() {
+        return Err(unavailable());
+    }
+    let state = Arc::new(State {
+        closed: AtomicBool::new(false),
+        changed: Notify::new(),
     });
+    let actor = state.clone();
+    tokio::runtime::Handle::try_current()
+        .map_err(|_| unavailable())?
+        .spawn(async move {
+            loop {
+                if destination
+                    .retire_open(&request.operation, &open_operation, Some(member.id()))
+                    .await
+                    .is_ok_and(|receipt| {
+                        receipt.assignment() == destination.context().assignment()
+                            && receipt.operation() == request.operation
+                            && receipt.open_operation() == open_operation
+                            && receipt.member() == Some(member.id())
+                    })
+                {
+                    actor.closed.store(true, Ordering::Release);
+                    actor.changed.notify_waiters();
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        });
     Ok(Receipt(state))
 }
 
@@ -80,7 +94,8 @@ pub(crate) fn start_request(member: Arc<dyn Member>, request: Retirement) -> io:
 }
 
 pub(crate) fn start_owned_request(
-    member: Arc<dyn Member>, request: Retirement,
+    member: Arc<dyn Member>,
+    request: Retirement,
     attempt: Option<Arc<crate::native_preload::Attempt>>,
 ) -> io::Result<Receipt> {
     request.validate()?;
@@ -95,7 +110,8 @@ pub(crate) fn start_owned_request(
             loop {
                 if member.retire_captured(&request).await.is_ok() {
                     if let Some(attempt) = &attempt {
-                        let closed = crate::native_preload::Closed::from_native(attempt.body().clone());
+                        let closed =
+                            crate::native_preload::Closed::from_native(attempt.body().clone());
                         if !closed.is_ok_and(|closed| attempt.closed(&closed).is_ok()) {
                             return;
                         }
@@ -163,10 +179,22 @@ mod tests {
     #[tokio::test]
     async fn native_source_retirement_retries_exact_metadata_after_eof_and_cancelled_waiter() {
         let peer = Arc::new(Peer::default());
-        let receipt = start_request(peer.clone(), Retirement {
-            operation: "a".repeat(32), preload_operation: Some("b".repeat(32)),
-            preload_sequence: Some(crate::native_preload::Sequence::parse(&format!("{}0000000000000001", "c".repeat(16))).unwrap()), registration: None,
-        }).unwrap();
+        let receipt = start_request(
+            peer.clone(),
+            Retirement {
+                operation: "a".repeat(32),
+                preload_operation: Some("b".repeat(32)),
+                preload_sequence: Some(
+                    crate::native_preload::Sequence::parse(&format!(
+                        "{}0000000000000001",
+                        "c".repeat(16)
+                    ))
+                    .unwrap(),
+                ),
+                registration: None,
+            },
+        )
+        .unwrap();
         let waiter = receipt.clone();
         let cancelled = tokio::spawn(async move { waiter.closed().await });
         cancelled.abort();

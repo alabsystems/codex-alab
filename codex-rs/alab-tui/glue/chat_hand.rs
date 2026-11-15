@@ -115,10 +115,7 @@ impl ChatWidget {
     pub(crate) fn alab_report_frame(&self, status: ProgramStatus) -> turns::Frame {
         let status = self.alab_work_status(status);
         let goal_between_turns = self.status_state.program_status_after_turn == ProgramStatus::Done
-            && self
-                .current_goal_status
-                .as_ref()
-                .is_some_and(super::GoalStatusState::is_active);
+            && self.alab_goal_counts_as_work();
         turns::Frame {
             state: program_state_of(status),
             startup_only: status == ProgramStatus::Working
@@ -750,3 +747,6 @@ mod tests {
         assert_eq!(bar(&chat), Bar::Plan(50));
     }
 }
+
+#[cfg(test)]
+#[path = "goal_runtime_status_widget_tests.rs"] mod goal_runtime_status_widget_tests;

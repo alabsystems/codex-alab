@@ -1,0 +1,47 @@
+{
+  "account_id": "source-account",
+  "additional_rate_limits": [
+    {
+      "limit_name": "codex_other",
+      "metered_feature": "codex_other",
+      "normal_model_slug": null,
+      "rate_limit": {
+        "allowed": false,
+        "limit_reached": true,
+        "primary_window": {
+          "limit_window_seconds": 18000,
+          "reset_after_seconds": 7200,
+          "reset_at": 1800007200,
+          "used_percent": 100
+        },
+        "secondary_window": {
+          "limit_window_seconds": 604800,
+          "reset_after_seconds": 259200,
+          "reset_at": 1800259200,
+          "used_percent": 40
+        }
+      }
+    }
+  ],
+  "plan_type": "pro",
+  "rate_limit": {
+    "allowed": true,
+    "limit_reached": false,
+    "primary_window": {
+      "limit_window_seconds": 18000,
+      "reset_after_seconds": 3600,
+      "reset_at": 1800003600,
+      "used_percent": 20
+    },
+    "secondary_window": {
+      "limit_window_seconds": 604800,
+      "reset_after_seconds": 86400,
+      "reset_at": 1800086400,
+      "used_percent": 10
+    }
+  },
+  "rate_limit_reset_credits": {
+    "available_count": 0
+  },
+  "user_id": "fixture-user"
+}

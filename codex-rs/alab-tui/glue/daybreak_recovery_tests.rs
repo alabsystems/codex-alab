@@ -41,6 +41,7 @@ fn configure_daybreak_offer(chat: &mut crate::chatwidget::ChatWidget) -> ThreadI
     let thread = ThreadId::new();
     chat.thread_id = Some(thread);
     chat.set_feature_enabled(Feature::CliDaybreak, true);
+    chat.set_feature_enabled(Feature::SafetyRecourse, true);
     let mut model = crate::test_support::TEST_MODEL_PRESETS[0].clone();
     model.model = chat.current_model().into();
     model.available_access_programs = Some(ModelAccessPrograms {
@@ -134,6 +135,29 @@ async fn daybreak_verification_warning_preserves_work_and_the_next_draft() {
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
     assert_draft_submission(&mut operations);
     assert!(!chat.daybreak_enabled);
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok())
+            .all(|event| !matches!(event, AppEvent::PersistDaybreakSelection { .. }))
+    );
+}
+
+#[tokio::test]
+async fn daybreak_refusal_is_informational_by_default() {
+    let shared = shared();
+    let _scope = boxes::scoped(shared);
+    let (mut chat, _sender, mut events, mut operations) =
+        make_chatwidget_manual_with_sender().await;
+    configure_daybreak_offer(&mut chat);
+    chat.set_feature_enabled(Feature::SafetyRecourse, false);
+    turn(&mut chat, "refused-turn", TurnStatus::InProgress);
+    chat.apply_external_edit(DRAFT.into());
+
+    chat.handle_non_retry_error("request refused".into(), Some(CodexErrorInfo::CyberPolicy));
+
+    assert!(chat.no_modal_or_popup_active());
+    assert_eq!(chat.composer_text_with_pending(), DRAFT);
+    assert!(!chat.daybreak_enabled);
+    assert!(operations.try_recv().is_err());
     assert!(
         std::iter::from_fn(|| events.try_recv().ok())
             .all(|event| !matches!(event, AppEvent::PersistDaybreakSelection { .. }))

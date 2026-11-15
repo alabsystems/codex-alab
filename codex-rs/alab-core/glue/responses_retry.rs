@@ -24,6 +24,42 @@ use codex_protocol::protocol::StreamErrorEvent;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+/// An opaque rejection does not identify corrupt history. Rebuild the request
+/// over HTTPS before spending retries on the same socket's continuation state.
+/// This only requests a switch: an already-HTTP request keeps its bounded budget.
+pub(super) fn prefer_clean_transport(err: &CodexErr) -> bool {
+    prefer_clean_transport_when_active(codex_alab_core::active(), err)
+}
+
+fn prefer_clean_transport_when_active(active: bool, err: &CodexErr) -> bool {
+    active
+        && matches!(err.details(), CodexErrorDetails::Stream(message)
+            if codex_alab_core::request_error::opaque_bad_request_stream(message))
+}
+
+#[cfg(test)]
+#[test]
+fn clean_transport_requires_the_normalized_opaque_rejection() {
+    let opaque = CodexErr::Stream(format!(
+        "{}{}",
+        codex_alab_core::request_error::OPAQUE_BAD_REQUEST_PREFIX,
+        r#"{"detail":"Bad Request"}"#,
+    ));
+    assert!(prefer_clean_transport_when_active(true, &opaque));
+    assert!(!prefer_clean_transport_when_active(false, &opaque));
+    for error in [
+        CodexErr::InvalidRequest(r#"{"detail":"Bad Request"}"#.into()),
+        CodexErr::Stream("connection interrupted".into()),
+        CodexErr::Stream(format!(
+            "{}{}",
+            codex_alab_core::request_error::OPAQUE_BAD_REQUEST_PREFIX,
+            r#"{"detail":"Bad Request","code":"invalid_prompt"}"#,
+        )),
+    ] {
+        assert!(!prefer_clean_transport_when_active(true, &error));
+    }
+}
+
 /// Keep automatic transport recovery in the live retry-status channel.
 pub(super) fn fallback_notice(event: EventMsg, err: &CodexErr) -> EventMsg {
     fallback_notice_when_active(codex_alab_core::active(), event, err)
@@ -35,10 +71,7 @@ fn fallback_notice_when_active(active: bool, event: EventMsg, err: &CodexErr) ->
     }
     match event {
         EventMsg::Warning(warning) => {
-            tracing::warn!(
-                diagnostic = %warning.message,
-                "WebSocket request is continuing over HTTPS"
-            );
+            tracing::warn!("WebSocket request is continuing over HTTPS");
             EventMsg::StreamError(StreamErrorEvent {
                 message: "Reconnecting over HTTPS".into(),
                 codex_error_info: Some(CodexErrorInfo::ResponseStreamDisconnected {
@@ -523,6 +556,10 @@ pub(super) async fn wait(
         .await;
 }
 
+#[cfg(test)]
+#[path = "test_child_process.rs"]
+mod test_child_process;
+
 #[path = "responses_quota_retry.rs"]
 mod quota_retry;
 
@@ -600,17 +637,40 @@ pub(crate) async fn recover_compaction_weekly(
         .await?)
 }
 
+/// Whether this session's thread is one of the TUI's hidden helpers: a rename
+/// suggestion or automatic title (`thread_title`) or a recap (`system`), each
+/// a single structured turn on an ephemeral thread the person never sees.
+///
+/// This mirrors upstream's own test, which is written inline where the TUI
+/// keeps such a thread out of its routing (the `ThreadStarted` test in
+/// `handle_server_notification_event`, `tui/src/app/app_server_events.rs`)
+/// and, for the title alone, as `title_request` in
+/// `core/src/session/session.rs`. Every other `Feature` thread is a
+/// conversation: an attached side chat is `tui_side_chat`, and automations
+/// name their own.
+async fn hidden_helper_thread(sess: &Session) -> bool {
+    use codex_protocol::protocol::ThreadSource;
+    let thread = sess.thread_config_snapshot().await;
+    thread.ephemeral
+        && matches!(
+            thread.thread_source.as_ref(),
+            Some(ThreadSource::Feature(feature)) if matches!(feature.as_str(), "system" | "thread_title")
+        )
+}
+
 /// Redeem before deciding whether the original quota wall is terminal.
 pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnContext) -> bool {
     use codex_protocol::protocol::SessionSource;
+    // An exec host keeps its request across the wall: no handoff is asked for
+    // its turn, and its usage error does not end it.
+    let exec = turn
+        .extension_data
+        .get::<codex_alab_core::quota::HeadlessExec>()
+        .is_some();
     if !codex_alab_core::active()
         || !weekly_provider(turn)
         || turn.session_source.is_non_root_agent()
-        || !(matches!(turn.session_source, SessionSource::Cli)
-            || turn
-                .extension_data
-                .get::<codex_alab_core::quota::HeadlessExec>()
-                .is_some())
+        || !(matches!(turn.session_source, SessionSource::Cli) || exec)
     {
         return false;
     }
@@ -618,6 +678,16 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
         return false;
     };
     if !codex_alab_quota_recovery::ordinary_weekly_wall(details) {
+        return false;
+    }
+    // A hidden helper's turn is nobody's conversation: no handoff is ever ready
+    // for its thread, so recovery would poll until the wall's reset and the
+    // session would say busy for as long. Its usage error ends it instead.
+    // Only an interactive turn is such a helper: an exec turn of the same
+    // thread identity (`codex exec --ephemeral --thread-source system`) is the
+    // run's own request, and returning here would leave it waiting out the wall
+    // with no further look for an earned reset.
+    if !exec && hidden_helper_thread(sess).await {
         return false;
     }
     let Some(state) = turn
@@ -629,15 +699,15 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
     // Recovery can keep polling until an earned reset arrives. Keep the exact
     // authenticated request observable during that wait, before the later quota
     // retry path is reached; cancellation or restoration drops this lease.
-    let _quota_observation =
-        crate::session::alab_exec_recovery_options::quota_observation::publish(sess, turn);
+    let _quota_observation = crate::session::alab_exec_recovery_options::quota_observation::publish(
+        sess,
+        turn,
+        codex_alab_quota_recovery::WallKind::Ordinary,
+    );
     // An earned reset comes first, then another account. A host that can move
     // this conversation once the turn ends installs the handoff in the turn
     // store; an exec host keeps its request across the wall instead.
-    let handoff = turn
-        .extension_data
-        .get::<codex_alab_core::quota::HeadlessExec>()
-        .is_none()
+    let handoff = (!exec)
         .then(|| {
             turn.extension_data
                 .get::<codex_alab_core::quota::WallHandoff>()
@@ -707,6 +777,8 @@ pub(crate) async fn bind_weekly(sess: &Session, turn: &TurnContext) {
         scope.observe_file(&codex_alab_core::home::auth_file(&turn.config.codex_home));
         scope.register(std::sync::Arc::clone(&sess.services.auth_manager));
     }
+    // The quota retry sees no session: an exec member's turn carries its tree's walls.
+    crate::session::alab_exec_recovery_options::quota_observation::bind(sess, turn);
     if codex_alab_core::active()
         && weekly_provider(turn)
         && !turn.session_source.is_non_root_agent()

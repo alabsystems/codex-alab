@@ -26,7 +26,8 @@
 #      own target dir: lib.sh, alab_pristine). It gates unless it fails there too.
 # Newly integrated upstream commits also need committed intake reviews and complete
 # declared execution evidence for every affected feature's scenarios.
-# Execution order: hooks, intake/evidence admission, full tippy classification, CLI build/version, ALab tests,
+# Execution order: hooks, intake/evidence admission, full tippy classification, certified CLI build/version, actual loopback app/reset and
+# persisted TUI pagination/resize scenarios, ALab tests,
 # then hooked upstream unit tests. Check numbers above retain their existing identities.
 # Upstream's integration suites stay upstream's gate: several need the network or are
 # timing-sensitive, and they cannot tell an ALab fault from an upstream one.
@@ -38,6 +39,14 @@
 # target/ to 52 GB (this Mac's disk ran out). It raises its open-file limit first: launchd
 # starts alab/daily.sh with a soft limit of 256, under which libtest's parallel tests fail with
 # "Too many open files" (829 codex-tui tests did, 2026-10-16).
+#
+# Existing unmanaged build outputs are preserved, never adopted by the gate. If native
+# cache admission asks for a fresh target, choose a new absolute path and keep using it:
+#
+#   CARGO_TARGET_DIR=/absolute/fresh/check-cache /bin/bash alab/check.sh
+#
+# This selects the gate's cache; it does not change the compiler, proof requirements or
+# explicit target ownership checks. Do not delete an existing cache to make it admissible.
 #
 # Exit status: 0 holds; 2 step 2 failed (alab/sync.sh then builds pristine upstream to tell
 # an ALab fault from a toolchain fault); 1 any other step failed.

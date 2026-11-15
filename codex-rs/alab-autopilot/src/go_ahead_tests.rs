@@ -3,9 +3,10 @@
 
 //! The go-ahead reader against `fixtures/go-ahead-table.txt`, and the park it hands the answer.
 //!
-//! PORTED VERBATIM from aterm's `crates/aterm-agent/src/supervise/policy/go_ahead_tests.rs` at
+//! Based on aterm's `crates/aterm-agent/src/supervise/policy/go_ahead_tests.rs` at
 //! aterm main `79002d08ce` (its owner-classification test from `718835900b` and `dc6fd84782`
-//! included), only its paths changed (aterm's `turn_end` is [`crate::words`], its
+//! included), with native tab-ID and stored-credential regressions added and paths adapted (aterm's `turn_end`
+//! is [`crate::words`], its
 //! `guard_base_tests.rs` helpers are [`escaped`], [`unescaped`] and [`SAME`] here, and a hidden
 //! character is what [`crate::needs::sanitized`] drops), with aterm's
 //! `the_guards_cut_takes_no_go_ahead_join` (`needs_tests.rs`) and the guard base's reader
@@ -13,6 +14,58 @@
 
 use super::*;
 use crate::words::Said;
+
+#[test]
+fn stored_credentials_beside_a_go_ahead_use_the_vault_path() {
+    let direct = parked(
+        "",
+        "NEEDS YOU: say \"go\" so I can rebuild, but I need your GitHub token first.",
+    )
+    .expect("the direct stored precondition uses the vault too");
+    assert_eq!(direct.credential_lines.len(), 1);
+    for credential in [
+        "password",
+        "passphrase",
+        "passcode",
+        "token",
+        "SSH key",
+        "secret",
+        "keychain",
+    ] {
+        let said = format!(
+            "The build needs your GitHub {credential}, which I don't have.\n\nNEEDS YOU: say \"go\" so I can rebuild the branch."
+        );
+        let park = parked("", &said).expect("stored credentials are no person's go-ahead");
+        assert_eq!(park.credential_lines.len(), 1, "{credential}: {park:?}");
+        assert_eq!(
+            crate::credential_need::wants_of(&park.credential_lines[0]),
+            Some(vec!["gh:dev"]),
+            "{credential}"
+        );
+    }
+    for context in [
+        "I don't need your password to rebuild it.",
+        "The census check now flags a token in a log line.",
+        "Fixed the build after the GitHub token expired.",
+        "The commit needs your password, which is out of scope.",
+    ] {
+        let said = format!("{context}\n\nNEEDS YOU: say \"go\" so I can rebuild the branch.");
+        assert!(
+            parked("", &said).unwrap().credential_lines.is_empty(),
+            "{context}"
+        );
+    }
+    for context in [
+        "The build needs your admin password, which I don't have.",
+        "The build needs you to log in.",
+        "The build needs Full Disk Access.",
+        "As you asked, I stopped the build.",
+        "As you asked, I am stopping the build.",
+    ] {
+        let said = format!("{context}\n\nNEEDS YOU: say \"go\" so I can rebuild the branch.");
+        assert!(parked("", &said).is_none(), "{context}");
+    }
+}
 
 /// Whether `c` is a character [`crate::needs::sanitized`] drops (aterm's `is_hidden_char`).
 fn hidden(c: char) -> bool {
@@ -216,15 +269,11 @@ fn uppercase_owners_keep_their_work_outside_the_standing_go_ahead() {
     ] {
         assert!(parked("", reply).is_some(), "own work still parks: {reply}");
     }
-    for reply in [
-        "NEEDS YOU: approval from the security team so I can merge my branch into main.",
-        "The build needs your GitHub token, which I don't have.\n\nNEEDS YOU: say \"go\" so I can rebuild the branch.",
-    ] {
-        assert!(
-            parked("", reply).is_none(),
-            "the boundary still holds: {reply}"
-        );
-    }
+    let other = "NEEDS YOU: approval from the security team so I can merge my branch into main.";
+    assert!(
+        parked("", other).is_none(),
+        "the boundary still holds: {other}"
+    );
 
     let mut wrong = Vec::new();
     for reply in [
@@ -547,6 +596,22 @@ fn an_echo_or_a_report_of_the_go_ahead_parks_nothing() {
 /// A WORD ANOTHER NEED ASKS FOR AN ACT THE GO-AHEAD DOES NOT COVER IS NEVER SAID (2026-10-29
 /// review 3): the reply's own reversible need parks, and the answer quotes it rather than say
 /// `go`, which the other need asks for a deletion on the remote.
+#[test]
+fn canonical_tab_ids_keep_other_sessions_work_outside_the_go_ahead() {
+    for sid in ["t0pe7873g64", "s-0123456789abcdef0123"] {
+        for words in [
+            format!("stop {sid}"),
+            format!("clear the build cache of {sid}"),
+            format!("restart {sid}"),
+        ] {
+            assert!(someone_else(&Unit::new(&words, false)), "{words}");
+        }
+        let wait = format!("wait for {sid} to finish using memory");
+        assert!(!someone_else(&Unit::new(&wait, false)), "{wait}");
+    }
+    assert!(!someone_else(&Unit::new("stop my own build", false)));
+}
+
 #[test]
 fn a_word_another_need_asks_for_an_excluded_act_is_never_said() {
     let two = "NEEDS YOU: say go so I can rerun the checks.\nNEEDS YOU: say go so I can delete the \

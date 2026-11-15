@@ -20,6 +20,7 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -113,7 +114,7 @@ impl Launch {
     }
 }
 
-/// The environment variable naming the aterm session (`s-<hex>`) a process runs in, which
+/// The environment variable naming the aterm tab ID a process runs in, which
 /// aterm sets for every program in a tab (never `ATERM_SESSION_ID`, a nested aterm's
 /// preminted identity): the key of aterm's own books for that tab.
 pub const ATERM_SESSION_ENV: &str = "ATERM_PARENT_SESSION_ID";
@@ -302,9 +303,11 @@ impl HarnessWord {
 }
 
 /// An unresolved provider failure, kept across a witnessed crash or live re-exec.
-/// Deadlines use epoch milliseconds so restarting a process never restarts a wait.
+/// Millisecond deadlines belong to `clock`'s boot-bound axis, so neither a restart
+/// nor a wall-clock correction spends a relative provider wait.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recovery {
+    pub clock: Option<crate::recovery_clock::Anchor>,
     pub thread: String,
     /// The exact failed turn; a newer history point makes this intent obsolete.
     pub turn_id: String,
@@ -319,6 +322,7 @@ pub struct Recovery {
 /// authorize a continuation, waive a manual stop, or extend the crash carry-on chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InFlightRetry {
+    pub clock: Option<crate::recovery_clock::Anchor>,
     pub thread: String,
     pub turn_id: String,
     pub not_before_ms: u64,
@@ -656,6 +660,9 @@ pub struct Pace {
     /// relaunch as in this one (item a: it lived in memory only, so the relaunch's try met the
     /// blocked goal as a person's stop and parked for good).
     pub wall_goal: Option<WallGoal>,
+    /// A successful native model block, bound to the original goal and recovered by
+    /// the next paced continuation. Explicit person stops revoke this binding.
+    pub model_blocked_goal: Option<WallGoal>,
 }
 
 /// A PERSON'S ESC AS THE RECORD CARRIES IT ([`Pace::esc`]).
@@ -768,6 +775,7 @@ impl Pace {
             && self.left_point.is_none()
             && self.esc.is_none()
             && self.wall_goal.is_none()
+            && self.model_blocked_goal.is_none()
     }
 }
 
@@ -1017,6 +1025,56 @@ impl Drop for ActGuard<'_> {
     }
 }
 
+/// THE NATIVE POINT'S TWO COUNTERS, under the one lock native facts, an automatic turn's
+/// admission ([`Shared::publish_renewal`], [`Shared::admit_recovered_turn`]) and the live
+/// upgrade's commit and cancel share, so none of them interleaves with another.
+///
+/// The live upgrade's asynchronous all-thread scan reads every loaded thread, goal and
+/// background task, so any TUI or app-server event may have changed what it read: its counter
+/// moves with every event and every native fact. An automatic turn's admission reads only the
+/// facts its own checks name (the frame, a person's input, the overlay, the signal, the
+/// Autopilot, the claim, a box, a turn's start or end, a resume), so its counter moves with
+/// those alone: an event such as the TUI's periodic usage reply (`RateLimitsLoaded`, every
+/// 60 s) left an admission nothing to recheck, yet refused it whenever it landed inside the
+/// admission's host reads (review of the happy successor that never reran its turn).
+///
+/// WHAT THE ADMISSION COUNTER DOES NOT COVER: the frame's flags lag an event by one frame.
+/// The composer's draft, queued input, a popup, the external editor and a person's pending
+/// turn reach this state only when the TUI draws ([`Shared::observe`]), and the overlay at
+/// its next terminal event. An event's handler can change one of them with no key pressed (a
+/// usage reply that opens the rate-limit prompt), and until the frame after it both the flag
+/// and this counter read as before: an admission whose last check falls in that one
+/// handler-and-frame interval goes ahead under what the event just opened. The single counter
+/// refused an admission already in flight across such an event, and one that began after the
+/// event and before its frame no more than this does. A person's own key, paste or click is
+/// not in that interval: it is a fact at once ([`Shared::human_input`]).
+struct NativeGenerations {
+    /// [`Shared::upgrade_generation`].
+    scan: u64,
+    /// [`Shared::admission_generation`].
+    admission: u64,
+}
+
+impl NativeGenerations {
+    /// A fact that can invalidate an automatic turn: both counters move.
+    fn fact(&mut self) {
+        self.scan = self.scan.wrapping_add(1);
+        self.admission = self.admission.wrapping_add(1);
+    }
+
+    /// An event only the live upgrade's scan reads ([`Shared::invalidate_upgrade`]).
+    fn event(&mut self) {
+        self.scan = self.scan.wrapping_add(1);
+    }
+}
+
+/// The native point an automatic act was decided at ([`Shared::admission_generation`]): what
+/// [`Shared::publish_renewal`] and [`Shared::publish_recovery`] publish against. Its own type,
+/// so the live upgrade's scan counter ([`Shared::upgrade_generation`]) can never stand in for
+/// it, nor it for that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdmissionGeneration(u64);
+
 /// Why the session is not at rest although its frame may read idle ([`Shared::unrest`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unrest {
@@ -1074,9 +1132,10 @@ pub struct Shared {
     waker: OnceLock<Callback>,
     leave: OnceLock<Callback>,
     upgrade_leave: OnceLock<UpgradeLeave>,
-    /// Native facts and the upgrade's final commit share this lock. Record bookkeeping
-    /// has its own generation and must not invalidate an otherwise unchanged handoff.
-    upgrade_generation: Mutex<u64>,
+    /// Native facts, an automatic turn's admission and the upgrade's final commit share this
+    /// lock ([`NativeGenerations`]). Record bookkeeping has its own generation and must not
+    /// invalidate an otherwise unchanged handoff.
+    native: Mutex<NativeGenerations>,
     own_turns: Mutex<Vec<String>>,
     /// The TUI is about to start a thread that carries on another's work
     /// ([`Self::continue_work`]); the next root thread taken takes it.
@@ -1088,6 +1147,10 @@ pub struct Shared {
     carry_on_owed: AtomicBool,
     carried_on: AtomicU32,
     owed_act: Mutex<Option<OwedAct>>,
+    /// Counts the moments this session may have begun leaving its account for a spent usage
+    /// allowance ([`Self::account_move_watch`]). Made at first use: [`Self::new`] is a
+    /// `const fn`, and a watch sender cannot be built in one.
+    account_move: OnceLock<tokio::sync::watch::Sender<u64>>,
     needs_off: AtomicU64,
     workdirs: Mutex<BTreeMap<String, PathBuf>>,
     /// Each thread's [`ProbeScope`] ([`Self::set_probe_scope`]).
@@ -1100,6 +1163,14 @@ pub struct Shared {
     /// last moved ([`Self::set_background_terminals`]).
     background_terminals: Mutex<TerminalCount>,
     paces: Mutex<BTreeMap<String, Pace>>,
+    /// Model-stop provenance selected by the record writer, independent of old turn
+    /// pacing. An explicit empty entry retires that source for this process.
+    carried_model_goals: Mutex<BTreeMap<String, Option<WallGoal>>>,
+    model_goal_custody: Mutex<BTreeMap<String, crate::model_goal_stops::Custody>>,
+    /// Accepted callback facts are passive until an exact native receipt chain
+    /// reaches the current epoch. They never enter a saved session record.
+    model_goal_stops: Mutex<BTreeMap<String, Arc<crate::model_goal_stops::AcceptedStops>>>,
+    model_goal_imports: OnceLock<tokio::sync::watch::Sender<u64>>,
     /// A person's stops of each thread's goal this process saw ([`Self::person_goal_set`]):
     /// taken after `paces`, never before it.
     person_goal_stops: Mutex<BTreeMap<String, u64>>,
@@ -1271,6 +1342,17 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The usage wall's move `act` is the intent of (`usage-rotate@v1`): the thread it restarts
+/// and the account it leaves, which a receipt bound to it later does not change. `None` for
+/// any other act, a login's renewal and a lost login's move among them.
+fn usage_move(act: &OwedAct) -> Option<(&str, (&str, &str))> {
+    let renewal = act
+        .renewal
+        .as_ref()
+        .filter(|renewal| renewal.purpose == crate::account_handoff::Purpose::WeeklyQuota)?;
+    Some((act.thread.as_str(), renewal.source()))
+}
+
 fn replace_if_changed<T: PartialEq + ?Sized + ToOwned>(
     slot: &mut Option<T::Owned>,
     value: Option<&T>,
@@ -1348,7 +1430,10 @@ impl Shared {
             waker: OnceLock::new(),
             leave: OnceLock::new(),
             upgrade_leave: OnceLock::new(),
-            upgrade_generation: Mutex::new(0),
+            native: Mutex::new(NativeGenerations {
+                scan: 0,
+                admission: 0,
+            }),
             own_turns: Mutex::new(Vec::new()),
             continues: Mutex::new(None),
             prepared_continuation: Mutex::new(BTreeMap::new()),
@@ -1357,6 +1442,7 @@ impl Shared {
             carry_on_owed: AtomicBool::new(false),
             carried_on: AtomicU32::new(0),
             owed_act: Mutex::new(None),
+            account_move: OnceLock::new(),
             needs_off: AtomicU64::new(0),
             workdirs: Mutex::new(BTreeMap::new()),
             probe_scopes: Mutex::new(BTreeMap::new()),
@@ -1367,6 +1453,10 @@ impl Shared {
                 moved: None,
             }),
             paces: Mutex::new(BTreeMap::new()),
+            carried_model_goals: Mutex::new(BTreeMap::new()),
+            model_goal_custody: Mutex::new(BTreeMap::new()),
+            model_goal_stops: Mutex::new(BTreeMap::new()),
+            model_goal_imports: OnceLock::new(),
             person_goal_stops: Mutex::new(BTreeMap::new()),
             recovery: Mutex::new(None),
             in_flight_retry: Mutex::new(None),
@@ -1519,7 +1609,7 @@ impl Shared {
     /// Take in one frame. Cheap when nothing moved (no allocation, no wake-up); any change
     /// bumps the generation the record writer waits on.
     pub fn observe(&self, frame: &Frame<'_>, now_ms: u64) -> bool {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         let mut changed = false;
         {
             let mut view = lock(&self.view);
@@ -1566,7 +1656,7 @@ impl Shared {
         // The frame drew whatever a key since the last one did to the composer.
         changed |= self.keyed_since_frame.swap(false, Ordering::SeqCst);
         if changed {
-            *upgrade = upgrade.wrapping_add(1);
+            native.fact();
             self.mark_changed();
         }
         changed
@@ -1592,11 +1682,11 @@ impl Shared {
     /// The autopilot keeps this thread: a root thread of the TUI's own (never a sub-agent's,
     /// exec's or an app-server client's).
     pub fn note_root_thread(&self, thread: &str) {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         let mut roots = lock(&self.roots);
         if !roots.iter().any(|t| t == thread) {
             roots.push(thread.to_owned());
-            *upgrade = upgrade.wrapping_add(1);
+            native.fact();
         }
     }
 
@@ -1634,12 +1724,12 @@ impl Shared {
     }
 
     fn stamp_human(&self, now_ms: u64, keyed: bool) {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         self.human_input_ms.store(now_ms, Ordering::SeqCst);
         if keyed {
             self.keyed_since_frame.store(true, Ordering::SeqCst);
         }
-        *upgrade = upgrade.wrapping_add(1);
+        native.fact();
         self.mark_changed();
     }
 
@@ -1674,9 +1764,9 @@ impl Shared {
     /// ALAB(session) hook, each TUI event: a whole-screen overlay (the transcript, a diff, a
     /// backtrack preview) is up. The TUI draws no chat frame under it, so it is told here.
     pub fn set_overlay_open(&self, open: bool) {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         if self.overlay_open.swap(open, Ordering::SeqCst) != open {
-            *upgrade = upgrade.wrapping_add(1);
+            native.fact();
             self.mark_changed();
         }
     }
@@ -1784,7 +1874,7 @@ impl Shared {
 
     /// Note the terminating signal; the first one wins. `false` if one was already noted.
     pub fn set_signal(&self, signal: i32) -> bool {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         let changed = self
             .signal
             .compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst)
@@ -1794,7 +1884,7 @@ impl Shared {
                 lock(&self.in_flight_retry).take();
                 self.mark_changed();
             }
-            *upgrade = upgrade.wrapping_add(1);
+            native.fact();
         }
         changed
     }
@@ -1834,15 +1924,15 @@ impl Shared {
     /// The Autopilot, and the word with it or the word standing. Only the Autopilot moves the
     /// generations; a word alone asks the TUI for a frame.
     fn publish_autopilot(&self, autopilot: Autopilot, word: Option<HarnessWord>) {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         let was = self.update_cell(|cell| {
             let word = word.map_or(cell & !AUTOPILOT_BITS, HarnessWord::bits);
             Some(word | autopilot.bits())
         });
         let changed = Autopilot::from_cell(was) != autopilot;
-        let cleared = autopilot == Autopilot::Off && lock(&self.recovery).take().is_some();
+        let cleared = autopilot == Autopilot::Off && self.clear_recovery_intent_inner();
         if changed || cleared {
-            *upgrade = upgrade.wrapping_add(1);
+            native.fact();
             self.mark_changed();
             let _ = self.wake();
         } else if word.is_some_and(|word| HarnessWord::from_cell(was) != word) {
@@ -1956,11 +2046,11 @@ impl Shared {
 
     /// The supervisor claim codex-alab holds now (`codex-alab@<pid>`), if any.
     pub fn set_claim(&self, claim: Option<String>) {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         let mut slot = lock(&self.claim);
         if *slot != claim {
             *slot = claim;
-            *upgrade = upgrade.wrapping_add(1);
+            native.fact();
             drop(slot);
             self.mark_changed();
             let _ = self.wake();
@@ -1993,7 +2083,7 @@ impl Shared {
 
     /// The box glue reports the box it draws (its `opened_ms` is kept while its id is).
     pub fn report_box(&self, mut open: OpenBox) {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         let mut slot = lock(&self.boxes);
         slot.seen = true;
         if let Some(was) = &slot.open
@@ -2015,7 +2105,7 @@ impl Shared {
             }
         }
         slot.open = Some(open);
-        *upgrade = upgrade.wrapping_add(1);
+        native.fact();
         drop(slot);
         self.mark_changed();
     }
@@ -2201,21 +2291,45 @@ impl Shared {
         }
     }
 
-    /// Stamp the native state before collecting asynchronous all-thread facts.
+    /// Stamp the native state before collecting asynchronous all-thread facts: the live
+    /// upgrade's scan counter, which every TUI and app-server event moves as well as every
+    /// native fact ([`NativeGenerations`]). An automatic act's admission reads
+    /// [`Self::admission_generation`] instead.
     pub fn upgrade_generation(&self) -> u64 {
-        *lock(&self.upgrade_generation)
+        lock(&self.native).scan
     }
 
-    /// A loaded-thread lifecycle change outside the displayed TUI invalidates its scan.
+    /// Stamp the native point an automatic act is decided at, before its awaits: only facts
+    /// that can invalidate an automatic turn move it ([`NativeGenerations`]), never a TUI or
+    /// app-server event the act's own checks do not read.
+    pub fn admission_generation(&self) -> AdmissionGeneration {
+        AdmissionGeneration(lock(&self.native).admission)
+    }
+
+    /// A TUI or app-server event (`codex_alab_tui::upgrade::native_event`), or a goal
+    /// transfer an upgrade began and a native goal change interrupted: it can change a loaded
+    /// thread, goal or background task the live upgrade's scan read, so it invalidates that
+    /// scan. An automatic turn's admission reads none of those, so its counter stays. The
+    /// facts it does read reach this lock through their own setters: a person's input when it
+    /// arrives, and what the frame shows (a draft, a popup) only from the frame after the
+    /// event that changed it ([`NativeGenerations`], what the admission counter does not
+    /// cover).
     pub fn invalidate_upgrade(&self) {
-        let mut generation = lock(&self.upgrade_generation);
-        *generation = generation.wrapping_add(1);
+        lock(&self.native).event();
     }
 
-    /// The final synchronous TUI commit, serialized with native frame/input/turn changes.
+    /// A native lifecycle change no setter here sees (a loaded thread started or stopped, a
+    /// turn of a thread the autopilot does not track): it invalidates the live upgrade's scan
+    /// and an automatic act's admission alike.
+    pub fn invalidate_native(&self) {
+        lock(&self.native).fact();
+    }
+
+    /// The final synchronous TUI commit, serialized with native frame/input/turn changes and
+    /// with every TUI and app-server event since the scan ([`Self::upgrade_generation`]).
     pub fn commit_upgrade(&self, expected: u64) -> bool {
-        let generation = lock(&self.upgrade_generation);
-        if *generation != expected
+        let generation = lock(&self.native);
+        if generation.scan != expected
             || !self.record_draft_empty()
             || self.queued_input()
             || self.popup_open()
@@ -2255,11 +2369,11 @@ impl Shared {
     /// Withdraw a rejected/cancelled intent and restore any still-current act while a
     /// native turn start cannot supersede it between the check and timer restoration.
     pub fn cancel_upgrade(&self, restore: impl FnOnce()) -> bool {
-        let mut generation = lock(&self.upgrade_generation);
+        let mut generation = lock(&self.native);
         if self.exec_pending() {
             return false;
         }
-        *generation = generation.wrapping_add(1);
+        generation.fact();
         restore();
         true
     }
@@ -2430,9 +2544,19 @@ impl Shared {
             return;
         }
         if *slot != owed {
+            // A usage wall's move newly on record wakes the turns that wait that wall out
+            // ([`Self::account_move_watch`]). The same move published again (each pass of
+            // its ask, a receipt bound to it) is not new, and wakes nothing.
+            let begins_move = owed
+                .as_ref()
+                .and_then(usage_move)
+                .is_some_and(|new| slot.as_ref().and_then(usage_move) != Some(new));
             *slot = owed;
             drop(slot);
             self.mark_changed();
+            if begins_move {
+                self.note_account_move();
+            }
         }
     }
 
@@ -2443,10 +2567,37 @@ impl Shared {
             .clone()
     }
 
-    /// Publish a renewal only at the native point observed before its awaits.
-    pub fn publish_renewal(&self, generation: u64, owed: OwedAct) -> bool {
-        let current = lock(&self.upgrade_generation);
-        if *current != generation || owed.renewal.is_none() {
+    fn account_move(&self) -> &tokio::sync::watch::Sender<u64> {
+        self.account_move
+            .get_or_init(|| tokio::sync::watch::channel(0).0)
+    }
+
+    /// A WATCH THAT CHANGES WHEN THE SESSION MAY HAVE BEGUN LEAVING ITS ACCOUNT for a spent
+    /// usage allowance: a usage wall's move intent (`usage-rotate@v1`) came onto the record
+    /// ([`Self::set_owed_act`]), or the Autopilot says its ask for that move is live again
+    /// ([`Self::note_account_move`]).
+    ///
+    /// Who waits on it: a turn of another root thread that waits out the same wall in quota
+    /// recovery (`codex_alab_quota_recovery`), which asks its host only every 30 seconds
+    /// whether ending now would be followed by a move. While that turn waits the session's
+    /// record says `busy`, and aterm moves no account under a busy record, so the turn is
+    /// told at once to look again. The watch carries no answer: the turn looks for an earned
+    /// reset and asks its host again, and the host's answer then decides.
+    pub fn account_move_watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.account_move().subscribe()
+    }
+
+    /// The session may have begun leaving its account ([`Self::account_move_watch`]).
+    pub fn note_account_move(&self) {
+        self.account_move()
+            .send_modify(|moves| *moves = moves.wrapping_add(1));
+    }
+
+    /// Publish a renewal only at the native point observed before its awaits
+    /// ([`Self::admission_generation`]).
+    pub fn publish_renewal(&self, generation: AdmissionGeneration, owed: OwedAct) -> bool {
+        let current = lock(&self.native);
+        if current.admission != generation.0 || owed.renewal.is_none() {
             return false;
         }
         self.set_owed_act(Some(owed.clone()));
@@ -2456,7 +2607,7 @@ impl Shared {
     /// A verified, durably admitted recovery reuses the original native ID.
     /// This only prepares bookkeeping; it never starts or authorizes input.
     pub fn admit_recovered_turn(&self, thread: &str, turn: &str) -> bool {
-        let _generation = lock(&self.upgrade_generation);
+        let _generation = lock(&self.native);
         let mut book = lock(&self.turns);
         if book.running.iter().any(|(id, _)| id == thread)
             || book.latest.get(thread).is_some_and(|id| id != turn)
@@ -2668,6 +2819,13 @@ impl Shared {
         {
             pace.wall_goal = None;
         }
+        if pace
+            .model_blocked_goal
+            .as_ref()
+            .is_some_and(|goal| goal.person_stops != self.person_goal_stops(thread))
+        {
+            pace.model_blocked_goal = None;
+        }
         let changed = if pace.at_rest() {
             paces.remove(thread).is_some()
         } else if paces.get(thread) != Some(&pace) {
@@ -2684,7 +2842,99 @@ impl Shared {
 
     /// [`Self::set_pace`]'s pace for `thread`; `None` at rest.
     pub fn pace(&self, thread: &str) -> Option<Pace> {
-        lock(&self.paces).get(thread).cloned()
+        let paces = lock(&self.paces);
+        let carried = self.carried_model_goal(thread);
+        let mut pace = paces.get(thread).cloned().unwrap_or_default();
+        let model_current = match self.model_goal_custody(thread) {
+            None => true,
+            Some(crate::model_goal_stops::Custody::Known(binding)) => binding.epoch.is_current(),
+            Some(crate::model_goal_stops::Custody::Import(epoch)) => epoch.is_current(),
+            Some(crate::model_goal_stops::Custody::Closed) => false,
+        };
+        if !model_current {
+            pace.model_blocked_goal = None;
+        } else if pace.model_blocked_goal.is_none() {
+            pace.model_blocked_goal = carried;
+        }
+        (!pace.at_rest()).then_some(pace)
+    }
+
+    /// Retain only the model-stop provenance from one qualified, uniquely selected
+    /// record. Native acceptance supersedes old turn pacing, but does not complete
+    /// the goal. History and the native goal store must still authorize recovery.
+    /// An earlier retirement or explicit empty source cannot be filled back in.
+    pub fn carry_model_goal(&self, thread: &str, goal: Option<WallGoal>) {
+        if thread.is_empty() {
+            return;
+        }
+        let changed = {
+            let mut carried = lock(&self.carried_model_goals);
+            if carried.contains_key(thread) {
+                return;
+            }
+            let goal = goal.filter(|goal| goal.person_stops == self.person_goal_stops(thread));
+            let changed = goal.is_some();
+            carried.insert(thread.to_owned(), goal);
+            changed
+        };
+        if changed {
+            self.mark_changed();
+            self.model_goal_imports()
+                .send_modify(|imports| *imports = imports.wrapping_add(1));
+        }
+    }
+
+    /// Saved provenance awaiting validation; this grants no goal mutation authority.
+    pub fn carried_model_goal(&self, thread: &str) -> Option<WallGoal> {
+        lock(&self.carried_model_goals)
+            .get(thread)
+            .cloned()
+            .flatten()
+    }
+
+    /// Complete process-local custody, never restored by the record codec.
+    pub fn model_goal_custody(&self, thread: &str) -> Option<crate::model_goal_stops::Custody> {
+        lock(&self.model_goal_custody).get(thread).cloned()
+    }
+
+    /// The Autopilot publishes only under its current-runtime registration lock.
+    /// A stale epoch is passive evidence and cannot authorize native admission.
+    pub fn set_model_goal_custody(&self, thread: &str, custody: crate::model_goal_stops::Custody) {
+        if !thread.is_empty() {
+            lock(&self.model_goal_custody).insert(thread.to_owned(), custody);
+        }
+    }
+
+    /// Bounded, process-local accepted native source facts for one thread.
+    /// The Autopilot records and resolves them under its registration lock.
+    pub fn model_goal_stops(&self, thread: &str) -> Arc<crate::model_goal_stops::AcceptedStops> {
+        Arc::clone(
+            lock(&self.model_goal_stops)
+                .entry(thread.to_owned())
+                .or_default(),
+        )
+    }
+
+    fn model_goal_imports(&self) -> &tokio::sync::watch::Sender<u64> {
+        self.model_goal_imports
+            .get_or_init(|| tokio::sync::watch::channel(0).0)
+    }
+
+    /// Wake the autopilot only when newly selected positive provenance arrives.
+    /// Ordinary pacing publications and retirement cannot create a recovery loop.
+    pub fn model_goal_watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.model_goal_imports().subscribe()
+    }
+
+    /// Consume or reject this process's inherited model-stop provenance permanently.
+    /// Closing an absent slot also fences a record writer that has not discovered it yet.
+    pub fn retire_carried_model_goal(&self, thread: &str) {
+        let changed = lock(&self.carried_model_goals)
+            .insert(thread.to_owned(), None)
+            .is_some_and(|goal| goal.is_some());
+        if changed {
+            self.mark_changed();
+        }
     }
 
     /// A PERSON SET THREAD `thread`'S GOAL, leaving it `stopped` (any status but active; the
@@ -2695,7 +2945,13 @@ impl Shared {
     /// forgotten, and the image after resumed the goal the person had stopped). A set that leaves
     /// the goal active counts none, so a wall's stop after a person's resume is still the wall's.
     pub fn person_goal_set(&self, thread: &str, stopped: bool) {
-        if !stopped || thread.is_empty() {
+        if thread.is_empty() {
+            return;
+        }
+        // Any explicit user goal set supersedes an inherited source, including an
+        // active replacement. Only a stop increments the existing stop counter.
+        self.retire_carried_model_goal(thread);
+        if !stopped {
             return;
         }
         let changed = {
@@ -2705,8 +2961,9 @@ impl Shared {
             *count = count.saturating_add(1);
             drop(stops);
             match paces.get_mut(thread) {
-                Some(pace) if pace.wall_goal.is_some() => {
+                Some(pace) if pace.wall_goal.is_some() || pace.model_blocked_goal.is_some() => {
                     pace.wall_goal = None;
+                    pace.model_blocked_goal = None;
                     if pace.at_rest() {
                         paces.remove(thread);
                     }
@@ -2745,6 +3002,29 @@ impl Shared {
         lock(&self.recovery).clone()
     }
 
+    /// Retire actionable intent without erasing a known wait whose clock could
+    /// not be validated. Such a fact grants no action, but losing it could make
+    /// the next witnessed restart retry without its original provider bound.
+    /// A real native lifecycle transition clears it through the ordinary path.
+    pub fn clear_recovery_intent(&self) {
+        if self.clear_recovery_intent_inner() {
+            self.mark_changed();
+        }
+    }
+
+    fn clear_recovery_intent_inner(&self) -> bool {
+        let mut current = lock(&self.recovery);
+        if current
+            .as_ref()
+            .is_some_and(|recovery| recovery.clock.is_some())
+        {
+            *current = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// The exact native turn's pacing fact. Setting it grants no retry or continuation;
     /// the crash relaunch must independently prove its ordinary carry-on authority.
     pub fn set_in_flight_retry(&self, retry: Option<InFlightRetry>) {
@@ -2763,7 +3043,7 @@ impl Shared {
     /// A retry hook can publish only for the current primary turn that core still runs.
     /// Passive/bootstrap/Off keep pacing facts; they still authorize no autopilot act.
     pub fn publish_in_flight_retry(&self, retry: InFlightRetry) -> bool {
-        let _generation = lock(&self.upgrade_generation);
+        let _generation = lock(&self.native);
         if self.signal().is_some() && !self.leaving_for_relaunch() {
             return false;
         }
@@ -2794,11 +3074,11 @@ impl Shared {
     /// acceptance. The closure follows native -> caller-state lock order and uses
     /// only bookkeeping setters, never another native-boundary method or I/O.
     pub fn apply_resume_at_rest<T>(&self, thread: &str, restore: impl FnOnce() -> T) -> Option<T> {
-        let mut generation = lock(&self.upgrade_generation);
+        let mut generation = lock(&self.native);
         if self.turn_running_on(thread) {
             return None;
         }
-        *generation = generation.wrapping_add(1);
+        generation.fact();
         Some(restore())
     }
 
@@ -2824,7 +3104,7 @@ impl Shared {
     /// Seed only before the native work tracked by [`Self::native_work`].
     /// The closure uses only bookkeeping setters under this boundary.
     pub fn seed_before_native_work(&self, seed: impl FnOnce()) -> bool {
-        let _generation = lock(&self.upgrade_generation);
+        let _generation = lock(&self.native);
         let turns = lock(&self.turns);
         if !turns.latest.is_empty() || !turns.stopped_threads.is_empty() || !turns.ended.is_empty()
         {
@@ -2838,7 +3118,7 @@ impl Shared {
     /// A completed/cancelled wait cannot clear another turn's selected wait. HUP/TERM
     /// teardown retains the bound; a person's interrupt and ordinary stops discard it.
     pub fn clear_in_flight_retry(&self, thread: &str, turn: &str) -> bool {
-        let _generation = lock(&self.upgrade_generation);
+        let _generation = lock(&self.native);
         if self.leaving_for_relaunch() {
             return false;
         }
@@ -2855,18 +3135,19 @@ impl Shared {
         false
     }
 
-    /// Publish a checked failure only while the same native state still holds. A newly
-    /// accepted turn either rejects this publication or clears it before write-through.
+    /// Publish a checked failure only while the same native state still holds
+    /// ([`Self::admission_generation`]). A newly accepted turn either rejects this
+    /// publication or clears it before write-through.
     /// `validate` checks the decision's state under the native lock; callers must acquire
     /// their decision lock there, rather than hold it while entering this method.
     pub fn publish_recovery(
         &self,
-        expected: u64,
+        expected: AdmissionGeneration,
         recovery: Recovery,
         validate: impl FnOnce() -> bool,
     ) -> bool {
-        let generation = lock(&self.upgrade_generation);
-        if *generation != expected
+        let generation = lock(&self.native);
+        if generation.admission != expected.0
             || self.turn_running_on(&recovery.thread)
             || self.autopilot() != Autopilot::Active
             || !validate()
@@ -2960,7 +3241,7 @@ impl Shared {
     /// its OSC 7501 report reads a turn of a thread it does not show
     /// ([`Self::turn_running_besides`]), whose events no frame of its own follows.
     pub fn turn_started(&self, thread: &str, turn: &str) -> bool {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         let key = (thread.to_owned(), turn.to_owned());
         let started = {
             let mut book = lock(&self.turns);
@@ -2997,10 +3278,10 @@ impl Shared {
         // between the two.
         let came = self.turn_came(thread);
         if started || came {
-            *upgrade = upgrade.wrapping_add(1);
+            native.fact();
             self.mark_changed();
         }
-        drop(upgrade);
+        drop(native);
         if started {
             let _ = self.wake();
         }
@@ -3009,7 +3290,7 @@ impl Shared {
 
     /// A turn of `thread` ended (stopped or aborted).
     pub fn turn_ended(&self, thread: &str, turn: &str) {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         let key = (thread.to_owned(), turn.to_owned());
         let removed = {
             let mut book = lock(&self.turns);
@@ -3031,9 +3312,9 @@ impl Shared {
             }
             removed
         };
-        *upgrade = upgrade.wrapping_add(1);
+        native.fact();
         self.mark_changed();
-        drop(upgrade);
+        drop(native);
         if removed {
             let _ = self.wake();
         }
@@ -3041,7 +3322,7 @@ impl Shared {
 
     /// `thread` stopped: none of its turns runs any more, and none is awaited.
     pub fn thread_ended(&self, thread: &str) {
-        let mut upgrade = lock(&self.upgrade_generation);
+        let mut native = lock(&self.native);
         let removed = {
             let mut book = lock(&self.turns);
             let before = book.running.len();
@@ -3056,10 +3337,10 @@ impl Shared {
             before != book.running.len()
         };
         if removed | self.turn_came(thread) {
-            *upgrade = upgrade.wrapping_add(1);
+            native.fact();
             self.mark_changed();
         }
-        drop(upgrade);
+        drop(native);
         if removed {
             let _ = self.wake();
         }

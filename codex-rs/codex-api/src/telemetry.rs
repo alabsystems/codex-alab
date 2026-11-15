@@ -14,6 +14,8 @@ use tokio::time::Instant;
 
 /// Generic telemetry.
 pub trait SseTelemetry: Send + Sync {
+    fn on_sse_error(&self, _error: &ApiError) {} // ALAB(recovery): observe terminal error selection independently of raw SSE polling.
+
     fn on_sse_poll(
         &self,
         result: &Result<

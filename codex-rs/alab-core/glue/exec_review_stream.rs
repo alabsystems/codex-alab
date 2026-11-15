@@ -195,6 +195,9 @@ pub(crate) fn begin(
     if data.get::<HeadlessExec>().is_some() {
         context.extension_data.insert(HeadlessExec);
     }
+    // The review's own turn never samples, its delegate does: it is the root turn an exec move
+    // recovers, so it is named the exec tree's root turn here (gap 4, step S3).
+    crate::session::alab_exec_recovery_options::quota_observation::bind(session, context);
     let state = State::new(session.thread_id, context.sub_id.clone(), cancel.clone());
     context.extension_data.insert(Handle(Arc::clone(&state)));
     Some(RunGuard(state))

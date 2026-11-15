@@ -1181,6 +1181,9 @@
             "mentions_v2": {
               "type": "boolean"
             },
+            "misalignment_review": {
+              "type": "boolean"
+            },
             "model_catalog_in_context": {
               "type": "boolean"
             },
@@ -1305,6 +1308,9 @@
               "$ref": "#/definitions/FeatureToml_for_RuntimeAgentInstancesConfigToml"
             },
             "runtime_metrics": {
+              "type": "boolean"
+            },
+            "safety_recourse": {
               "type": "boolean"
             },
             "search_tool": {
@@ -8271,6 +8277,9 @@
         "mentions_v2": {
           "type": "boolean"
         },
+        "misalignment_review": {
+          "type": "boolean"
+        },
         "model_catalog_in_context": {
           "type": "boolean"
         },
@@ -8395,6 +8404,9 @@
           "$ref": "#/definitions/FeatureToml_for_RuntimeAgentInstancesConfigToml"
         },
         "runtime_metrics": {
+          "type": "boolean"
+        },
+        "safety_recourse": {
           "type": "boolean"
         },
         "search_tool": {

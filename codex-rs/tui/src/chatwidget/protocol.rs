@@ -77,6 +77,7 @@ impl ChatWidget {
                     }
                 }
             }
+            ServerNotification::AlabGoalRuntimeUpdated(_) => {} // ALAB(storage-status): only authenticated ALab App routing applies live metadata; transcript replay grants no fresh status.
             ServerNotification::ThreadGoalUpdated(notification) => {
                 self.on_thread_goal_updated(notification.goal, notification.turn_id);
             }

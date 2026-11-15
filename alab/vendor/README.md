@@ -8,8 +8,10 @@ SDK545 treats `std::convert::Infallible` as an alias of `!`. Upstream 0.3.6 enab
 both `Allocative` implementations on every dev/nightly compiler, which fails with
 E0119. Our build script probes whether the two types alias and, when they do,
 keeps the existing Infallible implementation as the implementation for both types.
-Older compilers retain upstream behavior. The unit regression requires both types
-to implement `Allocative` on dev/nightly compilers.
+It also probes whether `never_type` is stable before enabling that feature, avoiding
+a `stable_features` warning on newer Trust compilers. Older compilers retain upstream
+behavior. The unit regression requires both types to implement `Allocative` on
+dev/nightly compilers.
 
 The golden test helper also normalizes Rust's internal `alloc::rcs::arc::Arc` name
 to its public `alloc::sync::Arc` spelling. Its allocation sizes, fields and edges

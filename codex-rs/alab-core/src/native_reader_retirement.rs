@@ -25,10 +25,20 @@ struct State {
     changed: Notify,
 }
 impl State {
-    fn start(&self, request: Retirement, attempt: Option<Arc<crate::native_preload::Attempt>>) -> io::Result<crate::native_source_retirement::Receipt> {
+    fn start(
+        &self,
+        request: Retirement,
+        attempt: Option<Arc<crate::native_preload::Attempt>>,
+    ) -> io::Result<crate::native_source_retirement::Receipt> {
         if request.preload_operation.is_none()
-            && let Some((destination, open)) = &self.target {
-            return crate::native_source_retirement::start_target_open(self.member.clone(), destination.clone(), open.clone(), request);
+            && let Some((destination, open)) = &self.target
+        {
+            return crate::native_source_retirement::start_target_open(
+                self.member.clone(),
+                destination.clone(),
+                open.clone(),
+                request,
+            );
         }
         crate::native_source_retirement::start_owned_request(self.member.clone(), request, attempt)
     }
@@ -43,8 +53,17 @@ impl Owner {
             changed: Notify::new(),
         }))
     }
-    pub(crate) fn with_target(member: Arc<dyn Member>, destination: Arc<dyn crate::native_target::Destination>, open_operation: String) -> Self {
-        Self(Arc::new(State { member, target: Some((destination, open_operation)), progress: Mutex::default(), changed: Notify::new() }))
+    pub(crate) fn with_target(
+        member: Arc<dyn Member>,
+        destination: Arc<dyn crate::native_target::Destination>,
+        open_operation: String,
+    ) -> Self {
+        Self(Arc::new(State {
+            member,
+            target: Some((destination, open_operation)),
+            progress: Mutex::default(),
+            changed: Notify::new(),
+        }))
     }
     pub(crate) fn observer(&self, member: MemberIncarnation) -> Observer {
         Observer {
@@ -88,7 +107,10 @@ impl Owner {
         // Outside a runtime, keep the exact unsent metadata for the observer. It
         // may start the same owned cleanup once a runtime is available.
         if progress.receipt.is_none() && tokio::runtime::Handle::try_current().is_ok() {
-            progress.receipt = Some(self.0.start(progress.request.clone().ok_or_else(unavailable)?, progress.attempt.clone())?);
+            progress.receipt = Some(self.0.start(
+                progress.request.clone().ok_or_else(unavailable)?,
+                progress.attempt.clone(),
+            )?);
         }
         drop(progress);
         self.0.changed.notify_waiters();

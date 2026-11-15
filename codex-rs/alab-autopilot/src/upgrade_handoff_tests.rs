@@ -7,6 +7,12 @@
 #[path = "upgrade_end_catchup_tests.rs"]
 mod end_catchup_tests;
 
+#[path = "model_blocked_dispatch_tests.rs"]
+mod model_blocked_dispatch_tests;
+
+#[path = "model_blocked_identity_tests.rs"]
+mod model_blocked_identity_tests;
+
 #[path = "upgrade_inventory_tests.rs"]
 mod upgrade_inventory_tests;
 
@@ -15,6 +21,9 @@ mod upgrade_ask_native_tests;
 
 #[path = "upgrade_pending_indicator_tests.rs"]
 mod pending_indicator;
+
+#[path = "native_failure_diagnostics_tests.rs"]
+mod native_failure_diagnostics_tests;
 
 use super::*;
 use codex_alab_aterm::Options as ClientOptions;
@@ -369,11 +378,7 @@ async fn live_upgrade_counts_sleep_before_carry_and_refused_rollback() {
                 runnable.abort();
                 let _ = runnable.await;
                 tokio::time::resume();
-                h.test
-                    .codex
-                    .shutdown_and_wait()
-                    .await
-                    .expect("native shutdown");
+                h.shutdown_and_export().await.expect("native shutdown");
             }
         }
         assert!(
@@ -493,8 +498,15 @@ fn cli() -> clap::Command {
         .subcommand(clap::Command::new("resume").arg(clap::Arg::new("session_id")))
 }
 
+/// The hang detector around one whole native-Core scenario: a Core session, its turns against
+/// the mock provider, its shutdown and resume. It only turns a deadlock into a failure, never
+/// bounds speed: a correct scenario takes a few seconds alone, but well over a minute in a full
+/// lib run of this crate on a loaded machine, where a one-minute detector reported correct runs
+/// as hangs.
+pub(super) const NATIVE_HANG: Duration = Duration::from_secs(300);
+
 pub(super) async fn wait_for_supervisor(ready: impl Fn() -> bool) {
-    // The outer one-minute hang detector bounds this wait. Supervisor state can move
+    // The outer hang detector ([`NATIVE_HANG`]) bounds this wait. Supervisor state can move
     // after the fake's last response, so the fake's own change stream cannot wake it.
     while !ready() {
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -503,11 +515,54 @@ pub(super) async fn wait_for_supervisor(ready: impl Fn() -> bool) {
 
 /// Native Core setup and turns use upstream's explicit stack convention; the
 /// ordinary libtest stack remains unchanged for ALab's pure tests.
-pub(super) fn native_test<F, Fut>(test: F)
+pub(crate) fn native_test<F, Fut>(test: F)
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
+    const CHILD: &str = "ALAB_AUTOPILOT_NATIVE_TEST_CHILD";
+    let thread = std::thread::current();
+    let exact = thread.name().expect("native fixture has a libtest name");
+    if let Some(child) = std::env::var_os(CHILD) {
+        assert_eq!(child.to_str(), Some(exact));
+    } else {
+        // A child runs the whole exact test, including both scenarios in the
+        // existing outer loops. The parent must not run that test a second time.
+        static COMPLETED: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::BTreeSet<String>>,
+        > = std::sync::OnceLock::new();
+        let completed = COMPLETED.get_or_init(Default::default);
+        if completed.lock().unwrap().contains(exact) {
+            return;
+        }
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+        child
+            // The parent already selected this exact test, including an opt-in
+            // ignored diagnostic fixture. Its child must execute the same test.
+            .args([
+                "--exact",
+                exact,
+                "--include-ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, exact);
+        let bound = NATIVE_HANG
+            .saturating_mul(2)
+            .saturating_add(Duration::from_secs(60));
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("native fixture parent runtime")
+            .block_on(async {
+                crate::test_child_process::run(child, bound)
+                    .await
+                    .unwrap_or_else(|failure| panic!("{exact}: {failure}"))
+                    .assert_test_success(exact);
+            });
+        completed.lock().unwrap().insert(exact.to_owned());
+        return;
+    }
     core_test_support::test_codex::run_test_with_large_stack(
         "codex-alab native core",
         move || async move {
@@ -529,22 +584,133 @@ pub(super) struct Harness {
     _upgrade_guard: codex_alab_tui::upgrade::test_support::Guard,
     _dir: tempfile::TempDir,
     pub(super) _server: wiremock::MockServer,
+    diagnostics: Mutex<RetainedDiagnostics>,
+}
+
+#[derive(Default)]
+struct RetainedDiagnostics {
+    requested: bool,
+    exported: bool,
+    extra_roots: Vec<(String, PathBuf)>,
+    manifest: Option<PathBuf>,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        // Panic, timeout or failed shutdown cannot promise that producers stopped.
+        // Never start async shutdown from Drop or relabel a later snapshot using
+        // an earlier teardown (a successor may already be writing the same home).
+        self.export_retained_artifacts(
+            codex_alab_core::test_support::DiagnosticProducerState::Incomplete,
+        );
+    }
+}
+
+pub(super) struct HookFixture {
+    pub(super) configuration: serde_json::Value,
+    pub(super) observer: Arc<dyn ToolLifecycleContributor>,
+}
+
+struct ResumeFixture {
+    home: Arc<tempfile::TempDir>,
+    rollout: PathBuf,
+}
+
+struct HarnessOptions {
+    observer: Option<Arc<dyn TurnLifecycleContributor>>,
+    thread_observer: Option<Arc<dyn ThreadLifecycleContributor<Config>>>,
+    pre_tool_observer: Option<Arc<dyn ToolLifecycleContributor>>,
+    tool_observer: Option<Arc<dyn ToolLifecycleContributor>>,
+    timeout: Duration,
+    setup_observer: Option<Arc<dyn Fn(&'static str) + Send + Sync>>,
+    accounting_and_tools: bool,
+    code_mode: bool,
+    event_sink: Option<Arc<dyn codex_extension_api::ExtensionEventSink>>,
+    hooks: Option<HookFixture>,
+    resume: Option<ResumeFixture>,
+    seed_pending_act: bool,
+}
+
+impl Default for HarnessOptions {
+    fn default() -> Self {
+        Self {
+            observer: None,
+            thread_observer: None,
+            pre_tool_observer: None,
+            tool_observer: None,
+            timeout: ClientOptions::default().timeout,
+            setup_observer: None,
+            accounting_and_tools: false,
+            code_mode: false,
+            event_sink: None,
+            hooks: None,
+            resume: None,
+            seed_pending_act: true,
+        }
+    }
 }
 
 impl Harness {
-    /// Keep a new regression fixture's roots, including on an assertion failure.
+    /// Request a bounded diagnostic export while these owned roots still exist.
     pub(super) fn retain_artifacts(&mut self) {
-        self._dir.disable_cleanup(true);
-        // Core may retain other Arc owners. Keeping one owner of each TempDir
-        // prevents its eventual cleanup without changing legacy fixture lifetimes.
-        std::mem::forget(Arc::clone(&self.test.home));
-        std::mem::forget(Arc::clone(&self.test.cwd));
-        eprintln!(
-            "kept native fixture roots: {} {} {}",
-            self._dir.path().display(),
-            self.test.home.path().display(),
-            self.test.cwd.path().display()
+        lock(&self.diagnostics).requested = true;
+    }
+
+    pub(super) fn retain_artifact_root(&mut self, alias: &str, path: &std::path::Path) {
+        let mut diagnostics = lock(&self.diagnostics);
+        diagnostics.requested = true;
+        diagnostics.extra_roots.push((alias.into(), path.into()));
+    }
+
+    pub(super) fn export_retained_artifacts(
+        &self,
+        producer: codex_alab_core::test_support::DiagnosticProducerState,
+    ) -> Option<PathBuf> {
+        let extra_roots = {
+            let mut diagnostics = lock(&self.diagnostics);
+            if !diagnostics.requested || diagnostics.exported {
+                return diagnostics.manifest.clone();
+            }
+            diagnostics.exported = true;
+            diagnostics.extra_roots.clone()
+        };
+        let mut roots = vec![
+            ("fake", self._dir.path()),
+            ("home", self.test.home.path()),
+            ("work", self.test.cwd.path()),
+        ];
+        roots.extend(
+            extra_roots
+                .iter()
+                .map(|(alias, path)| (alias.as_str(), path.as_path())),
         );
+        match codex_alab_core::test_support::export_fixture_diagnostics(&roots, producer) {
+            Ok(Some(manifest)) => {
+                eprintln!("native fixture diagnostics: {}", manifest.display());
+                lock(&self.diagnostics).manifest = Some(manifest.clone());
+                Some(manifest)
+            }
+            Ok(None) => {
+                eprintln!("native fixture diagnostics unavailable: no qualified destination");
+                None
+            }
+            Err(error) => {
+                eprintln!("native fixture diagnostic export failed: {error}");
+                None
+            }
+        }
+    }
+
+    pub(super) async fn shutdown_and_export(&self) -> codex_protocol::error::Result<()> {
+        let result = self.test.codex.shutdown_and_wait().await;
+        // This records the observed API return, never a durable consistency proof.
+        let producer = if result.is_ok() {
+            codex_alab_core::test_support::DiagnosticProducerState::ShutdownReturned
+        } else {
+            codex_alab_core::test_support::DiagnosticProducerState::Incomplete
+        };
+        self.export_retained_artifacts(producer);
+        result
     }
 
     pub(super) async fn immediate_point(&self) {
@@ -566,6 +732,148 @@ impl Harness {
 
     pub(super) async fn new_with_goals(goals: Option<Arc<GoalService>>) -> Self {
         Self::new_with_goals_and_observer(goals, None).await
+    }
+
+    pub(super) async fn new_with_accounted_goals(goals: Arc<GoalService>) -> Self {
+        Self::new_with_goal_capabilities(
+            Some(goals),
+            HarnessOptions {
+                accounting_and_tools: true,
+                ..HarnessOptions::default()
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn new_with_accounted_goals_and_hooks(
+        goals: Arc<GoalService>,
+        hooks: HookFixture,
+    ) -> Self {
+        Self::new_with_goal_capabilities(
+            Some(goals),
+            HarnessOptions {
+                accounting_and_tools: true,
+                hooks: Some(hooks),
+                ..HarnessOptions::default()
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn new_with_accounted_goals_hooks_and_observer(
+        goals: Arc<GoalService>,
+        hooks: HookFixture,
+        observer: Arc<dyn TurnLifecycleContributor>,
+    ) -> Self {
+        Self::new_with_goal_capabilities(
+            Some(goals),
+            HarnessOptions {
+                accounting_and_tools: true,
+                hooks: Some(hooks),
+                observer: Some(observer),
+                ..HarnessOptions::default()
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn new_with_accounted_goals_and_lifecycle_observers(
+        goals: Arc<GoalService>,
+        before: Arc<dyn ToolLifecycleContributor>,
+        after: Arc<dyn ToolLifecycleContributor>,
+        turns: Arc<dyn TurnLifecycleContributor>,
+        threads: Option<Arc<dyn ThreadLifecycleContributor<Config>>>,
+    ) -> Self {
+        Self::new_with_goal_capabilities(
+            Some(goals),
+            HarnessOptions {
+                accounting_and_tools: true,
+                pre_tool_observer: Some(before),
+                tool_observer: Some(after),
+                observer: Some(turns),
+                thread_observer: threads,
+                ..HarnessOptions::default()
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn new_with_accounted_goals_code_mode_and_hooks(
+        goals: Arc<GoalService>,
+        hooks: HookFixture,
+    ) -> Self {
+        Self::new_with_goal_capabilities(
+            Some(goals),
+            HarnessOptions {
+                accounting_and_tools: true,
+                code_mode: true,
+                hooks: Some(hooks),
+                ..HarnessOptions::default()
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn new_with_accounted_goals_and_tool_observer(
+        goals: Arc<GoalService>,
+        observer: Arc<dyn ToolLifecycleContributor>,
+    ) -> Self {
+        Self::new_with_goal_capabilities(
+            Some(goals),
+            HarnessOptions {
+                accounting_and_tools: true,
+                tool_observer: Some(observer),
+                ..HarnessOptions::default()
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn resume_with_accounted_goals(
+        goals: Arc<GoalService>,
+        home: Arc<tempfile::TempDir>,
+        rollout: PathBuf,
+    ) -> Self {
+        Self::new_with_goal_capabilities(
+            Some(goals),
+            HarnessOptions {
+                accounting_and_tools: true,
+                resume: Some(ResumeFixture { home, rollout }),
+                ..HarnessOptions::default()
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn resume_with_accounted_goals_without_pending_act(
+        goals: Arc<GoalService>,
+        home: Arc<tempfile::TempDir>,
+        rollout: PathBuf,
+    ) -> Self {
+        Self::new_with_goal_capabilities(
+            Some(goals),
+            HarnessOptions {
+                accounting_and_tools: true,
+                resume: Some(ResumeFixture { home, rollout }),
+                seed_pending_act: false,
+                ..HarnessOptions::default()
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn new_with_goal_status_sink(
+        goals: Arc<GoalService>,
+        sink: Arc<dyn codex_extension_api::ExtensionEventSink>,
+    ) -> Self {
+        Self::new_with_goal_capabilities(
+            Some(goals),
+            HarnessOptions {
+                event_sink: Some(sink),
+                ..HarnessOptions::default()
+            },
+        )
+        .await
     }
 
     pub(super) async fn new_with_goals_and_setup_observer(
@@ -607,6 +915,36 @@ impl Harness {
         timeout: Duration,
         setup_observer: Option<Arc<dyn Fn(&'static str) + Send + Sync>>,
     ) -> Self {
+        Self::new_with_goal_capabilities(
+            goals,
+            HarnessOptions {
+                observer,
+                timeout,
+                setup_observer,
+                ..HarnessOptions::default()
+            },
+        )
+        .await
+    }
+
+    async fn new_with_goal_capabilities(
+        goals: Option<Arc<GoalService>>,
+        options: HarnessOptions,
+    ) -> Self {
+        let HarnessOptions {
+            observer,
+            thread_observer,
+            pre_tool_observer,
+            tool_observer,
+            timeout,
+            setup_observer,
+            accounting_and_tools,
+            code_mode,
+            event_sink,
+            hooks,
+            resume,
+            seed_pending_act,
+        } = options;
         let observe = |phase| {
             if let Some(observer) = &setup_observer {
                 observer(phase);
@@ -640,48 +978,107 @@ impl Harness {
         // This fixture supplies the decided point and timer itself. Do not also launch
         // an unrelated claim-change evaluation that can supersede them after setup.
         autopilot.watching.store(true, Ordering::SeqCst);
+        if let Some(observer) = thread_observer {
+            builder.thread_lifecycle_contributor(observer);
+        }
+        if let Some(observer) = pre_tool_observer {
+            builder.tool_lifecycle_contributor(observer);
+        }
         autopilot.register(&mut builder);
         if let Some(observer) = observer {
             builder.turn_lifecycle_contributor(observer);
         }
+        if let Some(observer) = tool_observer {
+            builder.tool_lifecycle_contributor(observer);
+        }
+        if let Some(hooks) = &hooks {
+            builder.tool_lifecycle_contributor(Arc::clone(&hooks.observer));
+        }
         let late_goal = goals.as_ref().map(|_| {
-            let late = Arc::new(late_goal::LateGoal::default());
+            let late = Arc::new(late_goal::LateGoal::with_event_sink(event_sink.clone()));
             late.register(&mut builder);
+            if accounting_and_tools {
+                builder.config_contributor(Arc::clone(&late) as _);
+                builder.token_usage_contributor(Arc::clone(&late) as _);
+                builder.tool_lifecycle_contributor(Arc::clone(&late) as _);
+                builder.tool_contributor(Arc::clone(&late) as _);
+            }
             late
         });
         observe("setup: start mock server");
         let server = responses::start_mock_server().await;
         let mut test_builder = test_codex().with_extensions(Arc::new(builder.build()));
-        if let Some(observer) = &setup_observer {
-            let pre_build = Arc::clone(observer);
-            let configured = Arc::clone(observer);
-            let workspace = Arc::clone(observer);
-            let manager = Arc::clone(observer);
+        if code_mode {
+            test_builder = test_builder.with_model("test-gpt-5.1-codex");
+        }
+        if setup_observer.is_some() || hooks.is_some() || code_mode {
+            let pre_build = setup_observer.clone();
+            let configured = setup_observer.clone();
+            let workspace = setup_observer.clone();
+            let manager = setup_observer.clone();
+            let hook_configuration = hooks.as_ref().map(|hooks| hooks.configuration.clone());
+            let trust_hooks = hooks.is_some();
             test_builder = test_builder
-                .with_pre_build_hook(move |_| {
-                    pre_build("setup: default config and tool discovery");
+                .with_pre_build_hook(move |home| {
+                    if let Some(observer) = &pre_build {
+                        observer("setup: default config and tool discovery");
+                    }
+                    if let Some(configuration) = &hook_configuration {
+                        std::fs::write(home.join("hooks.json"), configuration.to_string())
+                            .expect("write native hook fixture");
+                    }
                 })
-                .with_config(move |_| {
-                    configured("setup: post-config and environment preparation");
+                .with_config(move |config| {
+                    if let Some(observer) = &configured {
+                        observer("setup: post-config and environment preparation");
+                    }
+                    if trust_hooks {
+                        core_test_support::hooks::trust_discovered_hooks(config);
+                    }
+                    if code_mode {
+                        config
+                            .features
+                            .enable(codex_features::Feature::CodeMode)
+                            .expect("enable mixed CodeMode");
+                        config
+                            .features
+                            .enable(codex_features::Feature::CodeModeHost)
+                            .expect("enable native CodeMode host");
+                        config.code_mode.disable_in_process_fallback = true;
+                    }
                 })
                 .with_workspace_setup(move |_, _| async move {
-                    workspace("setup: state database and managers");
+                    if let Some(observer) = &workspace {
+                        observer("setup: state database and managers");
+                    }
                     Ok(())
                 })
                 .with_thread_manager(move |thread_manager| {
-                    manager("setup: native thread startup");
+                    if let Some(observer) = &manager {
+                        observer("setup: native thread startup");
+                    }
                     thread_manager
                 });
         }
         observe("setup: create native test environment");
-        let test = test_builder
-            .build(&server)
-            .await
-            .unwrap_or_else(|err| panic!("{err}"));
+        let is_resume = resume.is_some();
+        let test = match resume {
+            Some(ResumeFixture { home, rollout }) => {
+                test_builder.resume(&server, home, rollout).await
+            }
+            None => test_builder.build(&server).await,
+        }
+        .unwrap_or_else(|err| panic!("{err}"));
         observe("setup: bind goal runtime");
         autopilot.bind_thread_manager(Arc::downgrade(&test.thread_manager));
         if let (Some(late), Some(goals)) = (&late_goal, goals) {
-            late.bind(&test, goals).await;
+            late.bind(&test, Arc::clone(&goals)).await;
+            if is_resume {
+                goals
+                    .restore_thread_runtime_after_resume(test.session_configured.thread_id)
+                    .await
+                    .expect("restore the resumed native goal runtime");
+            }
         }
         observe("setup: fixture paths and launch identity");
         let rt = test
@@ -731,40 +1128,42 @@ impl Harness {
         );
         observe("setup: acquire supervisor claim");
         wait_for_supervisor(|| autopilot.sup.acting()).await;
-        observe("setup: seed decision and timer");
         let at = clock();
-        rt.with_state(|state| {
-            state.task = true;
-            state.point = Some(TurnEnd {
-                at,
-                by_autopilot: true,
-                by_person: false,
-                text: Some("Continue the current task".into()),
-                earlier: None,
-                questions: false,
-                worked: Duration::from_secs(600),
-                wall: None,
-                aborted: false,
-                ran_tools: false,
-                restored: false,
-            });
-        });
-        *lock(&rt.decided) = Some(Some(at));
         let deadline = at + Duration::from_secs(300);
-        autopilot.schedule_act(
-            &rt,
-            deadline,
-            Some(Owed {
-                native_origin: None,
-                rule: crate::words::RULE_DONE_CHECK,
-                text: "Preserve this exact pending act".into(),
-                mode: crate::decide::Mode::Cruise,
-                not_before: deadline,
-                repo_owed: None,
-                resume_goal: false,
-                landing: false,
-            }),
-        );
+        if seed_pending_act {
+            observe("setup: seed decision and timer");
+            rt.with_state(|state| {
+                state.task = true;
+                state.point = Some(TurnEnd {
+                    at,
+                    by_autopilot: true,
+                    by_person: false,
+                    text: Some("Continue the current task".into()),
+                    earlier: None,
+                    questions: false,
+                    worked: Duration::from_secs(600),
+                    wall: None,
+                    aborted: false,
+                    ran_tools: false,
+                    restored: false,
+                });
+            });
+            *lock(&rt.decided) = Some(Some(at));
+            autopilot.schedule_act(
+                &rt,
+                deadline,
+                Some(Owed {
+                    native_origin: None,
+                    rule: crate::words::RULE_DONE_CHECK,
+                    text: "Preserve this exact pending act".into(),
+                    mode: crate::decide::Mode::Cruise,
+                    not_before: deadline,
+                    repo_owed: None,
+                    resume_goal: false,
+                    landing: false,
+                }),
+            );
+        }
         let (queue, requests) = tokio::sync::mpsc::unbounded_channel();
         shared.set_upgrade_leave(Box::new(move |request| {
             let _ = queue.send(request);
@@ -780,6 +1179,7 @@ impl Harness {
             _upgrade_guard: codex_alab_tui::upgrade::test_support::Guard(shared),
             _dir: dir,
             _server: server,
+            diagnostics: Mutex::default(),
         }
     }
 }
@@ -859,11 +1259,7 @@ fn an_immediate_continuation_after_real_work_yields_to_the_new_build() {
             assert!(request.decide(true));
             wait_for_supervisor(|| h.shared.exec_pending()).await;
             assert!(!h.fake.acts().iter().any(|act| act == words::RULE_CONTINUE));
-            h.test
-                .codex
-                .shutdown_and_wait()
-                .await
-                .expect("native shutdown");
+            h.shutdown_and_export().await.expect("native shutdown");
         })
         .await
         .expect("immediate upgrade hang detector");
@@ -1053,9 +1449,7 @@ fn an_immediate_continuation_survives_refusal_but_never_supersedes_new_input() {
                     assert!(h.shared.owed_act().is_none());
                 }
             }
-            h.test
-                .codex
-                .shutdown_and_wait()
+            h.shutdown_and_export()
                 .await
                 .expect("native shutdown");
         })
@@ -1090,11 +1484,7 @@ fn cancelling_an_immediate_upgrade_before_its_scan_keeps_the_point_undecided() {
                 h.autopilot.upgrade_facts().await.undecided.as_deref(),
                 Some(h.rt.key())
             );
-            h.test
-                .codex
-                .shutdown_and_wait()
-                .await
-                .expect("native shutdown");
+            h.shutdown_and_export().await.expect("native shutdown");
         })
         .await
         .expect("immediate cancellation hang detector");
@@ -1126,7 +1516,7 @@ fn cancelling_a_queued_immediate_upgrade_restores_one_continuation_without_reoff
         assert!(h.shared.turn_running_on(h.rt.key()));
         assert!(h.rt.owed_timer().is_none());
         assert!(!h.shared.exec_pending());
-        h.test.codex.shutdown_and_wait().await.expect("native shutdown");
+        h.shutdown_and_export().await.expect("native shutdown");
     }).await.expect("queued cancellation hang detector");
     });
 }
@@ -1190,11 +1580,7 @@ fn an_immediate_upgrade_redecides_after_policy_or_off_changes() {
                 assert!(!h.fake.acts().iter().any(|act| act == words::RULE_CONTINUE));
                 assert!(next.decide(true));
                 wait_for_supervisor(|| h.shared.exec_pending()).await;
-                h.test
-                    .codex
-                    .shutdown_and_wait()
-                    .await
-                    .expect("native shutdown");
+                h.shutdown_and_export().await.expect("native shutdown");
             }
         })
         .await
@@ -1470,7 +1856,7 @@ fn a_changed_first_thread_cannot_lose_the_second_threads_suspended_act() {
                     .expect("second shutdown hang detector")
                     .expect("second shutdown");
             }
-            tokio::time::timeout(Duration::from_secs(60), h.test.codex.shutdown_and_wait())
+            tokio::time::timeout(Duration::from_secs(60), h.shutdown_and_export())
                 .await
                 .expect("first shutdown hang detector")
                 .expect("first shutdown");
@@ -1544,11 +1930,7 @@ fn a_same_key_replacement_keeps_its_own_selected_act() {
             assert!(old.owed_timer().is_none());
             assert!(!h.shared.exec_pending());
             Autopilot::cancel_timer(&replacement).await;
-            h.test
-                .codex
-                .shutdown_and_wait()
-                .await
-                .expect("native shutdown");
+            h.shutdown_and_export().await.expect("native shutdown");
         })
         .await
         .expect("same-key selection hang detector");
@@ -1624,11 +2006,7 @@ fn fresh_native_or_policy_changes_reject_queued_upgrade_and_preserve_only_unsupe
                     assert_eq!(restored.native_origin, before.native_origin);
                     assert!(restored.not_before >= before.not_before);
                     assert!(h.requests.try_recv().is_err());
-                    h.test
-                        .codex
-                        .shutdown_and_wait()
-                        .await
-                        .expect("native shutdown");
+                    h.shutdown_and_export().await.expect("native shutdown");
                     return;
                 }
                 let request = tokio::select! {
@@ -1792,9 +2170,7 @@ fn fresh_native_or_policy_changes_reject_queued_upgrade_and_preserve_only_unsupe
                         "committed or superseded acts cannot be restored"
                     );
                 }
-                h.test
-                    .codex
-                    .shutdown_and_wait()
+                h.shutdown_and_export()
                     .await
                     .unwrap_or_else(|err| panic!("{err}"));
             })
@@ -1836,9 +2212,7 @@ fn cancellation_before_the_first_upgrade_scan_releases_only_its_own_attempt() {
             assert!(request.decide(true));
             next.await.unwrap_or_else(|err| panic!("{err}"));
             assert!(h.shared.exec_pending());
-            h.test
-                .codex
-                .shutdown_and_wait()
+            h.shutdown_and_export()
                 .await
                 .unwrap_or_else(|err| panic!("{err}"));
         })
@@ -1854,6 +2228,7 @@ fn explicit_off_persists_the_end_of_recovery_before_a_remote_release_answers() {
             let h = Harness::new().await;
             h.shared
                 .set_recovery(Some(codex_alab_core::session::Recovery {
+                    clock: crate::recovery::test_clock(0),
                     thread: h.rt.key.clone(),
                     turn_id: "failed-turn".into(),
                     point_at_ms: now_ms(),
@@ -1904,9 +2279,7 @@ fn explicit_off_persists_the_end_of_recovery_before_a_remote_release_answers() {
             assert!(flushed_clear.load(Ordering::SeqCst));
             h.fake.open_gate("meta unset supervisor");
             off.await.unwrap_or_else(|err| panic!("{err}"));
-            h.test
-                .codex
-                .shutdown_and_wait()
+            h.shutdown_and_export()
                 .await
                 .unwrap_or_else(|err| panic!("{err}"));
         })
@@ -1988,9 +2361,7 @@ fn the_park_at_an_off_writes_its_record_with_the_thread_list_let_go() {
                     !under_threads.load(Ordering::SeqCst),
                     "at_turn_end={at_turn_end}: the park's record was written with `threads` held"
                 );
-                h.test
-                    .codex
-                    .shutdown_and_wait()
+                h.shutdown_and_export()
                     .await
                     .unwrap_or_else(|err| panic!("{err}"));
             })

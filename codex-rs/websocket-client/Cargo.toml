@@ -17,7 +17,7 @@ url = { workspace = true }
 codex-utils-rustls-provider = { workspace = true }
 pretty_assertions = { workspace = true }
 rcgen = { workspace = true }
-tokio = { workspace = true, features = ["macros", "test-util"] }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "test-util"] } # ALAB(test): proxy fixtures retain and reap their isolated children.
 
 [lints]
 workspace = true

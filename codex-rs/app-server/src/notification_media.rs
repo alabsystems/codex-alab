@@ -69,6 +69,7 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::ThreadSectionChanged(_)
         | ServerNotification::ThreadAttachmentUpdated(_)
         | ServerNotification::ThreadGoalUpdated(_)
+        | ServerNotification::AlabGoalRuntimeUpdated(_) // ALAB(storage-status): no media in passive metadata.
         | ServerNotification::ThreadPredictionUpdated(_)
         | ServerNotification::ThreadGoalCleared(_)
         | ServerNotification::ThreadQueueChanged(_)

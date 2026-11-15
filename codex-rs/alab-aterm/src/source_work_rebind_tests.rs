@@ -33,7 +33,7 @@ impl Fixture {
         let listener = UnixListener::bind(&sock)?;
         let endpoint = Endpoint {
             sock,
-            sid: "s-123abc".into(),
+            sid: "t0pe7873g64".into(),
         };
         let sid = endpoint.sid.clone();
         let requests = Arc::new(Mutex::new(Vec::new()));

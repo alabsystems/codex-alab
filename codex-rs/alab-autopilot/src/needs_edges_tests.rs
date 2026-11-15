@@ -16,9 +16,9 @@ use pretty_assertions::assert_eq;
 use super::*;
 use crate::extension::turn_said;
 
-const NEED: &str = "the Developer ID certificate password";
+const NEED: &str = "the Apple developer enrollment";
 const SAID: &str = "The release build needs signing.\n\
-                    NEEDS YOU: the Developer ID certificate password\n\
+                    NEEDS YOU: the Apple developer enrollment\n\
                     Carrying on with the docs meanwhile.";
 
 /// The turn ends that cut a turn's work short: a usage window, a server's error, a full
@@ -153,7 +153,7 @@ const NESTED: &str = "Here is the README's install section now:\n\
                       pip install foo\n\
                       ```\n\
                       ```";
-const PYPI: &str = "the PyPI token to publish foo 0.3.0";
+const PYPI: &str = "the PyPI approval to publish foo 0.3.0";
 
 /// ONE MESSAGE'S OPEN CODE FENCE HIDES NO LATER MESSAGE'S NEED (needs-fence-crosses-messages):
 /// each agent message is its own Markdown item, which the TUI renders on its own, so a fence a

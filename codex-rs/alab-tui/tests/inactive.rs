@@ -25,6 +25,10 @@ async fn without_the_switch_upstream_defaults_stand() {
     assert!(codex_alab_tui::attach_shared_daemon());
     assert!(!codex_alab_tui::is_upsell_cta("open_pricing_dialog"));
     assert!(!codex_alab_tui::skip_optional_model_upgrade());
+    assert!(!codex_alab_tui::execution::accept_forced_model_migration());
+    assert!(codex_alab_tui::execution::automatic_thread_title_model_calls());
+    assert!(codex_alab_core::execution::full_access_form_input());
+    assert!(!config.bypass_hook_trust);
     assert!(!codex_alab_tui::reload_skills_after_import());
     assert_eq!(
         codex_alab_tui::auth_path_daemon_exclusion_with(

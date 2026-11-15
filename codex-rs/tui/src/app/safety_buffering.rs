@@ -43,7 +43,8 @@ impl App {
             return;
         }
         let recovery_turn = turn.clone();
-        if self.active_thread_id != Some(thread_id)
+        if !self.chat_widget.safety_recourse_allows_buffered_retry() // ALAB(safety-recourse): reject stale interactive retries after opt-out.
+            || self.active_thread_id != Some(thread_id)
             || self.chat_widget.thread_id() != Some(thread_id)
             || self.primary_thread_id != Some(thread_id)
         {

@@ -66,6 +66,33 @@ fn under_development_features_are_disabled_by_default() {
 }
 
 #[test]
+fn misalignment_review_is_an_opt_in_map_feature() {
+    let mut features = Features::with_defaults();
+    assert!(!features.enabled(Feature::MisalignmentReview));
+
+    features.apply_map(&BTreeMap::from([("misalignment_review".to_string(), true)]));
+    assert!(features.enabled(Feature::MisalignmentReview));
+
+    features.apply_map(&BTreeMap::from([(
+        "misalignment_review".to_string(),
+        false,
+    )]));
+    assert!(!features.enabled(Feature::MisalignmentReview));
+}
+
+#[test]
+fn safety_recourse_is_an_opt_in_map_feature() {
+    let mut features = Features::with_defaults();
+    assert!(!features.enabled(Feature::SafetyRecourse));
+
+    features.apply_map(&BTreeMap::from([("safety_recourse".to_string(), true)]));
+    assert!(features.enabled(Feature::SafetyRecourse));
+
+    features.apply_map(&BTreeMap::from([("safety_recourse".to_string(), false)]));
+    assert!(!features.enabled(Feature::SafetyRecourse));
+}
+
+#[test]
 fn tool_registry_config_is_not_a_feature_toggle() {
     let features: FeaturesToml = toml::from_str(
         "[tool_registry]\nerror_on_tool_collisions = true\nturn_metadata_includes_tool_info = true\n",

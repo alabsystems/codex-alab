@@ -1,0 +1,27 @@
+{
+  "baseline": "0.168.0",
+  "build_observation_sha256": "2318f37f57c195ea1ff3957f54a788dd5d48db4c8de3c8bb07736e8955bdde1b",
+  "client_version": "0.169.0",
+  "compiler": {
+    "admitted": true,
+    "binaries_sha256": "fd3bda4228b62f44447fe87f69af9889a50b94ee0e75e23a17ed0daf8e86fcf0",
+    "id": "9c69de73e3ed3d49",
+    "rustc": "rustc 1.99.0-dev (20565c325 2026-10-19) (trustc 0.11.0+g20565c325)",
+    "rustc_vV": "rustc 1.99.0-dev (20565c325 2026-10-19) (trustc 0.11.0+g20565c325)\nbinary: trustc\ncommit-hash: 20565c3255adf151f9eb920e89cdf83c38f84abe\ncommit-date: 2026-10-19\nhost: aarch64-apple-darwin\nrelease: 1.99.0-dev\ntrust: 0.11.0+g20565c325\nLLVM version: 22.1.2\n",
+    "sysroot": "/opt/fixture/pkg/store/trust/15698.noindex"
+  },
+  "packager": "codex-release/native-layout-v1",
+  "ripgrep": "ripgrep@15.2.0",
+  "ripgrep_build_observation_sha256": "abfb5e0cbd1a22880335935bfcf3ad7fe06d22a20062b2d7e890a145c807b5f5",
+  "ripgrep_features": "pcre2",
+  "source": "d75c9b47196df14d99247827e7522d1bd29f8a6d",
+  "target": "aarch64-apple-darwin",
+  "updater": "atpkg",
+  "upstream": {
+    "commit": "ce3031018ef130e653ed4d9c5bb971652de97161",
+    "commit_date": "2026-11-12T15:35:27Z",
+    "commits_since_release": 286,
+    "release": "rust-v0.168.0"
+  },
+  "version": "0.7.0"
+}

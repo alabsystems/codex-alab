@@ -3,6 +3,7 @@
 
 //! The real ordinary-retry handler, held inside its event notification across sleep.
 
+use super::test_child_process;
 use super::*;
 use crate::realtime_history::RealtimeHistoryState;
 use crate::session::step_context::StepContext;
@@ -11,13 +12,13 @@ use codex_alab_core::wake::WakeState;
 use codex_async_utils::OrCancelExt;
 use codex_http_client::RetryAfter;
 use std::fs;
-use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::process::Command;
 
 const SECOND: Duration = Duration::from_secs(1);
 const WAIT: Duration = Duration::from_secs(10);
@@ -413,15 +414,17 @@ fn isolated(case: &str) -> std::io::Result<()> {
             child.env(key, value);
         }
     }
-    let output = child.output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "{case}: {stdout}\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(stdout.contains(&format!("{COMPLETE}:{case}")), "{stdout}");
-    assert!(stdout.contains("1 passed; 0 failed"), "{stdout}");
+    let expected_marker = format!("{COMPLETE}:{case}\n");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(test_child_process::run_with_stdout_marker(
+            child,
+            Duration::from_secs(90),
+            Some(&expected_marker),
+        ))
+        .unwrap_or_else(|failure| panic!("isolated {case}: {failure}"))
+        .assert_test_success(&name);
     assert!(!codex_alab_core::active());
     Ok(())
 }

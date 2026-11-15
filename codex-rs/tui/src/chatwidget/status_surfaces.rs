@@ -331,10 +331,7 @@ impl ChatWidget {
         } else if self.bottom_pane.is_task_running()
             || self.is_user_turn_pending_or_running()
             || (self.status_state.program_status_after_turn == ProgramStatus::Done
-                && self
-                    .current_goal_status
-                    .as_ref()
-                    .is_some_and(GoalStatusState::is_active))
+                && self.alab_goal_counts_as_work()) // ALAB(storage-status): a settled persistence hold is not synthetic background work.
         {
             ProgramStatus::Working
         } else {

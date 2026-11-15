@@ -921,6 +921,8 @@ async fn misalignment_replay_blocks_when_turn_start_was_evicted() {
     ] {
         for saw_start in [false, true] {
             let mut app = make_test_app().await;
+            app.chat_widget
+                .set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ true);
             let mut store = ThreadEventStore::new_with_session(
                 /*capacity*/ 1,
                 test_thread_session(thread_id, app.config.cwd.to_path_buf()),

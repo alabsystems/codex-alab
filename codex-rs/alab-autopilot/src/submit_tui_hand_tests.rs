@@ -175,9 +175,7 @@ fn prepared_continuation_hands(compact: bool) {
                     assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted + 1);
                     assert_eq!(h.fake.acts().iter().filter(|act| *act == rule).count(), 1);
                 }
-                h.test
-                    .codex
-                    .shutdown_and_wait()
+                h.shutdown_and_export()
                     .await
                     .expect("owned native shutdown before verdict");
             }
@@ -259,9 +257,7 @@ fn a_usage_goal_resume_respects_a_draft_after_its_initial_read() {
                         "the healthy resume books its try"
                     );
                 }
-                h.test
-                    .codex
-                    .shutdown_and_wait()
+                h.shutdown_and_export()
                     .await
                     .expect("owned goal fixture shutdown");
             }

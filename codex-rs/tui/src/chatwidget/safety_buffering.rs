@@ -5,7 +5,7 @@ use super::*;
 use crate::wrapping::word_wrap_lines;
 use codex_app_server_protocol::ModelSafetyBufferingUpdatedNotification;
 
-const SAFETY_BUFFERING_PROMPT_VIEW_ID: &str = "safety-buffering-prompt";
+pub(super) const SAFETY_BUFFERING_PROMPT_VIEW_ID: &str = "safety-buffering-prompt";
 const SAFETY_BUFFERING_LEARN_MORE_URL: &str = "https://help.openai.com/en/articles/20001326";
 
 const SAFETY_BUFFERING_HEADER: &str = "Giving this request a little extra thought";
@@ -83,6 +83,11 @@ impl ChatWidget {
                 .active
                 .as_ref()
                 .is_some_and(|active| active.turn_id == turn_id && !active.agent_message_started)
+    }
+
+    pub(crate) fn safety_recourse_allows_buffered_retry(&self) -> bool {
+        // ALAB(recovery): Preserve explicit headless recovery while rejecting stale interactive actions.
+        self.config.features.enabled(Feature::SafetyRecourse) || self.alab_autonomous_root_active()
     }
 
     pub(crate) fn prepare_safety_buffered_retry_submission(&mut self, prompt: UserMessage) {
@@ -172,7 +177,9 @@ impl ChatWidget {
             && retry_turn
                 .as_ref()
                 .is_some_and(|turn| self.alab_autonomous_safety_retry_allowed(turn));
-        let should_show_prompt = retry_offer_changed && !autonomous;
+        let should_show_prompt = retry_offer_changed
+            && !autonomous
+            && self.config.features.enabled(Feature::SafetyRecourse); // ALAB(safety-recourse): buffering status is informational by default.
         self.safety_buffering.active = Some(ActiveSafetyBuffering {
             turn_id: turn_id.clone(),
             last_retry_model: retry_offer,
@@ -272,7 +279,10 @@ impl ChatWidget {
         turn: AppCommand,
         prompt: UserMessage,
     ) {
-        if self.thread_id != Some(thread_id) || !self.can_retry_safety_buffered_turn(&turn_id) {
+        if !self.config.features.enabled(Feature::SafetyRecourse) // ALAB(safety-recourse): passive status cannot authorize a retry.
+            || self.thread_id != Some(thread_id)
+            || !self.can_retry_safety_buffered_turn(&turn_id)
+        {
             return;
         }
 

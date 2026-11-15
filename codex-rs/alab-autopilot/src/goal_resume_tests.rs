@@ -1453,6 +1453,7 @@ fn a_walls_goal_outlives_a_re_exec_and_a_relaunch() {
                 ..Pace::default()
             };
             let (shared, autopilot) = image_after(relaunch, &rt.key, Some(pace));
+            autopilot.keep_thread(&rt);
             autopilot.seed_pace(&rt, history.map(Vec::as_slice));
             let bound = lock(&rt.wall_goal).clone();
             if !binds {
@@ -1509,6 +1510,7 @@ fn a_persons_stop_before_a_restart_keeps_the_walls_goal_from_the_image_after() {
             // The image before: the wall's goal is bound and written to the pace.
             let (before, old) = image_after(false, &id.to_string(), None);
             let rt = Arc::new(ThreadRt::new(id, None, false, Duration::ZERO));
+            old.keep_thread(&rt);
             lock(&rt.state).seed_pace(1, None);
             *lock(&rt.wall_goal) = Some(WallGoal {
                 goal_id: "goal-1".to_string(),
@@ -1545,6 +1547,7 @@ fn a_persons_stop_before_a_restart_keeps_the_walls_goal_from_the_image_after() {
                 shared.person_goal_set(&rt.key, true);
             }
             let resumed = Arc::new(ThreadRt::new(id, None, false, Duration::ZERO));
+            autopilot.keep_thread(&resumed);
             autopilot.seed_pace(&resumed, Some(&history));
             let bound = lock(&resumed.wall_goal).clone();
             let resumes = bound.as_ref().is_some_and(|bound| {

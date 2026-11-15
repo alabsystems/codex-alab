@@ -158,6 +158,7 @@ impl ChatWidget {
             token_info: None,
             token_usage_pending: false,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
+            alab_goal_runtime: Default::default(), // ALAB(storage-status): old peers/unobserved backends remain unknown.
             alab_allowance: Default::default(), // ALAB(interface): account-scoped quota presentation starts empty.
             refreshing_status_outputs: Vec::new(),
             next_status_refresh_request_id: 0,

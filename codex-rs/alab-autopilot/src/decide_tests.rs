@@ -750,7 +750,7 @@ fn the_defend_prompt_names_the_open_work_and_the_repository() {
     let rules = " (standing rules: never push to main)";
     let mut p = policy();
     p.texts.done_check = format!("{}{rules}", words::DONE_CHECK);
-    let claim = "All done, nothing left to do.\nNEEDS YOU: the signing key password";
+    let claim = "All done, nothing left to do.\nNEEDS YOU: the signing permission";
     let want = format!("{} {repo} {NEEDS_ACK}{rules}", words::DONE_CHECK);
     let mut s = ThreadState::default();
     s.observe_turn_end(end(now, claim, 5 * MIN), &t);
@@ -3614,6 +3614,65 @@ fn subscription_restoration_wakes_once_then_preserves_retry_pacing() {
     assert_eq!(retry.not_before, Some(now + t.entitlement_backoff[0]));
 }
 
+/// A RESTORED WALL BOUND TO ANOTHER LOGIN STARTS THAT LOGIN'S LADDER (review of gap 3's fix,
+/// finding 1): fresh permission resumes at once past the rung the record carried, the old
+/// login's; the new login's own try climbs its ladder, and the wall met again waits that
+/// ladder's first rung from the answer. NEGATIVE CONTROL: the rung kept (the same login) paces
+/// the fresh permission's resume.
+#[test]
+fn a_restored_wall_on_another_login_climbs_its_own_ladder() {
+    let t = Timing::default();
+    let now = Instant::now();
+    let reset = now + 3 * 24 * 60 * MIN;
+    let wall = || Wall::Usage {
+        reset_at: Some(reset),
+        reset_label: None,
+    };
+    let point = now - MIN;
+    let restored = |moved: bool| {
+        let mut s = ThreadState::default();
+        s.observe_person_turn();
+        s.seed_pace(
+            0,
+            crate::decide::WallTrack::carried(
+                "usage",
+                now - 24 * 60 * MIN,
+                1,
+                Some(point - Duration::from_secs(5)),
+                Some(point),
+                false,
+            ),
+        );
+        s.observe_turn_end(
+            TurnEnd {
+                restored: true,
+                ..walled(point, wall())
+            },
+            &t,
+        );
+        if moved {
+            s.restart_wall_ladder();
+        }
+        s
+    };
+    let at = |s: &ThreadState, now: Instant| {
+        crate::decide::decide_with_usage(s, &policy(), &t, now, Duration::ZERO, true)
+    };
+    assert_eq!(at(&restored(false), now).not_before, Some(point + 10 * MIN));
+    let mut moved = restored(true);
+    let d = at(&moved, now);
+    assert!(matches!(d.act, Act::ResumeLimit { .. }), "{d:?}");
+    assert_eq!(d.not_before, Some(now));
+    moved.acted(&d.act, now, &t);
+    assert_eq!(moved.wall.as_ref().map(|w| w.attempts), Some(1));
+    let again = now + Duration::from_secs(3);
+    moved.observe_turn_end(walled(again, wall()), &t);
+    assert_eq!(
+        at(&moved, again).not_before,
+        Some(again + t.limit_backoff[0])
+    );
+}
+
 /// A USAGE WALL MET AGAIN AFTER ITS RESUME WAITS FOR THE RESET IT NAMES NOW (aterm's
 /// `resume_at_reset`: the reset plus the grace and the jitter, or the back-off after the
 /// continuation that met the wall again, whichever is later). The resume past a session
@@ -3793,7 +3852,7 @@ fn a_wall_goal_resumed_in_place_of_lands_words_gives_no_instruction() {
     let t = Timing::default();
     let now = Instant::now();
     let p = land();
-    let need = "Stage 1 is in.\nNEEDS YOU: the signing key password";
+    let need = "Stage 1 is in.\nNEEDS YOU: the signing permission";
     let mut s = ThreadState::default();
     s.observe_mode(Mode::Land);
     s.observe_person_turn();
@@ -3853,7 +3912,7 @@ fn a_usage_goal_resumed_in_place_of_lands_words_gives_no_instruction() {
     let t = Timing::default();
     let now = Instant::now();
     let p = land();
-    let need = "Stage 1 is in.\nNEEDS YOU: the signing key password";
+    let need = "Stage 1 is in.\nNEEDS YOU: the signing permission";
     let mut s = ThreadState::default();
     s.observe_mode(Mode::Land);
     s.observe_person_turn();
@@ -5079,7 +5138,7 @@ fn land_lands_a_clean_defense_over_a_clean_repository_only() {
     s.observe_turn_end(
         ours(
             at,
-            "Nothing left: merged and pushed.\nNEEDS YOU: the signing key password",
+            "Nothing left: merged and pushed.\nNEEDS YOU: the signing permission",
             10 * MIN,
         ),
         &t,
@@ -5152,12 +5211,12 @@ fn a_need_never_blocks_and_its_act_carries_the_ack_once() {
         questions: Questions::Ask,
         ..policy()
     };
-    let need = "Stage 1 is in.\nNEEDS YOU: should I use the production signing key?";
+    let need = "Stage 1 is in.\nNEEDS YOU: should I use the production signing permission?";
     let mut s = ThreadState::default();
     s.observe_turn_end(end(now, need, 5 * MIN), &t);
     assert_eq!(
         s.needs.standing,
-        ["should I use the production signing key?"]
+        ["should I use the production signing permission?"]
     );
     assert!(s.needs.ack_owed());
     let d = run(&mut s, &ask, &t, now);
@@ -5183,7 +5242,7 @@ fn a_need_never_blocks_and_its_act_carries_the_ack_once() {
     s.observe_turn_end(
         ours(
             at,
-            "NEEDS YOU: the signing key password\nNEEDS YOU: a DNS change",
+            "NEEDS YOU: the signing permission\nNEEDS YOU: a DNS change",
             10 * MIN,
         ),
         &t,
@@ -5202,7 +5261,11 @@ fn a_need_never_blocks_and_its_act_carries_the_ack_once() {
     // NEGATIVE CONTROL: the question outside a NEEDS YOU line.
     let mut s = ThreadState::default();
     s.observe_turn_end(
-        end(now, "Should I use the production signing key?", 5 * MIN),
+        end(
+            now,
+            "Should I use the production signing permission?",
+            5 * MIN,
+        ),
         &t,
     );
     assert!(matches!(
@@ -5258,7 +5321,7 @@ fn needs_clear_at_a_persons_turn_and_an_irreversible_need_is_never_consented_to(
     s.observe_turn_end(
         end(
             now,
-            "Should I rename the module?\nNEEDS YOU: the signing key password",
+            "Should I rename the module?\nNEEDS YOU: the signing permission",
             5 * MIN,
         ),
         &t,
@@ -5851,18 +5914,22 @@ fn needs_clear_at_a_persons_turns_point_never_at_its_start() {
     let named = || {
         let mut s = ThreadState::default();
         s.observe_turn_end(
-            end(now, "Stage 1 is in.\nNEEDS YOU: the prod API key", 5 * MIN),
+            end(
+                now,
+                "Stage 1 is in.\nNEEDS YOU: the prod API grant",
+                5 * MIN,
+            ),
             &t,
         );
         run(&mut s, &policy(), &t, now);
-        assert_eq!(s.needs.standing, ["the prod API key"]);
+        assert_eq!(s.needs.standing, ["the prod API grant"]);
         assert!(!s.needs.ack_owed());
         s
     };
     // The person's turn runs: the need stays up.
     let mut s = named();
     s.observe_person_turn();
-    assert_eq!(s.needs.standing, ["the prod API key"]);
+    assert_eq!(s.needs.standing, ["the prod API grant"]);
     // …and through its end at a wall.
     s.observe_turn_end(
         TurnEnd {
@@ -5875,7 +5942,7 @@ fn needs_clear_at_a_persons_turns_point_never_at_its_start() {
         },
         &t,
     );
-    assert_eq!(s.needs.standing, ["the prod API key"]);
+    assert_eq!(s.needs.standing, ["the prod API grant"]);
     // Its clean end clears it.
     let mut s = named();
     s.observe_person_turn();
@@ -5887,12 +5954,12 @@ fn needs_clear_at_a_persons_turns_point_never_at_its_start() {
     s.observe_turn_end(
         end(
             now + MIN,
-            "That key was refused.\nNEEDS YOU: the prod API key",
+            "That key was refused.\nNEEDS YOU: the prod API grant",
             5 * MIN,
         ),
         &t,
     );
-    assert_eq!(s.needs.standing, ["the prod API key"]);
+    assert_eq!(s.needs.standing, ["the prod API grant"]);
     assert!(s.needs.ack_owed());
 }
 
@@ -6550,6 +6617,7 @@ fn only_a_paced_acts_or_a_walls_tries_rule_is_carried() {
     }
     for rule in [
         words::RULE_CONTINUE,
+        crate::credential_need::RULE_CREDENTIAL,
         words::RULE_ANSWER,
         words::RULE_PROSE_LONG_TERM,
         words::RULE_PROSE_SHORT_TERM,
@@ -6587,7 +6655,7 @@ fn landed_only_where_every_condition_holds() {
         CLEAN,
         "All landed.\nATERM-TASK-DONE",
         "Nothing left: merged, but the docs are not pushed.",
-        "Nothing left: merged.\nNEEDS YOU: the credential",
+        "Nothing left: merged.\nNEEDS YOU: the permission",
         "Stage 2 is half done; continuing next.",
     ];
     let mut seen = [0_u32; 2];
@@ -6861,7 +6929,7 @@ fn the_texts_atermss_policy_reply_sends_are_typed() {
         autopilot: Mode::Land,
         ..cruise.clone()
     };
-    let need = "Stage 1 is in.\nNEEDS YOU: the signing key password";
+    let need = "Stage 1 is in.\nNEEDS YOU: the signing permission";
     let mut s = ThreadState::default();
     s.observe_turn_end(end(now, need, 5 * MIN), &t);
     assert_eq!(
@@ -6909,7 +6977,7 @@ fn the_texts_atermss_policy_reply_sends_are_typed() {
 fn the_needs_guards_hold() {
     let t = Timing::default();
     let now = Instant::now();
-    let named = needs_of("NEEDS YOU: the signing key password");
+    let named = needs_of("NEEDS YOU: the signing permission");
     // A wall's retry with an ack owed.
     let mut s = ThreadState {
         task: true,
@@ -6988,11 +7056,7 @@ fn an_off_parks_the_needs_and_the_episode_and_keeps_the_landing() {
     let now = Instant::now();
     let mut s = ThreadState::default();
     s.observe_turn_end(
-        end(
-            now,
-            "Stage 1.\nNEEDS YOU: the signing key password",
-            5 * MIN,
-        ),
+        end(now, "Stage 1.\nNEEDS YOU: the signing permission", 5 * MIN),
         &t,
     );
     run(&mut s, &land(), &t, now);
@@ -7029,7 +7093,7 @@ fn an_off_parks_the_needs_and_the_episode_and_keeps_the_landing() {
 fn the_needs_a_resumed_history_leaves_are_restored() {
     let t = Timing::default();
     let now = Instant::now();
-    let named = needs_of("NEEDS YOU: the prod API key");
+    let named = needs_of("NEEDS YOU: the prod API grant");
     let mut s = ThreadState::default();
     s.observe_resume(true, Some("Widened the tests."), true);
     s.restore_needs(named.clone());
@@ -7122,7 +7186,7 @@ fn land_answers_every_question_with_the_land_answer_and_the_ack_only() {
             );
         }
         // A need named beside the question: the ack rides along, nothing else.
-        let needing = format!("{force}\nNEEDS YOU: the signing key password");
+        let needing = format!("{force}\nNEEDS YOU: the signing permission");
         let d = asked(&p, "Stage 1 is in.", &needing);
         let (rule, said) = typed(&d).unwrap_or_else(|| panic!("an act: {d:?}"));
         assert_eq!(rule, words::RULE_LAND_ANSWER);
@@ -7320,7 +7384,7 @@ fn a_landed_tasks_own_wake_over_open_work_gets_the_nudge() {
             "a need",
             wake(
                 wake_at,
-                "The monitor fired: the release needs signing.\nNEEDS YOU: the signing key password",
+                "The monitor fired: the release needs signing.\nNEEDS YOU: the signing permission",
             ),
             None,
             act_words(words::LAND_NUDGE, &[NEEDS_ACK]),
@@ -7328,7 +7392,7 @@ fn a_landed_tasks_own_wake_over_open_work_gets_the_nudge() {
         (
             "a need said earlier in the wake",
             TurnEnd {
-                earlier: Some("NEEDS YOU: the signing key password".to_string()),
+                earlier: Some("NEEDS YOU: the signing permission".to_string()),
                 ..wake(wake_at, QUIET)
             },
             None,
@@ -7436,7 +7500,7 @@ fn a_wake_that_reopens_a_landing_over_someone_elses_edit_names_none_of_it() {
     let theirs = stated(7);
     let open = "The monitor fired: the deploy finished. The docs fix is parked for later.";
     let claim = "The monitor fired: the deploy finished. All done, nothing left to do.\nNEEDS \
-                 YOU: the signing key password";
+                 YOU: the signing permission";
     let repo = words::repo_suffix(&theirs.summary());
     for (why, said, began, named) in [
         ("over their edit", open, Some(theirs.clone()), false),
@@ -7599,7 +7663,7 @@ fn a_wall_resume_under_land_types_lands_instruction_with_the_ack_until_it_was_gi
         assert!(s.needs.ack_owed());
         s
     };
-    let plain = "NEEDS YOU: the signing key password";
+    let plain = "NEEDS YOU: the signing permission";
     let destroy = "NEEDS YOU: say whether to delete the old release branch";
     assert!(needs_of(destroy).destroy() && !needs_of(plain).destroy());
     for (need, rev) in [(plain, false), (destroy, true)] {
@@ -7747,7 +7811,7 @@ fn under_land_a_usage_reset_goes_on_with_a_persons_opening_exchange() {
     let t = Timing::default();
     let now = Instant::now();
     let p = land();
-    let need = "Stage 1 is in.\nNEEDS YOU: the signing key password";
+    let need = "Stage 1 is in.\nNEEDS YOU: the signing permission";
     let cut_at = |wall: Wall, opening: bool| {
         let mut s = ThreadState::default();
         s.observe_mode(Mode::Land);
@@ -7838,15 +7902,12 @@ fn a_need_said_earlier_in_the_turn_stands_and_keeps_a_defense_from_landing() {
     let mut clean = s.clone();
     s.observe_turn_end(
         TurnEnd {
-            earlier: Some("Pushed the branch.\nNEEDS YOU: the signing key password".to_string()),
+            earlier: Some("Pushed the branch.\nNEEDS YOU: the signing permission".to_string()),
             ..ours(at, CLEAN, 10 * MIN)
         },
         &t,
     );
-    assert_eq!(
-        s.needs.standing,
-        vec!["the signing key password".to_string()]
-    );
+    assert_eq!(s.needs.standing, vec!["the signing permission".to_string()]);
     let d = probed(&mut s, &p, &t, at, None);
     assert!(!s.landed, "{d:?}");
     assert_eq!(
@@ -8402,4 +8463,210 @@ fn an_owed_answer_honors_question_switches_and_unreadable_hour_cap() {
     let d = decide(&s, &unreadable_cap, &t, due, NO_JITTER);
     assert_eq!(d.act, Act::Nothing);
     assert_eq!(d.why, "continue_per_hour unreadable: nothing is typed");
+}
+
+#[test]
+fn a_go_aheads_stored_precondition_is_resolved_before_its_answer() {
+    use crate::credential_need::CredentialRead;
+    use crate::credential_need::RULE_CREDENTIAL;
+    use crate::credential_need::Resolution;
+
+    let timing = Timing::default();
+    let now = Instant::now();
+    let policy = policy();
+    let said = "The build needs your GitHub token, which I don't have.\n\nNEEDS YOU: say \"go\" so I can rebuild the branch.";
+    let mut state = ThreadState::default();
+    state.observe_turn_end(end(now, said, 10 * MIN), &timing);
+    assert_eq!(state.point.as_ref().unwrap().credential_lines().len(), 1);
+    state.credentials = CredentialRead::Resolved(vec![("gh:dev".to_string(), Resolution::Filed)]);
+    let mut initial_land = state.clone();
+    let first = run(&mut initial_land, &land(), &timing, now);
+    assert_eq!(
+        typed(&first).map(|(rule, _)| rule),
+        Some(RULE_CREDENTIAL),
+        "the stored precondition also precedes Land's first instruction"
+    );
+    let decision = run(&mut state, &policy, &timing, now);
+    assert_eq!(
+        typed(&decision).map(|(rule, _)| rule),
+        Some(RULE_CREDENTIAL)
+    );
+    let later = now + 20 * MIN;
+    state.observe_turn_end(tooled(ours(later, said, 15 * MIN)), &timing);
+    let decision = run(&mut state, &policy, &timing, later);
+    assert_eq!(
+        typed(&decision).map(|(rule, _)| rule),
+        Some(crate::go_ahead::RULE_GO_AHEAD)
+    );
+}
+
+/// A CREDENTIAL LINE IS NO PERSON'S NEED, AND IS TOLD ONCE (owner, 2026-11-12: "credentials must
+/// never reach the person as a NEEDS YOU at all"): a reply whose `NEEDS YOU:` asks for the notary
+/// credential stands no need (no set, no ack owed), and its point types the credential line
+/// (`credential@v1`) naming the registry's entry, which ends on the worker's own next step; the
+/// same line at a later point, told already, gets the continuation. NEGATIVE CONTROL: a person's
+/// decision on the same line stands as a need and owes its ack.
+#[test]
+fn a_credential_line_is_told_once_and_never_a_need() {
+    use crate::credential_need::CREDENTIAL_HEAD;
+    use crate::credential_need::CREDENTIAL_TAIL;
+    use crate::credential_need::CredentialRead;
+    use crate::credential_need::RULE_CREDENTIAL;
+    use crate::credential_need::Resolution;
+    use crate::credential_need::VaultEntry;
+    let t = Timing::default();
+    let now = Instant::now();
+    let p = policy();
+    let said = "Stage 1 is in.\nNEEDS YOU: the notary credential";
+    let mut s = ThreadState::default();
+    s.observe_turn_end(end(now, said, 10 * MIN), &t);
+    assert!(s.needs.standing.is_empty(), "{:?}", s.needs);
+    assert!(!s.needs.ack_owed());
+    s.credentials = CredentialRead::Resolved(vec![(
+        "notary".to_string(),
+        Resolution::Held(vec![VaultEntry {
+            name: "release-notary".to_string(),
+            pointer: Some("~/.secrets/release-notary".to_string()),
+            purpose: "the notary credential".to_string(),
+        }]),
+    )]);
+    let d = run(&mut s, &p, &t, now);
+    let (rule, text) = typed(&d).expect("typed");
+    assert_eq!(rule, RULE_CREDENTIAL);
+    assert!(text.starts_with(CREDENTIAL_HEAD), "{text}");
+    assert!(
+        text.contains("`release-notary` at `~/.secrets/release-notary`"),
+        "{text}"
+    );
+    assert!(text.ends_with(CREDENTIAL_TAIL), "{text}");
+    assert!(s.credentials_told.contains("held:release-notary"));
+    // Under standing rules the act carries them after its words, as every act does.
+    let ruled = Policy {
+        continue_text: Some("keep going (standing rules: Never push to main.)".to_string()),
+        ..policy()
+    };
+    let mut r = ThreadState::default();
+    r.observe_turn_end(end(now, said, 10 * MIN), &t);
+    r.credentials = s.credentials.clone();
+    let d = run(&mut r, &ruled, &t, now);
+    let (rule, ruled_text) = typed(&d).expect("typed");
+    assert_eq!(rule, RULE_CREDENTIAL);
+    assert_eq!(
+        ruled_text,
+        format!("{text} (standing rules: Never push to main.)")
+    );
+    // Told once: the same line later gets the point's own act.
+    let at = now + 20 * MIN;
+    s.observe_turn_end(tooled(ours(at, said, 15 * MIN)), &t);
+    assert_eq!(
+        typed(&run(&mut s, &p, &t, at)),
+        Some((words::RULE_CONTINUE, "keep going"))
+    );
+    assert!(s.needs.standing.is_empty());
+    // NEGATIVE CONTROL: a person's decision stands as a need.
+    let mut s = ThreadState::default();
+    s.observe_turn_end(
+        end(
+            now,
+            "Stage 1 is in.\nNEEDS YOU: a decision on the schema",
+            10 * MIN,
+        ),
+        &t,
+    );
+    assert_eq!(s.needs.standing, ["a decision on the schema"]);
+    assert!(s.needs.ack_owed());
+    assert_eq!(s.credential_owed(), None);
+}
+
+/// A CREDENTIAL LINE HOLDS NO LANDING: a clean defense beside one is clean, a landed task's own
+/// wake that names one leaves nothing open, and a land act's yield reads no needs leg for it.
+/// NEGATIVE CONTROL: a person's need beside the same defense holds each of them.
+#[test]
+fn a_credential_line_holds_no_landing() {
+    use codex_alab_aterm::LandLeg;
+    let defense = "Nothing left: all on origin/main.";
+    for (need, holds) in [
+        ("NEEDS YOU: the release GitHub token", false),
+        ("NEEDS YOU: the Developer ID signing certificate", false),
+        ("NEEDS YOU: approve the 0.200.0 release", true),
+    ] {
+        let reply = format!("{defense}\n{need}");
+        assert_eq!(!words::clean_defense(Some(&reply)), holds, "{reply}");
+        let yielded = ours(Instant::now(), &reply, MIN);
+        assert_eq!(crate::decide::wake_left_open(&yielded), holds, "{reply}");
+        assert_eq!(
+            crate::decide::YieldRead::of(&yielded)
+                .read
+                .legs
+                .contains(&LandLeg::Needs),
+            holds,
+            "{reply}"
+        );
+        // A credential line in the turn's earlier message holds no needs leg either.
+        let earlier = TurnEnd {
+            earlier: Some(format!("Building.\n{need}")),
+            ..ours(Instant::now(), defense, MIN)
+        };
+        assert_eq!(
+            crate::decide::YieldRead::of(&earlier)
+                .read
+                .legs
+                .contains(&LandLeg::Needs),
+            holds,
+            "{need}"
+        );
+    }
+}
+
+#[test]
+fn original_goal_recovery_keeps_continuation_limits_and_policy_exclusions() {
+    let now = Instant::now();
+    let timing = Timing::default();
+    let mut state = ThreadState::default();
+    state.observe_mode(Mode::Land);
+    state.observe_person_turn();
+    state.observe_turn_end(
+        tooled(ours(
+            now,
+            "Nothing left: the repository is clean.",
+            10 * MIN,
+        )),
+        &timing,
+    );
+    let mut policy = land();
+    let continuation = |state: &ThreadState, policy: &Policy| {
+        crate::decide::continue_original_goal(state, policy, &timing, now, NO_JITTER)
+    };
+    assert_eq!(
+        typed(&continuation(&state, &policy)).map(|(rule, _)| rule),
+        Some(words::RULE_CONTINUE)
+    );
+    let mut refused = state.clone();
+    crate::recovery::refuse_clock(&mut refused, "original-turn", now, &timing);
+    assert!(matches!(
+        continuation(&refused, &policy).act,
+        Act::Attention { key: "api", .. }
+    ));
+    policy.continue_on = false;
+    assert_eq!(continuation(&state, &policy).act, Act::Nothing);
+    policy.continue_on = true;
+    policy.continue_per_hour = Some(0);
+    assert_eq!(continuation(&state, &policy).act, Act::Nothing);
+    policy.continue_per_hour = Some(1);
+    let mut spent = state.clone();
+    spent.typed.push_back(now);
+    assert!(continuation(&spent, &policy).waits(now));
+    policy.continue_per_hour = None;
+    state.policy_continued = true;
+    assert!(
+        typed(&continuation(&state, &policy))
+            .expect("allowed work keeps the refusal boundary")
+            .1
+            .ends_with(words::POLICY_BOUNDARY)
+    );
+    state.point.as_mut().unwrap().earlier = Some(words::POLICY_EXHAUSTED.into());
+    assert!(matches!(
+        continuation(&state, &policy).act,
+        Act::Attention { key: "wall", .. }
+    ));
 }

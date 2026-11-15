@@ -519,9 +519,18 @@ fn a_held_wall_survives_a_re_exec_and_clears_at_a_relaunch() {
         matches!(held_try.act, Act::ResumeLimit { .. }),
         "{held_try:?}"
     );
-    let recovery =
-        crate::recovery::capture("the-thread", FAILED, &before, &held_try, false, at, EPOCH)
-            .unwrap_or_else(|| panic!("captured"));
+    let recovery = crate::recovery::capture(
+        "the-thread",
+        FAILED,
+        &before,
+        &held_try,
+        false,
+        at,
+        EPOCH,
+        Some(&crate::recovery::test_sample(EPOCH)),
+        None,
+    )
+    .unwrap_or_else(|| panic!("captured"));
     let items = [codex_history::RolloutItem::EventMsg(
         serde_json::from_value::<codex_protocol::protocol::EventMsg>(serde_json::json!({
             "type": "task_complete",
@@ -542,9 +551,17 @@ fn a_held_wall_survives_a_re_exec_and_clears_at_a_relaunch() {
             s.seed_replies(before.replies, before.replies_at);
             s.seed_replies_reset(before.replies_reset);
         }
-        assert!(crate::recovery::restore(
-            &mut s, &items, &recovery, at, EPOCH, &t
-        ));
+        assert!(
+            crate::recovery::restore(
+                &mut s,
+                &items,
+                &recovery,
+                Some(&crate::recovery::test_sample(EPOCH)),
+                at,
+                &t
+            )
+            .restored()
+        );
         s
     };
     let mut s = after(true);

@@ -171,11 +171,7 @@ fn a_later_displayed_end_retries_the_same_handoff_once() {
                 .is_empty()
         );
         resume_clock(runnable).await;
-        h.test
-            .codex
-            .shutdown_and_wait()
-            .await
-            .expect("native shutdown");
+        h.shutdown_and_export().await.expect("native shutdown");
     });
 }
 
@@ -211,11 +207,7 @@ fn an_unhandled_displayed_end_uses_the_bound_then_continues_once() {
         };
         assert_eq!(requests.len(), 1, "one native fallback submission");
         resume_clock(runnable).await;
-        h.test
-            .codex
-            .shutdown_and_wait()
-            .await
-            .expect("native shutdown");
+        h.shutdown_and_export().await.expect("native shutdown");
     });
 }
 
@@ -310,11 +302,7 @@ fn authority_changes_during_catch_up_retire_the_old_retry_and_submission() {
             );
             resume_clock(runnable).await;
             eprintln!("{change}: native cleanup begins");
-            h.test
-                .codex
-                .shutdown_and_wait()
-                .await
-                .expect("native shutdown");
+            h.shutdown_and_export().await.expect("native shutdown");
             eprintln!("{change}: native cleanup completed");
         }
     });

@@ -131,7 +131,10 @@ for name in sys.argv[1:]:
 print(json.dumps(result))
 '''
             result = json.loads(self.contained_command(
-                {}, (sys.executable, "-I", "-B", "-c", child, *map(str, canaries))))
+                # Isolate the Python-prefix grant. A managed interpreter also
+                # lives under the separately readable atpkg toolchain store.
+                {"ATPKG_BIN": ""},
+                (sys.executable, "-I", "-B", "-c", child, *map(str, canaries))))
             self.assertTrue(all(code in (errno.EPERM, errno.EACCES) for code in result), result)
 
     def test_unsafe_python_runtime_prefixes_are_refused_after_canonicalization(self):

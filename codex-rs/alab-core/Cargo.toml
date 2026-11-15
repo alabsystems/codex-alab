@@ -37,4 +37,4 @@ libc = { workspace = true }
 [dev-dependencies]
 zstd = "=0.13.3"
 pretty_assertions = { workspace = true }
-tokio = { workspace = true, features = ["macros", "process", "rt", "test-util", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "test-util", "time"] }

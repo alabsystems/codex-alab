@@ -37,12 +37,12 @@ mod turns_routing_tests;
 #[cfg(all(test, unix))]
 #[path = "upgrade_finish_order_tests.rs"]
 mod upgrade_finish_order_tests;
-#[cfg(all(test, unix))]
-#[path = "upgrade_readiness_order_tests.rs"]
-mod upgrade_readiness_order_tests;
 #[cfg(test)]
 #[path = "upgrade_handoff_native_tests.rs"]
 mod upgrade_handoff_native_tests;
+#[cfg(all(test, unix))]
+#[path = "upgrade_readiness_order_tests.rs"]
+mod upgrade_readiness_order_tests;
 
 pub(super) fn observe(app: &App) {
     codex_alab_tui::interface::set_goal(app.chat_widget.alab_goal());
@@ -55,6 +55,7 @@ pub(super) fn observe(app: &App) {
         ThreadId::from_string(thread).is_ok_and(|id| app.owns_thread_for_routing(id))
     });
     super::alab_backend_bookkeeping::observe_goal(app);
+    super::alab_backend_bookkeeping::observe_runtime(app);
     if !codex_alab_tui::session::active() {
         return;
     }
@@ -146,6 +147,15 @@ pub(super) fn routed(app: &App, owner: BackendId, notification: &ServerNotificat
 /// stays owned). A stream that lagged or ended may have lost its own seen turn's end;
 /// another backend's turns remain standing. The autopilot's own book is unaffected.
 pub(super) fn stream(app: &App, owner: BackendId, event: &AppServerEvent) {
+    if matches!(
+        event,
+        AppServerEvent::Lagged { .. }
+            | AppServerEvent::Disconnected { .. }
+            | AppServerEvent::ThreadStreamDisconnected(_)
+    ) || matches!(event, AppServerEvent::ServerNotification(notification) if matches!(notification.as_ref(), ServerNotification::ThreadClosed(closed) if app.chat_widget.thread_id().is_some_and(|thread| thread.to_string() == closed.thread_id)))
+    {
+        app.chat_widget.alab_goal_runtime_transport_lost(owner);
+    }
     app.alab_backend_bookkeeping.stream(owner, event);
 }
 

@@ -6,8 +6,15 @@
 #[path = "record_recovery_tests.rs"]
 mod record_recovery_tests;
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[path = "record_native_transition_tests.rs"]
+mod record_native_transition_tests;
+
 #[path = "record_custody_tests.rs"]
 mod record_custody_tests;
+
+#[path = "model_goal_custody_tests.rs"]
+mod model_goal_custody_tests;
 
 use crate::identity;
 use crate::record;
@@ -1369,6 +1376,7 @@ fn the_record_carries_the_pace_to_a_re_exec_and_a_relaunch() {
             turn: "turn-7".to_string(),
             person_stops: 0,
         }),
+        model_blocked_goal: None,
     };
     let word = serde_json::json!({
         "shortStreak": 2,
@@ -3471,7 +3479,7 @@ fn the_writer_wakes_to_write_a_held_count() {
 #[test]
 fn native_renewal_custody_survives_a_cold_restart_without_a_drive_lease() {
     use codex_alab_core::account_handoff::Purpose;
-    for purpose in [Purpose::Login, Purpose::WeeklyQuota] {
+    for purpose in [Purpose::Login, Purpose::WeeklyQuota, Purpose::LoginRotation] {
         native_account_custody_survives_restart(purpose);
     }
 }
@@ -3504,12 +3512,12 @@ fn native_account_custody_survives_restart(purpose: codex_alab_core::account_han
         }),
         renewal: Some(AccountHandoff {
             purpose,
-            destination: (purpose == codex_alab_core::account_handoff::Purpose::WeeklyQuota).then(
-                || codex_alab_core::account_handoff::Destination {
+            destination: purpose.moves_account().then(|| {
+                codex_alab_core::account_handoff::Destination {
                     account: "d".repeat(64),
                     user: "e".repeat(64),
-                },
-            ),
+                }
+            }),
             openai_scope: true,
             local: false,
             account: "a".repeat(64),
@@ -3525,7 +3533,7 @@ fn native_account_custody_survives_restart(purpose: codex_alab_core::account_han
         mode: Some("land".into()),
         ..Default::default()
     };
-    assert!(original.publish_renewal(original.upgrade_generation(), act.clone()));
+    assert!(original.publish_renewal(original.admission_generation(), act.clone()));
     let before = Writer::new(
         original,
         dir.clone(),
@@ -3574,7 +3582,7 @@ fn native_account_custody_survives_restart(purpose: codex_alab_core::account_han
     );
     let mut reserved = act;
     reserved.renewal.as_mut().unwrap().turn = Some(wall.into());
-    assert!(next.publish_renewal(next.upgrade_generation(), reserved));
+    assert!(next.publish_renewal(next.admission_generation(), reserved));
     assert!(next.admit_recovered_turn(THREAD, wall));
     assert!(next.turn_started(THREAD, wall));
     next.turn_ended(THREAD, wall);
@@ -3643,7 +3651,7 @@ fn native_custody_rejects_other_contexts_and_retires_only_known_supersession() {
             mode: Some("land".into()),
             ..Default::default()
         };
-        assert!(original.publish_renewal(original.upgrade_generation(), act.clone()));
+        assert!(original.publish_renewal(original.admission_generation(), act.clone()));
         let before = Writer::new(
             original,
             dir.clone(),
@@ -3701,7 +3709,7 @@ fn native_custody_rejects_other_contexts_and_retires_only_known_supersession() {
                 } else {
                     renewal.account = "d".repeat(64);
                 }
-                assert!(next.publish_renewal(next.upgrade_generation(), changed.clone()));
+                assert!(next.publish_renewal(next.admission_generation(), changed.clone()));
                 explicitly_published = Some(changed);
             }
             after.write_now().unwrap();
@@ -3745,4 +3753,60 @@ fn rollout_materialized_and_ensure_dir_reject_symlinks() {
     let link_dir = home.path().join("link-sessions");
     std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap_or_else(|err| panic!("{err}"));
     assert!(record::ensure_dir(&link_dir).is_err());
+}
+
+/// The model-block binding remains distinct from a provider wall and survives
+/// the same process handoff without carrying a predecessor's stop count.
+#[test]
+fn a_model_blocked_goal_survives_the_record_without_becoming_a_wall() {
+    use codex_alab_core::session::Pace;
+    use codex_alab_core::session::WallGoal;
+    let pace = Pace {
+        model_blocked_goal: Some(WallGoal {
+            goal_id: "model-goal-1".into(),
+            objective: "complete the original objective".into(),
+            token_budget: Some(1200),
+            turn: "model-turn-1".into(),
+            person_stops: 7,
+        }),
+        ..Pace::default()
+    };
+    assert!(!pace.at_rest());
+    let word = serde_json::to_value(record::Pace::from(pace.clone())).unwrap();
+    assert_eq!(
+        word,
+        serde_json::json!({
+            "shortStreak": 0,
+            "modelBlockedGoal": {
+                "id": "model-goal-1", "objective": "complete the original objective",
+                "budget": 1200, "turn": "model-turn-1"
+            }
+        })
+    );
+    let decoded = Pace::from(serde_json::from_value::<record::Pace>(word).unwrap());
+    let mut expected = pace;
+    expected.model_blocked_goal.as_mut().unwrap().person_stops = 0;
+    assert_eq!(decoded, expected);
+    assert!(decoded.wall_goal.is_none());
+    for invalid in [
+        serde_json::json!({"id": "model-goal-1", "objective": "keep going"}),
+        serde_json::json!({"id": "", "objective": "keep going", "turn": "turn-1"}),
+        serde_json::json!({"id": "model-goal-1", "objective": "keep going", "turn": " "}),
+        serde_json::json!({"id": "model-goal-1", "objective": "keep going", "turn": "turn-1", "budget": "none"}),
+        serde_json::json!(["model-goal-1"]),
+    ] {
+        let decoded = Pace::from(
+            serde_json::from_value::<record::Pace>(serde_json::json!({
+                "shortStreak": 2,
+                "modelBlockedGoal": invalid
+            }))
+            .unwrap(),
+        );
+        assert_eq!(decoded.short_streak, 2);
+        assert!(decoded.model_blocked_goal.is_none());
+    }
+    let old = Pace::from(
+        serde_json::from_value::<record::Pace>(serde_json::json!({"shortStreak": 0})).unwrap(),
+    );
+    assert!(old.model_blocked_goal.is_none());
 }

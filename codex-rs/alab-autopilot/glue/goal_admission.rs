@@ -10,7 +10,11 @@ impl super::GoalRuntimeHandle {
     pub async fn alab_automatic_input_permit(
         &self,
     ) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
-        self.goal_state_permit().await
+        let permit = self.goal_state_permit().await?;
+        if self.alab_defer_for_goal_persistence() {
+            return Err("automatic input is held after failed or unfinished goal persistence".to_owned());
+        }
+        Ok(permit)
     }
 
     /// Flush idle progress and read the active goal under the native mutation
@@ -134,7 +138,8 @@ impl super::GoalRuntimeHandle {
         self.tools_available() && self.alab_upgrade_goal_state_ready()
     }
     fn alab_upgrade_goal_state_ready(&self) -> bool {
-        self.inner.accounting_state.current_turn_id().is_none()
+        !self.alab_goal_persistence_held()
+            && self.inner.accounting_state.current_turn_id().is_none()
             && self.inner.accounting_state.interrupted_turn_id().is_none()
             && !self.alab_auth_recovery_deferred()
             && !self.inner.alab_recovery.pending()
@@ -259,6 +264,9 @@ impl super::GoalRuntimeHandle {
             .acquire()
             .await
             .map_err(|error| error.to_string())?;
+        if !self.alab_model_resume_allowed() {
+            return Err("the model goal stop changed before native resume".into());
+        }
         drop(admission);
         Ok(permit)
     }

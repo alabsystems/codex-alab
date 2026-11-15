@@ -20,6 +20,9 @@ pub trait ExtensionEventSink: Send + Sync {
     /// Queue one protocol event for host-owned delivery.
     fn emit(&self, event: Event);
 
+    fn alab_goal_runtime_updated(&self, _update: codex_protocol::protocol::AlabGoalRuntimeUpdatedNotification) {} // ALAB(storage-status): optional passive host transport; no durable event or DB read.
+    fn alab_goal_runtime_inline_snapshot(&self, _update: codex_protocol::protocol::AlabGoalRuntimeUpdatedNotification) -> Option<codex_protocol::protocol::AlabGoalRuntimeSnapshot> { None } // ALAB(storage-status): stamp a listener-owned snapshot without self-enqueueing.
+
     /// Queue one warning for host-owned delivery.
     ///
     /// Implementations must use [`ExtensionWarning::thread_id`] for routing. The optional

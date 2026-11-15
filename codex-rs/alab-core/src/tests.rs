@@ -1,6 +1,9 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
+#[path = "../glue/test_child_process.rs"]
+mod test_child_process;
+
 use pretty_assertions::assert_eq;
 
 const UPSTREAM: &str = "a = 1\n[history]\npersistence = \"save-all\"\n";
@@ -38,7 +41,14 @@ fn alabs_own_defaults_parse() {
             .unwrap_or_else(|| panic!("merge compiled defaults"));
         let merged: toml::Table =
             toml::from_str(&merged).unwrap_or_else(|err| panic!("compiled defaults: {err}"));
-        for feature in ["daemon_auto_start", "plugins"] {
+        for feature in [
+            "daemon_auto_start",
+            "plugins",
+            "misalignment_review",
+            "safety_recourse",
+            "skill_mcp_dependency_install",
+            "unbounded_connection_retries",
+        ] {
             assert_eq!(merged["features"][feature].as_bool(), Some(false));
         }
         assert_eq!(merged["tui"]["notifications"].as_bool(), Some(false));
@@ -538,18 +548,17 @@ fn vanilla_switch_restores_upstream_defaults_and_behavior() {
         return;
     }
     // Process-global mode changes cannot race unrelated tests in this binary.
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "tests::vanilla_switch_restores_upstream_defaults_and_behavior",
-        ])
-        .env(CHILD, "1")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let name = "tests::vanilla_switch_restores_upstream_defaults_and_behavior";
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+    child.args(["--exact", name]).env(CHILD, "1");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(test_child_process::run(
+            child,
+            std::time::Duration::from_secs(30),
+        ))
+        .unwrap_or_else(|failure| panic!("{name}: {failure}"))
+        .assert_test_success(name);
 }

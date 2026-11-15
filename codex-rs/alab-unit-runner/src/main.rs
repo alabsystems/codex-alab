@@ -6,7 +6,8 @@
 // The C entrypoint deliberately skips Rust's runtime initialization, including
 // its SIGPIPE policy and standard-FD repair. We use no threads, args iterator,
 // buffered standard streams or process::Command; libc::execv preserves Cargo's
-// exact PID, parent, session/group, environment, descriptors and signal context.
+// exact PID, parent, session/group, descriptors and signal context. The adapter
+// binds only its qualified diagnostic-directory variable in the environment.
 #![cfg_attr(unix, no_main)]
 
 #[cfg(unix)]

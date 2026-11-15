@@ -1,3 +1,4 @@
+use super::alab_request_diagnostics; // ALAB(recovery): request metadata stays local and content-free.
 use crate::auth::SharedAuthProvider;
 use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
@@ -83,6 +84,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
         let body = EncodedJsonBody::encode(&request)
             .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
 
+        let alab_diagnostic = alab_request_diagnostics::http(&request, body.as_bytes().len(), compression); // ALAB(recovery): record the actual wire request shape without retaining its content.
         let mut headers = extra_headers;
         if let Some(ref thread_id) = thread_id {
             insert_header(&mut headers, "x-client-request-id", thread_id);
@@ -92,8 +94,8 @@ impl<T: HttpTransport> ResponsesClient<T> {
             insert_header(&mut headers, "x-openai-subagent", &subagent);
         }
 
-        self.stream_encoded(body, headers, compression, turn_state)
-            .await
+        self.stream_encoded(body, headers, compression, turn_state, alab_diagnostic.as_ref()) // ALAB(recovery): retain this attempt through the existing SSE task.
+            .await.inspect_err(|error| alab_request_diagnostics::failed(alab_diagnostic.as_ref(), error)) // ALAB(recovery): preserve local request correlation before mapping the error.
     }
 
     #[instrument(
@@ -114,10 +116,12 @@ impl<T: HttpTransport> ResponsesClient<T> {
         compression: Compression,
         turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
+        let alab_body = &body; // ALAB(recovery): count the original Value before its encoded bytes shadow it.
         let body = EncodedJsonBody::encode(&body)
             .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
-        self.stream_encoded(body, extra_headers, compression, turn_state)
-            .await
+        let alab_diagnostic = alab_request_diagnostics::http_value(alab_body, body.as_bytes().len(), compression); // ALAB(recovery): generic compaction requests share the local shape diagnostic.
+        self.stream_encoded(body, extra_headers, compression, turn_state, alab_diagnostic.as_ref()) // ALAB(recovery): retain this attempt through the existing SSE task.
+            .await.inspect_err(|error| alab_request_diagnostics::failed(alab_diagnostic.as_ref(), error)) // ALAB(recovery): HTTP setup failures retain their request correlation.
     }
 
     async fn stream_encoded(
@@ -126,6 +130,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
         extra_headers: HeaderMap,
         compression: Compression,
         turn_state: Option<Arc<OnceLock<String>>>,
+        alab_diagnostic: Option<&alab_request_diagnostics::RequestDiagnostic>, // ALAB(recovery): the stream retains the request attempt that opened it.
     ) -> Result<ResponseStream, ApiError> {
         let request_compression = match compression {
             Compression::None => RequestCompression::None,
@@ -149,10 +154,11 @@ impl<T: HttpTransport> ResponsesClient<T> {
             )
             .await?;
 
+        let alab_sse_telemetry = alab_request_diagnostics::sse_telemetry(alab_diagnostic, self.sse_telemetry.clone(), &stream_response.headers); // ALAB(recovery): capture context and successful response IDs before the SSE task starts.
         Ok(spawn_response_stream(
             stream_response,
             self.session.provider().stream_idle_timeout,
-            self.sse_telemetry.clone(),
+            alab_sse_telemetry, // ALAB(recovery): observe actual stream failures without another channel or task.
             turn_state,
         ))
     }

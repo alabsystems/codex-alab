@@ -33,7 +33,8 @@ def validate(catalog, topics, repo, *, path_exists=None):
         if identity in ids:
             errors.append('duplicate feature ID: ' + identity)
         ids.add(identity)
-        if feature.get('lifecycle') not in {'active', 'retiring', 'retired'}:
+        lifecycle = feature.get('lifecycle')
+        if not isinstance(lifecycle, str) or lifecycle not in {'active', 'retiring', 'retired'}:
             errors.append(identity + ': invalid lifecycle')
         for field in ('purpose', 'equivalence'):
             if not isinstance(feature.get(field), str) or not feature[field].strip():

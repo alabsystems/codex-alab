@@ -2064,6 +2064,7 @@ server_notification_definitions! {
     ThreadSectionChanged => "thread/section/changed" (v2::ThreadSectionChangedNotification),
     ThreadAttachmentUpdated => "thread/attachment/updated" (v2::ThreadAttachmentUpdatedNotification),
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
+    AlabGoalRuntimeUpdated => "alab/thread/goal/runtimeUpdated" (v2::AlabGoalRuntimeUpdatedNotification), // ALAB(storage-status): live runtime observation, never a saved-goal mutation.
     #[experimental("thread/prediction/updated")]
     ThreadPredictionUpdated => "thread/prediction/updated" (v2::ThreadPredictionUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),

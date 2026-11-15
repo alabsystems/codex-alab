@@ -60,6 +60,83 @@ class ProjectToolchainTests(unittest.TestCase):
                               env=env or self.env, cwd=self.repo, capture_output=True,
                               text=True, timeout=30)
 
+    def assert_unsupported_source_shell(self, name):
+        shell = shutil.which(name, path=self.env["PATH"])
+        if shell is None:
+            self.skipTest(name + " is unavailable for the wrong-shell fixture")
+        external_trace = self.root / "unexpected shell preflight command"
+        fake_bin = self.root / "guard command lookup"
+        fake_bin.mkdir()
+        # A source guard must query a real builtin, not execute a PATH command
+        # of the same name when an ambient version variable is misleading.
+        for command in ("builtin", "shopt"):
+            program = fake_bin / command
+            program.write_text("#!/bin/sh\nprintf 'called\\n' >> " +
+                               shlex.quote(str(external_trace)) + "\nexit 0\n")
+            program.chmod(0o755)
+        body = r"""
+alab_library_root=source-not-initialized
+. "$1/alab/lib.sh"
+source_status=$?
+printf 'source_status=%s\n' "$source_status"
+printf 'library_root=%s\n' "$alab_library_root"
+if command -v alab_project_run >/dev/null 2>&1; then
+    printf 'selector=defined\n'
+    alab_project_run "$1" "" /usr/bin/true
+else
+    printf 'selector=undefined\n'
+fi
+printf 'caller=alive\n'
+"""
+        diagnostic = "alab/lib.sh: Bash is required; source this library from Bash."
+        for spoof_version in (False, True):
+            for direct in (False, True):
+                with self.subTest(shell=name, spoof_version=spoof_version, direct=direct):
+                    for record in (self.record, external_trace):
+                        record.unlink(missing_ok=True)
+                    env = dict(self.env, PATH=str(fake_bin) + ":" + self.env["PATH"])
+                    if spoof_version:
+                        env["BASH_VERSION"] = "99.0-fixture"
+                    if direct:
+                        argv = [shell, "-f", str(self.repo / "alab/lib.sh")]
+                    else:
+                        argv = [shell, "-f", "-c", body, "fixture", str(self.repo)]
+                    done = subprocess.run(argv, env=env, cwd=self.repo,
+                                          capture_output=True, text=True, timeout=10)
+                    self.assertFalse(self.record.exists(),
+                                     "an unsupported shell reached the native recorder")
+                    self.assertFalse(self.cache.exists())
+                    self.assertFalse(external_trace.exists(),
+                                     "shell preflight executed an external lookup candidate")
+                    self.assertEqual(done.stderr.strip(), diagnostic)
+                    if direct:
+                        self.assertEqual(done.returncode, 2, done.stderr)
+                    else:
+                        # Capture the dot command's status: a later successful
+                        # printf must not turn a failed source into a green test.
+                        self.assertEqual(done.returncode, 0, done.stderr)
+                        self.assertEqual(done.stdout.splitlines(), [
+                            "source_status=2", "library_root=source-not-initialized",
+                            "selector=undefined", "caller=alive",
+                        ])
+
+    def test_zsh_rejects_library_before_any_controller_or_helper(self):
+        self.assert_unsupported_source_shell("zsh")
+
+    def test_dash_rejects_library_before_any_controller_or_helper(self):
+        self.assert_unsupported_source_shell("dash")
+
+    def test_bash_source_preserves_real_helper_and_initialization(self):
+        target = str(self.root / "ordinary target with spaces")
+        done = self.run_shell(
+            'set -euo pipefail; . "$1/alab/lib.sh"; '
+            'printf "%s\\n" "$alab_library_root"; alab_check_lint_target "$2"', target)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.splitlines(), [str(self.repo), target + "/tippy"])
+        self.assertEqual(done.stderr, "")
+        self.assertFalse(self.record.exists())
+        self.assertFalse(self.cache.exists())
+
     def test_gate_enters_working_authority_before_any_target_or_compiler(self):
         done = subprocess.run([str(self.repo / "alab/check.sh")], env=self.env,
                               cwd=self.repo, capture_output=True, text=True, timeout=30)

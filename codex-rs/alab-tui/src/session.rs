@@ -294,6 +294,34 @@ fn same_native_custody(source: &Record, current: &record::Owed) -> bool {
         })
 }
 
+fn normalize_imported_clocks(source: &mut Record, current: &Shared) {
+    let sample = codex_alab_core::recovery_clock::Sample::read(
+        current.launch().and_then(|launch| launch.identity.as_ref()),
+    );
+    for clock in [
+        source.recovery.as_mut().map(|recovery| &mut recovery.clock),
+        source
+            .in_flight_retry
+            .as_mut()
+            .map(|retry| &mut retry.clock),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if clock.as_ref().is_some_and(|clock| {
+            sample
+                .as_ref()
+                .and_then(|sample| {
+                    codex_alab_core::recovery_clock::Anchor::from(clock.clone()).epoch_at(sample)
+                })
+                .is_none()
+        }) {
+            // Keep the original wait fact; an unusable clock grants no retry.
+            *clock = None;
+        }
+    }
+}
+
 #[derive(Default)]
 struct WriterState {
     last: Option<Record>,
@@ -307,6 +335,9 @@ struct WriterState {
     resume: Option<(ResumeKey, Option<Vec<String>>)>,
     /// The unique newest dead-record source; emitting its fields needs launch proof.
     pending_handoff: Option<Record>,
+    /// Goal provenance can outlive an unrelated native turn that supersedes the
+    /// selected source's old pacing and automatic intent.
+    model_goal_handoff: Option<Record>,
     /// A same-identity predecessor is already authoritative, including before a frame.
     inherited_handoff: Option<Record>,
     /// Sources remain on disk through an initializer or failed successor write.
@@ -442,6 +473,19 @@ impl Writer {
     }
 
     fn retain_native_source(&self, state: &WriterState, source: &Record) -> bool {
+        // An early native turn may have rejected the old pacing handoff before
+        // the launch probe can qualify its model-goal provenance. Keep that
+        // selected record on disk until the probe settles the source boundary.
+        if state.model_goal_handoff.as_ref() == Some(source)
+            && source
+                .pace
+                .as_ref()
+                .is_some_and(|pace| pace.model_blocked_goal.is_some())
+            && !self.same_session(source)
+            && !self.shared.launch_probed()
+        {
+            return true;
+        }
         if !self.native_custody_source(source) {
             return false;
         }
@@ -509,14 +553,23 @@ impl Writer {
         let _ = record::ensure_dir(&self.dir);
         let launch = self.shared.launch();
         let own = launch.and_then(|launch| launch.identity.as_ref());
-        if let Some(previous) = record::read(&self.path())
+        if let Some(mut previous) = record::read(&self.path())
             && let (Some(own), Some(theirs)) = (own, previous.identity.clone())
             && codex_alab_core::session::ProcessIdentity::from(theirs) == *own
         {
             state.exec_generation = previous.exec_generation;
             // The chain survives the live upgrade's execve: a 0 here would let a later turn
             // nobody asked for start a fresh chain (review of cf084e3b7, finding 4).
+            normalize_imported_clocks(&mut previous, self.shared);
             if let Some(thread) = &previous.session_id {
+                self.shared.carry_model_goal(
+                    thread,
+                    previous
+                        .pace
+                        .clone()
+                        .map(codex_alab_core::session::Pace::from)
+                        .and_then(|pace| pace.model_blocked_goal),
+                );
                 let seeded = self.shared.seed_before_native_work(|| {
                     if previous.carried_on > self.shared.carried_on() {
                         self.shared.set_carried_on(previous.carried_on);
@@ -656,6 +709,7 @@ impl Writer {
                     shared.set_carried_on(chain.max(shared.carried_on()));
                 });
             } else {
+                state.model_goal_handoff = Some(source.clone());
                 let eligible = record::relaunch_owed(&source)
                     && started.saturating_sub(source.updated_at) <= horizon;
                 let native_custody = self.native_custody_source(&source);
@@ -672,6 +726,7 @@ impl Writer {
                         && source.status == Status::Busy
                         && source.carried_on < codex_alab_core::session::MAX_CARRY_ONS
                 });
+                normalize_imported_clocks(&mut source, shared);
                 // THE PACE, HOWEVER OLD (aterm's loop seeds its streak and its retry ladder
                 // from the session's books at every start, `short_streak_in`, `seed_retry`,
                 // with no horizon): the acts the budget counts fall out of its window at the
@@ -702,6 +757,7 @@ impl Writer {
                 }
             }
         }
+        self.carry_model_goal(&state);
         // The autopilot's carry-on waits for this (the crash witnesses are known now).
         shared.set_swept();
     }
@@ -958,6 +1014,7 @@ impl Writer {
     }
 
     fn build(&self, state: &mut WriterState, now: u64) -> Record {
+        self.carry_model_goal(state);
         let shared = self.shared;
         let launch = shared.launch();
         let view = shared.view();
@@ -1250,7 +1307,6 @@ impl Writer {
     }
 
     fn handoff_allows(&self, state: &WriterState, matches: impl Fn(&Record) -> bool) -> bool {
-        let shared = self.shared;
         if state.inherited_handoff.as_ref().is_some_and(&matches)
             || !state.pending_handoff.as_ref().is_some_and(matches)
         {
@@ -1259,6 +1315,30 @@ impl Writer {
         let Some(source) = &state.pending_handoff else {
             return false;
         };
+        self.source_relaunches(source)
+    }
+
+    fn carry_model_goal(&self, state: &WriterState) {
+        let Some(source) = &state.model_goal_handoff else {
+            return;
+        };
+        let Some(thread) = &source.session_id else {
+            return;
+        };
+        if self.same_session(source) || self.source_relaunches(source) {
+            self.shared.carry_model_goal(
+                thread,
+                source
+                    .pace
+                    .clone()
+                    .map(codex_alab_core::session::Pace::from)
+                    .and_then(|pace| pace.model_blocked_goal),
+            );
+        }
+    }
+
+    fn source_relaunches(&self, source: &Record) -> bool {
+        let shared = self.shared;
         let Some(thread) = &source.session_id else {
             return false;
         };

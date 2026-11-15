@@ -14,6 +14,14 @@ retained native ledger must report rollback completion, and the live rollback
 vendor must acquire its own actual proven supervisor claim. This is a live
 source, never an expired dead-source continuation witness.
 
+The controller waits for each of those three facts, because they arrive in any
+order. The vendor's own `status` can retire the receipt from live evidence
+before the host's worker reads the native Completed reply. That reply writes
+`native_completed_prepare` and `native_observation` together, and the completed
+prepare must equal the original. A ledger that ends the operation without
+completing it fails at once and names the cause: no exec granted, proven never
+executed, stopped, or released. It does not wait for the hang detector.
+
 Recovery then requires a distinct root/native operation bound to that vendor,
 a new deadline, and the same already selected credential generation and row.
 The old terminal capability is never reused. The final actual request must use

@@ -728,21 +728,26 @@ and wall-binding regressions passed. Broader `goal_resume`, `policy_continuation
 TUI safety tests and the standard `targo --unverified build -p codex-cli --bin codex`.
 The enlarged test stack remained set.
 
-The follow-up re-audit is integrated with `b6a5e9c0da9c3ed316dc13aa1d49fc91eda5b0c3`.
-Both policy-wall native regressions passed. The broader `goal_resume` run passed 14
-library tests plus its integration case; `policy_continuation` passed four library and
-three integration tests; `goal_admission` matched and passed its two cases; and all 37
-`codex-goal-extension` tests passed. As a negative control, removing only the production
-custody change made the new unchanged-goal regression fail because the generic retry
-omitted `abandon the refused action`; restoring it made the same test pass again.
+The follow-up re-audit is integrated with current main through merge
+`b2823f824d`. Both policy-wall native regressions passed. The broader `goal_resume`
+run passed 14 library tests plus its integration case; `policy_continuation` passed
+four library and three integration tests; `goal_admission` matched and passed its two
+cases; and all 37 `codex-goal-extension` tests passed. As a negative control, removing
+only the production custody change made the new unchanged-goal regression fail because
+the generic retry omitted `abandon the refused action`; restoring it made the same test
+pass again.
 
-The protected `alab/check.sh` gate ran with the qualified producer in a fresh managed
-worktree. Its full Tippy phase completed in 9m10s and reported no finding in this delta,
-but stopped on the pre-existing `bool_assert_comparison` at
-`codex-rs/alab-tui/glue/account_move_pool_tests.rs:710`, introduced by `db610c49d5`.
-That file is outside the Daybreak delta and was not rewritten. The gate therefore did
-not reach its CLI-build or later test phases; this is explicitly not a passing-gate
-claim. The separate certified package result is recorded below after publication.
+An initial protected `alab/check.sh` stopped on the pre-existing `bool_assert_comparison`
+at `codex-rs/alab-tui/glue/account_move_pool_tests.rs:710`, introduced by `db610c49d5`.
+Current main fixed that unrelated warning and was merged without conflict. On the merged
+source, the full Tippy phase found nothing in ALab's code and set aside 41 upstream-only
+diagnostics. The required certified CLI build then refused `codex-cli`'s proc-macro
+dependencies: evidence-grade verification does not permit those macros to share the
+compiler process and proof transport. No proof measurement ran, and the gate did not
+reach its later test phases. This is explicitly not a passing-gate claim. A separate
+package attempt could not substitute: its contained build stopped with
+`Operation not permitted`. The real native regression suites above are the behavioral
+verification; no formal verification or passing repository-wide gate is claimed.
 
 On the bounded lifecycle implementation integrated with
 `4b44e195a0c8667762b9b4c1ef98ddd96c12c049`, `targo --unverified check -p codex-tui

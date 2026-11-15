@@ -191,7 +191,9 @@ pub mod test_support {
 pub use codex_alab_core::session::UpgradeRequest;
 
 /// Any native App/server event can change a loaded thread, goal or background task.
-/// Invalidate an in-flight asynchronous scan before dispatching it.
+/// Invalidate an in-flight asynchronous scan before dispatching it. An automatic turn's
+/// admission is not fenced by it: the facts that admission reads move its own counter
+/// (`Shared::admission_generation`), those the frame shows from the frame after this event.
 pub fn native_event() {
     if crate::session::active() {
         codex_alab_core::session::shared().invalidate_upgrade();

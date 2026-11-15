@@ -22,6 +22,8 @@ ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 RESULT = re.compile(r"\btest (\S+) \.\.\. (ok|FAILED|ignored)\b")
 SUMMARY = re.compile(r"test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored")
 IDENTITY = ("package", "version", "manifest", "target", "source")
+DIAGNOSTICS_PREFIX = "alab-unit-diagnostics."
+DIAGNOSTIC_MANIFEST = "manifest.json"
 
 
 class Refusal(Exception):
@@ -65,6 +67,73 @@ def snapshot(path):
 
 def identity(copy):
     return tuple(copy[field] for field in IDENTITY)
+
+
+def open_directory(path):
+    path = Path(path)
+    require(path.is_absolute() and path.anchor == "/" and ".." not in path.parts,
+            "unit-test diagnostics require an absolute canonical directory")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open("/", flags)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def directory_identity(descriptor):
+    value = os.fstat(descriptor)
+    require(stat.S_ISDIR(value.st_mode), "unit-test diagnostics are not a directory")
+    return [value.st_dev, value.st_ino]
+
+
+def diagnostics_root(state):
+    target, root = Path(state["target_dir"]), Path(state["diagnostics_root"])
+    require(root.parent == target and root.name.startswith(DIAGNOSTICS_PREFIX),
+            "unit-test diagnostics root escapes its prepared target")
+    descriptor = open_directory(root)
+    try:
+        require(directory_identity(descriptor) == state["diagnostics_root_identity"],
+                "unit-test diagnostics root changed after preparation")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return root, descriptor
+
+
+def diagnostic_manifests(descriptor, path):
+    """Index bounded regular manifests without interpreting diagnostic contents."""
+    manifests = []
+    try:
+        with os.scandir(descriptor) as entries:
+            for number, entry in enumerate(entries):
+                if number >= 256:
+                    break
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                                    | os.O_CLOEXEC, dir_fd=descriptor)
+                except OSError:
+                    continue
+                try:
+                    manifest = os.stat(DIAGNOSTIC_MANIFEST, dir_fd=child, follow_symlinks=False)
+                    if stat.S_ISREG(manifest.st_mode) and manifest.st_size <= 1024 * 1024:
+                        manifests.append(str(path / entry.name / DIAGNOSTIC_MANIFEST))
+                except OSError:
+                    pass
+                finally:
+                    os.close(child)
+    except OSError:
+        # Missing or concurrently changed diagnostic content is advisory. The
+        # prepared runner root and selected leaf identities are checked above.
+        pass
+    return sorted(manifests)
 
 
 def prepare(args):
@@ -129,12 +198,40 @@ def prepare(args):
             copy["round"] = rounds.get(copy["library_key"], 0)
             rounds[copy["library_key"]] = copy["round"] + 1
             copies.append(copy)
-    save(state / "state.json", {"repo": str(root), "target_dir": str(target),
+    round_count = max(rounds.values()) if rounds else 1
+    target_descriptor = open_directory(target)
+    diagnostic_name = DIAGNOSTICS_PREFIX + os.urandom(16).hex()
+    diagnostics = target / diagnostic_name
+    created = False
+    try:
+        os.mkdir(diagnostic_name, mode=0o700, dir_fd=target_descriptor)
+        created = True
+        descriptor = os.open(diagnostic_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                             | os.O_CLOEXEC, dir_fd=target_descriptor)
+        try:
+            diagnostic_identity = directory_identity(descriptor)
+        finally:
+            os.close(descriptor)
+        for library in libraries:
+            library["diagnostics_dirs"] = [
+                str(diagnostics / ("library-" + library["key"] + "-round-" + str(number)))
+                if not args.plan or any(copy["library_key"] == library["key"]
+                                        and copy["round"] == number for copy in copies) else None
+                for number in range(round_count)]
+        save(state / "state.json", {"repo": str(root), "target_dir": str(target),
+                               "diagnostics_root": str(diagnostics),
+                               "diagnostics_root_identity": diagnostic_identity,
                                "mode": "compare" if args.plan else "record",
                                "libraries": libraries, "copies": copies,
-                               "rounds": max(rounds.values()) if rounds else 1,
+                               "rounds": round_count,
                                "runner_cfg": 'cfg(any(all(), target_os = "alab-unit-'
                                              + os.urandom(16).hex() + '"))'}, exclusive=True)
+    except BaseException:
+        if created:
+            os.rmdir(diagnostic_name, dir_fd=target_descriptor)
+        raise
+    finally:
+        os.close(target_descriptor)
 
 
 def result_text(path):
@@ -159,15 +256,44 @@ def collect(args):
     require(not any(int(value) != 101 for value in re.findall(
         r"process didn't exit successfully: .*\(exit status: (\d+)\)", text)),
         "a unit-test harness exited without a normal test outcome")
-    receipts = {}
-    for round_number in range(state["rounds"]):
-        for library in state["libraries"]:
-            receipt = load(state_dir / ("library-" + library["key"] + "-" + str(round_number) + ".json"))
-            require(receipt["library_key"] == library["key"] and receipt["binary"] == library["binary"]
-                    and receipt["cwd"] == library["cwd"] and receipt["mode"] == state["mode"]
-                    and receipt["round"] == round_number,
-                    "unit-test runtime receipt does not match its prepared Cargo artifact")
-            receipts[(library["key"], round_number)] = receipt
+    receipts, diagnostics = {}, []
+    diagnostic_root, root_descriptor = diagnostics_root(state)
+    try:
+        for round_number in range(state["rounds"]):
+            for library in state["libraries"]:
+                require(re.fullmatch(r"[0-9a-f]{64}", library["key"])
+                        and len(library["diagnostics_dirs"]) == state["rounds"],
+                        "invalid prepared diagnostics library or rounds")
+                receipt = load(state_dir / ("library-" + library["key"] + "-" + str(round_number) + ".json"))
+                require(receipt["library_key"] == library["key"] and receipt["binary"] == library["binary"]
+                        and receipt["cwd"] == library["cwd"] and receipt["mode"] == state["mode"]
+                        and receipt["round"] == round_number,
+                        "unit-test runtime receipt does not match its prepared Cargo artifact")
+                expected = library["diagnostics_dirs"][round_number]
+                selected = state["mode"] == "record" or any(
+                    copy["library_key"] == library["key"] and copy["round"] == round_number
+                    for copy in state["copies"])
+                leaf = "library-" + library["key"] + "-round-" + str(round_number)
+                require(expected == (str(diagnostic_root / leaf) if selected else None)
+                        and receipt["diagnostics_dir"] == expected,
+                        "unit-test runtime diagnostics do not match their prepared leaf")
+                if selected:
+                    descriptor = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                                         | os.O_CLOEXEC, dir_fd=root_descriptor)
+                    try:
+                        require(directory_identity(descriptor) == receipt["diagnostics_identity"],
+                                "unit-test diagnostics leaf changed after native execution")
+                        diagnostics.append({"library_key": library["key"], "round": round_number,
+                                            "directory": expected,
+                                            "manifests": diagnostic_manifests(descriptor, Path(expected))})
+                    finally:
+                        os.close(descriptor)
+                else:
+                    require(receipt["diagnostics_identity"] is None,
+                            "an unselected unit-test round claimed a diagnostics directory")
+                receipts[(library["key"], round_number)] = receipt
+    finally:
+        os.close(root_descriptor)
     executions = state["libraries"] if state["mode"] == "record" else state["copies"]
     observations = {entry["key"]: {"results": [], "summaries": [], "details": False} for entry in executions}
     execution_round = {entry["key"]: entry.get("round", 0) for entry in executions}
@@ -258,7 +384,8 @@ def collect(args):
             "Cargo's aggregate outcome disagrees with its execution rounds")
     require((args.status == 101) == bool(failed), "Cargo's outcome disagrees with the expected unit-test copies")
     save(args.out, {"failed": failed, "passed": passed, "selected_libraries": len(state["libraries"]),
-                    "executed_copies": None if state["mode"] == "record" else len(state["copies"])})
+                    "executed_copies": None if state["mode"] == "record" else len(state["copies"]),
+                    "diagnostics": diagnostics})
 
 
 def main():

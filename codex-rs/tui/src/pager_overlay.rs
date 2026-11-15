@@ -44,6 +44,8 @@ use scrolling::render_offset_content;
 pub(crate) enum Overlay {
     Transcript(TranscriptOverlay),
     Static(StaticOverlay),
+    // ALAB(misalignment-review): Identify the policy overlay so opt-out can dismiss it.
+    MisalignmentReview(StaticOverlay),
     Analytics(Box<crate::analytics::AnalyticsView>),
 }
 
@@ -76,6 +78,15 @@ impl Overlay {
         Self::Static(StaticOverlay::with_title(lines, title, keymap))
     }
 
+    // ALAB(misalignment-review): Keep policy review distinct from unrelated static pagers.
+    pub(crate) fn new_misalignment_review_with_lines(
+        lines: Vec<Line<'static>>,
+        title: String,
+        keymap: PagerKeymap,
+    ) -> Self {
+        Self::MisalignmentReview(StaticOverlay::with_title(lines, title, keymap))
+    }
+
     pub(crate) fn new_static_with_renderables(
         renderables: Vec<Box<dyn Renderable>>,
         title: String,
@@ -87,12 +98,12 @@ impl Overlay {
     pub(crate) fn handle_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
         let mouse_capture = match self {
             Overlay::Transcript(_) | Overlay::Analytics(_) => tui::MouseCapture::Enabled,
-            Overlay::Static(_) => tui::MouseCapture::Disabled,
+            Overlay::Static(_) | Overlay::MisalignmentReview(_) => tui::MouseCapture::Disabled,
         };
         tui.set_mouse_capture(mouse_capture)?;
         let result = match self {
             Overlay::Transcript(o) => o.handle_event(tui, event).map(drop),
-            Overlay::Static(o) => o.handle_event(tui, event),
+            Overlay::Static(o) | Overlay::MisalignmentReview(o) => o.handle_event(tui, event),
             Overlay::Analytics(o) => o.handle_event(tui, event),
         };
         if result.is_err() || self.is_done() {
@@ -105,7 +116,7 @@ impl Overlay {
     pub(crate) fn is_done(&self) -> bool {
         match self {
             Overlay::Transcript(o) => o.is_done(),
-            Overlay::Static(o) => o.is_done(),
+            Overlay::Static(o) | Overlay::MisalignmentReview(o) => o.is_done(),
             Overlay::Analytics(o) => o.is_done,
         }
     }

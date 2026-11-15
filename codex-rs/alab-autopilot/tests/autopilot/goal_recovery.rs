@@ -82,6 +82,82 @@ fn a_blocked_goal_is_surfaced_before_a_provider_retry_wait() {
     });
 }
 
+/// A Daybreak refusal ends its own turn, never the goal: the native idle continuation runs next.
+#[test]
+fn a_daybreak_refusal_keeps_the_goal_active_and_continues_it() {
+    big_stack(|| async {
+        let h = harness_goals(
+            Mode::Current,
+            vec![
+                responses::sse_response(responses::sse_failed(
+                    "refused",
+                    "cyber_policy",
+                    "This action was refused by the cybersecurity access policy.",
+                )),
+                responses::sse_response(reply(
+                    "ordinary-work",
+                    "Continued the ordinary goal work.",
+                )),
+            ],
+            &[("human_grace_s", "0"), ("continue", "false")],
+            &[],
+            Some(0),
+            None,
+            Timing {
+                min_work: Duration::ZERO,
+                ..Timing::default()
+            },
+            |_| {},
+            Some(Arc::new(codex_goal_extension::GoalService::new())),
+        )
+        .await;
+        let db = h
+            .test
+            .codex
+            .state_db()
+            .unwrap_or_else(|| panic!("goal database"));
+        let id = h.test.session_configured.thread_id;
+        db.thread_goals()
+            .replace_thread_goal(
+                id,
+                "finish the ordinary task",
+                codex_state::ThreadGoalStatus::Active,
+                None,
+            )
+            .await
+            .unwrap_or_else(|err| panic!("the active goal: {err}"));
+        h.test
+            .codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "Attempt the refused action.".into(),
+                text_elements: Vec::new(),
+            }]))
+            .await
+            .unwrap_or_else(|err| panic!("start the refused turn: {err}"));
+
+        wait_for_event_with_timeout(&h.test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(done)
+                if done.last_agent_message.as_deref() == Some("Continued the ordinary goal work."))
+        }, Duration::from_secs(60)).await;
+
+        assert_eq!(h.mock.requests().len(), 2);
+        assert_eq!(
+            db.thread_goals()
+                .get_thread_goal(id)
+                .await
+                .unwrap_or_else(|err| panic!("read goal: {err}"))
+                .unwrap_or_else(|| panic!("same goal"))
+                .status,
+            codex_state::ThreadGoalStatus::Active
+        );
+        h.test
+            .codex
+            .shutdown_and_wait()
+            .await
+            .unwrap_or_else(|err| panic!("shutdown: {err}"));
+    });
+}
+
 /// THE GOAL A TURN ERROR BLOCKED AT A WALL IS RESUMED AT THE WALL'S TRY, ON ITS LADDER (owner
 /// 2026-10-28: codex-alab "must keep continuing and making progress with retries" through
 /// outages; FOREVER CRUISE): upstream's goal extension blocks the active goal at the server
@@ -93,11 +169,26 @@ fn a_blocked_goal_is_surfaced_before_a_provider_retry_wait() {
 /// ([`a_blocked_goal_is_surfaced_before_a_provider_retry_wait`]).
 #[test]
 fn a_goal_a_turn_error_blocked_resumes_at_the_walls_try() {
-    big_stack(|| async {
+    goal_error_recovery(false);
+}
+
+#[test]
+fn an_opaque_bad_request_resumes_the_same_goal_with_provider_pacing() {
+    goal_error_recovery(true);
+}
+
+fn goal_error_recovery(opaque: bool) {
+    big_stack(move || async move {
         let server = || {
-            wiremock::ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                "error": {"message": "Internal server error."}
-            }))
+            if opaque {
+                wiremock::ResponseTemplate::new(400)
+                    .insert_header("Retry-After", "2")
+                    .set_body_json(serde_json::json!({"detail": "Bad Request"}))
+            } else {
+                wiremock::ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                    "error": {"message": "Internal server error."}
+                }))
+            }
         };
         let h = harness_goals(
             Mode::Current,
@@ -122,7 +213,8 @@ fn a_goal_a_turn_error_blocked_resumes_at_the_walls_try() {
             .state_db()
             .unwrap_or_else(|| panic!("goal database"));
         let id = h.test.session_configured.thread_id;
-        db.thread_goals()
+        let original_goal = db
+            .thread_goals()
             .replace_thread_goal(
                 id,
                 "finish the original task",
@@ -166,6 +258,23 @@ fn a_goal_a_turn_error_blocked_resumes_at_the_walls_try() {
             },
         )
         .await;
+        if opaque {
+            let state = rt.state();
+            let Some(codex_alab_autopilot::decide::Wall::Server {
+                retry_at: Some(deadline),
+                cut_off: false,
+                ..
+            }) = state.point.and_then(|point| point.wall)
+            else {
+                panic!("opaque goal failure lost its provider deadline");
+            };
+            assert!(
+                rt.owed_timer()
+                    .unwrap_or_else(|| panic!("paced goal retry"))
+                    .not_before >= deadline,
+                "the next goal retry must retain provider advice"
+            );
+        }
         assert_eq!(resumes(), 1, "{:?}", lines());
         assert!(
             !lines().iter().any(|l| l.contains("typed \"")),
@@ -181,13 +290,16 @@ fn a_goal_a_turn_error_blocked_resumes_at_the_walls_try() {
             "{:?}",
             h.fake.attention()
         );
+        let stopped_goal = db
+            .thread_goals()
+            .get_thread_goal(id)
+            .await
+            .unwrap_or_else(|err| panic!("read goal: {err}"))
+            .unwrap_or_else(|| panic!("same goal"));
+        assert_eq!(stopped_goal.goal_id, original_goal.goal_id);
+        assert_eq!(stopped_goal.objective, original_goal.objective);
         assert_eq!(
-            db.thread_goals()
-                .get_thread_goal(id)
-                .await
-                .unwrap_or_else(|err| panic!("read goal: {err}"))
-                .unwrap_or_else(|| panic!("same goal"))
-                .status,
+            stopped_goal.status,
             codex_state::ThreadGoalStatus::Blocked,
             "the wall stopped it again; its next try resumes it"
         );

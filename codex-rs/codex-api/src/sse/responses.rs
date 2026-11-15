@@ -638,6 +638,7 @@ async fn process_sse_with_treatment(
                     ) => ApiError::Transport(error),
                     error => ApiError::Stream(error.to_string()),
                 };
+                if let Some(t) = telemetry.as_ref() { t.on_sse_error(&error); } // ALAB(recovery): correlate selected terminal errors before their channel send.
                 let _ = tx_event.send(Err(error)).await;
                 return;
             }
@@ -645,13 +646,14 @@ async fn process_sse_with_treatment(
                 let error = response_error.unwrap_or(ApiError::Stream(
                     "stream closed before response.completed".into(),
                 ));
+                if let Some(t) = telemetry.as_ref() { t.on_sse_error(&error); } // ALAB(recovery): correlate selected terminal errors before their channel send.
                 let _ = tx_event.send(Err(error)).await;
                 return;
             }
             Err(_) => {
-                let _ = tx_event
-                    .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
-                    .await;
+                let error = ApiError::Stream("idle timeout waiting for SSE".into());
+                if let Some(t) = telemetry.as_ref() { t.on_sse_error(&error); } // ALAB(recovery): a timeout is a terminal delivery, not just a raw poll.
+                let _ = tx_event.send(Err(error)).await;
                 return;
             }
         };
@@ -716,6 +718,7 @@ async fn process_sse_with_treatment(
                         | ApiError::ContentPolicyViolation { .. }
                         | ApiError::ResponseIncomplete(_)
                 ) || alab_capacity::emit_immediately(&error) { // ALAB(capacity): deliver known capacity failures without waiting for EOF.
+                    if let Some(t) = telemetry.as_ref() { t.on_sse_error(&error); } // ALAB(recovery): correlate selected terminal errors before their channel send.
                     let _ = tx_event.send(Err(error)).await;
                     return;
                 }

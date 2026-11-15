@@ -140,8 +140,17 @@ async fn fixture() -> (tempfile::TempDir, Arc<ModelCatalog>, Arc<Calls>) {
 async fn fixture_with_work(
     work: Option<Arc<Calls>>,
 ) -> (tempfile::TempDir, Arc<ModelCatalog>, Arc<Calls>) {
-    let codex_home = tempfile::tempdir().unwrap_or_else(|err| panic!("scratch home: {err}"));
     let calls = Arc::new(Calls::default());
+    let endpoint = Arc::new(Endpoint(Arc::clone(&calls), work.clone()));
+    fixture_with_endpoint(calls, endpoint, work.is_some()).await
+}
+
+async fn fixture_with_endpoint(
+    calls: Arc<Calls>,
+    endpoint: Arc<dyn ModelsEndpointClient>,
+    retain_work: bool,
+) -> (tempfile::TempDir, Arc<ModelCatalog>, Arc<Calls>) {
+    let codex_home = tempfile::tempdir().unwrap_or_else(|err| panic!("scratch home: {err}"));
     let config_manager = crate::config_manager::ConfigManager::new_for_tests(
         codex_home.path().to_path_buf(),
         Vec::new(),
@@ -158,10 +167,10 @@ async fn fixture_with_work(
     );
     let models_manager: SharedModelsManager = Arc::new(OpenAiModelsManager::new_with_cache(
         Arc::new(FreshCache(Arc::clone(&calls))),
-        Arc::new(Endpoint(Arc::clone(&calls), work.clone())),
+        endpoint,
         /*auth_manager*/ None,
     ));
-    if work.is_some() {
+    if retain_work {
         models_manager
             .for_originator("codex_work_desktop")
             .expect("retained Work catalog");
@@ -301,4 +310,247 @@ async fn cache_aware_polls_refresh_retained_originators_without_refetching_defau
     }
     assert_eq!(root.log(), vec!["load", "load", "load"]);
     assert_eq!(work.log(), vec!["fetch", "fetch"]);
+}
+
+#[derive(Debug, Default)]
+struct PreflightGate {
+    entered: std::sync::atomic::AtomicUsize,
+    dropped: std::sync::atomic::AtomicUsize,
+    started: Notify,
+    release: CancellationToken,
+}
+
+struct PreflightObserver(Arc<PreflightGate>);
+
+impl Drop for PreflightObserver {
+    fn drop(&mut self) {
+        self.0
+            .dropped
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[derive(Debug)]
+struct PendingPreflightEndpoint {
+    gate: Arc<PreflightGate>,
+    calls: Arc<Calls>,
+}
+
+impl ModelsEndpointClient for PendingPreflightEndpoint {
+    fn identity(&self) -> Option<String> {
+        Some(IDENTITY.to_owned())
+    }
+
+    fn has_command_auth(&self) -> bool {
+        true
+    }
+
+    fn uses_codex_backend(&self) -> ModelsEndpointFuture<'_, bool> {
+        let gate = Arc::clone(&self.gate);
+        Box::pin(async move {
+            let _observer = PreflightObserver(Arc::clone(&gate));
+            gate.entered
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            gate.started.notify_one();
+            gate.release.cancelled().await;
+            false
+        })
+    }
+
+    fn list_models<'a>(
+        &'a self,
+        _client_version: &'a str,
+        _http_client_factory: HttpClientFactory,
+    ) -> ModelsEndpointFuture<'a, CoreResult<ModelsEndpointResponse>> {
+        self.calls.push("fetch");
+        Box::pin(std::future::ready(Ok(ModelsEndpointResponse {
+            models: Vec::new(),
+            etag: None,
+            identity: IDENTITY.to_owned(),
+        })))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StopWorker {
+    Shutdown,
+    Drop,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StopPoint {
+    BeforeStart,
+    DuringPreflight,
+}
+
+#[derive(Debug)]
+struct ShutdownObservation {
+    enhanced: bool,
+    stop: StopWorker,
+    point: StopPoint,
+    reached_stop_point: bool,
+    entered: usize,
+    dropped_while_held: usize,
+    gate_held: bool,
+    catalog_released: bool,
+    task_finished: bool,
+    calls_while_held: Vec<&'static str>,
+    clean_join: bool,
+    forced_cleanup: bool,
+    final_observer_drops: usize,
+}
+
+const OBSERVE_SHUTDOWN: Duration = Duration::from_secs(2);
+const CLEANUP_SHUTDOWN: Duration = Duration::from_secs(5);
+
+// This completed placeholder lets the test retain the actual JoinHandle across
+// real worker Drop. It starts no worker logic and is finished before real spawn.
+async fn completed_task_slot() -> JoinHandle<()> {
+    let slot = tokio::spawn(async {});
+    tokio::time::timeout(CLEANUP_SHUTDOWN, async {
+        while !slot.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("empty task slot completes before the model worker starts");
+    slot
+}
+
+async fn observe_shutdown(
+    enhanced: bool,
+    stop: StopWorker,
+    point: StopPoint,
+) -> ShutdownObservation {
+    let gate = Arc::new(PreflightGate::default());
+    let calls = Arc::new(Calls::default());
+    let endpoint = Arc::new(PendingPreflightEndpoint {
+        gate: Arc::clone(&gate),
+        calls: Arc::clone(&calls),
+    });
+    let (_home, catalog, calls) = fixture_with_endpoint(calls, endpoint, false).await;
+    let weak_catalog = Arc::downgrade(&catalog);
+    let (mode, receiver) = tokio::sync::watch::channel(enhanced);
+    let slot = completed_task_slot().await;
+    let mut worker = Some(alab_live::spawn_with_mode(
+        &catalog,
+        receiver,
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    ));
+    // These private fields belong to the actual worker under test. Retaining its
+    // JoinHandle observes a panic and permits cleanup; no task logic is copied.
+    let mut task = std::mem::replace(&mut worker.as_mut().unwrap()._task, slot);
+    let observed_task = task.abort_handle(); // Observe only; never abort as proof.
+    let reached_stop_point = match point {
+        StopPoint::BeforeStart => true,
+        StopPoint::DuringPreflight => tokio::time::timeout(CLEANUP_SHUTDOWN, async {
+            while gate.entered.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                gate.started.notified().await;
+            }
+        })
+        .await
+        .is_ok(),
+    };
+    match stop {
+        StopWorker::Shutdown => worker.as_ref().unwrap().shutdown(),
+        StopWorker::Drop => drop(worker.take()),
+    }
+    drop(catalog);
+
+    // JoinHandle waiting is cancel-safe. Snapshot all expected RED properties
+    // while the endpoint gate remains closed, without panicking before cleanup.
+    let early_join = tokio::time::timeout(OBSERVE_SHUTDOWN, &mut task).await.ok();
+    let mut observation = ShutdownObservation {
+        enhanced,
+        stop,
+        point,
+        reached_stop_point,
+        entered: gate.entered.load(std::sync::atomic::Ordering::SeqCst),
+        dropped_while_held: gate.dropped.load(std::sync::atomic::Ordering::SeqCst),
+        gate_held: !gate.release.is_cancelled(),
+        catalog_released: weak_catalog.upgrade().is_none(),
+        task_finished: observed_task.is_finished(),
+        calls_while_held: calls.log(),
+        clean_join: false,
+        forced_cleanup: false,
+        final_observer_drops: 0,
+    };
+
+    // Old source is still awaiting preflight. Release it and join before any
+    // expected failure, so the regression cannot leave that worker running.
+    gate.release.cancel();
+    observation.clean_join = match early_join {
+        Some(result) => result.is_ok(),
+        None => match tokio::time::timeout(CLEANUP_SHUTDOWN, &mut task).await {
+            Ok(result) => result.is_ok(),
+            Err(_) => {
+                // Abnormal custody fallback only, after the immutable snapshot.
+                // Forced cleanup can never turn the contract green.
+                observation.forced_cleanup = true;
+                task.abort();
+                tokio::time::timeout(CLEANUP_SHUTDOWN, &mut task)
+                    .await
+                    .expect("model worker cleanup abort/reap deadline")
+                    .expect_err("forced cleanup cancels the model worker");
+                false
+            }
+        },
+    };
+    observation.final_observer_drops = gate.dropped.load(std::sync::atomic::Ordering::SeqCst);
+    drop(worker);
+    drop(mode);
+    observation
+}
+
+fn assert_shutdown_observation(observation: &ShutdownObservation) {
+    let case = (observation.enhanced, observation.stop, observation.point);
+    assert!(observation.clean_join, "case {case:?}: {observation:?}");
+    assert!(!observation.forced_cleanup, "{observation:?}");
+    assert!(observation.reached_stop_point, "{observation:?}");
+    assert!(observation.gate_held, "{observation:?}");
+    assert!(observation.calls_while_held.is_empty(), "{observation:?}");
+    let expected_observers = match observation.point {
+        StopPoint::BeforeStart => 0,
+        StopPoint::DuringPreflight => 1,
+    };
+    assert_eq!(observation.entered, expected_observers, "{observation:?}");
+    assert_eq!(
+        observation.final_observer_drops, expected_observers,
+        "cleanup leaves no preflight observer: {observation:?}"
+    );
+    // Expected old-source RED follows actual preflight and clean task custody.
+    assert_eq!(
+        observation.dropped_while_held, expected_observers,
+        "shutdown drops its observer without waiting for source readiness: {observation:?}"
+    );
+    assert!(observation.catalog_released, "{observation:?}");
+    assert!(observation.task_finished, "{observation:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_worker_shutdown_releases_pending_preflight_in_both_modes() {
+    let mut observations = Vec::new();
+    for enhanced in [true, false] {
+        observations
+            .push(observe_shutdown(enhanced, StopWorker::Shutdown, StopPoint::BeforeStart).await);
+        observations.push(
+            observe_shutdown(enhanced, StopWorker::Shutdown, StopPoint::DuringPreflight).await,
+        );
+    }
+    for observation in observations {
+        assert_shutdown_observation(&observation);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_worker_drop_releases_pending_preflight_in_both_modes() {
+    let mut observations = Vec::new();
+    for enhanced in [true, false] {
+        observations
+            .push(observe_shutdown(enhanced, StopWorker::Drop, StopPoint::DuringPreflight).await);
+    }
+    for observation in observations {
+        assert_shutdown_observation(&observation);
+    }
 }

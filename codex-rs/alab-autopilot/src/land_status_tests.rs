@@ -241,7 +241,7 @@ async fn a_judged_yield_names_its_legs_and_counts() {
         &h,
         "the-yield",
         true,
-        "Nothing left: merged, but the lexer is not landed.\nNEEDS YOU: the signing key password",
+        "Nothing left: merged, but the lexer is not landed.\nNEEDS YOU: the signing permission",
     )
     .await;
     let read = LandRead {

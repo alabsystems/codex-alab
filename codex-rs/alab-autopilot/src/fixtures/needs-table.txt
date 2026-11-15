@@ -1,9 +1,12 @@
-# PORTED VERBATIM from aterm (crates/aterm-agent/src/supervise/policy/fixtures/
-# needs-table.txt): byte for byte aterm main 66894933d2's (one need a line: 93de0197f9), with
-# aterm `8d270de041`'s rows for a bare head its clause has for subject, as aterm `aafade09ee`
-# narrowed them (the block at the end), after it, for codex-alab's port of the NEEDS YOU reader
-# (alab-autopilot/src/needs.rs; `clean_defense` is in alab-autopilot/src/words.rs and
-# `land_open_words` in alab-autopilot/src/open_work.rs, where aterm's turn_end.rs holds both).
+# PORTED from aterm (crates/aterm-agent/src/supervise/policy/fixtures/needs-table.txt): aterm
+# main 66894933d2's rows (one need a line: 93de0197f9), with aterm `8d270de041`'s rows for a bare
+# head its clause has for subject, as aterm `aafade09ee` narrowed them (the block at the end),
+# after it, for codex-alab's port of the NEEDS YOU reader (alab-autopilot/src/needs.rs;
+# `clean_defense` is in alab-autopilot/src/words.rs and `land_open_words` in
+# alab-autopilot/src/open_work.rs, where aterm's turn_end.rs holds both). ONE DEPARTURE (owner,
+# 2026-11-12): a credential is no person's need (`persons_needs`, which codex-alab's
+# `clean_defense` reads), so aterm's rows whose need asks for a credential ask a person's
+# permission, approval or grant here (notary rows: an auditor), the grammar each row tests kept.
 #
 # NEEDS TABLE: what the NEEDS YOU reader (`needs_you`, `says_no_needs` in
 # supervise/policy/needs.rs) and Land's whole reading of a reply
@@ -112,7 +115,7 @@ NONE || Nothing left: all on origin/main.\nNEEDS YOU: none
 NONE || Nothing left: all on origin/main.\nNEEDS YOU: nothing, everything is merged.
 NEED publish the crate || NEEDS YOU: n/a — publish the crate.\nNothing left: all on origin/main.
 NEED the key || NEEDS YOU: no action except the key.\nNothing left: all on origin/main.
-NEED signing key || NEEDS YOU: no code changes, only the signing key.\nNothing left: all on origin/main.
+NEED signing approval || NEEDS YOU: no code changes, only the signing approval.\nNothing left: all on origin/main.
 NEED publish the crate || NEEDS YOU: no — publish the crate.\nNothing left: all on origin/main.
 NEED the key || NEEDS YOU: none (the key, eventually).\nNothing left: all on origin/main.
 NEED the key || NEEDS YOU: none except the key.\nNothing left: all on origin/main.
@@ -123,7 +126,7 @@ NEED publishing || NEEDS YOU: none, other than publishing.\nNothing left: all on
 NEED the key || NEEDS YOU: none, save the key.\nNothing left: all on origin/main.
 NEED the key || NEEDS YOU: none, though the key expires soon.\nNothing left: all on origin/main.
 NEED publish the crate || NEEDS YOU: none; publish the crate when convenient.\nNothing left: all on origin/main.
-NEED signing key || NEEDS YOU: none\n- the signing key\nNothing left: all on origin/main.
+NEED signing approval || NEEDS YOU: none\n- the signing approval\nNothing left: all on origin/main.
 NEED the key || NEEDS YOU: nothing besides the key.\nNothing left: all on origin/main.
 NEED the key || NEEDS YOU: nothing blocking; the key is optional but needed for release.\nNothing left: all on origin/main.
 NEED the key || NEEDS YOU: nothing but the key.\nNothing left: all on origin/main.
@@ -136,10 +139,10 @@ NEED the key || NEEDS YOU: nothing today, the key tomorrow.\nNothing left: all o
 NEED the key || NEEDS YOU: nothing urgent; the key when you can.\nNothing left: all on origin/main.
 NEED the key || NEEDS YOU: nothing yet; the key later.\nNothing left: all on origin/main.
 NEED the key || NEEDS YOU: nothing — but please rotate the key.\nNothing left: all on origin/main.
-NEED signing key || NEEDS YOU: nothing — only the signing key.\nNothing left: all on origin/main.
+NEED signing approval || NEEDS YOU: nothing — only the signing approval.\nNothing left: all on origin/main.
 NEED publish the crate || NEEDS YOU: nothing — please publish the crate.\nNothing left: all on origin/main.
 NEED publishing the crate || NEEDS YOU: nothing — publishing the crate is yours.\nNothing left: all on origin/main.
-NEED crates.io token || NEEDS YOU: nothing, apart from the crates.io token.\nNothing left: all on origin/main.
+NEED crates.io grant || NEEDS YOU: nothing, apart from the crates.io grant.\nNothing left: all on origin/main.
 NEED the key || NEEDS YOU: nothing, apart from the key.\nNothing left: all on origin/main.
 NEED publishing the crate || NEEDS YOU: nothing, aside from publishing the crate.\nNothing left: all on origin/main.
 NEED key || NEEDS YOU: nothing, but the tag needs your key.\nNothing left: all on origin/main.
@@ -163,7 +166,7 @@ NEED the key || Nothing left: all on origin/main.\n**NEEDS YOU (owner):** the ke
 NEED the key || Nothing left: all on origin/main.\n**NEEDS YOU** — the key.
 NEED the key || Nothing left: all on origin/main.\n**NEEDS YOU:** the key.
 NEED the key || Nothing left: all on origin/main.\n- NEEDS YOU: the key.
-NEED the token || Nothing left: all on origin/main.\nNEEDS YOU (2):\n- the key\n- the token
+NEED the grant || Nothing left: all on origin/main.\nNEEDS YOU (2):\n- the key\n- the grant
 NEED the key || Nothing left: all on origin/main.\nNEEDS YOU (Andrew) — the key.
 NEED publish the crate || Nothing left: all on origin/main.\nNEEDS YOU (Andrew): publish the crate.
 NEED the key || Nothing left: all on origin/main.\nNEEDS YOU (owner) — the key.
@@ -177,7 +180,7 @@ NEED publish the crate || Nothing left: all on origin/main.\nNEEDS YOU [owner]: 
 NEED the key || Nothing left: all on origin/main.\nNEEDS YOU [owner]: the key.
 NEED the key || Nothing left: all on origin/main.\nNEEDS YOU – the key.
 NEED the key || Nothing left: all on origin/main.\nNEEDS YOU — owner: the key
-NEED Apple signing key || Nothing left: all on origin/main.\nNEEDS YOU — the Apple signing key.
+NEED Apple signing approval || Nothing left: all on origin/main.\nNEEDS YOU — the Apple signing approval.
 NEED the key || Nothing left: all on origin/main.\nNEEDS YOU —\n- the key
 NEED the key || Nothing left: all on origin/main.\nNEEDS YOU → the key.
 NEED publish the crate || Nothing left: all on origin/main.\nNEEDS YOU, owner: publish the crate.
@@ -192,44 +195,44 @@ NEED the key || Nothing left: all on origin/main.\nNEEDS YOU; the key.
 NEED the key || Nothing left: all on origin/main.\nNeeds you: the key.
 
 # The needs reader's tests (needs_tests.rs), each a whole report.
-NEED the release credential || Landed the parser.\nNEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n- NEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n* NEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n+ NEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n• NEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n1. NEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n2) NEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n**NEEDS YOU:** the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n**NEEDS YOU**: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n__NEEDS YOU:__ the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n- **NEEDS YOU:** the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n*NEEDS YOU:* the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n**NEEDS YOU: the release credential**\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n  needs you: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\nNeeds You : the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\nNEEDS YOU—the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n- NEEDS YOU (Andrew) — the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n🚨 NEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n⚠️ NEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n- [ ] NEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\nNEEDS YOU -- the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\nNEEDS YOU the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n🚨 NEEDS YOU! the release credential\nNothing left: all on origin/main.
-NEED the release credential || Landed the parser.\n**Needs you** the release credential\nNothing left: all on origin/main.
-NEED signing credential || Nothing left: all on origin/main.\n**NEEDS YOU**\n- the signing credential\n- a decision on the schema
-NEED signing credential || **NEEDS YOU**\n- the signing credential\n- a decision on the schema\nNothing left: all on origin/main.
-NEED signing credential || Nothing left: all on origin/main.\nNEEDS YOU\n\n- the signing credential\n- a decision on the schema
-NEED signing credential || NEEDS YOU\n\n- the signing credential\n- a decision on the schema\nNothing left: all on origin/main.
-NEED signing credential || Nothing left: all on origin/main.\n## NEEDS YOU\n1. the signing credential\n2. a decision on the schema
-NEED signing credential || ## NEEDS YOU\n1. the signing credential\n2. a decision on the schema\nNothing left: all on origin/main.
-NEED signing credential || Nothing left: all on origin/main.\nNEEDS YOU (blocking)\n- the signing credential\n- a decision on the schema
-NEED signing credential || NEEDS YOU (blocking)\n- the signing credential\n- a decision on the schema\nNothing left: all on origin/main.
-NEED signing credential || Nothing left: all on origin/main.\nNEEDS YOU:\nThe signing credential for the release.
-NEED signing credential || NEEDS YOU:\nThe signing credential for the release.\nNothing left: all on origin/main.
-NEED signing credential || Nothing left: all on origin/main.\nNEEDS YOU:\n\nYour signing credential, to publish the\nrelease to the mirror.
-NEED signing credential || NEEDS YOU:\n\nYour signing credential, to publish the\nrelease to the mirror.\nNothing left: all on origin/main.
-NEED signing credential || Nothing left: all on origin/main.\nNEEDS YOU: nothing\nNEEDS YOU:\nThe signing credential for the release.
-NEED signing credential || NEEDS YOU: nothing\nNEEDS YOU:\nThe signing credential for the release.\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\nNEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n- NEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n* NEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n+ NEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n• NEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n1. NEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n2) NEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n**NEEDS YOU:** the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n**NEEDS YOU**: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n__NEEDS YOU:__ the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n- **NEEDS YOU:** the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n*NEEDS YOU:* the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n**NEEDS YOU: the release approval**\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n  needs you: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\nNeeds You : the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\nNEEDS YOU—the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n- NEEDS YOU (Andrew) — the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n🚨 NEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n⚠️ NEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n- [ ] NEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\nNEEDS YOU -- the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\nNEEDS YOU the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n🚨 NEEDS YOU! the release approval\nNothing left: all on origin/main.
+NEED the release approval || Landed the parser.\n**Needs you** the release approval\nNothing left: all on origin/main.
+NEED signing approval || Nothing left: all on origin/main.\n**NEEDS YOU**\n- the signing approval\n- a decision on the schema
+NEED signing approval || **NEEDS YOU**\n- the signing approval\n- a decision on the schema\nNothing left: all on origin/main.
+NEED signing approval || Nothing left: all on origin/main.\nNEEDS YOU\n\n- the signing approval\n- a decision on the schema
+NEED signing approval || NEEDS YOU\n\n- the signing approval\n- a decision on the schema\nNothing left: all on origin/main.
+NEED signing approval || Nothing left: all on origin/main.\n## NEEDS YOU\n1. the signing approval\n2. a decision on the schema
+NEED signing approval || ## NEEDS YOU\n1. the signing approval\n2. a decision on the schema\nNothing left: all on origin/main.
+NEED signing approval || Nothing left: all on origin/main.\nNEEDS YOU (blocking)\n- the signing approval\n- a decision on the schema
+NEED signing approval || NEEDS YOU (blocking)\n- the signing approval\n- a decision on the schema\nNothing left: all on origin/main.
+NEED signing approval || Nothing left: all on origin/main.\nNEEDS YOU:\nThe signing approval for the release.
+NEED signing approval || NEEDS YOU:\nThe signing approval for the release.\nNothing left: all on origin/main.
+NEED signing approval || Nothing left: all on origin/main.\nNEEDS YOU:\n\nYour signing approval, to publish the\nrelease to the mirror.
+NEED signing approval || NEEDS YOU:\n\nYour signing approval, to publish the\nrelease to the mirror.\nNothing left: all on origin/main.
+NEED signing approval || Nothing left: all on origin/main.\nNEEDS YOU: nothing\nNEEDS YOU:\nThe signing approval for the release.
+NEED signing approval || NEEDS YOU: nothing\nNEEDS YOU:\nThe signing approval for the release.\nNothing left: all on origin/main.
 NEED see the NEEDS YOU line || Nothing left: all on origin/main.\nNEEDS YOU:
 NEED see the NEEDS YOU line || Nothing left: all on origin/main.\n**NEEDS YOU**
 NEED see the NEEDS YOU line || Nothing left: all on origin/main.\nNEEDS YOU
@@ -237,29 +240,29 @@ NEED see the NEEDS YOU line || Nothing left: all on origin/main.\n🚨 NEEDS YOU
 NEED see the NEEDS YOU line || Nothing left: all on origin/main.\nNEEDS YOU (blocking)
 NEED see the NEEDS YOU line || NEEDS YOU:\nNothing left: all on origin/main.
 NEED see the NEEDS YOU line || Nothing left: all on origin/main.\nNEEDS YOU:\n```\nlog\n```
-NEED owner's release credential for the staging mirror and the signing key || NEEDS YOU: the owner's release credential for the staging\nmirror and the signing key\nNothing left: all on origin/main.
-NEED signing credential || Merged and pushed main.\nNEEDS YOU: nothing — except the signing credential\nNothing left: all on origin/main.
+NEED owner's release approval for the staging mirror and the signing approval || NEEDS YOU: the owner's release approval for the staging\nmirror and the signing approval\nNothing left: all on origin/main.
+NEED signing approval || Merged and pushed main.\nNEEDS YOU: nothing — except the signing approval\nNothing left: all on origin/main.
 NEED force-push || Merged and pushed main.\nNEEDS YOU: none; but approve the force-push to main\nNothing left: all on origin/main.
-NEED release key || Merged and pushed main.\nNEEDS YOU: nothing, other than the release key\nNothing left: all on origin/main.
-NEED signing credential || Merged and pushed main.\nNEEDS YOU: no — the signing credential, please\nNothing left: all on origin/main.
-NEED signing credential || Merged and pushed main.\nNEEDS YOU: nothing works without the signing credential\nNothing left: all on origin/main.
-NEED release credential || Merged and pushed main.\nNEEDS YOU: nothing — only the release credential to publish\nNothing left: all on origin/main.
+NEED release approval || Merged and pushed main.\nNEEDS YOU: nothing, other than the release approval\nNothing left: all on origin/main.
+NEED signing approval || Merged and pushed main.\nNEEDS YOU: no — the signing approval, please\nNothing left: all on origin/main.
+NEED signing approval || Merged and pushed main.\nNEEDS YOU: nothing works without the signing approval\nNothing left: all on origin/main.
+NEED release approval || Merged and pushed main.\nNEEDS YOU: nothing — only the release approval to publish\nNothing left: all on origin/main.
 NEED the PR || Merged and pushed main.\nNEEDS YOU: none, just approve the PR\nNothing left: all on origin/main.
-NEED signing key || Merged and pushed main.\nNEEDS YOU: none yet; I will need the signing key to publish\nNothing left: all on origin/main.
-NEED signing key || Merged and pushed main.\nNEEDS YOU: nothing from you — I still need the signing key\nNothing left: all on origin/main.
-NEED API token || Merged and pushed main.\nNEEDS YOU: none: please provide the API token\nNothing left: all on origin/main.
-NEED signing key || Merged and pushed main.\nNEEDS YOU: nothing; the signing key is required to publish\nNothing left: all on origin/main.
-NEED deploy key || Merged and pushed main.\nNEEDS YOU: nothing right now — please rotate the deploy key\nNothing left: all on origin/main.
+NEED signing approval || Merged and pushed main.\nNEEDS YOU: none yet; I will need the signing approval to publish\nNothing left: all on origin/main.
+NEED signing approval || Merged and pushed main.\nNEEDS YOU: nothing from you — I still need the signing approval\nNothing left: all on origin/main.
+NEED API grant || Merged and pushed main.\nNEEDS YOU: none: please provide the API grant\nNothing left: all on origin/main.
+NEED signing approval || Merged and pushed main.\nNEEDS YOU: nothing; the signing approval is required to publish\nNothing left: all on origin/main.
+NEED deploy approval || Merged and pushed main.\nNEEDS YOU: nothing right now — please rotate the deploy approval\nNothing left: all on origin/main.
 NEED the key || Merged and pushed main.\nNEEDS YOU: none — nothing now; I will need the key later\nNothing left: all on origin/main.
 NEED the PR || Merged and pushed main.\nNEEDS YOU: none (please approve the PR)\nNothing left: all on origin/main.
-NEED signing key || Merged and pushed main.\nNEEDS YOU: n/a — the signing key, please\nNothing left: all on origin/main.
-NEED deploy key || Merged and pushed main.\nNEEDS YOU: nothing (but please rotate the deploy key)\nNothing left: all on origin/main.
-NEED signing credential || Merged and pushed main.\nNEEDS YOU: no — the signing credential\nNothing left: all on origin/main.
-NEED signing key || Merged and pushed main.\nNEEDS YOU: nothing works without the signing key\nNothing left: all on origin/main.
+NEED signing approval || Merged and pushed main.\nNEEDS YOU: n/a — the signing approval, please\nNothing left: all on origin/main.
+NEED deploy approval || Merged and pushed main.\nNEEDS YOU: nothing (but please rotate the deploy approval)\nNothing left: all on origin/main.
+NEED signing approval || Merged and pushed main.\nNEEDS YOU: no — the signing approval\nNothing left: all on origin/main.
+NEED signing approval || Merged and pushed main.\nNEEDS YOU: nothing works without the signing approval\nNothing left: all on origin/main.
 NEED the key || Merged and pushed main.\nNEEDS YOU: none of the release steps can run without the key\nNothing left: all on origin/main.
 NEED the key || Merged and pushed main.\nNEEDS YOU: no access to the key\nNothing left: all on origin/main.
 NEED the tag || Merged and pushed main.\nNEEDS YOU: nothing, but the tag needs your key\nNothing left: all on origin/main.
-NEED signing key || Merged and pushed main.\nNEEDS YOU: none — except the signing key\nNothing left: all on origin/main.
+NEED signing approval || Merged and pushed main.\nNEEDS YOU: none — except the signing approval\nNothing left: all on origin/main.
 NEED the tag || Merged and pushed main.\nNEEDS YOU: nothing — only the tag push\nNothing left: all on origin/main.
 NEED release is cut || Merged and pushed main.\nNEEDS YOU: none, until the release is cut\nNothing left: all on origin/main.
 NEED the tag || Merged and pushed main.\nNEEDS YOU: nothing; once the tag is pushed it publishes\nNothing left: all on origin/main.
@@ -319,9 +322,9 @@ NONE || All landed on origin/main.\nNEEDS YOU:\n- none\nNothing left: all on ori
 NONE || All landed on origin/main.\nNEEDS YOU:\nNothing.\nNothing left: all on origin/main.
 NONE || Merged the parser and pushed main.\n```\nNEEDS YOU: the release credential\n```\nNothing left: all on origin/main.
 NONE || Merged the parser and pushed main.\n~~~\nNEEDS YOU: the release credential\n~~~\nNothing left: all on origin/main.
-NEED the release credential || Merged the parser and pushed main.\n`NEEDS YOU: the release credential`\nNothing left: all on origin/main.
-NEED the release credential || Merged the parser and pushed main.\n> NEEDS YOU: the release credential\nNothing left: all on origin/main.
-NEED the release credential || Merged the parser and pushed main.\n▎ NEEDS YOU: the release credential\nNothing left: all on origin/main.
+NEED the release approval || Merged the parser and pushed main.\n`NEEDS YOU: the release approval`\nNothing left: all on origin/main.
+NEED the release approval || Merged the parser and pushed main.\n> NEEDS YOU: the release approval\nNothing left: all on origin/main.
+NEED the release approval || Merged the parser and pushed main.\n▎ NEEDS YOU: the release approval\nNothing left: all on origin/main.
 NONE || Merged the parser and pushed main.\nThe primer says a NEEDS YOU: line reaches the person.\nNothing left: all on origin/main.
 NONE || Merged the parser and pushed main.\n“NEEDS YOU:” lines reach the person.\nNothing left: all on origin/main.
 NONE || Merged the parser and pushed main.\n⎿ NEEDS YOU: the release credential\nNothing left: all on origin/main.
@@ -329,8 +332,8 @@ NONE || Merged the parser and pushed main.\nNEEDS YOURSELF: a break\nNothing lef
 NONE || Merged the parser and pushed main.\nNEEDS YOU-know-what\nNothing left: all on origin/main.
 NONE || Merged the parser and pushed main.\nNEEDS YOU'RE here\nNothing left: all on origin/main.
 NONE || Merged the parser and pushed main.\nNEEDS YOU-related notes are in the brief.\nNothing left: all on origin/main.
-NEED The signing credential || Merged the parser and pushed main.\n> NEEDS YOU:\nThe signing credential.\nNothing left: all on origin/main.
-NEED The signing credential || Merged the parser and pushed main.\n`NEEDS YOU:`\nThe signing credential.\nNothing left: all on origin/main.
+NEED The signing approval || Merged the parser and pushed main.\n> NEEDS YOU:\nThe signing approval.\nNothing left: all on origin/main.
+NEED The signing approval || Merged the parser and pushed main.\n`NEEDS YOU:`\nThe signing approval.\nNothing left: all on origin/main.
 NONE || Merged the parser and pushed main; nothing else\nneeds you.\nNothing left: all on origin/main.
 NONE || Nothing left: all on origin/main. And nothing\nneeds you, the suites pass on main.
 NONE || Merged and pushed main; no step\nneeds you to act.\nNothing left: all on origin/main.
@@ -436,13 +439,13 @@ NONE || Landed the three commits on origin/main.\nNothing left: all on origin/ma
 NONE || Landed the three commits on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none whatsoever.
 NONE || Landed the three commits on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: no action required from you.
 NEED publish the crate || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU: publish the crate to crates.io.
-NEED sign the v1.4.0 release || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n**NEEDS YOU:** sign the v1.4.0 release with the release credential.
-NEED rotate the fabric token || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n**NEEDS YOU**: rotate the fabric token.
+NEED sign the v1.4.0 release || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n**NEEDS YOU:** sign the v1.4.0 release with the release approval.
+NEED rotate the fabric grant || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n**NEEDS YOU**: rotate the fabric grant.
 NEED approve the dependency bump || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n# NEEDS YOU: approve the dependency bump in #812
 NEED decide the API name || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n## NEEDS YOU: decide the API name (`spawn` or `start`)
 NEED grant Full Disk Access || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n### NEEDS YOU: grant Full Disk Access to the dev app
 NEED publish the crate || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n- NEEDS YOU: publish the crate
-NEED pub promote || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n* NEEDS YOU: run `pub promote` with the release credential
+NEED pub promote || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n* NEEDS YOU: run `pub promote` with the release approval
 NEED publish the crate || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU [owner]: publish the crate
 NEED sign the tag || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU [release]: sign the tag
 NEED rotate the key || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU (owner): rotate the key
@@ -452,15 +455,15 @@ NEED sign the release || Landed the parser fix on origin/main (4be1c2a).\nNothin
 NEED grant camera permission || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU - grant camera permission to the lab instance
 NEED drop macOS 13 || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU – decide whether to drop macOS 13
 NEED publish the crate || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nneeds you: publish the crate
-NEED the signing key || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNeeds you: the signing key.
+NEED the signing approval || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNeeds you: the signing approval.
 NEED approve #45 || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNeeds You: approve #45.
 NEED publish the crate || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU:\n- publish the crate\n- rotate the key
 NEED publish the crate || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n## NEEDS YOU\n- publish the crate
 NEED sign the release || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n## NEEDS YOU\n\n1. sign the release\n2. publish the crate
-NEED the crates.io token || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n### NEEDS YOU:\n* the crates.io token
+NEED the crates.io grant || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n### NEEDS YOU:\n* the crates.io grant
 NEED grant Accessibility || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n**NEEDS YOU**\n- grant Accessibility to aterm (dev).app
-NEED publish the crate || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU:\npublish the crate (the token is not on this machine).
-NEED the release credential || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU:\n\nThe release credential, to sign v1.4.0.
+NEED publish the crate || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU:\npublish the crate (the grant is not on this machine).
+NEED the release approval || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\nNEEDS YOU:\n\nThe release approval, to sign v1.4.0.
 NEED approve the force-push || Landed the parser fix on origin/main (4be1c2a).\nNothing left: all on origin/main.\n# NEEDS YOU\nApprove the force-push to the release branch.
 NEED the key || Merged the fold change and pushed main.\nNothing left: all on origin/main.\nNEEDS YOU: the key.
 NEED the theme default || Merged the fold change and pushed main.\nNothing left: all on origin/main.\nNEEDS YOU: a decision on the theme default.
@@ -471,7 +474,7 @@ NEED approve the dependency bump || Merged the fold change and pushed main.\nNot
 NEED publish the crate || Merged the fold change and pushed main.\nNothing left: all on origin/main.\nNEEDS YOU: publish the crate. Everything else is on origin/main.
 NEED publish the crate || Merged the fold change and pushed main.\nNothing left: all on origin/main. NEEDS YOU: publish the crate.
 NEED publish the crate || Merged the fold change and pushed main.\nNothing left: all on origin/main.\n- **NEEDS YOU:** publish the crate
-NEED pub promote || Merged the fold change and pushed main.\nNothing left: all on origin/main.\nNEEDS YOU: `pub promote` with the release credential
+NEED pub promote || Merged the fold change and pushed main.\nNothing left: all on origin/main.\nNEEDS YOU: `pub promote` with the release approval
 NEED Screen Recording || Merged the fold change and pushed main.\nNothing left: all on origin/main.\nNEEDS YOU: grant Screen Recording permission (only you can).
 NEED publish the crate || Merged the fold change and pushed main.\nNothing left: all on origin/main.\nNEEDS YOU: Nothing left to code; publish the crate.
 NEED the release signature || Merged the fold change and pushed main.\nNothing left: all on origin/main.\nNEEDS YOU: none of the code, just the release signature.
@@ -482,18 +485,18 @@ NEED the tag || Landed the shell integration fix on origin/main.\nNothing left: 
 NEED publish the crate || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: n/a — publish the crate.
 NEED the key || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing; the key whenever convenient.
 NEED signing || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing besides signing.
-NEED rotate the token || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none, but please rotate the token.
+NEED rotate the grant || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none, but please rotate the grant.
 NEED approving the PR || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing apart from approving the PR.
 NEED the release sign-off || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none other than the release sign-off.
 NEED a decision on the API name || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing except a decision on the API name.
 NEED publish v0.4 || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none — though you should publish v0.4.
-NEED the signing passphrase || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing, only the signing passphrase.
+NEED the signing approval || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing, only the signing approval.
 NEED tag the release || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing; when you can, tag the release.
 NEED rotate the key || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing yet, but you will need to rotate the key next week.
 NEED publish the crate || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing, all landed; please publish the crate when ready.
 NEED approve the dependency bump || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: n/a (please approve the dependency bump).
 NEED review #45 || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none - review #45 when convenient.
-NEED the crates.io token || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none (the crates.io token, if you want it published).
+NEED the crates.io grant || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none (the crates.io grant, if you want it published).
 NEED the key || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing from you except the key.
 NEED rotate the key || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none at the moment; later you will need to rotate the key.
 NEED publishing || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none — all landed, but the crate still needs publishing by you.
@@ -508,7 +511,7 @@ NEED the license sign-off || Landed the shell integration fix on origin/main.\nN
 NEED publishing the crate || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none needed beyond publishing the crate.
 NEED merge #45 || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\n**NEEDS YOU:** nothing — just merge #45 on GitHub.
 NEED the key || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\n## NEEDS YOU: none, plus the key
-NEED the signing key || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none.\n- the signing key
+NEED the signing approval || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none.\n- the signing approval
 HEADLESS publish the crate || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing\nOwner: please publish the crate.
 NEED the key || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing, just the key (it expired).
 NEED the key || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing; the key — whenever convenient.
@@ -517,7 +520,7 @@ NEED the tag push || Landed the shell integration fix on origin/main.\nNothing l
 NEED the signature || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none save the signature.
 NEED the API name || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing; you decide the API name.
 NEED approval of #45 || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing — waiting on your approval of #45.
-NEED rotate it || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing, though the token expires Friday — rotate it.
+NEED rotate it || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: nothing, though the grant expires Friday — rotate it.
 NEED publishing || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none, aside from publishing.
 NEED sign the release || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: n/a; sign the release.
 NEED the crates.io publish || Landed the shell integration fix on origin/main.\nNothing left: all on origin/main.\nNEEDS YOU: none (yet): the crates.io publish.
@@ -593,7 +596,7 @@ NEED no || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left
 NONE || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: none — tests pass on main.
 NONE || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: none; the change is on origin/main.
 # DELIBERATE: a none whose clause names a thing keeps a need.
-NEED no || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing (no secrets, no approvals).
+NEED no || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing (no grants, no approvals).
 NONE || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: No — all set.
 NONE || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing at all from you.
 NONE || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\n1. NEEDS YOU: none
@@ -601,19 +604,19 @@ NONE || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: m
 NONE || I double-checked that nothing needs you: the release workflow published it.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: none
 NONE || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: none.\nThanks!
 NEED publish || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing besides the crates.io publish.
-NEED token || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: none; I do need the crates.io token to publish.
+NEED grant || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: none; I do need the crates.io grant to publish.
 NEED tag || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: Nothing — though the tag push needs you.
 NEED sign || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing urgent — sign the release this week.
 NEED approve || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: no blockers, but approve #91 when you can.
 NEED review || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: none from the code; a review of #91.
-NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: zero code work; the notarization key.
-NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing except the notarization key.
+NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: zero code work; the hardware key.
+NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing except the hardware key.
 NEED publish || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: n/a, apart from publishing.
 NEED decide || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: none, though you may want to decide the default theme.
 NEED publish || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing (publish the crate when ready).
 NEED publish || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: — please publish the crate.
 NEED sign-off || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: no code; your sign-off on the license.
-NEED rotate || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: Nothing. Well — rotate the token.
+NEED rotate || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: Nothing. Well — rotate the grant.
 NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing apart from the key.
 NEED tag || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing other than tagging v2.1.
 NEED publish || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: nothing new; still the crates.io publish from yesterday.
@@ -631,7 +634,7 @@ NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing lef
 NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nneeds you: the key
 NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\n- [ ] **NEEDS YOU:** the key
 NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\n👉 NEEDS YOU: the key
-NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU:\nthe key, to notarize\nthe build
+NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU:\nthe key, to unlock\nthe build
 NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed. **NEEDS YOU:** the key.
 NEED key || Rebased the scroll fix and fast-forwarded main; pushed; NEEDS YOU: the key.\nNothing left: main is pushed and the worktree is removed.
 NEED key || Rebased the scroll fix and fast-forwarded main; pushed.\nNothing left: main is pushed and the worktree is removed.\nNEEDS YOU: none\nNEEDS YOU: the key
@@ -924,7 +927,7 @@ NONE || Merged and pushed.\nNothing left: all on origin/main — **NEEDS YOU:** 
 NEED the key || Merged and pushed.\nNothing left: all on origin/main; NEEDS YOU (owner): the key.
 NONE || Merged and pushed. The primer says a NEEDS YOU: line reaches the person.\nNothing left: all on origin/main.
 NONE || Merged and pushed; see `done. NEEDS YOU: x` in the brief.\nNothing left: all on origin/main.
-NEED the signing key || Merged and pushed.\nNEEDS YOU: none.\n- the signing key\nNothing left: all on origin/main.
+NEED the signing approval || Merged and pushed.\nNEEDS YOU: none.\n- the signing approval\nNothing left: all on origin/main.
 # One need a line (2026-10-22): a head whose words name a need is that one need, and a
 # list under it is the report's (the lab stub's tall reply was read as 80 needs).
 NEED the key || Merged and pushed.\nNEEDS YOU: the key\n- the tag\nNothing left: all on origin/main.
@@ -943,7 +946,7 @@ NEED except the key || Merged and pushed.\nNEEDS YOU: none\nexcept the key\nNoth
 NONE || Merged and pushed.\nNEEDS YOU: none. Nothing left: all on origin/main.\nNothing left: all on origin/main.
 HEADLESS please || Merged and pushed.\nNEEDS YOU: none\nPlease publish the crate.\nNothing left: all on origin/main.
 HEADLESS owner || Merged and pushed.\nNEEDS YOU: none\nOwner: publish the crate.\nNothing left: all on origin/main.
-NEED the release credential || Merged and pushed.\nNEEDS YOU: nothing\nNEEDS YOU: the release credential\nNothing left: all on origin/main.
+NEED the release approval || Merged and pushed.\nNEEDS YOU: nothing\nNEEDS YOU: the release approval\nNothing left: all on origin/main.
 NONE || Merged and pushed.\n**NEEDS YOU:** _none for now_\nNothing left: all on origin/main.
 # DELIBERATE: nones the needs tests once read as none, which say more than a
 # restatement: kept as needs.
@@ -983,7 +986,7 @@ NEED approval || Merged.\nNEEDS YOU: none blocking — but the prod deploy waits
 NEED the key || Merged.\nNEEDS YOU: no — the key, please\nNothing left: all of it is on the remote main branch.
 NEED signing step || Merged.\nNEEDS YOU: nothing — you have to run the signing step yourself\nNothing left: all of it is on the remote main branch.
 NEED sign the release || Merged.\nNEEDS YOU: not until you sign the release\nNothing left: all of it is on the remote main branch.
-NEED signing credential || Merged.\nNEEDS YOU: nothing works without the signing credential\nNothing left: all of it is on the remote main branch.
+NEED signing approval || Merged.\nNEEDS YOU: nothing works without the signing approval\nNothing left: all of it is on the remote main branch.
 NEED sign-off || Merged.\nNEEDS YOU: zero downtime needs your sign-off\nNothing left: all of it is on the remote main branch.
 NEED approve the deploy || Merged.\nNEEDS YOU:\n- approve the deploy\nNothing left: all of it is on the remote main branch.
 NEED approve the deploy || Merged.\nNEEDS-YOU: approve the deploy\nNothing left: all of it is on the remote main branch.
@@ -1018,7 +1021,7 @@ NONE || Merged the parser fix and pushed main.\nNEEDS YOU: nothing, you're cover
 NONE || Merged the parser fix and pushed main.\nNEEDS YOU: none; you're fine\nNothing left: all on origin/main.
 NEED tag needs your key || Merged the parser fix and pushed main.\nNEEDS YOU: nothing from my side, but the tag needs your key\nNothing left: all on origin/main.
 NEED except the key || Merged the parser fix and pushed main.\nNEEDS YOU: nothing on our part except the key\nNothing left: all on origin/main.
-NEED signing key || Merged the parser fix and pushed main.\nNEEDS YOU: no other asks than the signing key\nNothing left: all on origin/main.
+NEED signing approval || Merged the parser fix and pushed main.\nNEEDS YOU: no other asks than the signing approval\nNothing left: all on origin/main.
 NEED yours to publish || Merged the parser fix and pushed main.\nNEEDS YOU: nothing at this stage; the release is yours to publish\nNothing left: all on origin/main.
 NEED publish the crate || Merged the parser fix and pushed main.\nNEEDS YOU: none as of now — publish the crate when convenient\nNothing left: all on origin/main.
 NEED sign the release || Merged the parser fix and pushed main.\nNEEDS YOU: none — you're set to sign the release\nNothing left: all on origin/main.
@@ -1037,26 +1040,26 @@ NEED decide whether || Merged the parser and pushed main.\n> NEEDS YOU: decide w
 NEED sign the release || Merged the parser and pushed main.\n> NEEDS YOU: sign the release.\nNothing left: all of it is on origin/main.
 NEED sign the release || Merged the parser and pushed main.\n> **NEEDS YOU:** sign the release.\nNothing left: all of it is on origin/main.
 NEED sign the release || Merged the parser and pushed main.\n>> NEEDS YOU: sign the release.\nNothing left: all of it is on origin/main.
-NEED sign 3.4.0 || **Landing**\n- Pushed to main: origin/main is at `702d65d5c1`.\n\n> **NEEDS YOU:** sign 3.4.0 — the release credential is only on the desk Mac.\n\nNothing left: everything else is on origin/main.
+NEED sign 3.4.0 || **Landing**\n- Pushed to main: origin/main is at `702d65d5c1`.\n\n> **NEEDS YOU:** sign 3.4.0 — the release approval is only on the desk Mac.\n\nNothing left: everything else is on origin/main.
 NEED grant Full Disk Access || ## Landing\nMerged into main and pushed.\n\n> [!IMPORTANT]\n> NEEDS YOU: grant Full Disk Access to the lab runner on mini2.\n\nNothing left: landed on origin/main.
-NEED the signing key || Merged the parser and pushed main.\n> NEEDS YOU:\n> - the signing key\nNothing left: all of it is on origin/main.
-NEED the signing key || Merged the parser and pushed main.\n> **NEEDS YOU:**\n> The signing key for the release.\nNothing left: all of it is on origin/main.
+NEED the signing approval || Merged the parser and pushed main.\n> NEEDS YOU:\n> - the signing approval\nNothing left: all of it is on origin/main.
+NEED the signing approval || Merged the parser and pushed main.\n> **NEEDS YOU:**\n> The signing approval for the release.\nNothing left: all of it is on origin/main.
 NEED the promote to alabsystems || Merged the parser and pushed main.\nOne thing NEEDS YOU: the promote to alabsystems.\nNothing left: all of it is on origin/main.
-NEED the release credential || Merged the parser and pushed main.\nOne item NEEDS YOU: the release credential.\nNothing left: all of it is on origin/main.
+NEED the release approval || Merged the parser and pushed main.\nOne item NEEDS YOU: the release approval.\nNothing left: all of it is on origin/main.
 NEED approve the astream bump || Merged the parser and pushed main.\n`NEEDS YOU:` approve the astream bump.\nNothing left: all of it is on origin/main.
 NEED approve the astream bump || Merged the parser and pushed main.\nFor the bump, `NEEDS YOU`: approve the astream bump.\nNothing left: all of it is on origin/main.
 NEED sign the release || Merged the parser and pushed main.\nNEED YOU: sign the release.\nNothing left: all of it is on origin/main.
-NEED renew the cert || Merged the parser and pushed main.\nNEEDS YOU... renew the cert.\nNothing left: all of it is on origin/main.
-NEED renew the cert || Merged the parser and pushed main.\nNEEDS YOU… renew the cert.\nNothing left: all of it is on origin/main.
+NEED renew the lease || Merged the parser and pushed main.\nNEEDS YOU... renew the lease.\nNothing left: all of it is on origin/main.
+NEED renew the lease || Merged the parser and pushed main.\nNEEDS YOU… renew the lease.\nNothing left: all of it is on origin/main.
 NEED only you can promote || Merged the parser and pushed main.\nThis NEEDS YOU: only you can promote.\nNothing left: all of it is on origin/main.
-NEED renew the cert || Merged the parser and pushed main.\nNEEDS YOU? Yes: renew the cert.\nNothing left: all of it is on origin/main.
+NEED renew the lease || Merged the parser and pushed main.\nNEEDS YOU? Yes: renew the lease.\nNothing left: all of it is on origin/main.
 NEED sign 3.4.0 || Merged the parser and pushed main.\n- `release`: NEEDS YOU: sign 3.4.0\nNothing left: all of it is on origin/main.
-NEED release credential not on this machine || Merged the parser and pushed main.\n- `ship release`: NEEDS YOU (release credential not on this machine)\nNothing left: all of it is on origin/main.
+NEED release approval not on this machine || Merged the parser and pushed main.\n- `ship release`: NEEDS YOU (release approval not on this machine)\nNothing left: all of it is on origin/main.
 NEED the TCC grant || Merged the parser and pushed main.\nNothing left (NEEDS YOU: the TCC grant).
 NEED the TCC grant || Merged the parser and pushed main.\nNothing left: all of it is on origin/main (NEEDS YOU: the TCC grant).
-NEED the signing key || Merged the parser and pushed main.\n“NEEDS YOU: the signing key”\nNothing left: all of it is on origin/main.
+NEED the signing approval || Merged the parser and pushed main.\n“NEEDS YOU: the signing approval”\nNothing left: all of it is on origin/main.
 NEED sign the release || Merged the parser and pushed main.\nThe docs are on main, and the release NEEDS YOU: sign it, please (sign the release).\nNothing left: all of it is on origin/main.
-NEED the release credential || Merged the parser and pushed main.\n`NEEDS YOU: the release credential` (the key is only on the desk Mac).\nNothing left: all of it is on origin/main.
+NEED the release approval || Merged the parser and pushed main.\n`NEEDS YOU: the release approval` (the key is only on the desk Mac).\nNothing left: all of it is on origin/main.
 # Controls: the one mention (an article or a tick or quotation mark before
 # the token, a word naming the head after its separator), a fence, and a
 # tool's output.
@@ -1142,7 +1145,7 @@ NEED the push went through || Merged and pushed main.\nNEEDS YOU: none, the push
 NEED no release step was in scope || Merged and pushed main.\nNEEDS YOU: nothing; no release step was in scope.\nNothing left: all of it is on origin/main.
 NEED just FYI || Merged and pushed main.\nNEEDS YOU: nothing, just FYI the push was a fast-forward.\nNothing left: all of it is on origin/main.
 NEED for the record || Merged and pushed main.\nNEEDS YOU: none; for the record, origin/main is at `f582119aea`.\nNothing left: all of it is on origin/main.
-NEED no credential || Merged and pushed main.\nNEEDS YOU: none; no credential, approval or grant is needed.\nNothing left: all of it is on origin/main.
+NEED no badge || Merged and pushed main.\nNEEDS YOU: none; no badge, approval or grant is needed.\nNothing left: all of it is on origin/main.
 NEED the task is complete || Merged and pushed main.\nNEEDS YOU: none at this time; the task is complete.\nNothing left: all of it is on origin/main.
 NEED it's yours to publish || Merged and pushed main.\nNEEDS YOU: nothing; it's yours to publish.\nNothing left: all of it is on origin/main.
 NEED it's on you || Merged and pushed main.\nNEEDS YOU: nothing; it's on you to sign.\nNothing left: all of it is on origin/main.
@@ -1182,17 +1185,17 @@ HEADLESS must approve the deploy || Merged and pushed main. NEEDS YOU must appro
 NEED can you sign in to GitHub || Merged and pushed main.\nNEEDS YOU can you sign in to GitHub?\nNothing left: all on origin/main.
 NEED should I force-push main || Merged and pushed main.\nNEEDS YOU should I force-push main?\nNothing left: all on origin/main.
 NEED could you approve the deploy || Merged and pushed main.\nNEEDS YOU could you approve the deploy\nNothing left: all on origin/main.
-NEED is the release key still valid || Merged and pushed main.\nNEEDS YOU is the release key still valid? If not, rotate it.\nNothing left: all on origin/main.
+NEED is the release approval still valid || Merged and pushed main.\nNEEDS YOU is the release approval still valid? If not, rotate it.\nNothing left: all on origin/main.
 NEED can the release go out today || Merged and pushed main.\nNEEDS YOU can the release go out\ntoday?\nNothing left: all on origin/main.
-NEED is the release key still valid for the notary || Merged and pushed main.\nNEEDS YOU is the release key still\nvalid for the notary?\nNothing left: all on origin/main.
-NEED will be at the desk for the notary call || Merged and pushed main.\nNEEDS YOU will be at the desk for the notary call?\nNothing left: all on origin/main.
+NEED is the release approval still valid for the mirror || Merged and pushed main.\nNEEDS YOU is the release approval still\nvalid for the mirror?\nNothing left: all on origin/main.
+NEED will be at the desk for the auditor call || Merged and pushed main.\nNEEDS YOU will be at the desk for the auditor call?\nNothing left: all on origin/main.
 NEED is it OK to force-push main || Merged and pushed main.\nNEEDS YOU is it OK to force-push main\nNothing left: all on origin/main.
 NEED was I right to revert the pin || Merged and pushed main.\nNEEDS YOU was I right to revert the pin\nNothing left: all on origin/main.
-NEED does he have the notary password || Merged and pushed main.\nNEEDS YOU does he have the notary password\nNothing left: all on origin/main.
+NEED does he have the auditor's badge || Merged and pushed main.\nNEEDS YOU does he have the auditor's badge\nNothing left: all on origin/main.
 NEED has she signed the agreement || Merged and pushed main.\nNEEDS YOU has she signed the agreement\nNothing left: all on origin/main.
-NEED does someone hold the deploy key || Merged and pushed main.\nNEEDS YOU does someone hold the deploy key\nNothing left: all on origin/main.
-NEED is somebody at the desk for the notary || Merged and pushed main.\nNEEDS YOU is somebody at the desk for the notary\nNothing left: all on origin/main.
-NEED has anyone rotated the deploy key || Merged and pushed main.\nNEEDS YOU has anyone rotated the deploy key\nNothing left: all on origin/main.
+NEED does someone hold the deploy approval || Merged and pushed main.\nNEEDS YOU does someone hold the deploy approval\nNothing left: all on origin/main.
+NEED is somebody at the desk for the auditor || Merged and pushed main.\nNEEDS YOU is somebody at the desk for the auditor\nNothing left: all on origin/main.
+NEED has anyone rotated the deploy approval || Merged and pushed main.\nNEEDS YOU has anyone rotated the deploy approval\nNothing left: all on origin/main.
 NEED is anybody watching the release || Merged and pushed main.\nNEEDS YOU is anybody watching the release\nNothing left: all on origin/main.
 NEED does everyone agree to the freeze || Merged and pushed main.\nNEEDS YOU does everyone agree to the freeze\nNothing left: all on origin/main.
 NEED has everybody signed off on the release || Merged and pushed main.\nNEEDS YOU has everybody signed off on the release\nNothing left: all on origin/main.
@@ -1201,22 +1204,22 @@ NEED has everybody signed off on the release || Merged and pushed main.\nNEEDS Y
 NEED must approve the deploy || Merged and pushed main.\nNEEDS YOU must approve the deploy at https://example.com/deploy\nNothing left: all on origin/main.
 NEED should sign in to GitHub || Merged and pushed main.\nNEEDS YOU should sign in to GitHub (gh auth login) so I can push.\nNothing left: all on origin/main.
 NEED will need to accept the Xcode license || Merged and pushed main.\nNEEDS YOU will need to accept the Xcode license.\nNothing left: all on origin/main.
-NEED must sign the notarization agreement || Merged and pushed main.\n**NEEDS YOU** must sign the notarization agreement.\nNothing left: all on origin/main.
+NEED must sign the audit agreement || Merged and pushed main.\n**NEEDS YOU** must sign the audit agreement.\nNothing left: all on origin/main.
 NEED would need to rotate the key || Merged and pushed main.\nNEEDS YOU would need to rotate the key.\nNothing left: all on origin/main.
-NEED must provide the App Store Connect API key || Merged and pushed main.\nNEEDS YOU must provide the App Store Connect API key.\nNothing left: all on origin/main.
+NEED must provide the App Store Connect review || Merged and pushed main.\nNEEDS YOU must provide the App Store Connect review.\nNothing left: all on origin/main.
 NEED should run `gh auth login` || Merged and pushed main.\nNEEDS YOU should run `gh auth login`, then I can push.\nNothing left: all on origin/main.
 NEED can the owner sign in to GitHub || Merged and pushed main.\nNEEDS YOU can the owner sign in to GitHub\nNothing left: all on origin/main.
 NEED must log in to the Apple Developer portal || Merged and pushed main.\nNEEDS YOU must log in to the Apple Developer portal and accept the new agreement.\nNothing left: all on origin/main.
-NEED can the release go out once the notary answers || Merged and pushed main.\nNEEDS YOU can the release go out once the notary answers on\nFriday?\nNothing left: all on origin/main.
+NEED can the release go out once the auditor answers || Merged and pushed main.\nNEEDS YOU can the release go out once the auditor answers on\nFriday?\nNothing left: all on origin/main.
 NEED should the release wait for || Merged and pushed main.\nNEEDS YOU should the release wait for\nGitHub to restore Actions?\nNothing left: all on origin/main.
-NEED could the owner rotate the deploy key || Merged and pushed main.\nNEEDS YOU could the owner rotate the deploy key\nNothing left: all on origin/main.
-NEED can't push || Merged and pushed main.\nNEEDS YOU can't push: the token for alabsystems expired.\nNothing left: all on origin/main.
+NEED could the owner rotate the deploy approval || Merged and pushed main.\nNEEDS YOU could the owner rotate the deploy approval\nNothing left: all on origin/main.
+NEED can't push || Merged and pushed main.\nNEEDS YOU can't push: the grant for alabsystems expired.\nNothing left: all on origin/main.
 # A colon after the finite opens the need on it.
 NEED approve the deploy || Merged and pushed main.\nNEEDS YOU is: approve the deploy\nNothing left: all on origin/main.
 # A separator or a qualifier says the writer meant a head; an imperative's
 # base form (`have`, `do`) is no auxiliary.
 NEED can you sign in to GitHub || Merged and pushed main.\n- **NEEDS YOU:** can you sign in to GitHub\nNothing left: all on origin/main.
-NEED must rotate the deploy key || Merged and pushed main.\nNEEDS YOU — must rotate the deploy key before Friday\nNothing left: all on origin/main.
-NEED is blocked on the notary key || Merged and pushed main.\nNEEDS YOU (owner) is blocked on the notary key\nNothing left: all on origin/main.
-NEED have the notary password ready || Merged and pushed main.\nNEEDS YOU have the notary password ready\nNothing left: all on origin/main.
+NEED must rotate the deploy approval || Merged and pushed main.\nNEEDS YOU — must rotate the deploy approval before Friday\nNothing left: all on origin/main.
+NEED is blocked on the auditor key || Merged and pushed main.\nNEEDS YOU (owner) is blocked on the auditor key\nNothing left: all on origin/main.
+NEED have the auditor's badge ready || Merged and pushed main.\nNEEDS YOU have the auditor's badge ready\nNothing left: all on origin/main.
 NEED do the App Store submission || Merged and pushed main.\nNEEDS YOU do the App Store submission\nNothing left: all on origin/main.

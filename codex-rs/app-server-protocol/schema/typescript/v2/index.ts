@@ -25,6 +25,8 @@ export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotificat
 export type { AgentMessageDisplay } from "./AgentMessageDisplay";
 export type { AgentMessageModeration } from "./AgentMessageModeration";
 export type { AlabAccountSecuritySetupIdentity } from "./AlabAccountSecuritySetupIdentity";
+export type { AlabGoalPersistencePhase } from "./AlabGoalPersistencePhase";
+export type { AlabGoalRuntimeUpdatedNotification } from "./AlabGoalRuntimeUpdatedNotification";
 export type { AllowDenyRequirement } from "./AllowDenyRequirement";
 export type { AnalyticsConfig } from "./AnalyticsConfig";
 export type { AnswerAnnotation } from "./AnswerAnnotation";

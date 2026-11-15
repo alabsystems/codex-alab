@@ -414,7 +414,7 @@ fn websocket_tcp_nodelay(websocket: &WebSocketConnection) -> bool {
     let Some(ConnectionInner::Left(stream)) = &websocket.inner else {
         panic!("default connector should use Tungstenite's transport");
     };
-    let MaybeTlsStream::Plain(stream) = stream.get_ref() else {
+    let MaybeTlsStream::Plain(stream) = stream.get_ref().get_ref() else { // ALAB(recovery): inspect TCP beneath the transparent rejection adapter.
         panic!("test websocket should use a plain TCP stream");
     };
     stream.nodelay().expect("TCP_NODELAY should read")

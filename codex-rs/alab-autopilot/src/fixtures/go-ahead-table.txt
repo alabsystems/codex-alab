@@ -30,6 +30,7 @@
 #   # ...                                   a comment (the family a run of rows exercises)
 
 == park
+# A stored credential precondition gets credential@v1 before its go-ahead.
 # The incident's NEEDS YOU lines, every distinct one (the head is the pending marker; the token
 # is the word to say).
 NEEDS YOU: say "rerun the checks" when the Mac has memory to spare (the run on the merged branch was stopped for low memory and I'm not restarting it on my own).
@@ -208,6 +209,16 @@ I have nothing to free. My worktree has no build output or cache, just 487 MiB o
 Nothing has changed. The disk is below its build floor, and the build is waiting for your go-ahead.\n\nNEEDS YOU: free disk room or let the other sessions' builds finish, then say "rerun the checks" so I can build and test the upgrade fix branch, push it to main and remove the worktree.
 Nothing has changed: the disk is below the build floor, and the build is waiting for your go-ahead.\n\nNEEDS YOU: free disk room or let the other sessions' builds finish, then say "rerun the checks" so I can build and test the upgrade fix branch, push it to main and remove the worktree.
 
+# Stored credentials use the vault before answering a go-ahead.
+The rebuild needs your GitHub password, which I don't have.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
+I can't push to main without your GitHub token.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
+I can't push without credentials.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
+I haven't got the credentials for the push.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
+The build needs your GitHub token, which I don't have.\n\nNEEDS YOU: say "go" so I can rebuild the branch.
+`git push` needs your GitHub token, which I don't have.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
+The GitHub token expired, so I can't push.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
+It was rebuilt, but its tests need your GitHub token.\n\nNEEDS YOU: say "go" so I can rebuild the branch.
+
 == person
 # Only a person can give it: a sign-in, a decision to publish, physical access, a Mac restart,
 # money, a precondition only a person meets.
@@ -291,9 +302,6 @@ Waiting on the reviewer's approval before I merge my branch to main.
 NEEDS YOU: approval from the security team to merge my branch into main.
 NEEDS YOU: a reviewer's approval on my PR 812 so I can merge my branch into main.
 Waiting for sign-off by a second reviewer before I merge my branch to main.
-# A need whose work the turn's prose says only a person can unblock (2026-10-29 review 3).
-The rebuild needs your GitHub password, which I don't have.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
-I can't push to main without your GitHub token.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
 # A consent another gives, named further on, by a handle, as a giver, or with a modifier
 # between (2026-10-29 review 4).
 NEEDS YOU: approval on my PR 812 from a reviewer so I can merge my branch into main.
@@ -310,15 +318,9 @@ Waiting for sign-off from Alice before I merge my branch to main.
 # own word, its redo, its command or its cleanup (2026-10-29 review 4).
 I don't have push access to main.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
 I can't log in to GitHub, so I can't push.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
-I can't push without credentials.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
-I haven't got the credentials for the push.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
-The build needs your GitHub token, which I don't have.\n\nNEEDS YOU: say "go" so I can rebuild the branch.
-`git push` needs your GitHub token, which I don't have.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
 Removing the worktree needs the admin password, which I don't have.\n\nNEEDS YOU: say "go" so I can remove the worktree.
 I'm not logged in to GitHub, so the push can't run.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
 The push failed: operation not permitted.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
-The GitHub token expired, so I can't push.\n\nNEEDS YOU: say "go" so I can rebuild the branch and push it to main.
-It was rebuilt, but its tests need your GitHub token.\n\nNEEDS YOU: say "go" so I can rebuild the branch.
 
 # A destructive act in the passive, future or conditional, or as `overwritten` (2026-10-29
 # review 2).

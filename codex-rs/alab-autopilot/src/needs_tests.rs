@@ -17,25 +17,25 @@ use super::*;
 #[test]
 fn a_needs_line_is_read_under_every_list_marker_and_emphasis() {
     for line in [
-        "NEEDS YOU: the release credential",
-        "- NEEDS YOU: the release credential",
-        "* NEEDS YOU: the release credential",
-        "+ NEEDS YOU: the release credential",
-        "• NEEDS YOU: the release credential",
-        "1. NEEDS YOU: the release credential",
-        "2) NEEDS YOU: the release credential",
-        "**NEEDS YOU:** the release credential",
-        "**NEEDS YOU**: the release credential",
-        "__NEEDS YOU:__ the release credential",
-        "- **NEEDS YOU:** the release credential",
-        "*NEEDS YOU:* the release credential",
-        "**NEEDS YOU: the release credential**",
-        "  needs you: the release credential",
-        "Needs You : the release credential",
+        "NEEDS YOU: the release permission",
+        "- NEEDS YOU: the release permission",
+        "* NEEDS YOU: the release permission",
+        "+ NEEDS YOU: the release permission",
+        "• NEEDS YOU: the release permission",
+        "1. NEEDS YOU: the release permission",
+        "2) NEEDS YOU: the release permission",
+        "**NEEDS YOU:** the release permission",
+        "**NEEDS YOU**: the release permission",
+        "__NEEDS YOU:__ the release permission",
+        "- **NEEDS YOU:** the release permission",
+        "*NEEDS YOU:* the release permission",
+        "**NEEDS YOU: the release permission**",
+        "  needs you: the release permission",
+        "Needs You : the release permission",
     ] {
         assert_eq!(
             needs_you(&format!("Landed the parser.\n{line}")),
-            ["the release credential"],
+            ["the release permission"],
             "{line:?}"
         );
     }
@@ -44,12 +44,12 @@ fn a_needs_line_is_read_under_every_list_marker_and_emphasis() {
 #[test]
 fn a_needs_line_in_a_fence_or_named_as_a_thing_is_no_need() {
     for tail in [
-        "```\nNEEDS YOU: the release credential\n```",
-        "~~~\nNEEDS YOU: the release credential\n~~~",
+        "```\nNEEDS YOU: the release permission\n```",
+        "~~~\nNEEDS YOU: the release permission\n~~~",
         "The primer says a NEEDS YOU: line reaches the person.",
         "NEEDS YOUR review, as the brief says.",
         "“NEEDS YOU:” lines reach the person.",
-        "⎿ NEEDS YOU: the release credential",
+        "⎿ NEEDS YOU: the release permission",
         "Nothing left: no NEEDS YOU, no open work.",
         "See `done. NEEDS YOU: x` in the brief.",
     ] {
@@ -74,7 +74,7 @@ fn a_needs_line_in_a_fence_or_named_as_a_thing_is_no_need() {
         ("```markdown", "~~~", "````"),
     ] {
         let tail = format!(
-            "{open}\n{inner}\nNEEDS YOU: the release credential\n\
+            "{open}\n{inner}\nNEEDS YOU: the release permission\n\
              Nothing left: all of it is on origin/main.\n{close}"
         );
         assert!(needs_you(&tail).is_empty(), "{tail:?}");
@@ -144,28 +144,28 @@ fn a_needs_token_a_lines_start_names_is_no_need() {
         );
     }
     for tail in [
-        "Landed the parser.\nNEEDS YOU: the release credential",
-        "Everything is on main. NEEDS YOU: the release credential",
-        "Here is what I need before I can start\nNEEDS YOU: the release credential",
-        "The deploy is starting\nNEEDS YOU: the release credential",
-        "Starting now. NEEDS YOU: the release credential",
-        "The deploy is starting; NEEDS YOU: the release credential",
-        "Starting NEEDS YOU: the release credential",
-        "NEEDS YOU the release credential",
+        "Landed the parser.\nNEEDS YOU: the release permission",
+        "Everything is on main. NEEDS YOU: the release permission",
+        "Here is what I need before I can start\nNEEDS YOU: the release permission",
+        "The deploy is starting\nNEEDS YOU: the release permission",
+        "Starting now. NEEDS YOU: the release permission",
+        "The deploy is starting; NEEDS YOU: the release permission",
+        "Starting NEEDS YOU: the release permission",
+        "NEEDS YOU the release permission",
     ] {
-        assert_eq!(needs_you(tail), ["the release credential"], "{tail:?}");
+        assert_eq!(needs_you(tail), ["the release permission"], "{tail:?}");
     }
     // A small `and` after the token below the text's first row is a need.
     assert_eq!(
-        needs_you("Implemented the parser.\nNEEDS YOU: and the release credential"),
-        ["and the release credential"]
+        needs_you("Implemented the parser.\nNEEDS YOU: and the release permission"),
+        ["and the release permission"]
     );
 }
 
 #[test]
 fn a_first_row_and_names_a_need_as_any_other_row() {
     for need in [
-        "and the release credential",
+        "and the release permission",
         "and your approval to deploy",
         "and carry on with the deployment after you grant access",
     ] {
@@ -183,12 +183,12 @@ fn a_first_row_and_names_a_need_as_any_other_row() {
 #[test]
 fn a_first_row_and_keeps_a_need_standing_beside_a_defense() {
     let mut needs = crate::decide::Needs::default();
-    needs.fold(Some("NEEDS YOU: the signing key"));
-    assert_eq!(needs.standing, ["the signing key"]);
+    needs.fold(Some("NEEDS YOU: the signing approval"));
+    assert_eq!(needs.standing, ["the signing approval"]);
     needs.fold(Some(
-        "NEEDS YOU: and the release credential\n\nNothing left: all work is committed and pushed to origin/main.",
+        "NEEDS YOU: and the release permission\n\nNothing left: all work is committed and pushed to origin/main.",
     ));
-    assert_eq!(needs.standing, ["and the release credential"]);
+    assert_eq!(needs.standing, ["and the release permission"]);
     assert!(needs.ack_owed());
     needs.fold(Some("NEEDS YOU: nothing"));
     assert_eq!(needs, crate::decide::Needs::default());
@@ -201,17 +201,17 @@ fn a_first_row_and_keeps_a_need_standing_beside_a_defense() {
 #[test]
 fn a_needs_line_quoted_ticked_or_inside_a_sentence_is_a_need() {
     for tail in [
-        "`NEEDS YOU: the release credential`",
-        "> NEEDS YOU: the release credential",
-        "▎ NEEDS YOU: the release credential",
-        "> **NEEDS YOU:** the release credential",
-        "`NEEDS YOU:` the release credential",
-        "NEED YOU: the release credential",
-        "NEEDS YOU... the release credential",
-        "One thing NEEDS YOU: the release credential",
-        "- `release`: NEEDS YOU: the release credential",
+        "`NEEDS YOU: the release permission`",
+        "> NEEDS YOU: the release permission",
+        "▎ NEEDS YOU: the release permission",
+        "> **NEEDS YOU:** the release permission",
+        "`NEEDS YOU:` the release permission",
+        "NEED YOU: the release permission",
+        "NEEDS YOU... the release permission",
+        "One thing NEEDS YOU: the release permission",
+        "- `release`: NEEDS YOU: the release permission",
     ] {
-        assert_eq!(needs_you(tail), ["the release credential"], "{tail:?}");
+        assert_eq!(needs_you(tail), ["the release permission"], "{tail:?}");
         assert!(!says_no_needs(tail), "{tail:?}");
     }
     assert_eq!(
@@ -222,17 +222,17 @@ fn a_needs_line_quoted_ticked_or_inside_a_sentence_is_a_need() {
 
 #[test]
 fn needs_are_one_a_line_each_once_and_the_items_under_a_bare_head() {
-    let tail = "Done with the parser.\nNEEDS YOU: the release credential\nNEEDS YOU: a \
-                decision on the schema\nNEEDS YOU: the release credential";
+    let tail = "Done with the parser.\nNEEDS YOU: the release permission\nNEEDS YOU: a \
+                decision on the schema\nNEEDS YOU: the release permission";
     assert_eq!(
         needs_you(tail),
-        ["the release credential", "a decision on the schema"]
+        ["the release permission", "a decision on the schema"]
     );
-    let bare = "NEEDS YOU:\n\n- the release credential\n- a decision on the schema\nAll else \
+    let bare = "NEEDS YOU:\n\n- the release permission\n- a decision on the schema\nAll else \
                 is landed.";
     assert_eq!(
         needs_you(bare),
-        ["the release credential", "a decision on the schema"]
+        ["the release permission", "a decision on the schema"]
     );
     assert_eq!(without_needs(bare), "All else is landed.");
 }
@@ -293,20 +293,20 @@ fn a_bare_head_names_the_paragraph_under_it_or_a_need_it_cannot_read() {
     let defense = "Nothing left: every branch is merged into the remote main branch and pushed.";
     for (said, want) in [
         (
-            "NEEDS YOU:\nThe release needs your signing credential to publish.",
-            "The release needs your signing credential to publish.",
+            "NEEDS YOU:\nThe release needs your signing permission to publish.",
+            "The release needs your signing permission to publish.",
         ),
         (
-            "NEEDS YOU:\n\nYour signing credential, to publish the\nrelease to the mirror.",
-            "Your signing credential, to publish the release to the mirror.",
+            "NEEDS YOU:\n\nYour signing permission, to publish the\nrelease to the mirror.",
+            "Your signing permission, to publish the release to the mirror.",
         ),
         (
-            "**NEEDS YOU:**\nThe signing credential for the release.",
-            "The signing credential for the release.",
+            "**NEEDS YOU:**\nThe signing permission for the release.",
+            "The signing permission for the release.",
         ),
         (
-            "NEEDS YOU: nothing\nNEEDS YOU:\nThe signing credential for the release.",
-            "The signing credential for the release.",
+            "NEEDS YOU: nothing\nNEEDS YOU:\nThe signing permission for the release.",
+            "The signing permission for the release.",
         ),
     ] {
         for tail in [format!("{defense}\n{said}"), format!("{said}\n{defense}")] {
@@ -332,14 +332,14 @@ fn a_bare_head_names_the_paragraph_under_it_or_a_need_it_cannot_read() {
     assert!(says_no_needs("Landed.\nNEEDS YOU:\n- none"));
     // A quoted or ticked bare head takes its paragraph too.
     for tail in [
-        format!("{defense}\n> NEEDS YOU:\nThe signing credential."),
-        format!("{defense}\n`NEEDS YOU:`\nThe signing credential."),
+        format!("{defense}\n> NEEDS YOU:\nThe signing permission."),
+        format!("{defense}\n`NEEDS YOU:`\nThe signing permission."),
     ] {
-        assert_eq!(needs_you(&tail), ["The signing credential."], "{tail:?}");
+        assert_eq!(needs_you(&tail), ["The signing permission."], "{tail:?}");
     }
     assert_eq!(
-        needs_you("NEEDS YOU:\n- the credential\nAll else is landed."),
-        ["the credential"]
+        needs_you("NEEDS YOU:\n- the permission\nAll else is landed."),
+        ["the permission"]
     );
 }
 
@@ -351,16 +351,16 @@ fn a_bare_head_names_the_paragraph_under_it_or_a_need_it_cannot_read() {
 #[test]
 fn a_heading_or_a_dash_opens_either_head() {
     for line in [
-        "## NEEDS YOU: the signing credential for the release",
-        "### NEEDS YOU — the signing credential for the release",
-        "NEEDS YOU — the signing credential for the release",
-        "NEEDS YOU – the signing credential for the release",
-        "NEEDS YOU - the signing credential for the release",
-        "**NEEDS YOU** — the signing credential for the release",
+        "## NEEDS YOU: the signing permission for the release",
+        "### NEEDS YOU — the signing permission for the release",
+        "NEEDS YOU — the signing permission for the release",
+        "NEEDS YOU – the signing permission for the release",
+        "NEEDS YOU - the signing permission for the release",
+        "**NEEDS YOU** — the signing permission for the release",
     ] {
         assert_eq!(
             needs_you(&format!("Landed.\n{line}")),
-            ["the signing credential for the release"],
+            ["the signing permission for the release"],
             "{line:?}"
         );
     }
@@ -405,34 +405,34 @@ fn a_heading_or_a_dash_opens_either_head() {
 fn every_head_form_names_its_need_beside_a_defense() {
     use crate::words::clean_defense;
     let defense = "Nothing left: every branch is merged into the remote main branch and pushed.";
-    let two = ["the signing credential", "a decision on the schema"];
+    let two = ["the signing permission", "a decision on the schema"];
     let forms: [(&str, &[&str]); 13] = [
         (
-            "**NEEDS YOU**\n- the signing credential\n- a decision on the schema",
+            "**NEEDS YOU**\n- the signing permission\n- a decision on the schema",
             &two,
         ),
         (
-            "NEEDS YOU\n\n- the signing credential\n- a decision on the schema",
+            "NEEDS YOU\n\n- the signing permission\n- a decision on the schema",
             &two,
         ),
         (
-            "## NEEDS YOU\n1. the signing credential\n2. a decision on the schema",
+            "## NEEDS YOU\n1. the signing permission\n2. a decision on the schema",
             &two,
         ),
-        ("🚨 NEEDS YOU: the signing credential", &two[..1]),
-        ("⚠️ NEEDS YOU: the signing credential", &two[..1]),
-        ("- ⚠️ **NEEDS YOU:** the signing credential", &two[..1]),
-        ("NEEDS YOU (blocking): the signing credential", &two[..1]),
+        ("🚨 NEEDS YOU: the signing permission", &two[..1]),
+        ("⚠️ NEEDS YOU: the signing permission", &two[..1]),
+        ("- ⚠️ **NEEDS YOU:** the signing permission", &two[..1]),
+        ("NEEDS YOU (blocking): the signing permission", &two[..1]),
         (
-            "**NEEDS YOU (blocking):** the signing credential",
+            "**NEEDS YOU (blocking):** the signing permission",
             &two[..1],
         ),
-        ("- [ ] NEEDS YOU: the signing credential", &two[..1]),
-        ("- [x] NEEDS YOU: the signing credential", &two[..1]),
-        ("NEEDS YOU -- the signing credential", &two[..1]),
-        ("NEEDS YOU the signing credential", &two[..1]),
+        ("- [ ] NEEDS YOU: the signing permission", &two[..1]),
+        ("- [x] NEEDS YOU: the signing permission", &two[..1]),
+        ("NEEDS YOU -- the signing permission", &two[..1]),
+        ("NEEDS YOU the signing permission", &two[..1]),
         (
-            "NEEDS YOU (blocking)\n- the signing credential\n- a decision on the schema",
+            "NEEDS YOU (blocking)\n- the signing permission\n- a decision on the schema",
             &two,
         ),
     ];
@@ -474,15 +474,15 @@ fn every_head_form_names_its_need_beside_a_defense() {
 
 #[test]
 fn a_wrapped_need_is_joined_and_a_new_sentence_is_not() {
-    let wrapped = "NEEDS YOU: the owner's release credential for the staging\nmirror and the \
+    let wrapped = "NEEDS YOU: the owner's release permission for the staging\nmirror and the \
                    signing key\nEverything else is on main.";
     assert_eq!(
         needs_you(wrapped),
-        ["the owner's release credential for the staging mirror and the signing key"]
+        ["the owner's release permission for the staging mirror and the signing key"]
     );
     assert_eq!(without_needs(wrapped), "Everything else is on main.");
-    let stops = "NEEDS YOU: the release credential.\nthen the tag goes out";
-    assert_eq!(needs_you(stops), ["the release credential."]);
+    let stops = "NEEDS YOU: the release permission.\nthen the tag goes out";
+    assert_eq!(needs_you(stops), ["the release permission."]);
     assert_eq!(without_needs(stops), "then the tag goes out");
 }
 
@@ -596,18 +596,18 @@ fn prose_wrapped_before_needs_you_is_no_head() {
 #[test]
 fn a_dashed_or_qualified_head_still_names_a_need() {
     for line in [
-        "NEEDS YOU — the release credential",
-        "NEEDS YOU – the release credential",
-        "NEEDS YOU - the release credential",
-        "NEEDS YOU—the release credential",
-        "**NEEDS YOU** — the release credential",
-        "NEEDS YOU (owner): the release credential",
-        "**NEEDS YOU (owner):** the release credential",
-        "- NEEDS YOU (Andrew) — the release credential",
+        "NEEDS YOU — the release permission",
+        "NEEDS YOU – the release permission",
+        "NEEDS YOU - the release permission",
+        "NEEDS YOU—the release permission",
+        "**NEEDS YOU** — the release permission",
+        "NEEDS YOU (owner): the release permission",
+        "**NEEDS YOU (owner):** the release permission",
+        "- NEEDS YOU (Andrew) — the release permission",
     ] {
         assert_eq!(
             needs_you(&format!("Landed the parser.\n{line}")),
-            ["the release credential"],
+            ["the release permission"],
             "{line:?}"
         );
     }
@@ -622,12 +622,12 @@ fn a_need_is_sanitized_and_cut() {
     assert!(need.chars().count() <= NEED_CHARS, "{need}");
     assert!(need.ends_with('…'), "{need}");
     assert_eq!(
-        needs_you("NEEDS YOU: the\u{7}  release\u{200B}\tcredential\u{202E}  **"),
-        ["the release credential"]
+        needs_you("NEEDS YOU: the\u{7}  release\u{200B}\tpermission\u{202E}  **"),
+        ["the release permission"]
     );
     assert_eq!(
-        needs_you("NEEDS YOU: \u{200B}\nNEEDS YOU: the release credential"),
-        ["the release credential"]
+        needs_you("NEEDS YOU: \u{200B}\nNEEDS YOU: the release permission"),
+        ["the release permission"]
     );
 }
 
@@ -656,7 +656,7 @@ fn the_defense_line_is_read_by_the_same_line_test() {
 
 #[test]
 fn the_defense_body_drops_the_head_and_the_needs() {
-    let tail = "Merged.\nNothing left: the WIP branch is parked\nNEEDS YOU: the credential";
+    let tail = "Merged.\nNothing left: the WIP branch is parked\nNEEDS YOU: the permission";
     assert_eq!(defense_body(tail), "Merged.\nThe WIP branch is parked");
 }
 
@@ -836,7 +836,7 @@ fn a_none_in_common_words_reads_as_none() {
         "no — the key, please",
         "nothing — you have to run the signing step yourself",
         "not until you sign the release",
-        "nothing works without the signing credential",
+        "nothing works without the signing permission",
         "zero downtime needs your sign-off",
     ] {
         let tail = format!("Merged.\nNEEDS YOU: {x}\n{defense}");
@@ -893,7 +893,7 @@ fn a_need_that_names_an_irreversible_act_destroys() {
         needs_destroy(&["approval to Force-push the release branch".to_string()]),
         Some("force-push")
     );
-    // NEGATIVE CONTROL: a need for a credential destroys nothing.
+    // NEGATIVE CONTROL: a need for a permission destroys nothing.
     assert_eq!(
         needs_destroy(&["the signing key password".to_string()]),
         None
@@ -1056,8 +1056,8 @@ fn a_needs_you_named_as_a_noun_in_another_clause_is_no_need() {
             "sign the release",
         ),
         (
-            "One thing NEEDS YOU: the release credential",
-            "the release credential",
+            "One thing NEEDS YOU: the release permission",
+            "the release permission",
         ),
         ("The release NEEDS YOU (owner): approve it", "approve it"),
         ("The release NEEDS YOU, Andrew: approve it", "approve it"),
@@ -1077,12 +1077,12 @@ fn a_needs_you_named_as_a_noun_in_another_clause_is_no_need() {
             "the password).",
         ),
         (
-            "- `ship release`: NEEDS YOU (release credential not on this machine)",
-            "release credential not on this machine",
+            "- `ship release`: NEEDS YOU (release permission not on this machine)",
+            "release permission not on this machine",
         ),
         (
-            "Merged the parser and pushed main.\nNEEDS YOU (owner) the release credential",
-            "the release credential",
+            "Merged the parser and pushed main.\nNEEDS YOU (owner) the release permission",
+            "the release permission",
         ),
         (
             "Here is the\nNEEDS YOU (owner):\n\n- sign in to GitHub",
@@ -1424,7 +1424,7 @@ fn a_bare_head_its_clause_has_for_subject_is_prose_not_a_need() {
             "Merged the parser. NEEDS YOU: is blocked on the notary key",
             "is blocked on the notary key",
         ),
-        ("NEEDS YOU the release credential", "the release credential"),
+        ("NEEDS YOU the release permission", "the release permission"),
         ("NEEDS-YOU approve the deploy", "approve the deploy"),
         (
             "NEEDS YOU have the notary password ready",

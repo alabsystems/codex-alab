@@ -173,12 +173,12 @@ class ProofObservationTests(unittest.TestCase):
         (self.target / "release").mkdir(parents=True)
         (self.package / "bin").mkdir(parents=True)
         (self.target / "release/codex").write_bytes(b"compiled code")
-        (self.package / "bin/codex").write_bytes(b"stripped compiled code")
+        (self.package / "bin/codex").write_bytes(b"compiled code")
 
     def record(self, binaries=("codex",)):
         RECORD(self.compiler, self.report, "b" * 40, self.target, self.package, binaries)
 
-    def test_observation_binds_source_report_and_both_forms_of_each_binary(self):
+    def test_observation_binds_source_report_and_unchanged_binary_copy(self):
         self.record()
         result = json.loads(self.compiler.read_text())["verification"]
         self.assertEqual(result["source"], "b" * 40)
@@ -187,7 +187,7 @@ class ProofObservationTests(unittest.TestCase):
         self.assertEqual(result["report_sha256"], hashlib.sha256(self.report.read_bytes()).hexdigest())
         self.assertEqual(result["binaries"]["codex"], {
             "built_sha256": hashlib.sha256(b"compiled code").hexdigest(),
-            "packaged_sha256": hashlib.sha256(b"stripped compiled code").hexdigest(),
+            "packaged_sha256": hashlib.sha256(b"compiled code").hexdigest(),
         })
         self.assertIn("no verifier authority", result["authority"])
         self.assertNotIn(str(self.root), json.dumps(result))
@@ -203,7 +203,7 @@ class ProofObservationTests(unittest.TestCase):
         binaries = ("codex", "codex-code-mode-host", "codex-exec-server")
         for binary in binaries[1:]:
             (self.target / "release" / binary).write_bytes((binary + " compiled").encode())
-            (self.package / "bin" / binary).write_bytes((binary + " stripped").encode())
+            (self.package / "bin" / binary).write_bytes((binary + " compiled").encode())
         self.record(binaries)
         observed = json.loads(self.compiler.read_text())["verification"]["binaries"]
         self.assertEqual(set(observed), set(binaries))
@@ -212,6 +212,24 @@ class ProofObservationTests(unittest.TestCase):
                 (self.target / "release" / binary).read_bytes()).hexdigest())
             self.assertEqual(observed[binary]["packaged_sha256"], hashlib.sha256(
                 (self.package / "bin" / binary).read_bytes()).hexdigest())
+
+    def test_transformed_or_replaced_shipping_bytes_leave_the_record_unchanged(self):
+        binaries = ("codex", "codex-code-mode-host", "codex-exec-server")
+        for binary in binaries:
+            payload = (binary + " compiled").encode()
+            (self.target / "release" / binary).write_bytes(payload)
+            (self.package / "bin" / binary).write_bytes(payload)
+        before = self.compiler.read_bytes()
+        for binary in binaries:
+            packaged = self.package / "bin" / binary
+            payload = packaged.read_bytes()
+            for changed in (b"stripped " + payload, b"unrelated executable"):
+                with self.subTest(binary=binary, changed=changed):
+                    packaged.write_bytes(changed)
+                    with self.assertRaisesRegex(ValueError, "packaged.*differs"):
+                        self.record(binaries)
+                    self.assertEqual(self.compiler.read_bytes(), before)
+            packaged.write_bytes(payload)
 
     def test_redirected_report_is_refused_without_updating_compiler_record(self):
         before = self.compiler.read_bytes()

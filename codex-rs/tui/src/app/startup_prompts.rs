@@ -10,6 +10,8 @@ use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+#[path = "../../../alab-tui/glue/forced_model_migration.rs"] mod alab_forced_model_migration; // ALAB(execution): automatic required migration stays in ALab's layer
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct SkillLoadWarningKey {
     path: PathBuf,
@@ -358,7 +360,18 @@ pub(super) async fn handle_model_migration_prompt_if_needed(
         let target_description =
             (!target_preset.description.is_empty()).then(|| target_preset.description.clone());
         let can_opt_out = current_preset.is_some();
-        if can_opt_out && codex_alab_tui::skip_optional_model_upgrade() { return Ok(None); } // ALAB(no-upsell): only forced migrations prompt
+        if can_opt_out && codex_alab_tui::skip_optional_model_upgrade() { return Ok(None); } // ALAB(no-upsell): optional upgrades never prompt
+        if !can_opt_out && codex_alab_tui::execution::accept_forced_model_migration() { // ALAB(execution): a retired model cannot run, so accept its available replacement and continue
+            alab_forced_model_migration::apply(
+                config,
+                launch_choices,
+                app_event_tx,
+                model.to_string(),
+                target_model.clone(),
+                target_preset.default_reasoning_effort.clone(),
+            );
+            return Ok(None);
+        }
         let prompt_copy = migration_copy_for_models(
             model,
             &target_model,

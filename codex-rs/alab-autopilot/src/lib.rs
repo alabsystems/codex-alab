@@ -19,6 +19,8 @@
 //!
 //! - [`words`]: aterm's word lists and texts, verbatim.
 //! - [`needs`]: the NEEDS YOU and `Nothing left:` lines, aterm's readers verbatim.
+//! - [`credential_need`]: a credential line, never a person's need: resolved through `aterm
+//!   secrets` and told to the worker once (`credential@v1`).
 //! - [`go_ahead`]: a park on a person's go-ahead for the agent's own reversible work, and the
 //!   owner's standing go-ahead that answers it (`go-ahead@v1`), aterm's reader verbatim.
 //! - [`open_work`]: what a report still names open, Cruise's reading and Land's strict one.
@@ -50,12 +52,14 @@ use codex_goal_extension::GoalService;
 
 pub mod answer;
 pub mod approval;
+pub mod credential_need;
 pub mod decide;
 pub mod describe;
 pub mod extension;
 pub mod go_ahead;
 mod in_flight_retry;
 pub mod login;
+mod login_refusal;
 pub mod mounts;
 pub mod needs;
 pub mod netwatch;
@@ -67,6 +71,9 @@ mod recovery;
 pub mod replies;
 pub mod repo;
 mod resume_history;
+#[cfg(test)]
+#[path = "../../alab-core/glue/test_child_process.rs"]
+mod test_child_process;
 pub use resume_history::unfinished_recovery_turn;
 pub mod story;
 pub mod supervisor;
@@ -109,6 +116,8 @@ pub fn install(
         decide::Timing::default(),
         extension::tui_threads,
     );
+    // The workers' credential wants resolve through this Mac's `aterm` (CONTRACT §5 NEEDS YOU).
+    autopilot.resolve_credentials_through(std::path::PathBuf::from("aterm"));
     autopilot.register(builder);
 }
 

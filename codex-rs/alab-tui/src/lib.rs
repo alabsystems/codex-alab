@@ -21,6 +21,7 @@ pub mod boxes;
 pub mod context;
 pub mod daemon_packages;
 pub mod enrollment_ui;
+pub mod execution;
 pub mod fixture_clock;
 pub mod goal_interrupt;
 pub mod identity;

@@ -1,0 +1,11 @@
+{
+  "body": {
+    "error": {
+      "message": "Fixture usage not included",
+      "plan_type": "team",
+      "type": "usage_not_included"
+    }
+  },
+  "headers": {},
+  "status": 429
+}

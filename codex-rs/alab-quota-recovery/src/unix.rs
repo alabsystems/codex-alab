@@ -18,7 +18,6 @@ use std::time::Duration;
 /// Every automatic redemption, including an uncertain operation's retry, needs
 /// one ordinary window to satisfy both limits in the same fresh usage read.
 const REDEMPTION_USED_PERCENT: f64 = 99.0;
-const REDEMPTION_MAX_WAIT_SECONDS: i64 = 24 * 60 * 60;
 /// Stop reusing healthy reads before the redemption threshold is reachable.
 const PREFLIGHT_CLEAR_USED_PERCENT: f64 = 95.0;
 /// How long one point of headroom below the conservative read threshold excuses the
@@ -54,10 +53,7 @@ fn redemption_cycle(
                 return None;
             }
             let reset = w.resets_at?;
-            let remaining = reset.checked_sub(now)?;
-            (1..=REDEMPTION_MAX_WAIT_SECONDS)
-                .contains(&remaining)
-                .then_some(reset)
+            (reset > now).then_some(reset)
         })
         .max()
 }
@@ -233,11 +229,6 @@ fn stale_exhaustion(
             })
 }
 
-/// The 429's named reset and the usage read's five-hour reset are two reports
-/// of one moment (seconds since the Unix epoch). Further apart than this many
-/// seconds they are not the same wall, and it is not offered to a host.
-const RESET_AGREEMENT: u64 = 60;
-
 /// The account's own allowance is spent and will not return by itself before
 /// the reset this names: the wall another account could answer. The week is
 /// judged first, as the host judges it, and a spent five-hour window is named
@@ -288,24 +279,6 @@ fn spent_wall(
         window: SpentWindow::FiveHour,
         resets_at: resets_at(300)?,
     })
-}
-
-/// Whether a host may be asked about this wall at all. A spent week always:
-/// the turn that ends is resumed, or asked about, at whatever the 429 named
-/// (which need not be the week's own reset: the Autopilot's bound on asking
-/// says what that costs). A spent five-hour window only when the 429 named a
-/// reset and it is the window's own: what follows the ended turn (the
-/// Autopilot's limit on asking and its usage resume) runs on the 429's reset,
-/// so with none named nothing would bound the ask, and one that disagrees
-/// would resume the session at the wrong moment. Both are moments, not times
-/// left, so the comparison does not depend on when it is made.
-fn offerable(wall: SpentWall, reset_at: Option<i64>) -> bool {
-    match wall.window {
-        SpentWindow::Week => true,
-        SpentWindow::FiveHour => {
-            reset_at.is_some_and(|reset| reset.abs_diff(wall.resets_at) <= RESET_AGREEMENT)
-        }
-    }
 }
 
 fn restored(read: &RateLimitsWithResetCredits, owner: &(String, String, u64)) -> bool {
@@ -442,9 +415,21 @@ async fn wait_for_reset(
     handoff: Option<&codex_alab_core::quota::WallHandoff>,
 ) -> bool {
     let max_attempt = Duration::from_secs(45);
-    // Consecutive creditless answers that did not rest on a clean list read.
-    let mut inconclusive = 0_u32;
+    // When the unbroken run of creditless answers that did not rest on a clean
+    // list read began: the start of its first look.
+    let mut unread_since: Option<tokio::time::Instant> = None;
+    // Made before the first look, so a signal the host sends while a look or its
+    // question is in flight is kept for the wait that follows.
+    let mut wake = handoff.map(codex_alab_core::quota::WallHandoff::watch);
     loop {
+        // Told at every look, before it reads anything. A look can end before the
+        // question (an unread credit list, a read that failed, a timeout), and a
+        // host that signals only for looks that may predate its change must hear
+        // of those too, or this request waits out the interval below.
+        if let Some(handoff) = handoff {
+            handoff.look_begins();
+        }
+        let looked = tokio::time::Instant::now();
         if !codex_alab_core::active() || identity(manager).as_ref() != Some(owner) {
             return false;
         }
@@ -459,32 +444,56 @@ async fn wait_for_reset(
             recover(manager, config, owner, turn_id, Purpose::Recover),
         )
         .await;
-        // The earned reset comes before another account, so one unread credit
-        // list does not end the request: it is listed once more, one poll
-        // later. A second such answer in a row does, so a list outage cannot
-        // hold a spent allowance away from another account. The count is of
-        // unread lists, not of readings of one wall: the two answers may name
-        // different walls (a five-hour window, then the week), and the wall
-        // offered is the second's.
-        inconclusive = match outcome {
+        // The earned reset comes before another account, so an unread credit
+        // list does not end the request by itself: it is listed again, and the
+        // host is asked only at a later look that finds the list unread still,
+        // a whole poll interval or more after the first. With no signal from
+        // the host that is the second of two polls, so a list outage cannot
+        // hold a spent allowance away from another account.
+        //
+        // The rule is a span of time, not a count of looks, because a host's
+        // signal brings looks of its own (below), as little as a second apart.
+        // Counted, two of those would end the request over an outage of a
+        // second or two, with a credit behind it that the next poll would have
+        // found; and a rule that counted only the poll's own looks would never
+        // yield while signals kept coming, since each one starts the poll's
+        // wait again. The span is of unread lists, not of readings of one wall:
+        // its answers may name different walls (a five-hour window, then the
+        // week), and the wall offered is the last one's.
+        let outage = match outcome {
             Ok(Recovery::NoCredit {
                 conclusive: false, ..
-            }) => inconclusive.saturating_add(1),
-            _ => 0,
+            }) => match unread_since {
+                Some(first) => looked.duration_since(first) >= interval,
+                None => {
+                    unread_since = Some(looked);
+                    false
+                }
+            },
+            _ => {
+                unread_since = None;
+                false
+            }
         };
         match outcome {
             Ok(Recovery::Restored) => return true,
             Ok(Recovery::Stop) => return false,
             Ok(Recovery::Spent) if reset_at.is_none() => return false,
-            Ok(Recovery::NoCredit { wall, conclusive })
-                if (conclusive || inconclusive >= 2) && offerable(wall, reset_at) =>
-            {
+            Ok(Recovery::NoCredit { wall, conclusive }) if conclusive || outage => {
                 // No reset may be redeemed now: the policy forbids it, or the
                 // earned-credit check has nothing eligible to redeem.
                 // `recover` has returned, so neither the account resource nor
                 // the custody lock is held while the host is asked. Ending
                 // here returns the original usage error to the turn; a host
                 // that is not ready leaves this request polling for a credit.
+                //
+                // The host is told the usage read's wall, whatever reset the
+                // 429 named: none, the window's own, or another moment. A yes
+                // is given for that wall, and its owner keeps it as the ended
+                // turn's (`WallHandoff`), so what follows the turn (the bound
+                // on asking the host, the wall's own resume) runs on the
+                // read's reset. The 429's reset bounds only this request's
+                // own wait below.
                 if let Some(handoff) = handoff {
                     let ready = match reset_at {
                         Some(reset) => {
@@ -510,9 +519,34 @@ async fn wait_for_reset(
             delay = delay.min(remaining);
         }
         // The caller owns cancellation of this original sampler/compaction.
-        tokio::time::sleep(delay).await;
+        //
+        // A HOST THAT WAS NOT READY CAN SAY WHEN TO ASK IT AGAIN. This request keeps
+        // its turn running while it waits, and a running turn keeps the session's
+        // record busy; a host that moves accounts only under an idle record would
+        // otherwise wait out the rest of this interval for the turn it needs
+        // ended. Its signal ends the wait early and nothing more: the loop looks
+        // for an earned reset first, as at every poll, and asks the host again
+        // only if there is none. A host that never signals leaves the interval.
+        let Some(wake) = wake.as_mut() else {
+            tokio::time::sleep(delay).await;
+            continue;
+        };
+        if tokio::time::timeout(delay, wake.changed()).await.is_ok() {
+            // Each look is a usage read and a credit list read, so signals that
+            // keep coming buy one look per floor (or per poll, where that is
+            // the shorter), measured between the starts of two looks.
+            let since = looked.elapsed();
+            let floor = WAKE_FLOOR.min(delay);
+            if since < floor {
+                tokio::time::sleep(floor - since).await;
+            }
+        }
     }
 }
+
+/// The least time between the starts of two looks a host's signal asks for
+/// ([`wait_for_reset`]).
+const WAKE_FLOOR: Duration = Duration::from_secs(1);
 
 fn until_reset(reset: i64) -> Duration {
     let seconds = reset.saturating_sub(chrono::Utc::now().timestamp());
@@ -634,6 +668,22 @@ async fn recover_with(
     turn_id: &str,
     purpose: Purpose,
     clearing: Option<&State>,
+) -> Recovery {
+    recover_with_expiry_clock(manager, config, owner, turn_id, purpose, clearing, &|| {
+        chrono::Utc::now().timestamp()
+    })
+    .await
+}
+
+/// The supplied clock judges only newly selected credit expiry, not quota policy.
+async fn recover_with_expiry_clock(
+    manager: &AuthManager,
+    config: &Settings,
+    owner: &(String, String, u64),
+    turn_id: &str,
+    purpose: Purpose,
+    clearing: Option<&State>,
+    expiry_now: &(dyn Fn() -> i64 + Sync),
 ) -> Recovery {
     let current = || codex_alab_core::active() && identity(manager).as_ref() == Some(owner);
     if !current() {
@@ -808,7 +858,7 @@ async fn recover_with(
             .as_ref()
             .filter(|op| op.outcome.pending())
             .cloned();
-        let op = if let Some(op) = pending {
+        let (op, selected) = if let Some(op) = pending {
             // A committed per-credit proof can survive a crash before state.json.
             let Some(credit) = credit_at(&dir, &op.credit) else {
                 return Recovery::Stop;
@@ -823,10 +873,10 @@ async fn recover_with(
                 }
                 continue;
             }
-            op
+            (op, None)
         } else {
-            let listed = available(&client, &dir, &tried, now).await;
-            let Ok(Some(id)) = listed else {
+            let listed = available(&client, &dir, &tried, expiry_now).await;
+            let Ok(Some(selected)) = listed else {
                 // Nothing is in custody here: a consumed credit awaiting
                 // propagation returned above, and a pending operation never
                 // lists credits. Only a list that was read, in an attempt that
@@ -841,10 +891,10 @@ async fn recover_with(
                     None => Recovery::Wait,
                 };
             };
-            let Some(op) = begin(&dir, &account, &mut ledger, cycle, &id) else {
+            let Some(op) = begin(&dir, &account, &mut ledger, cycle, &selected.id) else {
                 return Recovery::Stop;
             };
-            op
+            (op, Some(selected))
         };
         if !current() {
             return Recovery::Stop;
@@ -869,6 +919,30 @@ async fn recover_with(
         // Listing credits and persisting custody can cross the natural reset.
         // A window that qualified before that wait cannot authorize a POST now.
         if redemption_cycle(&read, owner, chrono::Utc::now().timestamp()) != Some(cycle) {
+            return Recovery::Wait;
+        }
+        // Another reset or a concurrent usage update can invalidate the read
+        // while credits are listed or custody is persisted. Every POST needs
+        // a fresh read of the same owner's ordinary quota window.
+        let Ok(before_post) = client.get_rate_limits_with_reset_credits().await else {
+            return Recovery::Wait;
+        };
+        if !current() {
+            return Recovery::Stop;
+        }
+        let now = chrono::Utc::now().timestamp();
+        let fresh_cycle = match purpose {
+            Purpose::Recover => eligible(&before_post, owner, now),
+            Purpose::Preflight => redemption_cycle(&before_post, owner, now),
+        };
+        if fresh_cycle != Some(cycle) {
+            return Recovery::Wait;
+        }
+        // Only this call's newly selected credit carries expiry evidence. Do
+        // not send its initial POST after that evidence expires during I/O.
+        // Persisted pending operations still reconcile their exact key with
+        // the authoritative backend, without listing or changing custody.
+        if selected.is_some_and(|credit| !credit.unexpired(expiry_now())) {
             return Recovery::Wait;
         }
         tried.insert(op.credit.clone());
@@ -1001,13 +1075,24 @@ fn begin(
 /// the absence of one.
 struct Unlisted;
 
+struct AvailableCredit {
+    id: String,
+    expires_at: Option<i64>,
+}
+
+impl AvailableCredit {
+    fn unexpired(&self, now: i64) -> bool {
+        self.expires_at.is_none_or(|expiry| expiry > now)
+    }
+}
+
 /// The credit to redeem next, `None` where the list was read and offers none.
 async fn available(
     client: &Client,
     dir: &Path,
     tried: &std::collections::BTreeSet<String>,
-    now: i64,
-) -> Result<Option<String>, Unlisted> {
+    expiry_now: impl FnOnce() -> i64,
+) -> Result<Option<AvailableCredit>, Unlisted> {
     let details = client
         .list_rate_limit_reset_credits()
         .await
@@ -1015,6 +1100,8 @@ async fn available(
     if details.available_count <= 0 {
         return Ok(None);
     }
+    // The awaited list may itself have crossed a credit's expiry.
+    let now = expiry_now();
     let next = details
         .credits
         .iter()
@@ -1039,7 +1126,14 @@ async fn available(
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map_or(i64::MAX, |t| t.timestamp())
         })
-        .map(|c| c.id.clone());
+        .map(|c| AvailableCredit {
+            id: c.id.clone(),
+            expires_at: c.expires_at.as_deref().and_then(|expiry| {
+                chrono::DateTime::parse_from_rfc3339(expiry)
+                    .ok()
+                    .map(|expiry| expiry.timestamp())
+            }),
+        });
     Ok(next)
 }
 
@@ -1150,19 +1244,11 @@ fn read_receipt(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
-/// Premium and spend-control walls cannot consume an ordinary allowance reset.
+/// Premium and spend-control walls cannot consume an ordinary allowance reset. Reserve can: it
+/// is ordinary usage's fallback ([`crate::wall_kind`], which defines this so the two never
+/// drift).
 pub fn ordinary_weekly_wall(details: &codex_protocol::error::UsageLimitReachedError) -> bool {
-    use codex_protocol::protocol::RateLimitReachedType;
-    details
-        .rate_limit_reached_type
-        .is_none_or(|kind| kind == RateLimitReachedType::RateLimitReached)
-        && details.rate_limits.as_ref().is_none_or(|snapshot| {
-            snapshot.limit_id.as_deref().is_none_or(|id| id == "codex")
-                && snapshot.spend_control_reached != Some(true)
-                && snapshot
-                    .rate_limit_reached_type
-                    .is_none_or(|kind| kind == RateLimitReachedType::RateLimitReached)
-        })
+    crate::wall_kind(details) == crate::WallKind::Ordinary
 }
 
 fn write_bytes(path: &Path, bytes: &[u8]) -> Option<()> {
@@ -1333,7 +1419,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_redemption_requires_99_percent_and_a_reset_within_24_hours() {
+    fn automatic_redemption_requires_99_percent_and_a_future_reset() {
         let owner = ("account".into(), "user".into(), 1);
         for minutes in [300, 10080] {
             for (used, remaining, expected) in [
@@ -1341,8 +1427,9 @@ mod tests {
                 (99.0, 1, true),
                 (99.0, 24 * 3600, true),
                 (100.0, 24 * 3600, true),
-                (99.0, 24 * 3600 + 1, false),
-                (100.0, 7 * 24 * 3600, false),
+                (99.0, 24 * 3600 + 1, true),
+                (100.0, 25 * 3600, true),
+                (100.0, 7 * 24 * 3600, true),
                 (100.0, 0, false),
                 (100.0, -1, false),
             ] {
@@ -1362,6 +1449,43 @@ mod tests {
                 assert_eq!(eligible(&read, &owner, 1000), None);
                 assert_eq!(redemption_cycle(&read, &owner, 1000), None);
             }
+            let mut missing = reading(100.0, minutes, 4600);
+            missing.rate_limits[0].secondary.as_mut().unwrap().resets_at = None;
+            assert_eq!(eligible(&missing, &owner, 1000), None);
+            assert_eq!(redemption_cycle(&missing, &owner, 1000), None);
+        }
+    }
+
+    #[test]
+    fn ineligible_weekly_refresh_cannot_use_another_windows_refresh() {
+        let owner = ("account".into(), "user".into(), 1);
+        for reset in [Some(1000), Some(999), None] {
+            let mut read = reading(100.0, 10080, 4600);
+            read.rate_limits[0].secondary.as_mut().unwrap().resets_at = reset;
+            read.rate_limits[0].primary = reading(0.0, 300, 4600).rate_limits[0].secondary.take();
+            assert_eq!(eligible(&read, &owner, 1000), None);
+            for permission in [Some(false), Some(true)] {
+                read.ordinary_usage_allowed = permission;
+                assert_eq!(redemption_cycle(&read, &owner, 1000), None);
+            }
+        }
+    }
+
+    #[test]
+    fn redemption_uses_future_ordering_at_timestamp_bounds() {
+        let owner = ("account".into(), "user".into(), 1);
+        for (now, reset, expected) in [
+            (i64::MIN, i64::MIN, None),
+            (i64::MAX, i64::MAX, None),
+            (i64::MAX, i64::MIN, None),
+            (i64::MIN, i64::MAX, Some(i64::MAX)),
+            (i64::MAX - 86400, i64::MAX, Some(i64::MAX)),
+            (i64::MAX - 86401, i64::MAX, Some(i64::MAX)),
+            (i64::MIN, i64::MIN + 86400, Some(i64::MIN + 86400)),
+        ] {
+            let read = reading(99.0, 10080, reset);
+            assert_eq!(eligible(&read, &owner, now), expected);
+            assert_eq!(redemption_cycle(&read, &owner, now), expected);
         }
     }
 
@@ -1388,7 +1512,7 @@ mod tests {
                         "primary_window":{"used_percent":if read_redeemed.load(Ordering::SeqCst) {0}else{99},
                         "limit_window_seconds":18000,"reset_at":reset,"reset_after_seconds":3600}}
                 }))
-            }).expect(3).mount(&server).await;
+            }).expect(4).mount(&server).await;
         Mock::given(method("GET")).and(path("/api/codex/rate-limit-reset-credits"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "available_count":1,"credits":[{"id":"A","reset_type":"codex_rate_limits",
@@ -1461,7 +1585,7 @@ mod tests {
                         "limit_window_seconds":18000,"reset_at":reported_reset,"reset_after_seconds":3600}}
                 }))
             })
-            .expect(if delayed_usage { 5 } else if stale_start { 4 } else { 3 })
+            .expect(if delayed_usage || stale_start { 5 } else { 4 })
             .mount(&server)
             .await;
         let lists = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1710,7 +1834,7 @@ mod tests {
                     "rate_limit":{"allowed":restored,"limit_reached":!restored,
                         "secondary_window":{"used_percent":if restored {0}else{100},"limit_window_seconds":604800,"reset_at":cycle,"reset_after_seconds":46800}}
                 }))
-            }).expect(3).mount(&server).await;
+            }).expect(5).mount(&server).await;
         Mock::given(method("GET")).and(path("/api/codex/rate-limit-reset-credits"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"available_count":2,"credits":[
                 {"id":"A","reset_type":"codex_rate_limits","status":"available","granted_at":"2026-01-01T00:00:00Z","expires_at":"2030-01-01T00:00:00Z"},
@@ -1784,30 +1908,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut ledger = Ledger::default();
         let tried = std::collections::BTreeSet::new();
-        let first = available(&client, dir.path(), &tried, 1000)
+        let first = available(&client, dir.path(), &tried, || 1000)
             .await
             .ok()
             .flatten()
             .unwrap();
-        assert_eq!(first, "A", "parsed expiry orders offsets correctly");
-        let a = begin(dir.path(), "account", &mut ledger, 44200, &first).unwrap();
+        assert_eq!(first.id, "A", "parsed expiry orders offsets correctly");
+        let a = begin(dir.path(), "account", &mut ledger, 44200, &first.id).unwrap();
         assert_eq!(a.key, operation_key("account", 44200, "A", 1));
         let mut record = credit_at(dir.path(), "A").unwrap();
         record.consumed = true;
         save(&credit_path(dir.path(), "A"), &record).unwrap();
-        let second = available(&client, dir.path(), &tried, 1000)
+        let second = available(&client, dir.path(), &tried, || 1000)
             .await
             .ok()
             .flatten()
             .unwrap();
-        assert_eq!(second, "B");
-        let b = begin(dir.path(), "account", &mut ledger, 44200, &second).unwrap();
+        assert_eq!(second.id, "B");
+        let b = begin(dir.path(), "account", &mut ledger, 44200, &second.id).unwrap();
         assert_ne!(a.key, b.key);
         let mut record = credit_at(dir.path(), "B").unwrap();
         record.consumed = true;
         save(&credit_path(dir.path(), "B"), &record).unwrap();
         assert!(
-            matches!(available(&client, dir.path(), &tried, 1000).await, Ok(None)),
+            matches!(
+                available(&client, dir.path(), &tried, || 1000).await,
+                Ok(None)
+            ),
             "stale A/B lists never forget either consumed credit"
         );
     }
@@ -1850,12 +1977,12 @@ mod tests {
         std::fs::write(credit_path(dir.path(), "uncertain"), "interrupted receipt").unwrap();
         let tried = std::collections::BTreeSet::from(["tried".to_owned()]);
         assert_eq!(
-            available(&client, dir.path(), &tried, now)
+            available(&client, dir.path(), &tried, || now)
                 .await
                 .ok()
                 .flatten()
-                .as_deref(),
-            Some("usable")
+                .map(|credit| credit.id),
+            Some("usable".to_owned())
         );
     }
 }

@@ -10,8 +10,9 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CodexErrorInfo;
 use serde_json::Value;
 use serde_json::json;
-use std::process::Command;
 use std::process::Stdio;
+use std::time::Duration;
+use tokio::process::Command;
 
 const CHILD_MARKER: &str = "ALAB_STREAMED_QUOTA_TEST_CHILD";
 const COMPLETE: &str = "ALAB_STREAMED_QUOTA_ACTIVE_BOUNDARY_OK";
@@ -55,18 +56,17 @@ fn active_parser_boundary_runs_in_its_own_exact_test_process() -> std::io::Resul
             child.env(key, value);
         }
     }
-    let output = child.output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "isolated parser test failed: {stdout}\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        stdout.contains(COMPLETE),
-        "child did not exercise active cases"
-    );
-    assert!(stdout.contains("1 passed; 0 failed"), "{stdout}");
+    let expected_marker = format!("{COMPLETE}\n");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(crate::test_child_process::run_with_stdout_marker(
+            child,
+            Duration::from_secs(30),
+            Some(&expected_marker),
+        ))
+        .unwrap_or_else(|failure| panic!("isolated parser test: {failure}"))
+        .assert_test_success(&name);
     assert!(!codex_alab_core::active());
     Ok(())
 }

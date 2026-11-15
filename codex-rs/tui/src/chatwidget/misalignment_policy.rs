@@ -1,5 +1,6 @@
-//! Block ordinary input after a misalignment failure. Live findings can be reviewed and
-//! explicitly acknowledged; review identity prevents stale UI actions from authorizing a turn.
+//! Show misalignment findings in history by default. With `misalignment_review` enabled, block
+//! ordinary input for explicit review; review identity prevents stale UI actions from authorizing
+//! a turn.
 
 use super::*;
 use codex_app_server_protocol::MisalignmentErrorDetails;
@@ -27,6 +28,7 @@ pub(super) struct MisalignmentViolation {
     turn_id: Option<String>,
     review: Option<Arc<MisalignmentReview>>,
     retired_voice: bool,
+    passive: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -37,14 +39,40 @@ pub(crate) enum MisalignmentTurnSource {
 
 const MISALIGNMENT_POLICY_TITLE: &str = "Chat stopped as a precaution";
 const MISALIGNMENT_POLICY_DESCRIPTION: &str = "We couldn’t confirm the agent was acting safely and following your instructions. To continue working, start or resume another chat.";
+const MISALIGNMENT_POLICY_NOTICE: &str = "We couldn’t confirm the agent was acting safely and following your instructions. The request was stopped; you can continue with a new request.";
 
 impl ChatWidget {
+    fn add_passive_misalignment_findings(&mut self, review: Option<&MisalignmentReview>) {
+        if let Some(review) = review {
+            let explanation = review
+                .details
+                .detailed_explanation
+                .as_deref()
+                .unwrap_or(MISALIGNMENT_POLICY_NOTICE);
+            self.add_to_history(history_cell::new_visible_warning_event(format!(
+                "Misalignment policy finding: {explanation}"
+            )));
+            if let Some(message) = review.continuation_message() {
+                self.add_to_history(history_cell::new_info_event(
+                    format!("Server-suggested continuation (not submitted): {message:?}"),
+                    /*hint*/ None,
+                ));
+            }
+        } else {
+            self.add_to_history(history_cell::new_visible_warning_event(
+                MISALIGNMENT_POLICY_NOTICE.to_string(),
+            ));
+        }
+    }
+
     pub(crate) fn has_misalignment_policy_violation(&self) -> bool {
-        self.misalignment_policy_violation.is_some()
+        self.misalignment_policy_violation
+            .as_ref()
+            .is_some_and(|violation| !violation.passive)
     }
 
     pub(crate) fn rejects_misalignment_policy_op(&self, op: &AppCommand) -> bool {
-        self.misalignment_policy_violation.is_some()
+        self.has_misalignment_policy_violation()
             && !matches!(
                 op,
                 AppCommand::Interrupt
@@ -61,6 +89,37 @@ impl ChatWidget {
         self.on_misalignment_error(/*turn_id*/ None, /*details*/ None);
     }
 
+    pub(crate) fn on_side_thread_misalignment_policy_violation(&mut self) {
+        if self.config.features.enabled(Feature::MisalignmentReview) {
+            self.on_misalignment_policy_violation();
+        } else {
+            // ALAB(misalignment-review): A child finding must not finalize the visible parent turn.
+            self.add_passive_misalignment_findings(/*review*/ None);
+            self.request_redraw();
+        }
+    }
+
+    pub(super) fn on_misalignment_review_feature_changed(&mut self, enabled: bool) {
+        if enabled || !self.has_misalignment_policy_violation() {
+            return;
+        }
+        let review = self
+            .misalignment_policy_violation
+            .as_ref()
+            .and_then(|violation| violation.review.clone());
+        if let Some(violation) = self.misalignment_policy_violation.as_mut() {
+            violation.passive = true;
+            violation.retired_voice = false;
+        }
+        // ALAB(misalignment-review): Opting out immediately releases existing review UI.
+        self.bottom_pane.dismiss_view_by_id(PRECAUTION_VIEW);
+        self.bottom_pane
+            .set_composer_input_enabled(/*enabled*/ true, /*placeholder*/ None);
+        self.add_passive_misalignment_findings(review.as_deref());
+        self.request_redraw();
+        self.maybe_send_next_queued_input();
+    }
+
     pub(super) fn on_misalignment_error(
         &mut self,
         turn_id: Option<String>,
@@ -71,6 +130,11 @@ impl ChatWidget {
         {
             return;
         }
+        let interactive = self.config.features.enabled(Feature::MisalignmentReview);
+        let was_blocking = self
+            .misalignment_policy_violation
+            .as_ref()
+            .is_some_and(|violation| !violation.passive);
         // Bound memory-only findings and newly submitted model input. Never truncate a steer.
         let missing_details = details.is_none();
         let details = details.filter(|details| {
@@ -80,6 +144,7 @@ impl ChatWidget {
                 .is_some_and(|text| !text.trim().is_empty() && text.len() <= 64 * 1024)
         });
         if let Some(current) = &self.misalignment_policy_violation
+            && current.passive == !interactive
             // A parent-thread precaution cannot become a continuable side-thread warning.
             && (current.turn_id.is_none()
                 || (current.turn_id == turn_id
@@ -88,7 +153,7 @@ impl ChatWidget {
         {
             return;
         }
-        let retired_voice = self.realtime_conversation_is_running();
+        let retired_voice = interactive && self.realtime_conversation_is_running();
         if retired_voice {
             self.stop_realtime_conversation();
         }
@@ -101,11 +166,27 @@ impl ChatWidget {
                 })
             },
         );
+        let passive_review = (!interactive).then(|| review.clone()).flatten();
         self.misalignment_policy_violation = Some(MisalignmentViolation {
             turn_id,
             review,
             retired_voice,
+            passive: !interactive,
         });
+        // ALAB(misalignment-review): Keep findings visible without holding up subsequent work.
+        if !interactive {
+            self.input_queue.submit_pending_steers_after_interrupt = false;
+            self.finalize_turn();
+            if was_blocking {
+                self.bottom_pane.dismiss_view_by_id(PRECAUTION_VIEW);
+                self.bottom_pane
+                    .set_composer_input_enabled(/*enabled*/ true, /*placeholder*/ None);
+            }
+            self.add_passive_misalignment_findings(passive_review.as_deref());
+            self.request_redraw();
+            self.maybe_send_next_queued_input();
+            return;
+        }
         self.input_queue.clear();
         self.finalize_turn();
         self.refresh_pending_input_preview();
@@ -141,7 +222,9 @@ impl ChatWidget {
         let review = self
             .misalignment_policy_violation
             .as_ref()
-            .and_then(|violation| violation.review.clone());
+            .and_then(|violation| violation.review.clone())
+            // ALAB(misalignment-review): Hide a previously created review if the flag is disabled.
+            .filter(|_| self.config.features.enabled(Feature::MisalignmentReview));
         if let Some(review) = &review {
             let review = Arc::clone(review);
             items.insert(
@@ -186,7 +269,10 @@ impl ChatWidget {
             .as_ref()
             .and_then(|violation| violation.review.as_ref());
         let turn_id = self.turn_lifecycle.last_turn_id.as_ref();
-        self.thread_id == Some(review.thread_id)
+        // ALAB(misalignment-review): Passive or disabled findings cannot authorize continuation.
+        self.has_misalignment_policy_violation()
+            && self.config.features.enabled(Feature::MisalignmentReview)
+            && self.thread_id == Some(review.thread_id)
             && turn_id.is_none_or(|id| id == &review.turn_id)
             && current.is_some_and(|current| Arc::ptr_eq(current, review))
     }
@@ -234,9 +320,10 @@ impl ChatWidget {
             .misalignment_policy_violation
             .as_ref()
             .is_some_and(|violation| {
-                violation.turn_id.as_ref().is_some_and(|id| id != turn_id)
-                    && (!violation.retired_voice
-                        || source == MisalignmentTurnSource::AcknowledgedContinuation)
+                violation.passive // ALAB(misalignment-review): passive findings never leak into a later turn.
+                    || (violation.turn_id.as_ref().is_some_and(|id| id != turn_id)
+                        && (!violation.retired_voice
+                            || source == MisalignmentTurnSource::AcknowledgedContinuation))
             })
         {
             self.misalignment_policy_violation = None;

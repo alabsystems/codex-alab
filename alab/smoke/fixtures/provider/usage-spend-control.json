@@ -1,0 +1,37 @@
+{
+  "account_id": "source-account",
+  "plan_type": "team",
+  "rate_limit": {
+    "allowed": false,
+    "limit_reached": true,
+    "primary_window": {
+      "limit_window_seconds": 18000,
+      "reset_after_seconds": 3600,
+      "reset_at": 1800003600,
+      "used_percent": 20
+    },
+    "secondary_window": {
+      "limit_window_seconds": 604800,
+      "reset_after_seconds": 86400,
+      "reset_at": 1800086400,
+      "used_percent": 10
+    }
+  },
+  "rate_limit_reset_credits": {
+    "available_count": 0
+  },
+  "spend_control": {
+    "individual_limit": {
+      "limit": "25000",
+      "remaining": "0",
+      "remaining_percent": 0,
+      "reset_after_seconds": 1728000,
+      "reset_at": 1801728000,
+      "source": "workspace_spend_controls",
+      "used": "25000",
+      "used_percent": 100
+    },
+    "reached": true
+  },
+  "user_id": "fixture-user"
+}

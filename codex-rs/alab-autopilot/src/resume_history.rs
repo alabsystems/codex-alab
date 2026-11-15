@@ -7,7 +7,9 @@ use crate::decide::ThreadState;
 use crate::decide::Timing;
 use crate::decide::TurnEnd;
 use crate::decide::Wall;
+use codex_alab_core::session::WallGoal;
 use codex_history::RolloutItem;
+use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
@@ -224,6 +226,28 @@ pub(crate) fn latest(items: &[RolloutItem]) -> NativeHistory<'_> {
     history
 }
 
+/// THE TERMINAL THAT SHOWS NATIVE TURN `turn` WAS SERVED, as durable history says it (a usage
+/// wall's move reports its resumed turn served on the destination, `renewal_follow`'s
+/// `report_completion`): the latest native point is `turn`'s own completion with no error, and no
+/// error event follows `turn`'s latest start. Anything else is none: an error at the terminal or
+/// before it, an abort, a turn still running, a later turn, a person's message after the
+/// terminal, or a history that names no start of `turn`. Core records every error it sends as an
+/// event in the completion's `error`, so the error events matter only where a history keeps them.
+/// An error core reports to the turn's lifecycle alone (a post-turn compaction's usage limit) is
+/// in neither: only the stop of the process that ran the turn knows it (`report_completion`).
+pub(crate) fn served<'a>(items: &'a [RolloutItem], turn: &str) -> Option<&'a TurnCompleteEvent> {
+    let NativePoint::Complete(complete) = latest(items).point else {
+        return None;
+    };
+    let start = items.iter().rposition(|item| {
+        matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(started)) if started.turn_id == turn)
+    })?;
+    let errored = items[start..]
+        .iter()
+        .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::Error(_))));
+    (complete.turn_id == turn && complete.error.is_none() && !errored).then_some(complete)
+}
+
 fn accepted_agent_input(item: &RolloutItem, turn: &str) -> bool {
     let (metadata, has_content, has_participants) = match item {
         RolloutItem::ResponseItem(envelope) => {
@@ -280,6 +304,43 @@ pub(crate) fn person_goal_stop_since(items: &[RolloutItem], turn: &str) -> bool 
         .iter()
         .filter_map(person_goal_set)
         .any(|active| !active)
+}
+
+/// A saved model stop cannot cross a later stop or goal edit, even if another
+/// model call restores Blocked with the old objective and budget. The rollout
+/// has no exact committed call identity, so use the original turn's first start
+/// and fail closed on a conflicting update anywhere after it. In particular,
+/// an Active update cannot undo a Paused or edited boundary in this history.
+pub(crate) fn model_goal_stop_revoked_since(
+    items: &[RolloutItem],
+    id: ThreadId,
+    bound: &WallGoal,
+) -> bool {
+    if person_goal_stop_since(items, &bound.turn) {
+        return true;
+    }
+    let Some(start) = items.iter().position(|item| {
+        matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(started)) if started.turn_id == bound.turn)
+    }) else {
+        return true;
+    };
+    items[start..].iter().any(|item| {
+        let RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(update)) = item else {
+            return false;
+        };
+        if update.thread_id != id {
+            return false;
+        }
+        let goal = &update.goal;
+        goal.thread_id != id
+            || goal.objective != bound.objective
+            || goal.token_budget != bound.token_budget
+            || !matches!(
+                goal.status,
+                codex_protocol::protocol::ThreadGoalStatus::Active
+                    | codex_protocol::protocol::ThreadGoalStatus::Blocked
+            )
+    })
 }
 
 /// A PERSON'S GOAL SET AS UPSTREAM RECORDS IT ([`person_goal_stop_since`]): a user message of
@@ -482,9 +543,9 @@ pub(crate) fn policy_continued(items: &[RolloutItem]) -> bool {
     attempted
 }
 
-/// Restore definitive refusals, the exact legacy opaque 400, or revocation here, after no
-/// authenticated Recovery could restore the point with its original deadlines and native
-/// identity. Other failures still need that detailed recovery record. A PERSON'S ESC THE RECORD CARRIES
+/// Restore only attention or revocation here, after no authenticated Recovery could restore
+/// the point with its original deadlines and native identity. Error text alone cannot
+/// reconstruct provider retry advice. A PERSON'S ESC THE RECORD CARRIES
 /// FOR THE TURN THE HISTORY'S ABORT ENDED ([`ThreadState::esc_seed`]; the forever-persist lane,
 /// item a) makes that abort the person's: stood at whatever the source (never a signal
 /// teardown's, which the record would not name), held from the Esc as the process before held
@@ -534,10 +595,8 @@ pub(crate) fn restore_terminal(
             else {
                 return;
             };
-            let wall = recorded_wall(&history, error).filter(|wall| {
-                matches!(wall, Wall::Fatal { .. } | Wall::Login | Wall::Policy)
-                    || recorded_opaque_bad_request(error)
-            });
+            let wall = recorded_wall(&history, error)
+                .filter(|wall| matches!(wall, Wall::Fatal { .. } | Wall::Login | Wall::Policy));
             let Some(wall) = wall else { return };
             (Some(wall), false)
         }
@@ -573,13 +632,6 @@ fn recorded_wall(history: &NativeHistory<'_>, error: &ErrorEvent) -> Option<Wall
         .codex_error_info
         .as_ref()
         .unwrap_or(&CodexErrorInfo::Other);
-    if recorded_opaque_bad_request(error) {
-        return crate::extension::classify(
-            info,
-            &CodexErrorDetails::InvalidRequest(error.message.clone()),
-            false,
-        );
-    }
     if *info == CodexErrorInfo::CyberPolicy && (!history.saw_regular_input || history.compacting) {
         return Some(Wall::Fatal {
             why: "a cybersecurity policy refused context compaction or its operation cannot be proven; automatic work cannot replay that history".into(),
@@ -598,11 +650,6 @@ fn recorded_wall(history: &NativeHistory<'_>, error: &ErrorEvent) -> Option<Wall
         &CodexErrorDetails::Stream("recorded terminal refusal".into()),
         false,
     )
-}
-
-fn recorded_opaque_bad_request(error: &ErrorEvent) -> bool {
-    error.codex_error_info == Some(CodexErrorInfo::Other)
-        && codex_alab_core::request_error::opaque_bad_request(&error.message)
 }
 
 /// THE HISTORY'S LAST TURN END, STOOD AT AGAIN where a vanilla spell hid it from this memory
@@ -657,3 +704,7 @@ pub(crate) fn restore_end(state: &mut ThreadState, items: &[RolloutItem], at: In
 #[cfg(test)]
 #[path = "resume_history_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "model_goal_history_tests.rs"]
+mod model_goal_tests;

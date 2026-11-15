@@ -24,11 +24,16 @@ pub(super) async fn admit_renewal_turn(
                     .remove::<codex_alab_core::renewal::TurnAdmission>();
             }
         }
-        admission.admit(context.sub_id.clone()).await.map_err(|_| {
-            codex_protocol::error::CodexErr::Fatal(
-                "same-account renewal continuation was not durably admitted".into(),
-            )
-        })?;
+        // The admission's own reason goes back with the refusal: its follow logs it, and a
+        // refusal nobody could read cost the happy successor its turn.
+        admission
+            .admit(context.sub_id.clone())
+            .await
+            .map_err(|reason| {
+                codex_protocol::error::CodexErr::Fatal(format!(
+                    "same-account renewal continuation was not durably admitted: {reason}"
+                ))
+            })?;
     }
     crate::session::input_queue::exec_input_state::install_after_admission(session, context).await
 }

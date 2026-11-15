@@ -1517,3 +1517,6 @@ mod tests;
 
 #[path = "../../alab-tui/glue/interface_mode.rs"]
 mod alab_interface_mode; // ALAB(interface): reload effective preferences after the saved mode changes
+
+#[cfg(test)]
+#[path = "../../alab-tui/glue/goal_runtime_status_app_fixture.rs"] pub(crate) mod alab_goal_runtime_fixture; // ALAB(storage-status): native App/backend fixture for isolated status regressions.

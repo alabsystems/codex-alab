@@ -46,10 +46,14 @@
 //!   stand ([`ThreadState::needs`], put on the person's screen by the runtime), and the point's
 //!   own act carries the ack ([`crate::needs::NEEDS_ACK`]) once per new set.
 
+use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::credential_need;
+use crate::credential_need::CredentialRead;
+use crate::credential_need::RULE_CREDENTIAL;
 use crate::go_ahead;
 use crate::go_ahead::GO_AHEAD_ACTS;
 use crate::go_ahead::GO_AHEAD_HELD;
@@ -133,7 +137,26 @@ pub struct Timing {
     /// `LOGIN_SHARED_LOOK`, 15 s): a look only stats it ([`crate::login`]), and codex reloads
     /// the login only where the file moved.
     pub login_look: Duration,
+    /// How long this process asks for a lost login's move to another account with no receipt
+    /// bound before it declines it ([`LOGIN_ROTATION_ASK`]): awake time, as [`crate::supervisor::clock`]
+    /// counts it. The login wall then goes the way it goes without a move.
+    pub login_rotation_ask: Duration,
+    /// How old a usage wall's resumed turn's end may be when this process reports it served on
+    /// the destination (`codex-rotation complete`, `renewal_follow`'s `report_completion`):
+    /// aterm's canary hold ([`CANARY_HOLD`]).
+    pub canary_hold: Duration,
 }
+
+/// The lost login's move is asked for at most this long with no receipt bound
+/// (`alab/design/accounts-lost-login.md`): four minutes of this process's awake time.
+pub const LOGIN_ROTATION_ASK: Duration = Duration::from_secs(240);
+
+/// HOW LONG ATERM HOLDS AN UNPROVEN DESTINATION FOR ITS CANARY (aterm's `accounts::CANARY_HOLD_S`):
+/// the walled sessions behind a usage wall's move wait this long for the canary's proof before
+/// the next of them takes the canary. A resumed turn that ended longer ago than this proves
+/// nothing of the destination the pool holds now: the hold has lapsed, and the pool may since
+/// have moved away and back to it under another canary.
+pub const CANARY_HOLD: Duration = Duration::from_secs(600);
 
 impl Default for Timing {
     fn default() -> Self {
@@ -154,6 +177,8 @@ impl Default for Timing {
             wake_settle: codex_alab_core::wake::WAKE_SETTLE,
             probe_wait: crate::netwatch::PROBE_BUDGET + Duration::from_secs(1),
             login_look: Duration::from_secs(15),
+            login_rotation_ask: LOGIN_ROTATION_ASK,
+            canary_hold: CANARY_HOLD,
         }
     }
 }
@@ -659,17 +684,43 @@ impl TurnEnd {
         )
     }
 
-    /// No earlier message of the turn names a need ([`needs::needs_you`]).
+    /// The turn's credential needs and stored preconditions of its go-ahead: its earlier
+    /// messages' and last's, each once; none where the turn was aborted or a wall cut it.
+    pub fn credential_lines(&self) -> Vec<String> {
+        if self.aborted || self.wall.is_some() {
+            return Vec::new();
+        }
+        let mut out: Vec<String> = Vec::new();
+        for line in [self.earlier.as_deref(), self.text.as_deref()]
+            .into_iter()
+            .flatten()
+            .flat_map(needs::credential_needs)
+        {
+            if !out.contains(&line) {
+                out.push(line);
+            }
+        }
+        if let Some(park) = self.go_ahead() {
+            for line in park.credential_lines {
+                if !out.contains(&line) {
+                    out.push(line);
+                }
+            }
+        }
+        out
+    }
+
+    /// No earlier message of the turn names a need ([`needs::persons_needs`]).
     fn earlier_names_no_need(&self) -> bool {
         self.earlier
             .as_deref()
-            .is_none_or(|t| needs::needs_you(t).is_empty())
+            .is_none_or(|t| needs::persons_needs(t).is_empty())
     }
 }
 
 /// WHETHER A LANDED TASK'S OWN WAKE LEFT SOMETHING OPEN, by its words (aterm's
 /// `wake_left_open`): its last message or the turn's earlier ones ([`TurnEnd::earlier`]) name
-/// a need ([`needs::needs_you`]), or Land's strict reading of them, needs left out, finds
+/// a need ([`needs::persons_needs`]), or Land's strict reading of them, needs left out, finds
 /// open work ([`open_work_strict`]). Codex hands each message whole, so no read is cut short
 /// of the turn's start (aterm's `said_cut` has no counterpart here).
 pub fn wake_left_open(end: &TurnEnd) -> bool {
@@ -677,7 +728,7 @@ pub fn wake_left_open(end: &TurnEnd) -> bool {
         .into_iter()
         .flatten()
         .any(|t| {
-            !needs::needs_you(t).is_empty()
+            !needs::persons_needs(t).is_empty()
                 || !open_work_strict(Some(&needs::without_needs(t))).is_empty()
         })
 }
@@ -753,13 +804,13 @@ pub struct YieldRead {
 
 impl YieldRead {
     /// The yield `end`, its words read.
-    fn of(end: &TurnEnd) -> YieldRead {
+    pub(crate) fn of(end: &TurnEnd) -> YieldRead {
         use codex_alab_aterm::LandLeg;
         let tail = end.text.as_deref();
         let said_need = [end.earlier.as_deref(), tail]
             .into_iter()
             .flatten()
-            .any(|t| !needs::needs_you(t).is_empty());
+            .any(|t| !needs::persons_needs(t).is_empty());
         let open = words::land_open_words(tail);
         let legs = [
             (LandLeg::Needs, said_need),
@@ -827,7 +878,7 @@ impl YieldRead {
 /// [`ThreadState::go_ahead_unwritten`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Needs {
-    /// The needs standing, as the worker's last report named them ([`needs::needs_you`]).
+    /// The needs standing, as the worker's last report named them ([`needs::persons_needs`]).
     pub standing: Vec<String>,
     /// Their set's key ([`needs::needs_key`]); `0` for none.
     pub key: u64,
@@ -923,7 +974,7 @@ impl Needs {
         let Some(t) = tail else {
             return;
         };
-        let named = needs::needs_you(t);
+        let named = needs::persons_needs(t);
         if named.is_empty() && needs::defense_line(t).is_none() && !needs::says_no_needs(t) {
             self.answer(&[]);
             return;
@@ -1176,6 +1227,9 @@ pub struct ThreadState {
     /// The provider's in-turn wait from a witnessed busy crash. This only delays an
     /// independently authorized carry-on; it never creates a failed turn or an act.
     pub carry_on_not_before: Option<Instant>,
+    /// A matching durable wait could not be verified. Mode changes cannot erase
+    /// this timing refusal; a real new native point replaces it.
+    pub retry_clock_refused: Option<String>,
     /// `Op::Compact` was submitted; its idle is not a turn.
     pub compacting: bool,
     /// The compaction ended: continue.
@@ -1306,6 +1360,13 @@ pub struct ThreadState {
     /// before its end, whichever was later. A key of the person's after it, within the turn's
     /// work and [`PERSON_TURN_SLACK`], came in that turn ([`Self::person_keyed`]).
     pub turn_since: Option<Instant>,
+    /// HOW THE POINT'S CREDENTIAL LINES RESOLVED ([`credential_need::resolve`]): set by the
+    /// runtime before each decision of a point that names one, else
+    /// [`CredentialRead::NotAsked`], never carried in a record.
+    pub credentials: CredentialRead,
+    /// What the credential act told this session ([`credential_need::told_line`]'s keys): each
+    /// fact once ([`RULE_CREDENTIAL`]).
+    pub credentials_told: BTreeSet<String>,
 }
 
 /// THE LOST LOGIN AS THE RUNTIME READ IT through codex's own `AuthManager` ([`crate::login`];
@@ -1549,6 +1610,7 @@ fn is_continue_rule(rule: &str) -> bool {
         rule,
         words::RULE_CONTINUE
             | go_ahead::RULE_GO_AHEAD
+            | RULE_CREDENTIAL
             | words::RULE_POLICY_CONTINUE
             | words::RULE_ANSWER
             | words::RULE_PROSE_LONG_TERM
@@ -1564,6 +1626,7 @@ pub fn paced_rule(name: &str) -> Option<&'static str> {
     [
         words::RULE_CONTINUE,
         go_ahead::RULE_GO_AHEAD,
+        RULE_CREDENTIAL,
         words::RULE_POLICY_CONTINUE,
         words::RULE_ANSWER,
         words::RULE_PROSE_LONG_TERM,
@@ -1701,6 +1764,7 @@ impl ThreadState {
         self.policy_continued = false;
         self.recovery_not_before = None;
         self.carry_on_not_before = None;
+        self.retry_clock_refused = None;
         self.task = true;
         self.unland();
         self.land = LandEpisode::default();
@@ -1732,7 +1796,9 @@ impl ThreadState {
     /// history's reader sets them to what the books leave standing, a set the Off took down
     /// staying down; and a turn's end folds its own report, as every turn's end does.
     pub fn unwatched(&mut self) {
+        let refused = self.retry_clock_refused.clone();
         self.observe_person_turn();
+        self.retry_clock_refused = refused;
         self.point = None;
         self.point_turn_id = None;
         // A person's Esc held the point that goes with it ([`Self::esc_at`]).
@@ -1770,6 +1836,7 @@ impl ThreadState {
     /// landing names no legs while that turn runs (review of gap 11, finding 2: the reading
     /// stood until the turn's end). Returns whether the reading went.
     pub fn observe_turn_start(&mut self) -> bool {
+        self.retry_clock_refused = None;
         self.awaited.is_none() && self.land.legs.take().is_some()
     }
 
@@ -1965,6 +2032,27 @@ impl ThreadState {
         }
     }
 
+    /// THE RESTORED WALL'S LADDER STARTS OVER UNDER ANOTHER LOGIN (audit of 2026-11-14, gap 3,
+    /// its review's finding 1): the rung the record's pace carried ([`Self::seed_pace`]) counts
+    /// the tries of the login that met the wall, and a relaunch that binds the wall to another
+    /// login (aterm's `/accounts` move, `extension::Autopilot::restore_quota_scope`) must not
+    /// pace that login's first try by them: a moved session resumes at once where the account
+    /// it moved to has room. The point's track becomes the one it opens with no pace carried
+    /// ([`Self::note_wall`]): no try, counted from the point, so that login's own try climbs it
+    /// ([`Self::tried_wall`]) and the wall met again waits its first rung. A track of another
+    /// class than the point's wall, or none, is left as it is.
+    pub fn restart_wall_ladder(&mut self) {
+        let Some(end) = self.point.as_ref() else {
+            return;
+        };
+        let Some(class) = end.wall.as_ref().map(Wall::class) else {
+            return;
+        };
+        if self.wall.as_ref().is_some_and(|track| track.class == class) {
+            self.wall = Some(WallTrack::new(class, end.at));
+        }
+    }
+
     /// THE SESSION WORKED BEFORE THIS PROCESS (aterm's `seed_worked`, from its books; gap 32):
     /// the resumed thread's history holds a turn that ended or an act of codex-alab's
     /// ([`crate::resume_history::worked`]), or the record hands on a pace
@@ -2110,6 +2198,7 @@ impl ThreadState {
         self.left_seed = None;
         self.recovery_not_before = None;
         self.carry_on_not_before = None;
+        self.retry_clock_refused = None;
         self.net_asked = None;
         self.asleep_mark = None;
         // The start probe was this turn's own, or none ran for it.
@@ -2168,14 +2257,18 @@ impl ThreadState {
         self.observe_exchange(&end, hand, opening);
         let short = end.worked < t.min_work || words::says_done(end.text.as_deref());
         if end.by_autopilot && self.last_rule.is_some_and(is_continue_rule) {
-            self.short_streak = if short { self.short_streak + 1 } else { 0 };
+            self.short_streak = if short {
+                self.short_streak.saturating_add(1)
+            } else {
+                0
+            };
         } else if !end.by_autopilot && end.wall.is_none() && !end.aborted && !self.left {
             // Someone else's turn (a person's, or one codex-alab did not type) counts as
             // aterm's `TurnEndState` counts it: under `min_work` it is short and the act that
             // answers it backs off (2 min after one); real work ends the streak. A person's
             // own exchange left to them (Land's opening one, or an Off's) moves it not.
             self.short_streak = if end.worked < t.min_work {
-                self.short_streak + 1
+                self.short_streak.saturating_add(1)
             } else {
                 0
             };
@@ -2468,6 +2561,14 @@ impl ThreadState {
             .map(|c| c.found.as_ref())
     }
 
+    /// THE CREDENTIAL LINE THIS POINT OWES the worker ([`credential_need::told_line`]): what
+    /// the runtime resolved of the point's credential lines that this session has not told, and
+    /// its keys.
+    pub fn credential_owed(&self) -> Option<(String, Vec<String>)> {
+        let lines = self.point.as_ref()?.credential_lines();
+        credential_need::told_line(&lines, &self.credentials, &self.credentials_told)
+    }
+
     /// The decided act was carried out at `now`. An [`Act::Attention`] answers nothing: the
     /// point stands until a turn's end replaces it, so a point whose attention a passive spell
     /// cleared (`Supervisor::stand_by`, a release) is decided, and raised, again once codex-alab
@@ -2507,6 +2608,11 @@ impl ThreadState {
             Act::Type { rule, text } => {
                 if *rule == words::RULE_POLICY_CONTINUE {
                     self.policy_continued = true;
+                }
+                if *rule == RULE_CREDENTIAL
+                    && let Some((_, keys)) = self.credential_owed()
+                {
+                    self.credentials_told.extend(keys);
                 }
                 // THE LINES THE GO-AHEAD ANSWERS, whose ack it does not owe
                 // ([`Needs::ack_owed_past`]): its park's, read off the point it answers, or those
@@ -3185,7 +3291,7 @@ impl ThreadState {
 
     fn tried_wall(&mut self, now: Instant) {
         if let Some(wall) = &mut self.wall {
-            wall.attempts += 1;
+            wall.attempts = wall.attempts.saturating_add(1);
             wall.last_try = Some(now);
             wall.answer_owed = true;
         }
@@ -3656,7 +3762,56 @@ pub fn decide_with_usage(
     jitter: Duration,
     restored: bool,
 ) -> Decision {
-    let mut decision = decide_inner(s, p, t, now, jitter, restored);
+    guard_decision(
+        decide_inner(s, p, t, now, jitter, restored),
+        s,
+        p,
+        t,
+        now,
+        jitter,
+    )
+}
+
+/// A clean repository cannot finish a positively bound, incomplete native goal.
+/// Use the same pacing and final guards as every ordinary continuation. The
+/// runtime independently rechecks goal identity and budget under its permit.
+pub(crate) fn continue_original_goal(
+    s: &ThreadState,
+    p: &Policy,
+    t: &Timing,
+    now: Instant,
+    jitter: Duration,
+) -> Decision {
+    let decision = match s.point.as_ref() {
+        Some(end) if p.continue_on => paced(
+            s,
+            p,
+            t,
+            end,
+            now,
+            words::RULE_CONTINUE,
+            words::MODEL_BLOCKED_GOAL_CONTINUE.to_owned(),
+        ),
+        _ => Decision::nothing("the original goal has no authorized continuation"),
+    };
+    guard_decision(decision, s, p, t, now, jitter)
+}
+
+fn guard_decision(
+    mut decision: Decision,
+    s: &ThreadState,
+    p: &Policy,
+    t: &Timing,
+    now: Instant,
+    jitter: Duration,
+) -> Decision {
+    if s.retry_clock_refused.is_some() {
+        // Off is enforced by the supervisor before this decider runs.
+        return Decision::attention(
+            "api",
+            "the saved provider wait has no verifiable boot clock",
+        );
+    }
     // A PARK THE PERSON'S HOUR HOLDS IS DECIDED AGAIN AT THE HOUR'S END (aterm's
     // `GO_AHEAD_HOUR`): nothing typed here would otherwise stand on an unchanged point past the
     // hour, as a same reply's hold does.
@@ -4054,6 +4209,17 @@ fn decide_inner(
     if !p.continue_on && (done || gate_ask.is_none()) {
         return Decision::nothing("continue is off");
     }
+    // Saying go cannot supply the stored precondition. Resolve it first; independent
+    // credential needs retain their existing ordering.
+    if park
+        .as_ref()
+        .or(first.as_ref())
+        .is_some_and(|park| !park.credential_lines.is_empty())
+        && let Some((text, _)) = s.credential_owed()
+    {
+        let text = words::act_words_ruled(&text, &[], standing_rules(p));
+        return paced(s, p, t, end, now, RULE_CREDENTIAL, text);
+    }
     // The go-ahead outranks the done check and Land's own acts: the work it names is the work
     // they would ask for. Its ack owes none of the lines it answers.
     if let Some(park) = &park {
@@ -4089,6 +4255,14 @@ fn decide_inner(
                 &[words::reversible_clause(owed && s.needs.destroy()), ack],
             ),
         );
+    }
+    // THE CREDENTIAL LINE (owner, 2026-11-12: a credential is never a person's need): what
+    // codex-alab found or filed for the point's credential lines, told once a fact
+    // ([`credential_need::told_line`]). It outranks the done check and Land's own acts, as the
+    // go-ahead does: the worker records the step it blocks and goes on.
+    if let Some((text, _)) = s.credential_owed() {
+        let text = words::act_words_ruled(&text, &[], standing_rules(p));
+        return paced(s, p, t, end, now, RULE_CREDENTIAL, text);
     }
     let held = s.go_ahead_held(now);
     if mode == Mode::Land {

@@ -10,6 +10,7 @@ const LEGACY_SAFETY_ACCESS_BLOCK_PREFIX: &str =
     "Invalid prompt: we've limited access to this content for safety reasons.";
 const BIO_POLICY_SAFETY_ACCESS_BLOCK_PREFIX: &str =
     "This content was flagged for possible biological risk.";
+pub(super) const DAYBREAK_RECOVERY_VIEW_ID: &str = "daybreak-policy-recovery";
 
 pub(super) fn is_bio_policy_error(message: &str) -> bool {
     is_safety_access_block_message(message)
@@ -449,12 +450,14 @@ impl ChatWidget {
         self.finalize_turn();
         self.add_to_history(history_cell::new_cyber_policy_error_event(notice));
         if notice == crate::daybreak::Notice::Disabled
+            && self.config.features.enabled(Feature::SafetyRecourse) // ALAB(safety-recourse): access offers stay informational by default.
             && !self.alab_autonomous_root_active() // ALAB(recovery): preserve access while the harness advances permitted work.
             && !self.thread_usage.replaying_turn_completion
             && !self.blocks_direct_input
             && let Some(thread_id) = self.thread_id
         {
             self.bottom_pane.show_selection_view(SelectionViewParams {
+                view_id: Some(DAYBREAK_RECOVERY_VIEW_ID), // ALAB(safety-recourse): opt-out can dismiss this offer.
                 title: Some("Turn on Daybreak for your next request?".into()),
                 items: vec![
                     SelectionItem {

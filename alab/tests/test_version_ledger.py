@@ -573,6 +573,27 @@ class ReleaseRecordTests(Scratch):
         process = self.hook(PUB_SOURCE_COMMIT=source, PUB_VERSION="0.1.0")
         self.assertEqual(process.returncode, 0, process.stderr)
 
+    def test_pre_promote_binds_every_consumed_history_runtime_helper(self):
+        self.on(self.u3, "main-on-u3")
+        self.layer(ledger=HEADER + self.row("0.1.0", "0.164.0"))
+        helpers = ("history_pagination.py", "capacity_exec.py", "quota_resume.py")
+        directory = self.alab / "alab/smoke"
+        directory.mkdir()
+        for name in helpers:
+            (directory / name).write_text("# original runtime input DATA\n")
+        self.git(self.alab, "add", "alab/smoke")
+        source = self.commit(self.alab, "original runtime inputs", "2026-10-23T15:00:00+0000")
+        for name in helpers:
+            with self.subTest(helper=name):
+                (directory / name).write_text("# substituted runtime input DATA\n")
+                self.git(self.alab, "add", "alab/smoke/" + name)
+                self.commit(self.alab, "different runtime helper", "2026-10-23T15:01:00+0000")
+                process = self.hook(PUB_SOURCE_COMMIT=source, PUB_VERSION="0.1.0")
+                self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
+                self.assertIn("this checkout's release gate", process.stderr)
+                self.assertFalse((self.alab / ".git/proof-gate-called").exists())
+                self.git(self.alab, "checkout", "-q", "--detach", source)
+
     @unittest.skip(CERTIFIED_HOOK_NOTE)
     def test_pre_promote_cannot_prove_modified_inputs_for_an_unmodified_release_source(self):
         self.on(self.u3, "main-on-u3")

@@ -20,6 +20,8 @@ use crate::tool::protocol_goal_from_state;
 use crate::tool::state_status_from_protocol;
 use crate::tool::validate_goal_budget;
 
+#[path = "../../../alab-autopilot/glue/goal_persistence_api.rs"] mod alab_persistence; // ALAB(storage): validation refusals differ from failed or cancelled goal intent recording.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalServiceError {
     InvalidRequest(String),
@@ -100,10 +102,14 @@ impl GoalSetOutcome {
 
 #[derive(Debug, Default)]
 pub struct GoalService {
-    runtimes: Mutex<HashMap<String, Weak<GoalRuntimeHandle>>>,
+    runtimes: Arc<Mutex<HashMap<String, Weak<GoalRuntimeHandle>>>>, // ALAB(storage-status): watchers retain only a Weak registry, never the server.
 }
 
 impl GoalService {
+    pub fn alab_runtime_status_snapshot(&self, thread_id: ThreadId) -> Option<codex_protocol::protocol::AlabGoalRuntimeSnapshot> { self.runtime_for_thread(thread_id).and_then(|runtime| runtime.alab_runtime_status_snapshot()) } // ALAB(storage-status): exact registered owner capture and native transport stamp.
+
+    pub fn alab_emit_runtime_status(&self, thread_id: ThreadId) { if let Some(runtime) = self.runtime_for_thread(thread_id) { runtime.alab_emit_runtime_status(); } } // ALAB(storage-status): reattach observes native owner without reading SQLite.
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -207,6 +213,7 @@ impl GoalService {
             && let Err(err) = runtime.prepare_external_goal_mutation().await
         {
             tracing::warn!("failed to prepare external goal mutation: {err}");
+            if codex_alab_core::active() { return Err(GoalServiceError::Internal(err)); } // ALAB(storage): a replacement cannot erase unflushed or ambiguously committed usage.
         }
 
         let existing_goal = state_db
@@ -221,7 +228,8 @@ impl GoalService {
                 "cannot update goal for thread {thread_id}: no goal exists"
             )));
         }
-        record_user_instruction.await?;
+        self.alab_record_goal_instruction(runtime.as_ref(), record_user_instruction).await?; // ALAB(storage): healthy pre-write refusal does not manufacture a failed-persistence hold.
+        let alab_mutation = runtime.as_ref().and_then(|runtime| runtime.alab_begin_goal_mutation()); // ALAB(storage): external status intent revokes old stops and holds failed or cancelled writes.
 
         let (goal, previous_goal) = if let Some(objective) = objective {
             if let Some(existing_goal) = existing_goal.as_ref() {
@@ -294,6 +302,7 @@ impl GoalService {
         };
 
         if let Some(runtime) = runtime.as_ref() {
+            if let Some(alab_mutation) = alab_mutation { alab_mutation.commit_mutation(); } // ALAB(storage): acknowledge the native SQL mutation before releasing its permit.
             runtime.clear_pending_turn_start_options().await;
         }
 
@@ -330,10 +339,12 @@ impl GoalService {
             && let Err(err) = runtime.prepare_external_goal_mutation().await
         {
             tracing::warn!("failed to prepare external goal mutation: {err}");
+            if codex_alab_core::active() { return Err(GoalServiceError::Internal(err)); } // ALAB(storage): a replacement cannot erase unflushed or ambiguously committed usage.
         }
 
         // A failed set can leave authorization in history without a goal row.
-        record_user_instruction.await?;
+        self.alab_record_goal_instruction(runtime.as_ref(), record_user_instruction).await?; // ALAB(storage): healthy pre-write refusal does not manufacture a failed-persistence hold.
+        let alab_mutation = runtime.as_ref().and_then(|runtime| runtime.alab_begin_goal_mutation()); // ALAB(storage): external status intent revokes old stops and holds failed or cancelled writes.
 
         let cleared_goal = state_db
             .thread_goals()
@@ -342,6 +353,7 @@ impl GoalService {
             .map_err(|err| {
                 GoalServiceError::Internal(format!("failed to clear thread goal: {err}"))
             })?;
+        if let Some(alab_mutation) = alab_mutation { alab_mutation.commit_mutation(); } // ALAB(storage): successful clear acknowledges its own held intent under the mutation permit.
         let cleared = cleared_goal.is_some();
         if cleared && let Some(runtime) = runtime.as_ref() {
             runtime.clear_pending_turn_start_options().await;
@@ -361,6 +373,7 @@ impl GoalService {
     pub(crate) fn register_runtime(&self, runtime: &Arc<GoalRuntimeHandle>) {
         self.runtimes()
             .insert(runtime.thread_id().to_string(), Arc::downgrade(runtime));
+        runtime.alab_watch_runtime_status(Arc::downgrade(&self.runtimes)); // ALAB(storage-status): settled owners wake the typed host transport.
     }
 
     pub(crate) fn unregister_runtime(&self, runtime: &Arc<GoalRuntimeHandle>) {
@@ -371,6 +384,7 @@ impl GoalService {
             .get(&key)
             .is_some_and(|registered| registered.ptr_eq(&runtime))
         {
+            if let Some(runtime) = runtime.upgrade() { runtime.alab_retire_runtime_status(); } // ALAB(storage-status): retirement precedes replacement publication under the registry lock.
             runtimes.remove(&key);
         }
     }

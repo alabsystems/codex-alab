@@ -2005,6 +2005,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-alab-api-tests"
+version = "0.0.0"
+dependencies = [
+ "codex-alab-core",
+ "codex-api",
+ "codex-http-client",
+ "futures",
+ "http 1.4.0",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "codex-alab-aterm"
 version = "0.0.0"
 dependencies = [
@@ -2049,6 +2065,7 @@ dependencies = [
  "codex-protocol",
  "codex-shell-command",
  "codex-state",
+ "codex-thread-store",
  "codex-utils-path-uri",
  "codex-utils-process",
  "codex-utils-rustls-provider",
@@ -2060,6 +2077,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tempfile",
  "tokio",
@@ -2126,6 +2144,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-alab-kimi"
+version = "0.0.0"
+dependencies = [
+ "codex-api",
+ "codex-http-client",
+ "codex-model-provider-info",
+ "codex-models-manager",
+ "codex-protocol",
+ "http 1.4.0",
+ "pretty_assertions",
+ "serde_json",
+]
+
+[[package]]
 name = "codex-alab-quota-recovery"
 version = "0.0.0"
 dependencies = [
@@ -2147,6 +2179,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-alab-record-contracts"
+version = "0.0.0"
+dependencies = [
+ "codex-alab-tui",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "codex-alab-release"
 version = "0.0.0"
 dependencies = [
@@ -2157,6 +2198,23 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "toml 0.9.11+spec-1.1.0",
+]
+
+[[package]]
+name = "codex-alab-state-contracts"
+version = "0.0.0"
+dependencies = [
+ "codex-alab-core",
+ "codex-api",
+ "codex-http-client",
+ "codex-state",
+ "futures",
+ "http 1.4.0",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3227,6 +3285,7 @@ dependencies = [
  "codex-agent-message-board-host",
  "codex-agent-roles",
  "codex-alab-core",
+ "codex-alab-kimi",
  "codex-alab-quota-recovery",
  "codex-analytics",
  "codex-api",
@@ -4592,6 +4651,7 @@ dependencies = [
  "chrono",
  "codex-agent-identity",
  "codex-alab-core",
+ "codex-alab-kimi",
  "codex-api",
  "codex-aws-auth",
  "codex-features",

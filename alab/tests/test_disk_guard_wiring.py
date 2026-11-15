@@ -35,8 +35,7 @@ class DiskGuardWiringTests(unittest.TestCase):
         self.recorder.write_text(
             PYTHON_ENTRY + f"import json, os, sys\nfrom pathlib import Path\n"
             "if (any(Path(arg).name == 'package_cache.py' for arg in sys.argv[1:])\n"
-            "    or sys.argv[1:] == ['-I', '-c', 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)']\n"
-            "    or sys.argv[1:] == ['-I', '-c', 'import sys; sys.exit(sys.version_info < (3, 11))']):\n"
+            "    or sys.argv[1:3] == ['-I', '-c']):\n"
             f"    os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n"
             f"with Path({str(self.record)!r}).open('x') as stream:\n"
             "    json.dump(sys.argv[1:], stream)\n")
