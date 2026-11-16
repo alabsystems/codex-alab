@@ -199,6 +199,8 @@ elif args[:1] == ["metadata"]:
     document = {{"packages": packages, "workspace_root": str(metadata_here),
                 "target_directory": str(metadata_target),
                 "workspace_members": [package["id"] for package in packages]}}
+    if not runner_metadata and mode.get("helper_metadata") == "wrong_tree":
+        document["workspace_root"] = str(metadata_here.parent)
     with (fake / "metadata-observations.jsonl").open("a") as record:
         record.write(json.dumps({{"side": side, "runner": runner_metadata, "document": document}}) + "\\n")
     if runner_metadata:
@@ -362,6 +364,11 @@ elif "build" in args:
             write_helper(other, name, "ambiguous-second")
             print(json.dumps(helper_record(name, other)))
 elif "test" in args:
+    if mode.get("observe_helper_scratch"):
+        snapshots = [{{"directory": str(directory), "files": sorted(path.name for path in directory.iterdir())}}
+                     for directory in sorted(effective_target.glob("alab-helpers.*"))]
+        with (fake / "helper-scratch-observations.jsonl").open("a") as record:
+            record.write(json.dumps(snapshots) + "\\n")
     if "--lib" in args:
         target = Path(os.environ.get("CARGO_TARGET_DIR", str(here / "target")))
         selected_packages = [args[index + 1] for index, arg in enumerate(args) if arg == "-p"]
@@ -439,6 +446,16 @@ elif "test" in args:
                 print("error: test failed, to rerun pass `-p " + package + " --lib`", file=sys.stderr)
             any_failed = any_failed or result.returncode != 0
         sys.exit(101 if any_failed else 0)
+    selected_packages = [args[index + 1] for index, arg in enumerate(args) if arg == "-p"]
+    if "codex-alab-autopilot" in selected_packages:
+        require_v8()
+        name = "codex-code-mode-host"
+        expected = effective_target / "native helper output" / name
+        path = os.environ.get("CARGO_BIN_EXE_" + name,
+                              os.environ.get("CARGO_BIN_EXE_" + name.replace("-", "_")))
+        if (path != str(expected) or not expected.is_file()
+                or subprocess.run([path], capture_output=True, text=True, check=True).stdout.strip() != name):
+            sys.exit("fake cargo: raw Autopilot tests lack their prepared host")
     print("test result: ok. 0 passed; 0 failed; 0 ignored")
 else:
     sys.exit("fake cargo: unexpected " + " ".join(args))
@@ -956,6 +973,204 @@ raise SystemExit(mode.get("runtime_failure", 0))
         self.assertEqual(code, 0, stderr)
         self.assert_prepared("ours")
         self.assertEqual(self.compiler_calls("pristine"), [])
+
+    def add_raw_autopilot(self):
+        self.write(self.repo / "codex-rs/alab-autopilot/Cargo.toml",
+                   '[package]\nname = "codex-alab-autopilot"\nversion = "0.0.0"\n')
+        self.write(self.repo / "codex-rs/alab-autopilot/src/lib.rs", "pub fn alab() {}\n")
+        self.commit("include the raw Autopilot host consumer")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+    def raw_children(self):
+        children = [json.loads(line) for line in (self.fake / "environments.jsonl").read_text().splitlines()]
+        return [child for child in children if child["side"] == "ours"
+                and "test" in child["args"] and "--lib" not in child["args"]]
+
+    def test_raw_alab_tests_prepare_the_host_without_narrowing_cargo_scope(self):
+        self.add_raw_autopilot()
+        self.unit_mode(ours="ok", pristine="ok")
+        for alias in ("codex-code-mode-host", "codex_code_mode_host"):
+            self.assertEqual(self.environment["CARGO_BIN_EXE_" + alias], str(self.fake / "wrong helper"))
+        code, stderr = self.check(CLEAN)
+        self.assertEqual(code, 0, stderr)
+        raw = self.raw_children()
+        self.assertEqual(len(raw), 1, raw)
+        packages = sorted(manifest.parent.name for manifest in
+                          (self.repo / "codex-rs").glob("alab-*/Cargo.toml"))
+        expected = ["--unverified", "test", "--locked", "--no-fail-fast"]
+        for package in packages:
+            expected.extend(["-p", "codex-" + package])
+        self.assertEqual(raw[0]["args"], expected)
+        host = str(Path(raw[0]["target"]) / "native helper output/codex-code-mode-host")
+        for alias in ("codex-code-mode-host", "codex_code_mode_host"):
+            self.assertEqual(raw[0]["helpers"]["CARGO_BIN_EXE_" + alias], host)
+        calls = self.calls("ours")
+        host_build = next(at for at, call in enumerate(calls) if "--bin codex-code-mode-host" in call)
+        raw_test = next(at for at, call in enumerate(calls) if " test " in call and "--lib" not in call)
+        self.assertLess(host_build, raw_test)
+        self.assertIn("ours:codex-code-mode-host", self.helper_invocations("ours"))
+
+    def test_raw_alab_preparation_failures_never_launch_tests(self):
+        self.add_raw_autopilot()
+        target = self.repo / "codex-rs/target"
+        target.mkdir(parents=True)
+        body = '''set -euo pipefail
+. "$1/alab/lib.sh"
+. "$1/alab/unit-tests.sh"
+cargo="$ALAB_CARGO"
+all_alab_tests "$1" "$2" "$3" -p codex-alab-core -p codex-alab-autopilot
+'''
+        for at, mode in enumerate(({"v8_failure": "ours"}, {"build_failure": "ours"},
+                                   {"helper_metadata": "wrong_tree"},
+                                   {"artifacts": "missing", "artifact_helper": "codex-code-mode-host"})):
+            with self.subTest(mode=mode):
+                self.unit_mode(**mode)
+                (self.fake / "environments.jsonl").unlink(missing_ok=True)
+                process = subprocess.run(["/bin/bash", "-c", body, "raw-preparation-failure",
+                                          str(self.repo), str(target), str(self.fake / f"raw-helpers-{at}")],
+                                         cwd=self.repo, env=self.environment, capture_output=True,
+                                         text=True, timeout=60)
+                self.assertNotEqual(process.returncode, 0, process.stderr + process.stdout)
+                self.assertEqual(self.raw_children(), [])
+                if "helper_metadata" in mode:
+                    self.assertIn("helper metadata belongs to another workspace", process.stderr)
+
+    def test_raw_alab_tests_refuse_an_empty_selection_before_creating_outputs(self):
+        target = self.repo / "codex-rs/empty-target"
+        helper = self.fake / "empty-helpers"
+        body = '''set -euo pipefail
+. "$1/alab/lib.sh"
+. "$1/alab/unit-tests.sh"
+cargo="$ALAB_CARGO"
+all_alab_tests "$1" "$2" "$3"
+'''
+        process = subprocess.run(["/bin/bash", "-c", body, "raw-empty-selection",
+                                  str(self.repo), str(target), str(helper)], cwd=self.repo,
+                                 env=self.environment, capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(process.returncode, 0, process.stderr + process.stdout)
+        self.assertFalse(target.exists())
+        self.assertFalse(helper.exists())
+        self.assertEqual(self.calls("ours"), [])
+
+    def test_shared_prerequisites_preserve_the_callers_exit_trap(self):
+        self.add_raw_autopilot()
+        target = self.repo / "codex-rs/target"
+        target.mkdir(parents=True)
+        body = '''set -euo pipefail
+. "$1/alab/lib.sh"
+. "$1/alab/unit-tests.sh"
+cargo="$ALAB_CARGO"
+export CARGO_TARGET_DIR="$2"
+packages=(-p "$5")
+tree_config=()
+test_command=(/usr/bin/env)
+native_test_requirements
+trap 'printf "caller cleanup\\n" > "$4"' EXIT
+before="$(trap -p EXIT)"
+before_cwd="$(pwd -P)"
+rc=0
+native_test_prerequisites "$1" "$2" "$3" 0 1 || rc=$?
+[[ "$(trap -p EXIT)" == "${before}" ]] || exit 99
+[[ "$(pwd -P)" == "${before_cwd}" ]] || exit 98
+exit "${rc}"
+'''
+        for at, (package, mode, succeeds) in enumerate((
+                ("codex-alab-autopilot", {}, True),
+                ("codex-alab-autopilot", {"artifacts": "missing",
+                                           "artifact_helper": "codex-code-mode-host"}, False),
+                ("codex-alab-core", {}, True))):
+            with self.subTest(package=package, mode=mode):
+                self.unit_mode(**mode)
+                helper = self.fake / f"trap-helpers-{at}"
+                helper.mkdir()
+                marker = self.fake / f"trap-cleanup-{at}"
+                process = subprocess.run(["/bin/bash", "-c", body, "shared-prerequisite-trap",
+                                          str(self.repo), str(target), str(helper), str(marker), package],
+                                         cwd=self.repo, env=self.environment, capture_output=True,
+                                         text=True, timeout=60)
+                self.assertEqual(process.returncode == 0, succeeds, process.stderr + process.stdout)
+                self.assertNotEqual(process.returncode, 99, "shared preparation changed the caller trap")
+                self.assertNotEqual(process.returncode, 98, "shared preparation changed the caller cwd")
+                self.assertEqual(marker.read_text(), "caller cleanup\n")
+
+    def test_native_requirement_plan_is_pure_for_helper_v8_and_metadata_unions(self):
+        body = '''set -euo pipefail
+. "$1/alab/unit-tests.sh"
+shift
+packages=("$@")
+native_test_requirements
+printf '%s %s %s %s\\n' "$need_metadata" "$need_v8" "$need_stdio" "$need_host"
+'''
+        for names, expected in (
+                (("codex-alab-core",), [0, 0, 0, 0]),
+                (("codex-code-mode-host",), [0, 1, 0, 0]),
+                (("codex-code-mode-runtime",), [0, 1, 0, 0]),
+                (("codex-alab-autopilot",), [1, 1, 0, 1]),
+                (("codex-core",), [1, 1, 1, 1]),
+                (("codex-mcp",), [1, 0, 0, 0]),
+                (("codex-mcp", "codex-alab-autopilot", "codex-app-server"), [1, 1, 1, 1])):
+            with self.subTest(packages=names):
+                selectors = [value for name in names for value in ("-p", name)]
+                process = subprocess.run(["/bin/bash", "-c", body, "native-requirement-plan",
+                                          str(self.repo), *selectors], cwd=self.repo,
+                                         env=self.environment, capture_output=True, text=True, timeout=60)
+                self.assertEqual(process.returncode, 0, process.stderr)
+                self.assertEqual([int(value) for value in process.stdout.split()], expected)
+                self.assertEqual(self.calls("ours"), [])
+                self.assertFalse((self.repo / "codex-rs/target").exists())
+
+    def test_plain_helperless_and_v8_only_units_allocate_no_helper_scratch(self):
+        target = self.repo / "codex-rs/target"
+        target.mkdir(parents=True)
+        body = '''set -euo pipefail
+. "$1/alab/lib.sh"
+. "$1/alab/unit-tests.sh"
+cargo="$ALAB_CARGO"
+packages=(-p "$3")
+mktemp() { printf 'unexpected helper scratch allocation\\n' >&2; return 97; }
+rm() { printf 'unexpected helper scratch cleanup\\n' >&2; return 98; }
+unit_tests "$1" "$2"
+'''
+        for package, v8_queries in (("codex-alab-core", 0), ("codex-code-mode-host", 1)):
+            with self.subTest(package=package):
+                self.unit_mode(ours="ok")
+                self.clear_helper_observations()
+                process = subprocess.run(["/bin/bash", "-c", body, "helperless-unit-scratch",
+                                          str(self.repo), str(target), package], cwd=self.repo,
+                                         env=self.environment, capture_output=True, text=True, timeout=60)
+                self.assertEqual(process.returncode, 0, process.stderr + process.stdout)
+                self.assertEqual(list(target.glob("alab-helpers.*")), [])
+                calls = self.calls("ours")
+                self.assertEqual(sum(" test " in call for call in calls), 1)
+                self.assertEqual(sum("--version --verbose" in call for call in calls), v8_queries)
+                self.assertFalse(any(" metadata " in call or " build " in call for call in calls), calls)
+
+    def test_unrecorded_host_unit_does_not_write_a_discarded_artifact_log(self):
+        self.add_raw_autopilot()
+        self.unit_mode(ours="ok", observe_helper_scratch=True)
+        target = self.repo / "codex-rs/target"
+        target.mkdir(parents=True)
+        body = '''set -euo pipefail
+. "$1/alab/lib.sh"
+. "$1/alab/unit-tests.sh"
+cargo="$ALAB_CARGO"
+packages=(-p codex-alab-autopilot)
+unit_tests "$1" "$2"
+'''
+        process = subprocess.run(["/bin/bash", "-c", body, "unrecorded-host-artifacts",
+                                  str(self.repo), str(target)], cwd=self.repo,
+                                 env=self.environment, capture_output=True, text=True, timeout=60)
+        self.assertEqual(process.returncode, 0, process.stderr + process.stdout)
+        observations = [json.loads(line) for line in
+                        (self.fake / "helper-scratch-observations.jsonl").read_text().splitlines()]
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(len(observations[0]), 1)
+        self.assertEqual(observations[0][0]["files"], ["metadata.json"])
+        self.assertFalse(Path(observations[0][0]["directory"]).exists())
+        self.assertEqual(list(target.glob("alab-helpers.*")), [])
+        host = str(target / "native helper output/codex-code-mode-host")
+        for alias in ("codex-code-mode-host", "codex_code_mode_host"):
+            self.assertEqual(self.unit_children("ours")[0]["helpers"]["CARGO_BIN_EXE_" + alias], host)
 
     def test_standalone_autopilot_record_mode_authenticates_only_its_host(self):
         self.write(self.repo / "codex-rs/alab-autopilot/Cargo.toml",

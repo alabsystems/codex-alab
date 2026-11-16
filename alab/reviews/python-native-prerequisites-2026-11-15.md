@@ -145,3 +145,9 @@ failures/errors/skips and actual exit zero. Its two-file record hash is
 The repair touches no successful-discovery/native execution path; these focused
 controls cover its demonstrated failure path without claiming a new complete
 workflow, application certificate or installation on this later source.
+
+The later [starting-main comparison](recovery-main-comparison-2026-11-15.md)
+measures and removes quadratic missing/unfinished-ID lookups while preserving
+ordered output and duplicate checks. Its scoped comparisons, regression controls
+and native composition retain their own source identities; the earlier complete
+workflow observations above are not relabeled as later-source qualification.

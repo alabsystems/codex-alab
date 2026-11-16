@@ -422,6 +422,64 @@ fn array_shaped_bad_requests_remain_terminal() {
 }
 
 #[test]
+fn explicit_request_refusals_cannot_become_opaque_outage_recovery() {
+    let body = r#"{"detail":"Bad Request"}"#;
+    let now = Instant::now();
+    let timing = Timing::default();
+    for auto_compact in [false, true] {
+        let error = CodexErr::InvalidRequest(body.into());
+        let wall = crate::extension::classify(
+            &error.to_codex_protocol_error(),
+            error.details(),
+            auto_compact,
+        )
+        .expect("an explicit request refusal has a terminal wall");
+        assert!(matches!(wall, Wall::Fatal { .. }), "{wall:?}");
+        let refusal = decide(
+            &at_wall(wall, now, &timing),
+            &policy(),
+            &timing,
+            now,
+            Duration::ZERO,
+        );
+        assert!(matches!(refusal.act, Act::Attention { .. }), "{refusal:?}");
+
+        let error = CodexErr::Stream(format!(
+            "{}{body}",
+            codex_alab_core::request_error::OPAQUE_BAD_REQUEST_PREFIX,
+        ));
+        let wall = crate::extension::classify(
+            &error.to_codex_protocol_error(),
+            error.details(),
+            auto_compact,
+        )
+        .expect("a normalized opaque HTTP rejection retains recovery");
+        assert!(
+            matches!(wall, Wall::Server { cut_off: false, .. }),
+            "{wall:?}"
+        );
+        let retry = decide(
+            &at_wall(wall, now, &timing),
+            &policy(),
+            &timing,
+            now,
+            Duration::ZERO,
+        );
+        assert!(
+            matches!(
+                retry.act,
+                Act::Type {
+                    rule: crate::words::RULE_API_RETRY,
+                    ..
+                }
+            ),
+            "{retry:?}"
+        );
+        assert!(retry.not_before.is_some_and(|due| due > now));
+    }
+}
+
+#[test]
 fn a_saturated_restored_retry_count_keeps_the_slowest_rung() {
     let timing = Timing::default();
     let mut now = Instant::now();
@@ -1826,11 +1884,6 @@ fn native_capacity_and_processing_errors_keep_their_recorded_server_classificati
     let policy = policy();
     for (details, expected_info, provider_deadline) in [
         (CodexErrorDetails::Timeout, CodexErrorInfo::Other, None),
-        (
-            CodexErrorDetails::InvalidRequest(r#"{"detail":"Bad Request"}"#.into()),
-            CodexErrorInfo::Other,
-            None,
-        ),
         (
             CodexErrorDetails::Stream(format!(
                 "{}{}",

@@ -102,3 +102,20 @@ run by name the moment anything of a move or an ask exists.
 None of the lost-login cases is in `renewal_matrix.CASES`: their only runs
 used a trial package, which the matrix refuses (`alab/PARALLEL-LOGINS.md`,
 "Trial runs of the lost-login move").
+
+## The shared-pool follow (`tui_shared_pool.py`)
+
+These budgets are that controller's own, in its `BUDGETS` table, and every
+result records the pair it ran with.
+
+| Mode | Inner | Guardian |
+| --- | ---: | ---: |
+| `follow`, `--lost-consume-ack` | 270s | 300s |
+| `--control` | 150s + watch | 180s + watch |
+
+The watch defaults to 120 s and runs 30 to 420 s, so that it ends well short
+of aterm's 600 s canary hold. In the trial runs of 2026-11-15 at
+`314f0ccd89`, the follow and lost-ack runs ended 28.5 s and 33.4 s after the
+controller started. The control ended after 145.5 s, of which 120.1 s was
+its watch. At `6e0631276d` they ended after 24.5 s, 40.1 s and 145.3 s
+(120.1 s of watch).

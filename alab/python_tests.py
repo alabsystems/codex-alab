@@ -54,31 +54,115 @@ def _native_class():
 
 
 class _TrackingResult(unittest.TextTestResult):
-    def __init__(self, stream, descriptions, verbosity, phase):
+    def __init__(self, stream, descriptions, verbosity, phase, selected):
         super().__init__(stream, descriptions, verbosity)
         self.phase = phase
+        self.selected = selected
+        self.active = None
+        self.active_id = None
+        self.outcome_seen = False
+        self.success_seen = False
+
+    def integrity_error(self, code):
+        if code not in self.phase["integrity_errors"]:
+            self.phase["integrity_errors"].append(code)
+
+    def observe_outcome(self, test, *, fixture=False, skipped_subtest=False):
+        # Skipped subtests identify their parent through unittest's test_case link.
+        # Never read their parameter-bearing IDs or duplicate exception text.
+        if not isinstance(test, unittest.TestCase):
+            if (not fixture or not isinstance(test, unittest.suite._ErrorHolder)
+                    or self.active is not None):
+                self.integrity_error("outcome_without_matching_start")
+            return  # Builtin class/module fixture observations have no started case.
+        parent = test
+        if test is not self.active and skipped_subtest:
+            if (not isinstance(test, unittest.case._SubTest) or self.active is None
+                    or getattr(self.active, "_subtest", None) is not test
+                    or test.test_case is not self.active):
+                self.integrity_error("outcome_without_matching_start")
+                return
+            parent = self.active
+        if parent is not self.active:
+            self.integrity_error("outcome_without_matching_start")
+            return
+        if self.success_seen:
+            self.integrity_error("outcome_after_success")
+        self.outcome_seen = True
 
     def startTest(self, test):
-        self.phase["started_ids"].append(test.id())
+        name = test.id()
+        self.phase["started_ids"].append(name)
+        if self.active is not None:
+            self.integrity_error("overlapping_case_start")
+        selected = self.selected.get(id(test))
+        if selected is None or selected[0] is not test or selected[1] != name:
+            self.integrity_error("start_identity_mismatch")
+        self.active, self.active_id = test, name
+        self.outcome_seen = self.success_seen = False
         super().startTest(test)
 
     def stopTest(self, test):
-        self.phase["finished_ids"].append(test.id())
+        name = test.id()
+        self.phase["finished_ids"].append(name)
+        if test is not self.active or name != self.active_id:
+            self.integrity_error("stop_without_matching_start")
+        elif not self.outcome_seen:
+            self.integrity_error("missing_outcome")
+        if test is self.active:
+            self.active = self.active_id = None
         super().stopTest(test)
 
     def addSuccess(self, test):
-        self.phase["successful_ids"].append(test.id())
+        name = test.id()
+        self.phase["successful_ids"].append(name)
+        if test is not self.active:
+            self.integrity_error("success_without_matching_start")
+        else:
+            if name != self.active_id:
+                self.integrity_error("success_identity_mismatch")
+            if self.outcome_seen:
+                self.integrity_error("success_after_outcome")
+            self.outcome_seen = self.success_seen = True
         super().addSuccess(test)
+
+    def addFailure(self, test, err):
+        self.observe_outcome(test)
+        super().addFailure(test, err)
+
+    def addError(self, test, err):
+        self.observe_outcome(test, fixture=True)
+        super().addError(test, err)
+
+    def addSkip(self, test, reason):
+        self.observe_outcome(test, fixture=True, skipped_subtest=True)
+        super().addSkip(test, reason)
+
+    def addExpectedFailure(self, test, err):
+        self.observe_outcome(test)
+        super().addExpectedFailure(test, err)
+
+    def addUnexpectedSuccess(self, test):
+        self.observe_outcome(test)
+        super().addUnexpectedSuccess(test)
+
+    def addSubTest(self, test, subtest, err):
+        if err is not None:
+            self.observe_outcome(test)
+        super().addSubTest(test, subtest, err)
 
 
 def _phase(ids):
     return {"selected_ids": ids, "executed": False, "run_completed": False, "result": None,
-            "started_ids": [], "finished_ids": [], "successful_ids": []}
+            "started_ids": [], "finished_ids": [], "successful_ids": [],
+            "integrity_errors": []}
 
 
 def _run_phase(cases, phase, failfast, stderr):
+    selected = {id(case): (case, name) for case, name in zip(cases, phase["selected_ids"])}
+
     def result_class(stream, descriptions, verbosity):
-        result = _TrackingResult(stream, descriptions, verbosity, phase)
+        result = _TrackingResult(stream, descriptions, verbosity, phase, selected)
         phase["result"] = result
         return result
 
@@ -96,8 +180,12 @@ def _phase_summary(phase, native=False):
     started = phase["started_ids"]
     finished = phase["finished_ids"]
     successful = phase["successful_ids"]
-    complete = (phase["run_completed"] and Counter(started) == Counter(expected)
-                and Counter(finished) == Counter(expected))
+    started_set = set(started)
+    finished_set = set(finished)
+    expected_counts = Counter(expected)
+    successful_counts = Counter(successful)
+    complete = (phase["run_completed"] and Counter(started) == expected_counts
+                and Counter(finished) == expected_counts)
     counts = {
         "tests_run": result.testsRun if result is not None else 0,
         "passed": len(successful),
@@ -108,10 +196,15 @@ def _phase_summary(phase, native=False):
         "unexpected_successes": len(result.unexpectedSuccesses) if result is not None else 0,
     }
     successful_run = result is not None and result.wasSuccessful()
-    qualified = complete and successful_run
+    integrity_errors = list(phase["integrity_errors"])
+    if counts["tests_run"] != len(started):
+        integrity_errors.append("tests_run_mismatch")
+    if not successful_counts <= expected_counts:
+        integrity_errors.append("successful_callback_counts_mismatch")
+    qualified = (complete and successful_run and counts["tests_run"] == len(expected)
+                 and successful_counts <= expected_counts and not integrity_errors)
     if native:
-        qualified = (qualified and counts["tests_run"] == len(expected)
-                     and Counter(successful) == Counter(expected)
+        qualified = (qualified and successful_counts == expected_counts
                      and not any(counts[name] for name in (
                          "skipped", "expected_failures", "unexpected_successes")))
     return {
@@ -120,8 +213,9 @@ def _phase_summary(phase, native=False):
         "complete": complete, "was_successful": successful_run, "qualified": qualified,
         "started_ids": list(started), "finished_ids": list(finished),
         "successful_ids": list(successful),
-        "missing_ids": [name for name in expected if name not in started],
-        "unfinished_ids": [name for name in expected if name not in finished],
+        "integrity_errors": integrity_errors,
+        "missing_ids": [name for name in expected if name not in started_set],
+        "unfinished_ids": [name for name in expected if name not in finished_set],
         "unexpected_ids": sorted(set(started + finished + successful) - set(expected)),
     }
 
@@ -174,6 +268,8 @@ def _run_cases(cases, *, discovery_errors=(), preflight_errors=(), stdout=None, 
         pure = _phase_summary(pure_phase)
         started = native["started_ids"] + pure["started_ids"]
         finished = native["finished_ids"] + pure["finished_ids"]
+        started_set = set(started)
+        finished_set = set(finished)
         full_scope = (not errors and native["complete"] and pure["complete"]
                       and Counter(started) == Counter(ids) and Counter(finished) == Counter(ids))
         success = full_scope and native["qualified"] and pure["qualified"] and interrupted is None
@@ -185,8 +281,8 @@ def _run_cases(cases, *, discovery_errors=(), preflight_errors=(), stdout=None, 
             "full_scope": full_scope, "discovered": len(ids), **counts,
             "phases": {"native": native, "pure": pure},
             "started_ids": started, "finished_ids": finished,
-            "missing_ids": [name for name in ids if name not in started],
-            "unfinished_ids": [name for name in ids if name not in finished],
+            "missing_ids": [name for name in ids if name not in started_set],
+            "unfinished_ids": [name for name in ids if name not in finished_set],
             "preflight_errors": errors, "discovery_error_count": len(discovery_errors),
             "interrupted_type": interrupted,
         }

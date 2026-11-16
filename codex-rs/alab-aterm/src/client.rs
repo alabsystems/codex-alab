@@ -859,6 +859,9 @@ impl Client {
             .request_within(&line, Framing::Status, CLAIM_TIMEOUT)
             .await?;
         if reply.ok().is_none() {
+            // A refusal invalidates the previous proof even if the watch has not
+            // delivered the native clear or replacement yet. Every clone shares it.
+            self.lock().claimed = false;
             return Ok(refused_claim(reply.status));
         }
         let shown = self.status().await;

@@ -13,6 +13,9 @@ mod record_native_transition_tests;
 #[path = "record_custody_tests.rs"]
 mod record_custody_tests;
 
+#[path = "record_sweep_tests.rs"]
+mod record_sweep_tests;
+
 #[path = "model_goal_custody_tests.rs"]
 mod model_goal_custody_tests;
 

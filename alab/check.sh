@@ -365,7 +365,7 @@ alab_build_command "${ALAB_PYTHON}" -I -B -S "${repo_root}/alab/check_runtime.py
   --codex "${own_target}/debug/codex" --source "$(git rev-parse HEAD)" \
   --scratch "${scratch}/reset-runtime" --output "${proof_root}/runtime" || passed $? 1
 if [[ ${#alab_packages[@]} -gt 0 ]]; then
-  alab_build_command "${cargo}" --unverified test --locked --no-fail-fast "${alab_packages[@]}" || passed $? 1
+  all_alab_tests "${repo_root}" "${own_target}" "${scratch}/alab-test-helpers" "${alab_packages[@]}" || passed $? 1
 fi
 # Compile the fixed native kernel-probe driver under the same protected compiler
 # authority. macOS refuses sandbox_apply inside an existing sandbox, so the

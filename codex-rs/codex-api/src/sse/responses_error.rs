@@ -83,6 +83,7 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
                 .message
                 .unwrap_or_else(|| "Invalid request.".to_string()),
         },
+        Some("invalid_request") if codex_alab_core::active() => alab_request_error::invalid_request(error.message), // ALAB(recovery): preserve a specific streamed refusal instead of retrying it.
         Some("policy_capacity_unavailable") => ApiError::PolicyCapacityUnavailable {
             retry_after: retry_after_header,
         },
@@ -104,6 +105,9 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
         },
     }
 }
+
+#[path = "../../../alab-core/glue/responses_request_error.rs"]
+mod alab_request_error; // ALAB(recovery): decoded streamed request refusals keep their existing terminal channel.
 
 fn try_parse_retry_delay(err: &Error) -> Option<Duration> {
     let re = rate_limit_regex();

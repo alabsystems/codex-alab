@@ -24,6 +24,14 @@ pub(crate) struct WebsocketFixture {
 
 impl WebsocketFixture {
     pub(crate) async fn start(failure: Value) -> Self {
+        Self::start_frames(vec![failure]).await
+    }
+
+    pub(crate) async fn start_frames(frames: Vec<Value>) -> Self {
+        Self::start_payloads(frames.into_iter().map(|frame| frame.to_string()).collect()).await
+    }
+
+    pub(crate) async fn start_payloads(payloads: Vec<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("loopback websocket listener");
@@ -65,16 +73,18 @@ impl WebsocketFixture {
                 observed.send(request).is_ok(),
                 "test observes the actual request"
             );
-            // Never send the scripted error until the test confirms the caller's
+            // Never send the scripted frames until the test confirms the caller's
             // subscriber and parent spans have exited. No protocol parsing is copied.
             tokio::time::timeout(WAIT, gate)
                 .await
                 .expect("response release deadline")
                 .expect("caller context exited");
-            tokio::time::timeout(WAIT, socket.send(Message::Text(failure.to_string().into())))
-                .await
-                .expect("websocket response send deadline")
-                .expect("scripted semantic failure");
+            for payload in payloads {
+                tokio::time::timeout(WAIT, socket.send(Message::Text(payload.into())))
+                    .await
+                    .expect("websocket response send deadline")
+                    .expect("scripted response frame");
+            }
             // The consumer can retire the socket immediately after the terminal
             // error. Closing is bounded cleanup, not another protocol assertion.
             let _ = tokio::time::timeout(WAIT, socket.close(None)).await;

@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Capture both streams and the real pipeline status in the caller's admitted target.
 # The caller supplies its already-authorized command; this helper grants no lane.
+# Prefer ordinary libtest capture when requiring test names: --nocapture can
+# interleave fixture diagnostics with result lines. A zero Cargo status does not
+# waive missing names; retain the failure and replay only the affected scope.
 
 alab_run_focused() (
   set -o pipefail

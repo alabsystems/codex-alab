@@ -232,6 +232,7 @@ class PythonWorkflowTests(unittest.TestCase):
         self.assertEqual(len(result.summary["phases"]["pure"]["missing_ids"]), 2)
         self.assertEqual(result.summary["skipped"], 1)
         self.assertEqual(result.summary["tests_run"], 3)
+        self.assertEqual(result.summary["phases"]["pure"].get("integrity_errors", []), [])
 
     def test_pure_expected_failure_and_subtest_skip_keep_standard_outcomes(self):
         with self.fixture() as f:
@@ -307,6 +308,93 @@ class PythonWorkflowTests(unittest.TestCase):
         self.assertFalse(result.summary["full_scope"])
         self.assertTrue(result.summary["phases"]["pure"]["qualified"])
         self.assertIn(original, result.summary["missing_ids"])
+
+    def test_foreign_success_identity_cannot_qualify_complete_pure_coverage(self):
+        with self.fixture() as f:
+            cases = self.cases(f)[:-1]
+            case = cases[-1]
+            original = case.id()
+            foreign = original + ".foreign"
+            reads = 0
+
+            def success_only_foreign_id():
+                nonlocal reads
+                reads += 1
+                # Manifest, phase selection and start retain the real identity;
+                # only addSuccess differs, and stop returns the real identity.
+                return foreign if reads == 4 else original
+
+            case.id = success_only_foreign_id
+            result = self.run_cases(cases)
+        pure = result.summary["phases"]["pure"]
+        for name, actual, expected in (
+                ("identity reads", reads, 5),
+                ("started", pure["started_ids"], [original]),
+                ("finished", pure["finished_ids"], [original]),
+                ("successful", pure["successful_ids"], [foreign]),
+                ("unexpected", pure["unexpected_ids"], [foreign]),
+                ("missing", pure["missing_ids"], []),
+                ("unfinished", pure["unfinished_ids"], []),
+                ("complete", pure["complete"], True),
+                ("full scope", result.summary["full_scope"], True),
+                ("status", result.status, 1),
+                ("qualified", pure["qualified"], False),
+                ("success", result.summary["success"], False)):
+            with self.subTest(observation=name):
+                self.assertEqual(actual, expected)
+
+    def test_duplicate_success_callback_cannot_qualify_complete_pure_coverage(self):
+        with self.fixture() as f:
+            def duplicate_success(case):
+                case._outcome.result.addSuccess(case)
+
+            f.pure.test_one = duplicate_success
+            cases = self.cases(f)[:-1]
+            original = cases[-1].id()
+            result = self.run_cases(cases)
+        pure = result.summary["phases"]["pure"]
+        for name, actual, expected in (
+                ("started", pure["started_ids"], [original]),
+                ("finished", pure["finished_ids"], [original]),
+                ("successful", pure["successful_ids"], [original, original]),
+                ("unexpected", pure["unexpected_ids"], []),
+                ("missing", pure["missing_ids"], []),
+                ("unfinished", pure["unfinished_ids"], []),
+                ("tests run", pure["tests_run"], 1),
+                ("complete", pure["complete"], True),
+                ("full scope", result.summary["full_scope"], True),
+                ("status", result.status, 1),
+                ("qualified", pure["qualified"], False),
+                ("success", result.summary["success"], False)):
+            with self.subTest(observation=name):
+                self.assertEqual(actual, expected)
+
+    def test_corrupt_tests_run_count_cannot_qualify_complete_pure_coverage(self):
+        with self.fixture() as f:
+            def corrupt_count(case):
+                case._outcome.result.testsRun += 1
+
+            f.pure.test_one = corrupt_count
+            cases = self.cases(f)[:-1]
+            original = cases[-1].id()
+            result = self.run_cases(cases)
+        pure = result.summary["phases"]["pure"]
+        for name, actual, expected in (
+                ("started", pure["started_ids"], [original]),
+                ("finished", pure["finished_ids"], [original]),
+                ("successful", pure["successful_ids"], [original]),
+                ("unexpected", pure["unexpected_ids"], []),
+                ("missing", pure["missing_ids"], []),
+                ("unfinished", pure["unfinished_ids"], []),
+                ("selected", pure["selected"], 1),
+                ("tests run", pure["tests_run"], 2),
+                ("complete", pure["complete"], True),
+                ("full scope", result.summary["full_scope"], True),
+                ("status", result.status, 1),
+                ("qualified", pure["qualified"], False),
+                ("success", result.summary["success"], False)):
+            with self.subTest(observation=name):
+                self.assertEqual(actual, expected)
 
     def test_fixed_discovery_flattens_once_without_executing_cases(self):
         with self.fixture() as f:
@@ -500,6 +588,227 @@ class PythonWorkflowTests(unittest.TestCase):
                 self.assertFalse(result.summary["full_scope"])
                 self.assertFalse(result.summary["phases"]["native"]["qualified"])
                 self.assertFalse(result.summary["phases"]["pure"]["executed"])
+
+    def test_case_outcomes_must_belong_to_the_active_selected_object(self):
+        for kind in ("missing terminal", "aliased success", "success after stop",
+                     "passing subtest without terminal"):
+            with self.subTest(kind=kind), self.fixture() as f:
+                alias_checks = []
+
+                def run(case, result):
+                    result.startTest(case)
+                    if kind == "aliased success":
+                        alias = type(case)(case._testMethodName)
+                        alias_checks.extend((alias is not case, alias.id() == case.id()))
+                        result.addSuccess(alias)
+                    elif kind == "passing subtest without terminal":
+                        subcase = type(case)(case._testMethodName)
+                        subcase.test_case = case
+                        subcase.id = lambda: "private-passing-subtest-parameter"
+                        result.addSubTest(case, subcase, None)
+                    result.stopTest(case)
+                    if kind == "success after stop":
+                        result.addSuccess(case)
+                    return result
+
+                f.pure.run = run
+                cases = self.cases(f)[:-1]
+                selected = cases[-1].id()
+
+                def invoke(stdout, stderr):
+                    try:
+                        return WORKFLOW._run_cases(cases, stdout=stdout, stderr=stderr)
+                    except BaseException as error:
+                        return error
+
+                result = self.output(invoke)
+                phase = result.summary["phases"]["pure"]
+                self.assertEqual(phase["tests_run"], 1)
+                self.assertEqual(phase["started_ids"], [selected])
+                self.assertEqual(phase["finished_ids"], [selected])
+                self.assertEqual(phase["unexpected_ids"], [])
+                self.assertTrue(result.summary["phases"]["native"]["qualified"])
+                if kind == "aliased success":
+                    self.assertEqual(alias_checks, [True, True])
+                self.assertNotIn("private-passing-subtest-parameter", result.stdout)
+                with self.subTest(contract="exit"):
+                    self.assertEqual(result.status, 1)
+                with self.subTest(contract="phase qualification"):
+                    self.assertFalse(phase["qualified"])
+                with self.subTest(contract="workflow success"):
+                    self.assertFalse(result.summary["success"])
+                with self.subTest(contract="callback integrity"):
+                    self.assertTrue(phase.get("integrity_errors", []))
+
+    def test_ordinary_alias_parent_link_cannot_supply_a_selected_case_outcome(self):
+        for kind in ("skip", "expected failure"):
+            with self.subTest(kind=kind), self.fixture() as f:
+                alias_checks = []
+
+                def run(case, result):
+                    result.startTest(case)
+                    alias = type(case)(case._testMethodName)
+                    alias.test_case = case
+                    alias_checks.extend((alias is not case, alias.id() == case.id()))
+                    if kind == "skip":
+                        result.addSkip(alias, "ordinary alias skip")
+                    else:
+                        try:
+                            raise AssertionError("ordinary alias expected failure")
+                        except AssertionError:
+                            result.addExpectedFailure(alias, sys.exc_info())
+                    result.stopTest(case)
+                    return result
+
+                f.pure.run = run
+                cases = self.cases(f)[:-1]
+                selected = cases[-1].id()
+                result = self.run_cases(cases)
+                phase = result.summary["phases"]["pure"]
+                self.assertEqual(alias_checks, [True, True])
+                self.assertEqual(phase["started_ids"], [selected])
+                self.assertEqual(phase["finished_ids"], [selected])
+                self.assertEqual(phase["tests_run"], 1)
+                self.assertTrue(phase["complete"])
+                self.assertTrue(result.summary["full_scope"])
+                self.assertEqual(phase["successful_ids"], [])
+                self.assertEqual(phase["unexpected_ids"], [])
+                self.assertEqual(phase["skipped"], int(kind == "skip"))
+                self.assertEqual(phase["expected_failures"], int(kind == "expected failure"))
+                with self.subTest(contract="exit"):
+                    self.assertEqual(result.status, 1)
+                with self.subTest(contract="phase qualification"):
+                    self.assertFalse(phase["qualified"])
+                with self.subTest(contract="workflow success"):
+                    self.assertFalse(result.summary["success"])
+                with self.subTest(contract="callback integrity"):
+                    self.assertTrue(phase.get("integrity_errors", []))
+
+    def test_multiple_subtest_skips_and_expected_failure_are_ordinary_outcomes(self):
+        private_parameter = "private-skipped-subtest-parameter"
+        with self.fixture() as f:
+            def skipped(case):
+                for value in (1, 2):
+                    with case.subTest(value=value, private=private_parameter):
+                        case.skipTest("ordinary optional subcase")
+
+            f.pure.test_one = skipped
+            f.pure.test_two = unittest.expectedFailure(lambda case: case.fail("ordinary expected"))
+            result = self.run_cases(self.cases(f))
+        phase = result.summary["phases"]["pure"]
+        self.assertEqual(result.status, 0)
+        self.assertTrue(result.summary["success"])
+        self.assertTrue(result.summary["full_scope"])
+        self.assertTrue(phase["qualified"])
+        self.assertEqual(phase["tests_run"], 2)
+        self.assertEqual(phase["skipped"], 2)
+        self.assertEqual(phase["expected_failures"], 1)
+        self.assertEqual(phase.get("integrity_errors", []), [])
+        self.assertNotIn(private_parameter, result.stdout)
+
+    def test_multiple_cleanup_errors_are_failures_without_protocol_faults(self):
+        with self.fixture() as f:
+            def cleanup(label):
+                f.events.append(label)
+                raise RuntimeError(label)
+
+            def setup(case):
+                case.addCleanup(cleanup, "first cleanup error")
+                case.addCleanup(cleanup, "second cleanup error")
+
+            f.pure.setUp = setup
+            result = self.run_cases(self.cases(f)[:-1])
+            self.assertEqual(f.events[-3:],
+                             ["pure one", "second cleanup error", "first cleanup error"])
+        phase = result.summary["phases"]["pure"]
+        self.assertEqual(result.status, 1)
+        self.assertFalse(result.summary["success"])
+        self.assertTrue(result.summary["full_scope"])
+        self.assertTrue(phase["complete"])
+        self.assertFalse(phase["qualified"])
+        self.assertEqual(phase["tests_run"], 1)
+        self.assertEqual(phase["errors"], 2)
+        self.assertEqual(phase.get("integrity_errors", []), [])
+
+    def test_fixture_holders_are_not_case_outcomes_during_or_after_execution(self):
+        private_text = "private-fixture-holder-observation"
+        for kind in ("expected failure after stop", "skip during active case"):
+            with self.subTest(kind=kind), self.fixture() as f:
+                def run(case, result):
+                    case.fixture_result = result
+                    unittest.TestCase.run(case, result)
+                    if kind == "expected failure after stop":
+                        try:
+                            raise AssertionError(private_text)
+                        except AssertionError:
+                            result.addExpectedFailure(
+                                unittest.suite._ErrorHolder(private_text), sys.exc_info())
+                    return result
+
+                def method(case):
+                    f.events.append("ordinary pure body")
+                    if kind == "skip during active case":
+                        case.fixture_result.addSkip(
+                            unittest.suite._ErrorHolder(private_text), private_text)
+
+                f.pure.run = run
+                f.pure.test_one = method
+                cases = self.cases(f)[:-1]
+                selected = cases[-1].id()
+
+                def invoke(stdout, stderr):
+                    try:
+                        return WORKFLOW._run_cases(cases, stdout=stdout, stderr=stderr)
+                    except BaseException as error:
+                        return error
+
+                result = self.output(invoke)
+                phase = result.summary["phases"]["pure"]
+                self.assertEqual(f.events[-1], "ordinary pure body")
+                self.assertEqual(phase["started_ids"], [selected])
+                self.assertEqual(phase["finished_ids"], [selected])
+                self.assertEqual(phase["successful_ids"], [selected])
+                self.assertEqual(phase["tests_run"], 1)
+                self.assertEqual(phase["expected_failures"], int(kind == "expected failure after stop"))
+                self.assertEqual(phase["skipped"], int(kind == "skip during active case"))
+                self.assertTrue(phase["complete"])
+                self.assertTrue(phase["was_successful"])
+                self.assertTrue(result.summary["full_scope"])
+                self.assertNotIn(private_text, result.stdout)
+                with self.subTest(contract="exit"):
+                    self.assertEqual(result.status, 1)
+                with self.subTest(contract="phase qualification"):
+                    self.assertFalse(phase["qualified"])
+                with self.subTest(contract="workflow success"):
+                    self.assertFalse(result.summary["success"])
+                with self.subTest(contract="callback integrity"):
+                    self.assertTrue(phase.get("integrity_errors", []))
+
+    def test_completed_pure_class_and_module_teardown_skips_are_fixture_outcomes(self):
+        private_text = "private-ordinary-fixture-skip"
+        for kind in ("class", "module"):
+            with self.subTest(kind=kind), self.fixture() as f:
+                def skipped(*_args):
+                    raise unittest.SkipTest(private_text)
+
+                if kind == "class":
+                    f.pure.tearDownClass = classmethod(skipped)
+                else:
+                    f.pure_module.tearDownModule = skipped
+                result = self.run_cases(self.cases(f))
+                phase = result.summary["phases"]["pure"]
+                self.assertEqual(f.events[-2:], ["pure one", "pure two"])
+                self.assertEqual(result.status, 0)
+                self.assertTrue(result.summary["success"])
+                self.assertTrue(result.summary["full_scope"])
+                self.assertTrue(phase["qualified"])
+                self.assertTrue(phase["complete"])
+                self.assertEqual(phase["tests_run"], 2)
+                self.assertEqual(phase["passed"], 2)
+                self.assertEqual(phase["skipped"], 1)
+                self.assertEqual(phase["missing_ids"], [])
+                self.assertEqual(phase.get("integrity_errors", []), [])
+                self.assertNotIn(private_text, result.stdout)
 
 
 if __name__ == "__main__":

@@ -95,3 +95,10 @@ record import and live timer bounds, not a real Codex application crash, accepte
 external actor, provider retry, physical host sleep or wall-clock step. The
 original backend400 cause remains unknown; the unchanged procedural-macro
 certification boundary still prevents application delivery.
+
+The [starting-main comparison](recovery-main-comparison-2026-11-15.md) found a
+Linux fixture portability issue: different PIDs may share start-tick payloads.
+The corrected assertions compare full PID/kernel-identity tuples, including the
+three readers, and add a Linux-enum collision control. The new source-bound Mac
+replay and lint evidence are recorded separately; earlier Mac results stay valid
+for their recorded sources and do not qualify a live Linux kernel run.

@@ -1981,6 +1981,34 @@ fn retire_path_if_unchanged(
     is_live: impl Fn(u32, Option<&ProcessIdentity>) -> bool,
     after_rename: impl FnOnce(),
 ) -> io::Result<bool> {
+    let identity = source.identity.clone().map(ProcessIdentity::from);
+    capture_path_if(
+        dir,
+        path,
+        source.pid,
+        CapturedAction::Retire,
+        |captured| {
+            read(captured).as_ref() == Some(source) && !is_live(source.pid, identity.as_ref())
+        },
+        after_rename,
+    )
+}
+
+enum CapturedAction {
+    Retire,
+    Restore,
+}
+
+/// Take custody before validating the observed publication. A held observation
+/// is usable only after restoring that same object into an empty original slot.
+fn capture_path_if(
+    dir: &Path,
+    path: &Path,
+    pid: u32,
+    action: CapturedAction,
+    valid: impl FnOnce(&Path) -> bool,
+    after_rename: impl FnOnce(),
+) -> io::Result<bool> {
     static NONCE: AtomicU64 = AtomicU64::new(0);
     // The ordinary sweep recognizes this temporary too. Even an interrupted
     // restoration leaves the captured record discoverable by a later startup.
@@ -1988,7 +2016,7 @@ fn retire_path_if_unchanged(
         let nonce = NONCE.fetch_add(1, Ordering::Relaxed);
         let candidate = dir.join(format!(
             "{}.json.{}-{}-{nonce}.tmp",
-            source.pid,
+            pid,
             std::process::id(),
             codex_alab_core::session::now_ms()
         ));
@@ -2012,8 +2040,8 @@ fn retire_path_if_unchanged(
         };
     }
     after_rename();
-    let identity = source.identity.clone().map(ProcessIdentity::from);
-    if read(&quarantine).as_ref() == Some(source) && !is_live(source.pid, identity.as_ref()) {
+    let valid = valid(&quarantine);
+    if valid && matches!(action, CapturedAction::Retire) {
         fs::remove_file(&quarantine)?;
         return Ok(true);
     }
@@ -2022,11 +2050,27 @@ fn retire_path_if_unchanged(
     match fs::hard_link(&quarantine, path) {
         Ok(()) => {
             let _ = fs::remove_file(&quarantine);
+            return Ok(valid);
         }
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
         Err(err) => return Err(err),
     }
     Ok(false)
+}
+
+/// Renaming into quarantine changes ctime, so compare the inode and its observed
+/// type, size and modification time instead. Parsed equality alone loses fields
+/// belonging to a future writer; an unreadable candidate has no parsed identity.
+fn same_file_snapshot(observed: &fs::Metadata, captured: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    fs::symlink_metadata(captured).is_ok_and(|current| {
+        observed.dev() == current.dev()
+            && observed.ino() == current.ino()
+            && observed.mode() == current.mode()
+            && observed.len() == current.len()
+            && observed.mtime() == current.mtime()
+            && observed.mtime_nsec() == current.mtime_nsec()
+    })
 }
 
 /// The pid a record file (`<pid>.json`) or its temporary (`<pid>.json.<nonce>.tmp`) belongs to.
@@ -2133,8 +2177,11 @@ pub fn sweep_with(
     let Ok(entries) = fs::read_dir(dir) else {
         return 0;
     };
+    // A restoration conflict can retain our new quarantine. It belongs to a
+    // later census, not another iteration of this same startup's observations.
+    let entries = entries.flatten().collect::<Vec<_>>();
     let mut removed = 0;
-    for entry in entries.flatten() {
+    for entry in entries {
         let name = entry.file_name();
         let Some(pid) = name.to_str().and_then(owner_pid) else {
             continue;
@@ -2143,9 +2190,12 @@ pub fn sweep_with(
             continue;
         }
         let path = entry.path();
+        let Ok(observed) = fs::symlink_metadata(&path) else {
+            continue;
+        };
         let record = read(&path).filter(|record| record.pid == pid);
         let written_ms = record.as_ref().map(|record| record.updated_at).or_else(|| {
-            let modified = entry.metadata().ok()?.modified().ok()?;
+            let modified = observed.modified().ok()?;
             let elapsed = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
             u64::try_from(elapsed.as_millis()).ok()
         });
@@ -2163,13 +2213,28 @@ pub fn sweep_with(
         if verdict == Sweep::Leave {
             continue;
         }
-        if let (Sweep::Hold, Some(record)) = (verdict, &record) {
-            on_taken(pid, record);
-            continue;
-        }
-        if fs::remove_file(&path).is_ok() {
-            removed += 1;
-            if let (Sweep::Take, Some(record)) = (verdict, &record) {
+        let action = if verdict == Sweep::Hold {
+            CapturedAction::Restore
+        } else {
+            CapturedAction::Retire
+        };
+        let captured = capture_path_if(
+            dir,
+            &path,
+            pid,
+            action,
+            |captured| {
+                same_file_snapshot(&observed, captured)
+                    && read(captured).filter(|record| record.pid == pid).as_ref() == record.as_ref()
+                    && !is_live(pid, identity.as_ref())
+            },
+            || {},
+        );
+        if matches!(captured, Ok(true)) {
+            if verdict != Sweep::Hold {
+                removed += 1;
+            }
+            if let (Sweep::Take | Sweep::Hold, Some(record)) = (verdict, &record) {
                 on_taken(pid, record);
             }
         }

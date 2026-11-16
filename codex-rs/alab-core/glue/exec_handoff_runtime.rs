@@ -544,34 +544,34 @@ mod unix {
                         turn: root_options.turn().into(),
                         identity,
                     };
-                    let asked = account_recovery::ask_exec(&client, &origin, &kind).await;
-                    if kept && let Some(verdict) = asked.verdict() {
-                        if verdict == Verdict::Declined {
-                            decline(&watch, Some(&origin.turn), &kind);
+                    // What each answer comes to is decided, and tested, in alab-aterm
+                    // (`ExecAsked::step`); each step is done here as it is named.
+                    let step = account_recovery::ask_exec(&client, &origin, &kind)
+                        .await
+                        .step(kept);
+                    tracing::debug!(target: "codex_alab_exec_handoff", ?step, "read native account selection");
+                    if step.keeps() {
+                        watch.decide(&origin.turn, &kind, Verdict::Keep);
+                    }
+                    let destination = match step {
+                        account_recovery::ExecStep::Decline => {
+                            if kept {
+                                decline(&watch, Some(&origin.turn), &kind);
+                            }
                             watch
                                 .changed()
                                 .await
                                 .map_err(|_| "exec quota observation closed")?;
                             continue;
                         }
-                        watch.decide(&origin.turn, &kind, verdict);
-                    }
-                    let account_recovery::ExecAsked::Answered(selection) = asked else {
-                        // Only a host-kept wall goes unasked here, and it was declined above.
-                        watch
-                            .changed()
-                            .await
-                            .map_err(|_| "exec quota observation closed")?;
-                        continue;
+                        account_recovery::ExecStep::Tell(route) => {
+                            no_route(&mut latch, &key, route, &mut watch).await?;
+                            continue;
+                        }
+                        account_recovery::ExecStep::Again { .. } => None,
+                        account_recovery::ExecStep::Move { destination, .. } => Some(destination),
                     };
-                    tracing::debug!(target: "codex_alab_exec_handoff", selected = matches!(selection, Ok(account_recovery::ExecSelection::Selected { .. })), failed = selection.is_err(), "read native account selection");
-                    if matches!(selection, Ok(account_recovery::ExecSelection::NotNeeded)) {
-                        no_route(&mut latch, &key, exec_route::NoRoute::NotNeeded, &mut watch)
-                            .await?;
-                        continue;
-                    }
-                    if let Ok(account_recovery::ExecSelection::Selected { destination, .. }) =
-                        selection
+                    if let Some(destination) = destination
                         && wall.current()
                     {
                         // While armed or reserving, a kept wait does not end on its timer: its

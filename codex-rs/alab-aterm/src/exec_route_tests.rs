@@ -197,6 +197,257 @@ fn a_line_is_written_whole() {
     assert_eq!(out, line.as_bytes());
 }
 
+/// The routes aterm's refusals of a run name, and its `ERR denied` to a process prepare.
+fn refused_routes() -> Vec<NoRoute> {
+    vec![
+        NoRoute::NotInTab,
+        NoRoute::NotAlabImage,
+        NoRoute::NotExec,
+        NoRoute::UnsupportedRun,
+        NoRoute::NoPoolRow,
+        NoRoute::Denied,
+    ]
+}
+
+/// EACH NEW LINE IS ITS OWN, AND NAMES NO LABEL, EMAIL OR PATH: one line with the prefix, no
+/// other route's text, and, since none of these runs moves at this wall, the reset it waits
+/// for. None is read again for the wall.
+#[test]
+fn each_new_line_names_no_label_or_path() {
+    let earlier: Vec<String> = routes().iter().map(NoRoute::line).collect();
+    let mut told: Vec<String> = Vec::new();
+    for route in refused_routes() {
+        let line = route.line();
+        let body = line
+            .strip_prefix(PREFIX)
+            .and_then(|rest| rest.strip_suffix('\n'))
+            .unwrap_or_else(|| panic!("{line:?}"));
+        assert!(!body.is_empty(), "{line:?}");
+        assert!(!body.contains(['\n', '\r', '@', '/', '~', '=']), "{line:?}");
+        assert!(line.len() < 160, "{line:?}");
+        assert!(
+            line.contains("waits for its usage limit to reset"),
+            "{line:?}"
+        );
+        assert!(!line.contains("the move waits"), "{line:?}");
+        assert_eq!(route.again(), None, "{route:?}");
+        assert!(
+            !earlier.contains(&line) && !told.contains(&line),
+            "{route:?} has another route's line"
+        );
+        told.push(line);
+    }
+}
+
+/// A fake host that serves the exec contracts, an admitted leader's client of it, the origin it
+/// prepares for, and that prepare's request line.
+async fn prepared(dir: &std::path::Path) -> (FakeAterm, Client, crate::rotation::Origin, String) {
+    let host = host(dir).await;
+    let client = admit(host.endpoint(), true, options(), &ORDINARY)
+        .await
+        .unwrap();
+    let origin = crate::rotation::Origin {
+        thread: "00000000-0000-0000-0000-000000000001".into(),
+        turn: "00000000-0000-0000-0000-000000000002".into(),
+        identity: Identity {
+            account: "a".repeat(64),
+            user: "b".repeat(64),
+        },
+    };
+    let request = format!(
+        "@{} codex-exec-handoff prepare thread={} turn={} source_account={} source_user={}",
+        host.sid(),
+        origin.thread,
+        origin.turn,
+        origin.identity.account,
+        origin.identity.user
+    );
+    (host, client, origin, request)
+}
+
+/// The route `host` names when it refuses the prepare `request` with `word`, read off the wire as
+/// the runtime reads a prepare's answer.
+async fn refused_on_the_wire(
+    host: &FakeAterm,
+    client: &Client,
+    origin: &crate::rotation::Origin,
+    request: &str,
+    word: &str,
+) -> Option<NoRoute> {
+    host.reply_once(
+        request,
+        &format!("OK codex-exec-handoff state=refused why={word}\n"),
+    );
+    let Ok(selection) = account_recovery::prepare_exec(client, origin).await else {
+        panic!("{word} was not taken");
+    };
+    selection.route()
+}
+
+/// EACH OF ATERM'S REFUSAL WORDS (CONTRACT §1.1, "Wire") NAMES ITS ROUTE AND THAT ROUTE'S CLOCK:
+/// one that cannot change for the wall settles it, and an off word or `rotation-off` is read
+/// again on the passive clock. `not-needed` keeps C1's 5 s clock, and a move may still come of
+/// `waiting` and `selected`.
+#[tokio::test]
+async fn each_refused_word_names_its_route_and_clock() {
+    let dir = tempfile::tempdir().unwrap();
+    let (host, client, origin, request) = prepared(dir.path()).await;
+    let other = |word: &str| NoRoute::Off(Off::Other(word.into()));
+    for (word, route, again) in [
+        ("not-in-tab", NoRoute::NotInTab, None),
+        ("nested-aterm", NoRoute::NotInTab, None),
+        ("not-alab-image", NoRoute::NotAlabImage, None),
+        ("not-exec", NoRoute::NotExec, None),
+        ("unsupported-run", NoRoute::UnsupportedRun, None),
+        ("no-pool-row", NoRoute::NoPoolRow, None),
+        ("login-names-another", NoRoute::NoPoolRow, None),
+        ("hold", NoRoute::Off(Off::Hold), Some(PASSIVE)),
+        (
+            "autopilot-off",
+            NoRoute::Off(Off::AutopilotOff),
+            Some(PASSIVE),
+        ),
+        ("agent-off", other("agent-off"), Some(PASSIVE)),
+        ("disabled", other("disabled"), Some(PASSIVE)),
+        ("headless", other("headless"), Some(PASSIVE)),
+        ("unhosted", other("unhosted"), Some(PASSIVE)),
+        ("rotation-off", NoRoute::RotationOff, Some(PASSIVE)),
+    ] {
+        assert_eq!(NoRoute::refused(word), Miss::Route(route.clone()), "{word}");
+        assert_eq!(route.again(), again, "{word}");
+        assert_eq!(
+            refused_on_the_wire(&host, &client, &origin, &request, word).await,
+            Some(route.clone()),
+            "{word}"
+        );
+        let wall = Wall::new(login("fixture-account"), Some("root-turn".into()));
+        let mut latch = Latch::default();
+        assert_eq!(latch.note(&wall, &route), Some(route.line()), "{word}");
+        assert_eq!(latch.settled(&wall), again.is_none(), "{word}");
+    }
+    use account_recovery::ExecSelection;
+    assert_eq!(ExecSelection::NotNeeded.route(), Some(NoRoute::NotNeeded));
+    assert_eq!(NoRoute::NotNeeded.again(), Some(RETRY));
+    assert_eq!(ExecSelection::Waiting.route(), None);
+    let selected = ExecSelection::Selected {
+        destination: Identity {
+            account: "c".repeat(64),
+            user: "d".repeat(64),
+        },
+        origin,
+    };
+    assert_eq!(selected.route(), None);
+    assert_eq!(claims(&host), 1, "a refusal sends no other claim");
+}
+
+/// A REFUSAL IN A WORD THIS READER DOES NOT KNOW IS A PASSIVE OFF: never one that stops the asking
+/// for the wall, and never asked again on the 5 s clock. Its word is repeated only when it is
+/// plain. That holds on the wire too: a word that is not plain (`rotation_off`, in the spelling of
+/// aterm's own policy keys, a capital, a word too long, none) is a refusal, never a malformed
+/// reply, whose ask the runtime would repeat on the 5 s clock. `denied` is no refusal word: aterm
+/// denies with `ERR denied`.
+#[tokio::test]
+async fn an_unknown_refusal_is_a_passive_off() {
+    let wall = Wall::new(login("fixture-account"), Some("root-turn".into()));
+    for word in ["a-new-word", "not-in-tabs", "denied"] {
+        let Miss::Route(route) = NoRoute::refused(word) else {
+            panic!("{word} is no answer");
+        };
+        assert_eq!(route, NoRoute::Off(Off::Other(word.into())), "{word}");
+        assert_eq!(route.again(), Some(PASSIVE), "{word}");
+        assert!(route.line().contains("the move waits"), "{word}");
+        let mut latch = Latch::default();
+        assert!(latch.note(&wall, &route).is_some(), "{word}");
+        assert!(!latch.settled(&wall), "{word}");
+    }
+    let unknown = NoRoute::Off(Off::Other(String::new()));
+    assert_eq!(unknown.again(), Some(PASSIVE));
+    for word in [
+        "",
+        "a/b",
+        "x@y.z",
+        "Not-In-Tab",
+        "two words",
+        &"w".repeat(WHY_MAX + 1),
+    ] {
+        assert_eq!(
+            NoRoute::refused(word),
+            Miss::Route(unknown.clone()),
+            "{word:?}"
+        );
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (host, client, origin, request) = prepared(dir.path()).await;
+    assert_eq!(
+        refused_on_the_wire(&host, &client, &origin, &request, "a-new-word").await,
+        Some(NoRoute::Off(Off::Other("a-new-word".into())))
+    );
+    let secret = "a".repeat(64);
+    for word in [
+        "rotation_off",
+        "not_in_tab",
+        "Not-In-Tab",
+        "x@y.z",
+        "a/b",
+        "not-in-tab=1",
+        "",
+        &"w".repeat(WHY_MAX + 1),
+        &format!("{secret}x"),
+    ] {
+        let route = refused_on_the_wire(&host, &client, &origin, &request, word).await;
+        assert_eq!(route, Some(unknown.clone()), "{word:?}");
+        let line = unknown.line();
+        assert!(
+            !line.contains(word) || word.is_empty(),
+            "{word:?}: {line:?}"
+        );
+    }
+}
+
+/// A REFUSAL THAT NAMES A SUSPENSION IS NO ANSWER YET, as the host's policy reads it
+/// ([`the_hosts_policy_names_the_route`]): aterm answers a suspension `waiting` (CONTRACT §1.1),
+/// and a reply that names one anyway is asked again on the 5 s clock, silently, never told as an
+/// Off on the passive clock.
+#[tokio::test]
+async fn a_refused_suspension_is_no_answer_yet() {
+    assert_eq!(NoRoute::refused("suspended"), Miss::Transient);
+    let dir = tempfile::tempdir().unwrap();
+    let (host, client, origin, request) = prepared(dir.path()).await;
+    assert_eq!(
+        refused_on_the_wire(&host, &client, &origin, &request, "suspended").await,
+        None
+    );
+    host.set_effective(false, "suspended");
+    assert_eq!(
+        reach(host.endpoint(), options()).await.err(),
+        Some(Miss::Transient),
+        "the policy's suspension reads the same"
+    );
+}
+
+/// A RUN ATERM CAN NEVER READ AS A SUPPORTED EXEC RUN (`unsupported-run`: its directory, program
+/// or environment is not one aterm can start it again from) STOPS THE ASKING FOR THE WALL, with
+/// its own line: it is an exec run, not one that is not.
+#[tokio::test]
+async fn an_unsupported_run_stops_asking_with_its_own_line() {
+    let Miss::Route(route) = NoRoute::refused("unsupported-run") else {
+        panic!("unsupported-run is no answer");
+    };
+    assert_eq!(route, NoRoute::UnsupportedRun);
+    assert_eq!(route.again(), None);
+    assert_ne!(route.line(), NoRoute::NotExec.line());
+    let wall = Wall::new(login("fixture-account"), Some("root-turn".into()));
+    let mut latch = Latch::default();
+    assert_eq!(latch.note(&wall, &route), Some(route.line()));
+    assert!(latch.settled(&wall));
+    let dir = tempfile::tempdir().unwrap();
+    let (host, client, origin, request) = prepared(dir.path()).await;
+    assert_eq!(
+        refused_on_the_wire(&host, &client, &origin, &request, "unsupported-run").await,
+        Some(NoRoute::UnsupportedRun)
+    );
+}
+
 /// Whether this process can read files it was denied by their mode: root can, and then a
 /// denial cannot be staged by a mode.
 fn bypasses_modes() -> bool {

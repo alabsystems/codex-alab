@@ -6,6 +6,9 @@
 
 use crate::Client;
 use crate::Error;
+use crate::exec_route::Miss;
+use crate::exec_route::NoRoute;
+use crate::exec_route::plain_word;
 use crate::renewal::Identity;
 use crate::rotation::OTHER;
 use crate::rotation::Origin;
@@ -23,6 +26,26 @@ pub enum Selection {
         origin: Origin,
         destination: Identity,
     },
+    /// aterm's definite refusal of this run, `state=refused why=<word>`, by its word: a plain
+    /// one, or empty for a word that is not ([`plain_word`]), which is a word this reader does
+    /// not know. No aterm sends one yet.
+    Refused(String),
+}
+
+impl Selection {
+    /// Why the run does not move on this answer, as its line tells it: `not-needed`, or a
+    /// refusal by its word ([`NoRoute::refused`]). `None`: a move may still come of it
+    /// (`waiting`, `selected`), or it is no answer yet (a refusal that names a suspension).
+    pub fn route(&self) -> Option<NoRoute> {
+        match self {
+            Selection::Waiting | Selection::Selected { .. } => None,
+            Selection::NotNeeded => Some(NoRoute::NotNeeded),
+            Selection::Refused(why) => match NoRoute::refused(why) {
+                Miss::Route(route) => Some(route),
+                Miss::Transient => None,
+            },
+        }
+    }
 }
 
 fn malformed() -> Error {
@@ -80,6 +103,15 @@ fn parse(line: &str, expected: &Origin) -> Result<Selection, Error> {
     match fields.get("state").copied() {
         Some("waiting") if fields.len() == 1 => return Ok(Selection::Waiting),
         Some("not-needed") if fields.len() == 1 => return Ok(Selection::NotNeeded),
+        // Exactly `why=<word>` beside the state: anything more is no refusal this reader takes.
+        // A word that is not plain is one it does not know, kept empty, so its line never
+        // repeats it and the run never asks again on the 5 s clock for it.
+        Some("refused") if fields.len() == 2 => {
+            return fields
+                .get("why")
+                .map(|why| Selection::Refused(plain_word(why)))
+                .ok_or_else(malformed);
+        }
         Some("selected") if fields.len() == 7 => {}
         _ => return Err(malformed()),
     }
@@ -165,8 +197,10 @@ pub async fn ask(client: &Client, origin: &Origin, kind: &WallKind) -> Asked {
 
 impl Asked {
     /// The verdict this ask gives a host-kept wall ([`codex_alab_core::exec_wall`]): a move may
-    /// come at `waiting` and `selected`; none will at `not-needed`, at a policy that leaves no
-    /// such wall, or at a definite refusal ([`declined`]). `None`: no answer yet, or nothing asked.
+    /// come at `waiting` and `selected`; none will at `not-needed`, at aterm's `refused` for any
+    /// word that names a route (an off one included: the run keeps such a wall only while a move
+    /// may come), at a policy that leaves no such wall, or at a definite refusal ([`declined`]).
+    /// `None`: no answer yet (a refusal that names a suspension among them), or nothing asked.
     pub fn verdict(&self) -> Option<Verdict> {
         match self {
             Asked::Unasked => None,
@@ -174,8 +208,76 @@ impl Asked {
             Asked::Answered(Ok(Selection::Waiting | Selection::Selected { .. })) => {
                 Some(Verdict::Keep)
             }
-            Asked::Answered(Ok(Selection::NotNeeded)) => Some(Verdict::Declined),
+            Asked::Answered(Ok(selection)) => selection.route().map(|_| Verdict::Declined),
             Asked::Answered(Err(error)) => declined(error).then_some(Verdict::Declined),
+        }
+    }
+
+    /// What the runtime does with this ask at a wall it keeps only while a host may move it
+    /// (`kept`, [`WallKind::host_kept`]) or at an ordinary one. Each answer's handling is decided
+    /// here, and the runtime's loop (`alab-core/glue/exec_handoff_runtime.rs`) does each step
+    /// as it is named: at a host-kept wall the [`verdict`](Asked::verdict) decides first, so only
+    /// an ordinary wall tells a route.
+    pub fn step(self, kept: bool) -> Step {
+        let verdict = if kept { self.verdict() } else { None };
+        if verdict == Some(Verdict::Declined) {
+            return Step::Decline;
+        }
+        let keep = verdict == Some(Verdict::Keep);
+        match self {
+            Asked::Unasked | Asked::NotLeft => Step::Decline,
+            Asked::Answered(Ok(Selection::Selected { destination, .. })) => {
+                Step::Move { destination, keep }
+            }
+            Asked::Answered(Ok(selection)) => {
+                selection.route().map_or(Step::Again { keep }, Step::Tell)
+            }
+            Asked::Answered(Err(_)) => Step::Again { keep },
+        }
+    }
+}
+
+/// What the runtime of an exec run does with one ask at its wall ([`Asked::step`]).
+#[derive(Clone, PartialEq, Eq)]
+pub enum Step {
+    /// No move will come of this wall before it changes, and nothing is told: a host-kept wall
+    /// was answered a definite no, or nothing was asked. The runtime declines a host-kept wall
+    /// ([`Verdict::Declined`]), so the run ends at its next refusal there, and asks nothing more
+    /// until the wall changes.
+    Decline,
+    /// No move comes of this answer at an ordinary wall: tell the route once for the wall
+    /// ([`crate::exec_route::Latch`]), then ask again on its clock, or never
+    /// ([`NoRoute::again`]).
+    Tell(NoRoute),
+    /// The host selected `destination`: arm the move. `keep`: as at [`Step::Again`].
+    Move { destination: Identity, keep: bool },
+    /// No answer yet, or a move may still come of it (`waiting`): ask again on the 5 s clock,
+    /// telling nothing. `keep`: the host-kept wall waits on for this answer, so the runtime
+    /// records [`Verdict::Keep`] first.
+    Again { keep: bool },
+}
+
+impl Step {
+    /// Whether the runtime records [`Verdict::Keep`] for its host-kept wall before this step.
+    pub fn keeps(&self) -> bool {
+        matches!(
+            self,
+            Step::Move { keep: true, .. } | Step::Again { keep: true }
+        )
+    }
+}
+
+/// A destination names an account, so it is never printed.
+impl std::fmt::Debug for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Step::Decline => f.write_str("Decline"),
+            Step::Tell(route) => f.debug_tuple("Tell").field(route).finish(),
+            Step::Move { keep, .. } => f
+                .debug_struct("Move")
+                .field("keep", keep)
+                .finish_non_exhaustive(),
+            Step::Again { keep } => f.debug_struct("Again").field("keep", keep).finish(),
         }
     }
 }
@@ -325,6 +427,293 @@ mod tests {
         ] {
             assert!(!declined(&error), "{error}");
         }
+    }
+
+    /// A REFUSAL IS EXACTLY `state=refused why=<word>`: a plain word is kept, and a reply with any
+    /// other field, no `why=` or two of one key is malformed, so a definite no that another ask
+    /// cannot change, and its line is never kept. A word that is not plain is a refusal in a word
+    /// this reader does not know, kept empty: never malformed, and never repeated.
+    #[test]
+    fn a_refused_reply_with_other_fields_is_malformed() {
+        let origin = origin();
+        let read = |line: &str| parse(&format!("OK codex-exec-handoff {line}\n"), &origin);
+        for word in [
+            "not-in-tab",
+            "hold",
+            "rotation-off",
+            "unsupported-run",
+            "a-new-word",
+        ] {
+            // The order of the two fields is the host's.
+            for line in [
+                format!("state=refused why={word}"),
+                format!("why={word} state=refused"),
+            ] {
+                assert!(
+                    matches!(read(&line), Ok(Selection::Refused(kept)) if kept == word),
+                    "{line}"
+                );
+            }
+        }
+        let secret = "a".repeat(64);
+        for line in [
+            "state=refused".to_owned(),
+            "state=refused reason=not-in-tab".to_owned(),
+            "state=refused why=not-in-tab why=hold".to_owned(),
+            "state=refused state=refused why=hold".to_owned(),
+            "state=refused why=not-in-tab detail=x".to_owned(),
+            format!("state=refused why=not-exec source_account={secret}"),
+            format!("state=refused why=not-exec cap={}", "e".repeat(64)),
+            format!(
+                "state=refused why=not-in-tab thread={} turn={}",
+                origin.thread, origin.turn
+            ),
+        ] {
+            let error = read(&line)
+                .err()
+                .unwrap_or_else(|| panic!("{line} was taken"));
+            assert!(matches!(error, Error::Malformed(_)), "{line}: {error}");
+            assert!(declined(&error), "{line}");
+            assert!(!error.to_string().contains(&secret), "{line}");
+        }
+        for line in [
+            "state=refused why=".to_owned(),
+            "state=refused why=Not-In-Tab".to_owned(),
+            "state=refused why=x@y.z".to_owned(),
+            "state=refused why=a/b".to_owned(),
+            "state=refused why=not_in_tab".to_owned(),
+            "state=refused why=rotation_off".to_owned(),
+            format!("state=refused why={}", "w".repeat(33)),
+            format!("state=refused why={secret}x"),
+            "state=refused why=not-in-tab=1".to_owned(),
+        ] {
+            assert!(
+                matches!(read(&line), Ok(Selection::Refused(kept)) if kept.is_empty()),
+                "{line}"
+            );
+        }
+        // Another verb's refusal is not this one.
+        assert!(matches!(
+            parse("OK codex-rotation state=refused why=hold\n", &origin),
+            Err(Error::Malformed(_))
+        ));
+    }
+
+    /// A REFUSED PREPARE DECLINES A HOST-KEPT WALL, whatever its word: a structural one, an off
+    /// word or a word this reader does not know, plain or not. The run then ends at its next
+    /// refusal with the provider's own message, as at `not-needed`, where `waiting` before it kept
+    /// the run. A refusal that names a suspension is no answer yet: like busy, it leaves the
+    /// earlier `waiting` standing.
+    #[tokio::test]
+    async fn a_refused_prepare_declines_a_host_kept_wall() {
+        use codex_alab_core::exec_wall::ExecWalls;
+        use codex_alab_core::exec_wall::UNKNOWN_RESET_WAIT;
+        use codex_alab_core::wall_kind::Workspace;
+        use std::sync::Arc;
+        use std::time::Instant;
+        let directory = tempfile::tempdir().unwrap();
+        let host = crate::fake::FakeAterm::start(directory.path(), crate::fake::Mode::Current)
+            .await
+            .unwrap();
+        host.set_policy_key("codex_rotation", "1");
+        host.set_policy_key("accounts", "wall");
+        host.set_policy_key(crate::account_recovery::ROTATION_REFUSAL, "1");
+        let client = Client::connect(host.endpoint(), crate::Options::default())
+            .await
+            .unwrap();
+        client.harness_policy().await.unwrap();
+        client.claim().await.unwrap();
+        let origin = origin();
+        let request = format!(
+            "@{} codex-exec-handoff prepare thread={} turn={} source_account={} source_user={}",
+            host.sid(),
+            origin.thread,
+            origin.turn,
+            origin.identity.account,
+            origin.identity.user
+        );
+        let credits = WallKind::Workspace(Workspace::MemberCreditsDepleted);
+        let start = Instant::now();
+        // The word sent, and the word kept: empty for one that is not plain.
+        for (word, kept_word, declines) in [
+            ("not-in-tab", "not-in-tab", true),
+            ("nested-aterm", "nested-aterm", true),
+            ("not-alab-image", "not-alab-image", true),
+            ("not-exec", "not-exec", true),
+            ("unsupported-run", "unsupported-run", true),
+            ("no-pool-row", "no-pool-row", true),
+            ("login-names-another", "login-names-another", true),
+            ("hold", "hold", true),
+            ("autopilot-off", "autopilot-off", true),
+            ("agent-off", "agent-off", true),
+            ("rotation-off", "rotation-off", true),
+            ("a-new-word", "a-new-word", true),
+            ("rotation_off", "", true),
+            ("suspended", "suspended", false),
+        ] {
+            let run = Arc::new(ExecWalls::default());
+            run.root_turn(&origin.turn);
+            assert_eq!(run.keep(&credits, true, start), Some(UNKNOWN_RESET_WAIT));
+            run.waited(&credits, start);
+            host.reply_once(&request, "OK codex-exec-handoff state=waiting\n");
+            let asked = ask(&client, &origin, &credits).await;
+            run.decide(&origin.turn, &credits, asked.verdict().expect("waiting"));
+            host.reply_once(
+                &request,
+                &format!("OK codex-exec-handoff state=refused why={word}\n"),
+            );
+            let asked = ask(&client, &origin, &credits).await;
+            assert!(
+                matches!(&asked, Asked::Answered(Ok(Selection::Refused(kept))) if kept == kept_word),
+                "{word}"
+            );
+            let verdict = asked.verdict();
+            assert_eq!(verdict, declines.then_some(Verdict::Declined), "{word}");
+            if let Some(verdict) = verdict {
+                run.decide(&origin.turn, &credits, verdict);
+            }
+            assert_eq!(
+                run.keep(&credits, true, start + UNKNOWN_RESET_WAIT),
+                (!declines).then_some(UNKNOWN_RESET_WAIT),
+                "{word}"
+            );
+        }
+    }
+
+    /// EACH ANSWER IS ONE STEP OF THE RUNTIME, read off the wire as the runtime asks: at an
+    /// ordinary wall, `not-needed` and every refusal that names a route are told on that route's
+    /// clock (an unknown word, plain or not, a passive Off), `waiting`, a suspension and every
+    /// `ERR` are asked again on the 5 s clock, and `selected` moves. At a host-kept wall nothing
+    /// is told: `waiting` and `selected` keep the wall, and `not-needed`, a refusal that names a
+    /// route and a definite `ERR` decline it. Nothing asked declines it too.
+    #[tokio::test]
+    async fn each_answer_is_one_step_of_the_runtime() {
+        use codex_alab_core::wall_kind::Workspace;
+        let directory = tempfile::tempdir().unwrap();
+        let host = crate::fake::FakeAterm::start(directory.path(), crate::fake::Mode::Current)
+            .await
+            .unwrap();
+        host.set_policy_key("codex_rotation", "1");
+        host.set_policy_key("accounts", "wall");
+        host.set_policy_key(crate::account_recovery::ROTATION_REFUSAL, "1");
+        let client = Client::connect(host.endpoint(), crate::Options::default())
+            .await
+            .unwrap();
+        client.harness_policy().await.unwrap();
+        client.claim().await.unwrap();
+        let origin = origin();
+        let request = format!(
+            "@{} codex-exec-handoff prepare thread={} turn={} source_account={} source_user={}",
+            host.sid(),
+            origin.thread,
+            origin.turn,
+            origin.identity.account,
+            origin.identity.user
+        );
+        let credits = WallKind::Workspace(Workspace::MemberCreditsDepleted);
+        let destination = Identity {
+            account: "c".repeat(64),
+            user: "d".repeat(64),
+        };
+        let moves = |keep| Step::Move {
+            destination: destination.clone(),
+            keep,
+        };
+        let tell = Step::Tell;
+        let off = |word: &str| tell(NoRoute::Off(crate::exec_route::Off::Other(word.into())));
+        let again = Step::Again { keep: false };
+        let refused = |word: &str| format!("OK codex-exec-handoff state=refused why={word}\n");
+        for (reply, ordinary, kept) in [
+            (
+                "OK codex-exec-handoff state=waiting\n".to_owned(),
+                again.clone(),
+                Step::Again { keep: true },
+            ),
+            (selected(&origin), moves(false), moves(true)),
+            (
+                "OK codex-exec-handoff state=not-needed\n".to_owned(),
+                tell(NoRoute::NotNeeded),
+                Step::Decline,
+            ),
+            (
+                refused("not-in-tab"),
+                tell(NoRoute::NotInTab),
+                Step::Decline,
+            ),
+            (
+                refused("unsupported-run"),
+                tell(NoRoute::UnsupportedRun),
+                Step::Decline,
+            ),
+            (
+                refused("hold"),
+                tell(NoRoute::Off(crate::exec_route::Off::Hold)),
+                Step::Decline,
+            ),
+            (refused("agent-off"), off("agent-off"), Step::Decline),
+            (
+                refused("rotation-off"),
+                tell(NoRoute::RotationOff),
+                Step::Decline,
+            ),
+            (refused("a-new-word"), off("a-new-word"), Step::Decline),
+            (refused("rotation_off"), off(""), Step::Decline),
+            (refused("Not-In-Tab"), off(""), Step::Decline),
+            (refused("suspended"), again.clone(), again.clone()),
+            (
+                "ERR busy retry_ms=100\n".to_owned(),
+                again.clone(),
+                again.clone(),
+            ),
+            (
+                "ERR codex-exec-handoff capacity\n".to_owned(),
+                again.clone(),
+                again.clone(),
+            ),
+            (
+                "ERR denied native operation authority\n".to_owned(),
+                again.clone(),
+                Step::Decline,
+            ),
+            (
+                "OK codex-exec-handoff state=ready\n".to_owned(),
+                again.clone(),
+                Step::Decline,
+            ),
+        ] {
+            host.reply_once(&request, &reply);
+            let step = ask(&client, &origin, &WallKind::Ordinary).await.step(false);
+            assert_eq!(step, ordinary, "{reply}");
+            assert!(!step.keeps(), "{reply}");
+            host.reply_once(&request, &reply);
+            let step = ask(&client, &origin, &credits).await.step(true);
+            assert_eq!(step, kept, "{reply}");
+            assert_eq!(
+                step.keeps(),
+                reply.contains("state=waiting") || reply.contains("state=selected"),
+                "{reply}"
+            );
+            assert!(
+                !matches!(step, Step::Tell(_)),
+                "a host-kept wall tells nothing"
+            );
+        }
+        // Nothing asked: a model's own limit, and a workspace's wall the policy leaves none of.
+        let model = WallKind::Limit("codex_other".into());
+        assert_eq!(
+            ask(&client, &origin, &model).await.step(false),
+            Step::Decline
+        );
+        host.set_policy_key(crate::account_recovery::ROTATION_REFUSAL, "0");
+        client.harness_policy().await.unwrap();
+        let before = host.requests().len();
+        assert_eq!(
+            ask(&client, &origin, &credits).await.step(true),
+            Step::Decline
+        );
+        assert_eq!(host.requests().len(), before, "nothing is sent");
+        // A destination is never printed.
+        assert!(!format!("{:?}", moves(true)).contains(&destination.account));
     }
 
     /// THE RUNTIME'S ASK AT EACH KIND OF WALL, against the fake host, and what each answer does to

@@ -20,7 +20,9 @@
 //! asked again on the 5 s clock as before ([`Miss::Transient`]).
 //!
 //! The exec process admission that will move the other shapes is planned and not built
-//! (CONTRACT §1.1).
+//! (CONTRACT §1.1). Its definite refusal, `state=refused why=<word>`, is read already: each
+//! word names its route, or no answer yet for a suspension ([`NoRoute::refused`]). No aterm
+//! sends one yet.
 
 use std::io::Write;
 use std::time::Duration;
@@ -72,8 +74,9 @@ pub enum NoRoute {
     Off(Off),
     /// The policy is on, but its keys move no exec run (`codex_rotation`, `accounts`,
     /// `relaunch`, `resume_limits`; [`account_recovery::policy_allows`]), or none at the run's
-    /// kind of wall ([`account_recovery::leaves_exec_wall`]). Only an ordinary wall tells it: a
-    /// workspace's wall that no host leaves ends its run with no line.
+    /// kind of wall ([`account_recovery::leaves_exec_wall`]); or aterm refused the run
+    /// `rotation-off`, by the same keys. Only an ordinary wall tells it: a workspace's wall that
+    /// no host leaves ends its run with no line.
     RotationOff,
     /// The run does not lead its controlling terminal's foreground process group, so it
     /// sends no claim ([`leads_foreground`]). That is checked again locally: a job brought
@@ -96,6 +99,23 @@ pub enum NoRoute {
     /// The host answered `state=not-needed`: no move is needed now, or no account is
     /// there to move to. The wire does not say which, so it is asked again.
     NotNeeded,
+    /// aterm refused the run `not-in-tab`: it does not run in the tab it names, by the same
+    /// session or by its parents. Also `nested-aterm`: the nearest aterm above it is another
+    /// one, whose tab owns it.
+    NotInTab,
+    /// aterm refused the run `not-alab-image`: its program is not an ALab build of codex.
+    NotAlabImage,
+    /// aterm refused the run `not-exec`: its command line is not a `codex exec` run.
+    NotExec,
+    /// aterm refused the run `unsupported-run`: it is an exec run, but one aterm cannot start
+    /// again as it was launched (its directory, program or environment).
+    UnsupportedRun,
+    /// aterm refused the run `no-pool-row`: its login is no row of the account pool. Also
+    /// `login-names-another`: its row's login names another account.
+    NoPoolRow,
+    /// aterm answered a process prepare `ERR denied`: the asker is not one aterm admits (a
+    /// proxied or malformed request), which does not change for the wall.
+    Denied,
 }
 
 /// Why the host's policy is off for this tab (its `why=` word).
@@ -111,8 +131,7 @@ pub enum Off {
 }
 
 impl Off {
-    /// The off a `why=` word names. `suspended` is not one: it is transient (CONTRACT §0),
-    /// and the caller treats it as no answer.
+    /// The off a `why=` word names. `suspended` is not one: [`Off::read`] reads it first.
     fn of(why: &str) -> Self {
         match why {
             "hold" => Off::Hold,
@@ -120,11 +139,21 @@ impl Off {
             other => Off::Other(plain_word(other)),
         }
     }
+
+    /// What an off `why=` word comes to, in the host's policy or in its refusal of this run:
+    /// `suspended` is no answer yet, silent and asked again on the 5 s clock (CONTRACT §0 and
+    /// §1.1, "How often a run asks"), and any other word is an [`Off`].
+    fn read(why: &str) -> Miss {
+        match why {
+            "suspended" => Miss::Transient,
+            why => NoRoute::Off(Off::of(why)).into(),
+        }
+    }
 }
 
 /// `word` if it is short and made of lowercase letters, digits and dashes only. Otherwise
 /// it is empty, so a line never repeats what the host sent unchecked.
-fn plain_word(word: &str) -> String {
+pub(crate) fn plain_word(word: &str) -> String {
     let plain = !word.is_empty()
         && word.len() <= WHY_MAX
         && word
@@ -187,8 +216,46 @@ impl NoRoute {
             NoRoute::NotNeeded => "aterm sees no move to make now, or no account to move to; \
                                    the move waits for aterm's next read"
                 .to_owned(),
+            NoRoute::NotInTab => format!("aterm does not find this run in its tab; {RESET}"),
+            NoRoute::NotAlabImage => {
+                format!("aterm moves only an ALab build of codex, and this run is not one; {RESET}")
+            }
+            NoRoute::NotExec => {
+                format!("aterm does not read this run as a codex exec run; {RESET}")
+            }
+            NoRoute::UnsupportedRun => {
+                format!("aterm cannot start this run again as it was launched; {RESET}")
+            }
+            NoRoute::NoPoolRow => {
+                format!("this run's login is not one of the accounts aterm moves between; {RESET}")
+            }
+            NoRoute::Denied => format!("aterm denied this run's request to move; {RESET}"),
         };
         format!("{PREFIX}{reason}\n")
+    }
+
+    /// What aterm's definite refusal of this run (`state=refused why=<word>`) comes to, by its
+    /// word: the words of CONTRACT §1.1, "Wire (planned)", and `unsupported-run`, `no-pool-row`,
+    /// `login-names-another` and `rotation-off`, which the amended exec process admission adds
+    /// and CONTRACT does not list yet. A refusal that cannot change for the wall stops the
+    /// asking: `not-in-tab`, `nested-aterm`, `not-alab-image`, `not-exec`, `unsupported-run`,
+    /// `no-pool-row` and `login-names-another`. A Codex-scoped off word is an [`Off`] (`hold`,
+    /// `autopilot-off`, `agent-off`, `disabled`, `headless`, `unhosted`), and `rotation-off` is
+    /// [`NoRoute::RotationOff`]: each is read again on the passive clock. So is a word this
+    /// reader does not know, as [`Off::Other`] (empty when the word is not plain): the asking
+    /// never stops on a word it does not know, and never comes back on the 5 s clock for one.
+    /// `suspended` is no answer yet ([`Off::read`]), as aterm's policy says it: aterm answers a
+    /// suspension `waiting`, and a reply that names one anyway is asked again, silently.
+    pub fn refused(why: &str) -> Miss {
+        match why {
+            "not-in-tab" | "nested-aterm" => NoRoute::NotInTab.into(),
+            "not-alab-image" => NoRoute::NotAlabImage.into(),
+            "not-exec" => NoRoute::NotExec.into(),
+            "unsupported-run" => NoRoute::UnsupportedRun.into(),
+            "no-pool-row" | "login-names-another" => NoRoute::NoPoolRow.into(),
+            "rotation-off" => NoRoute::RotationOff.into(),
+            off => Off::read(off),
+        }
     }
 
     /// When to look again during this wall: `None` when nothing this run can see changes
@@ -201,7 +268,13 @@ impl NoRoute {
             | NoRoute::Unproven
             | NoRoute::AnotherLeads
             | NoRoute::NotChatGpt
-            | NoRoute::IdentityUnreadable => None,
+            | NoRoute::IdentityUnreadable
+            | NoRoute::NotInTab
+            | NoRoute::NotAlabImage
+            | NoRoute::NotExec
+            | NoRoute::UnsupportedRun
+            | NoRoute::NoPoolRow
+            | NoRoute::Denied => None,
             NoRoute::Off(_) | NoRoute::RotationOff => Some(PASSIVE),
             // Local: whether `fg` or `bg` moved this run's group is read without aterm.
             NoRoute::NotLeader => Some(RETRY),
@@ -217,7 +290,7 @@ impl NoRoute {
 /// busy, unanswered or closing aterm; a socket, token or rendezvous entry that refuses or
 /// is missing, or an `ERR auth` (an aterm seamless update); an unproven claim, or this
 /// run's own proven one, standing in the way; and a status read that fails after a standing
-/// claim kept this run's out.
+/// claim kept this run's out. A refusal of this run reads the same way ([`NoRoute::refused`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Miss {
     /// Ask again on the ordinary clock; tell nothing.
@@ -468,10 +541,7 @@ pub async fn reach(endpoint: Endpoint, options: Options) -> Result<Client, Miss>
         }
     }
     if !policy.effective {
-        return Err(match policy.why.as_str() {
-            "suspended" => Miss::Transient,
-            why => NoRoute::Off(Off::of(why)).into(),
-        });
+        return Err(Off::read(&policy.why));
     }
     if !account_recovery::policy_allows(&policy, Purpose::WeeklyQuota) {
         return Err(NoRoute::RotationOff.into());

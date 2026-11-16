@@ -19,7 +19,51 @@ them; an absent event does not establish that no request or failure occurred.
 The TUI's default SQLite filter admits these events when its log database is
 available. A standalone API caller must supply its own logging subscriber.
 
-The default database is `$CODEX_HOME/logs_2.sqlite`, with `CODEX_HOME` normally
+First identify the current history source and retain its recent turn records.
+A legacy rollout can be stale while the session uses paginated SQLite history.
+For a verified current, unbranched paginated root whose logical thread ID equals
+its rollout ID, read `thread_history_1.sqlite` under the effective `sqlite_home`.
+`log_dir` relocates logs, not this history database. Forks and reverts require
+the existing history API and lineage resolution; do not assume their logical
+thread ID identifies the current rollout. The source resolver and paging rules
+are in [thread_rollout_resolver.rs](../codex-rs/thread-store/src/local/thread_rollout_resolver.rs)
+and [segment_paging.rs](../codex-rs/thread-store/src/local/thread_history/segment_paging.rs).
+
+List recent statuses together so an older failed turn is not mistaken for
+current activity. Preserve `error_json` intact in private evidence before
+correlating its turn ID with the request logs:
+
+```sh
+# Supply the verified current rollout ID and effective history database path.
+# Use a new private output path; existing evidence must not be overwritten.
+(
+umask 077
+set -C
+python3 - "$thread_history_db" "$current_rollout_id" > "$private_turn_evidence" <<'PY'
+import json
+import sqlite3
+import sys
+from contextlib import closing
+from pathlib import Path
+
+uri = Path(sys.argv[1]).resolve(strict=True).as_uri() + "?mode=ro"
+with closing(sqlite3.connect(uri, uri=True)) as db:
+    db.row_factory = sqlite3.Row
+    rows = db.execute("""
+        SELECT thread_id, turn_id, rollout_ordinal, status,
+               started_at, completed_at, duration_ms, error_json
+        FROM thread_turns
+        WHERE thread_id = ?
+        ORDER BY rollout_ordinal DESC
+        LIMIT 10
+    """, (sys.argv[2],)).fetchall()
+    json.dump([dict(row) for row in rows], sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+PY
+)
+```
+
+The default logs database is `$CODEX_HOME/logs_2.sqlite`, with `CODEX_HOME` normally
 `~/.codex`. Use the running session's effective configuration: `sqlite_home`,
 `CODEX_SQLITE_HOME`, or an explicit `log_dir` can relocate it. A managed
 `sqlite_home` requirement keeps SQLite logs there despite `log_dir`. This is
@@ -190,6 +234,19 @@ the generic whole-response limit. Its separate default rejection-body budget
 retains HTTP identity rather than producing `ResponseTooLarge`, so the last two
 defensive variants do not establish those conditions in an ordinary request.
 
+The normalized `opaque backend HTTP 400: ` message prefix is reserved for the
+bridge's verified HTTP 400 producer. Raw retryable, stream, untyped rate-limit and
+network/build messages beginning with that prefix gain `provider stream: ` at
+the API-to-core boundary; their complete original text and existing retry advice
+remain available. They stay ordinary stream errors and acquire no HTTP status.
+
+Reservation follows ALab binary identity, including vanilla mode, because an
+error can remain queued while enhanced mode changes. Ordinary strings in every
+mode and unactivated upstream behavior stay unchanged. Genuine opaque HTTP 400
+normalization still follows the enhanced-mode recovery policy. This boundary
+protects current Responses recovery consumers; trusted internal code remains
+responsible for constructing its own errors correctly.
+
 Semantic API variants also retain fixed categories. Existing `api`, `stream`,
 `retryable`, `invalid_request`, `invalid_prompt`, `context_window` and `incomplete`
 labels remain unchanged. Additional type families use these labels:
@@ -214,6 +271,30 @@ supersedes it without a failure record, and a selected idle/I/O error remains
 on the Responses stream paths. Encoding failures before diagnostic creation and
 connection setup outside this observer do not acquire a fabricated request record.
 
+When ALab is active, a standalone `error` with an exact named-object
+`invalid_request` or `invalid_prompt` code shares the validated `response.failed`
+parser. A selected refusal is delivered immediately, keeps its diagnostic
+category, and receives no retry advice. `invalid_prompt` preserves present blank
+messages; only missing/null messages use `Invalid request.`. Malformed fields,
+positional arrays, type-only or near-code objects keep the ignored standalone
+path. Other policy/quota/rate codes gain no new admission from this rule.
+
+Valid WebSocket HTTP wrappers retain status precedence. A malformed wrapper can
+still supply an independently valid request refusal, but that semantic diagnosis
+does not assert HTTP status, authentication state or account-recovery authority.
+
+When ALab is active, an unambiguous non-success WebSocket HTTP status also
+survives a malformed optional error body. Strict decoding runs first, including
+existing special reconnect-code handling. Recovery requires unique root fields,
+a valid single status alias or two equal valid aliases, and unique fields in a
+named error body. Only optional nested headers reenter the parse copy; code and
+message cannot grant a special reconnect route. The original payload remains
+unchanged for the ordinary HTTP bridge, which keeps its own retry policy.
+During this fallback, scalar or positional bodies supply no inferred nested
+headers. Conflicting,
+invalid, repeated or statusless wrappers gain no new HTTP identity; the existing
+bounded malformed-capacity path retains its advice handling.
+
 Established WebSocket error frames can supply IDs in outer `headers` or nested
 `error.headers`. A valid outer `x-request-id`, then `x-oai-request-id`, takes
 precedence over nested equivalents; `cf-ray` falls back independently. IDs must
@@ -221,6 +302,28 @@ be 1 to 128 ASCII letters, digits, hyphens or underscores. The mapper retains
 only validated nested correlation values; nested authorization and other recovery
 headers do not enter the returned HTTP metadata. Status, original body and the
 already captured provider deadline retain their existing meaning.
+
+For a selected WebSocket `InvalidRequest` or `InvalidPrompt`, the diagnostic can
+also use safe IDs from the received `error` text frame, or from
+`response.error.headers` in a `response.failed` frame. Top-level `headers` takes
+the same precedence over
+nested headers described above. This fallback retains only the two validated
+tokens for that request. Each received text frame replaces the candidate,
+including frames with absent or invalid IDs; a new request starts empty.
+Completion and other error types do not use this fallback. Wrapped HTTP errors
+continue to use the metadata retained on their transport error.
+
+Outer correlation is decoded independently of optional nested error/response
+metadata. Unusable nested shapes omit nested IDs while preserving valid outer
+IDs. A positional error array supplies no named nested headers, even when the
+separate `response.failed` parser accepts its semantic fields. This logging rule
+does not admit standalone arrays or validate provider errors. Borrowed raw views
+remain within metadata extraction; only the two validated tokens enter state.
+
+The observer does not retain frame bodies or arbitrary headers, change error
+values or retry decisions, or parse provider deadlines. It forwards caller
+telemetry under the caller's existing context. Correlation identifies the
+selected received frame; it does not resolve ownership of a late provider frame.
 
 Counts describe the prepared endpoint JSON, after preparation and
 bounding. They do not measure changes a custom auth or transport implementation

@@ -28,12 +28,13 @@ use crate::Client;
 use crate::Error;
 use crate::wire;
 
-/// One `inbox` row (`msg <id> off=<n> t=<ms> from=<p> kind=<k> trust=<t> … len=<n>
+/// One ring `inbox` row (`msg <id> off=<n|-> t=<ms> from=<p> kind=<k> trust=<t> … len=<n>
 /// [more=1] [truncated=1] [text=<pct>]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub id: u64,
-    pub off: u64,
+    /// Broker offset, absent for direct fleet mail in the same handled-watermark domain.
+    pub off: Option<u64>,
     pub from: String,
     pub kind: String,
     pub trust: String,
@@ -47,25 +48,48 @@ impl Row {
     pub fn parse(line: &str) -> Option<Row> {
         let rest = line.strip_prefix("msg ")?;
         let (id, rest) = rest.split_once(' ')?;
-        let fields = wire::parse_fields(rest);
-        let raw = |k: &str| fields.get(k).filter(|v| !v.is_empty()).cloned();
+        let fields = unique_fields(rest)?;
+        let raw = |k: &str| fields.get(k).copied().filter(|v| !v.is_empty());
         Some(Row {
             id: wire::canonical_u64(id)?,
-            off: wire::canonical_u64(&raw("off")?)?,
-            from: raw("from")?,
-            kind: raw("kind")?,
-            trust: raw("trust")?,
-            len: usize::try_from(wire::canonical_u64(&raw("len")?)?).ok()?,
-            truncated: fields.get("truncated").map(String::as_str) == Some("1"),
-            deadline: raw("dl"),
+            off: match raw("off")? {
+                "-" => None,
+                off => Some(wire::canonical_u64(off)?),
+            },
+            from: raw("from")?.to_string(),
+            kind: raw("kind")?.to_string(),
+            trust: raw("trust")?.to_string(),
+            len: usize::try_from(wire::canonical_u64(raw("len")?)?).ok()?,
+            truncated: fields.get("truncated").copied() == Some("1"),
+            deadline: raw("dl").map(str::to_string),
         })
     }
+
+    /// The broker reference when one exists, otherwise the local ring row id.
+    pub fn reference(&self) -> String {
+        self.off
+            .map_or_else(|| format!("row {}", self.id), |off| format!("@{off}"))
+    }
+}
+
+/// Snapshot fields must be unambiguous before they can authorize a watermark advance.
+fn unique_fields(rest: &str) -> Option<std::collections::BTreeMap<&str, &str>> {
+    let mut fields = std::collections::BTreeMap::new();
+    for token in rest.split_ascii_whitespace() {
+        let (key, value) = token.split_once('=')?;
+        if key.is_empty() || fields.insert(key, value).is_some() {
+            return None;
+        }
+    }
+    Some(fields)
 }
 
 /// The `inbox` header's handled watermark (`seen=<id>`).
 pub fn seen_watermark(status: &str) -> Option<u64> {
     let rest = status.strip_prefix("OK ")?;
-    wire::parse_fields(rest)
+    let (count, rest) = rest.split_once(' ')?;
+    wire::canonical_u64(count)?;
+    unique_fields(rest)?
         .get("seen")
         .and_then(|s| wire::canonical_u64(s))
 }
@@ -81,10 +105,25 @@ pub async fn rows(client: &Client) -> Result<(u64, Vec<Row>), Error> {
     }
     let seen = seen_watermark(&reply.status)
         .ok_or_else(|| Error::Malformed(format!("inbox header: {}", reply.status)))?;
-    Ok((
-        seen,
-        reply.lines.iter().filter_map(|l| Row::parse(l)).collect(),
-    ))
+    let mut rows = Vec::new();
+    for line in &reply.lines {
+        if let Some(row) = Row::parse(line) {
+            rows.push(row);
+        } else if line.starts_with("post ")
+            || line
+                .strip_prefix("msg f")
+                .and_then(|rest| rest.split_once(' '))
+                .is_some_and(|(id, _)| wire::canonical_u64(id).is_some())
+        {
+            // Outbound posts and legacy fleet mailbox ids do not share the numeric
+            // ring's handled watermark. Numeric fleet rows (off=-) do, and stay above.
+            continue;
+        } else {
+            // A partial snapshot could let receipts cross an omitted unread task.
+            return Err(Error::Malformed("inbox contains an unreadable row".into()));
+        }
+    }
+    Ok((seen, rows))
 }
 
 /// The message at broker offset `off`, which must be a `kind` row nobody has handled: its row,
@@ -102,7 +141,7 @@ pub async fn read(
     let (seen, rows) = rows(client).await?;
     let row = rows
         .into_iter()
-        .find(|r| r.off == off)
+        .find(|r| r.off == Some(off))
         .ok_or_else(|| Error::Refused(format!("no inbox row at @{off}")))?;
     if row.kind != kind.word() {
         return Err(Error::Refused(format!(
@@ -148,7 +187,7 @@ pub async fn read(
     };
     Ok(InboxMail {
         id: row.id,
-        off: row.off,
+        off,
         from: wire::pct_decode(&row.from),
         kind: row.kind,
         trust: row.trust,
@@ -324,7 +363,7 @@ mod tests {
         )
         .expect("row");
         assert_eq!(row.id, 7);
-        assert_eq!(row.off, 1203);
+        assert_eq!(row.off, Some(1203));
         assert_eq!(row.from, "s-abc%40n-lab");
         assert_eq!(row.kind, "task");
         assert_eq!(row.trust, "agent");
@@ -391,7 +430,7 @@ mod tests {
     fn row(id: u64, kind: &str) -> Row {
         Row {
             id,
-            off: 100 + id,
+            off: Some(100 + id),
             from: "s-a@n-b".to_string(),
             kind: kind.to_string(),
             trust: "agent".to_string(),

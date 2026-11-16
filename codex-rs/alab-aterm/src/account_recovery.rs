@@ -7,6 +7,7 @@
 
 pub use crate::exec_selection::Asked as ExecAsked;
 pub use crate::exec_selection::Selection as ExecSelection;
+pub use crate::exec_selection::Step as ExecStep;
 pub use crate::exec_selection::ask as ask_exec;
 pub use crate::exec_selection::prepare as prepare_exec;
 

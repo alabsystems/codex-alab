@@ -957,6 +957,6 @@
       "revisit": "Run the named integration checks and certified application gate before activating or shipping the integrated prefix."
     }
   ],
-  "superseded_by": "alab/upstream/7eaaee4270-from-0593016153-intake.json",
-  "supersession_reason": "Extend reviewed coverage through 7eaaee4270; preserve all prior decisions unchanged in the complete 46-commit active batch."
+  "superseded_by": "alab/upstream/d87330d91e-from-0593016153-intake.json",
+  "supersession_reason": "Preserve all historical decisions unchanged in the active 66-commit prefix through d87330d91e; point directly to its current replacement rather than a superseded intermediate batch."
 }

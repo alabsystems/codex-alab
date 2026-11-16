@@ -12,6 +12,7 @@ use crate::common::ResponsesWsRequest;
 use crate::error::ApiError;
 use crate::requests::Compression;
 use crate::telemetry::SseTelemetry;
+use crate::telemetry::WebsocketTelemetry;
 use codex_client::TransportError;
 use codex_protocol::models::ResponseItem;
 use serde_json::Value;
@@ -144,6 +145,7 @@ pub(crate) struct RequestDiagnostic {
     transport: &'static str,
     dispatch: tracing::Dispatch,
     span: tracing::Span,
+    websocket_ids: Option<websocket_diagnostics::SharedIds>,
 }
 
 impl RequestDiagnostic {
@@ -176,6 +178,7 @@ impl RequestDiagnostic {
             transport,
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),
+            websocket_ids: None,
         };
         tracing::info!(
             local_attempt = diagnostic.attempt,
@@ -255,13 +258,17 @@ pub(crate) fn websocket(
     request: &ResponsesWsRequest<'_>,
     bytes: usize,
     connection_reused: bool,
-) -> Option<RequestDiagnostic> {
+    inner: Option<Arc<dyn WebsocketTelemetry>>,
+) -> (
+    Option<RequestDiagnostic>,
+    Option<Arc<dyn WebsocketTelemetry>>,
+) {
     if !codex_alab_core::active() {
-        return None;
+        return (None, inner);
     }
     let ResponsesWsRequest::ResponseCreate(request) = request;
     let tools = request.tools.map(serde_json::value::RawValue::get);
-    Some(RequestDiagnostic::record(
+    let diagnostic = RequestDiagnostic::record(
         Transport::Websocket {
             reused: connection_reused,
             warmup: request.generate == Some(false),
@@ -272,7 +279,8 @@ pub(crate) fn websocket(
         tools.is_none().then_some(0),
         Some(tools.map_or(0, str::len)),
         bytes,
-    ))
+    );
+    websocket_diagnostics::wrap(Some(diagnostic), inner)
 }
 
 /// Observe the selected terminal result without changing completion-preserving
@@ -281,8 +289,26 @@ pub(crate) fn websocket_result(
     diagnostic: Option<&RequestDiagnostic>,
     result: Result<ResponseEvent, ApiError>,
 ) -> Result<ResponseEvent, ApiError> {
-    result.inspect_err(|error| failed(diagnostic, error))
+    result.inspect_err(|error| {
+        if matches!(
+            error,
+            ApiError::InvalidRequest { .. } | ApiError::InvalidPrompt { .. }
+        ) {
+            let ids = websocket_diagnostics::selected_ids(diagnostic);
+            failed_with_response_ids(
+                diagnostic,
+                error,
+                ids.request_id.as_deref(),
+                ids.cf_ray.as_deref(),
+            );
+        } else {
+            failed(diagnostic, error);
+        }
+    })
 }
+
+#[path = "api_websocket_diagnostics.rs"]
+mod websocket_diagnostics;
 
 pub(crate) fn failed(diagnostic: Option<&RequestDiagnostic>, error: &ApiError) {
     failed_with_response_ids(diagnostic, error, None, None);

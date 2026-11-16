@@ -58,6 +58,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
 }
 
 fn map_api_error_details(err: ApiError) -> CodexErr {
+    let err = alab_request_recovery::provider_error(err); // ALAB(recovery): reserve internal transport-recovery messages before conversion.
     match err {
         ApiError::ContextWindowExceeded => CodexErr::ContextWindowExceeded,
         ApiError::QuotaExceeded => CodexErr::QuotaExceeded,

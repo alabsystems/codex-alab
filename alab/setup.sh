@@ -78,7 +78,8 @@ if [[ "${train}" -eq 1 ]]; then
   git worktree add --quiet --detach "${scratch}" "${from}"
   learned=0
   # The newest 30 are plenty: a merge-forward sync rarely meets an old conflict again.
-  for merge in $(git rev-list -n 30 --first-parent --merges --grep='^alab sync:' "${from}"); do
+  training_merges="$(alab_sync_merges "${from}")" || alab_die "cannot read sync history for rerere training"
+  for merge in $(printf '%s\n' "${training_merges}" | sed -n '1,30p'); do
     git -C "${scratch}" checkout --quiet --detach "${merge}^1"
     if ! git -C "${scratch}" merge --no-commit --no-ff --quiet "${merge}^2" >/dev/null 2>&1; then
       if [[ -s "$(git -C "${scratch}" rev-parse --git-path MERGE_RR)" ]]; then

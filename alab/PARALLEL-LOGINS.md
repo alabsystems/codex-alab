@@ -463,14 +463,15 @@ is fixed (below, with what it leaves).
    critique changes a step, the critique holds). The 10 minute hold stays, as
    the ceiling for a canary that never reports. The five-hour move shares the
    gap and the fix; the lost-login move has no canary and refuses the verb.
-   - A1 (aterm, not built): serve `codex-rotation complete` only to the bound
+   - A1 (aterm, built in `9fb6fb041d7`, as its commit and source say; not
+     reviewed here): serve `codex-rotation complete` only to the bound
      successor of a Consumed usage-wall receipt (its session, process,
      credentials and thread), never for an exec operation's receipt. A busy
      receipt writer, sign-in or auth lock is typed Busy in `aterm-agent` and
      answered `waiting`; a source login re-signed or held since the wall
      answers `selection changed`.
-   - A2 (aterm, not built, lands with A1): a completion proves a destination
-     that still runs, Low included, not only a fresh one.
+   - A2 (aterm, built with A1 in `9fb6fb041d7`): a completion proves a
+     destination that still runs, Low included, not only a fresh one.
    - **C1, done in `0b4ab96070` (codex-alab, `alab-aterm`).**
      `Client::rotation_complete(id, turn)` returns `rotation::Completion`
      (`Recorded`, `Waiting`, `Unsupported`); `account_recovery::complete`
@@ -535,8 +536,79 @@ is fixed (below, with what it leaves).
      Waits on A1 and A2: every aterm today answers the report unsupported
      (`invalid request` or `unknown verb`), so followers still wait out the
      10 minute hold until A1 and A2 land, and then S1 shows the change.
-   - S1 (not run): an interactive shared-pool smoke, with a control case
-     whose host refuses the report and whose followers still wait.
+     aterm built both in `9fb6fb041d7` (on aterm main by `7540b6d94f2`). In
+     the trial runs of 2026-11-15 a host built from `7540b6d94f2` answered
+     the report `state=completed` in each usage-wall move whose resumed turn
+     was served, and its pool then held the destination proven with no canary
+     ("Trial runs against aterm `7540b6d94f2` and codex-alab `cdfe65abe3`,
+     2026-11-15"). S1 has since shown the change, in trial runs only.
+   - **S1, written in `314f0ccd89` (codex-alab, test only):
+     `alab/smoke/tui_shared_pool.py`.** Three real codex-alab TUIs run, each
+     under its own native host fixture, over one `shared_pool_root`. A
+     loopback barrier refuses every session's second request on account A
+     within a second, and B is never spent. The `follow` verdict requires:
+     - one charged rotation;
+     - the canary's `complete` answered `completed`, after its last consume;
+     - every follower turned away after the canary's `ready` and before its
+       report: it asked then and was not moved;
+     - each follower's first commit taken only after the report, within
+       60 s of it, with its own report answered `completed`;
+     - no `canary:` row;
+     - the pool proven once, with no canary.
+
+     In this lane a follower that is not moved asks again every 5 s and is
+     turned away in one of two ways. Either its `prepare` is answered
+     `waiting`, or it is answered `ready` and its `commit` is answered
+     `retired`. While the destination is unproven, aterm's `commit_pool`
+     refuses the selection and the receipt is retired
+     (`codex_renewal_control.rs`, `commit`). Every run below shows this; it
+     is not a reading of the advice code. Neither answer names its cause.
+     The host answers `waiting` too while a follower's own read of the
+     accounts is pending, after the pool was proven as well (`s/p2`), and
+     `commit_pool` refuses a selection that lapsed or changed. So being
+     turned away shows a follower was not moved, not that the canary held
+     it. What ties a follower's move to the report is its order: taken only
+     after the report, and within 60 s of it. A `commit` answered a bare
+     `waiting`, naming no receipt, takes nothing either: aterm answers it
+     when `commit_pool` refuses and the receipt cannot be retired.
+
+     `--control` withholds the report and nothing else. Every host's first
+     consume ack is dropped and paused (the fixture's own switches). The
+     canary's resumed turn is served before that consume, with nothing
+     held. Once the canary's ack is traced, the controller holds the
+     destination's `auth.json.lock` (aterm's AuthLock flock) across
+     codex-alab's consume retry and its 5 s report budget, so the host
+     answers each report `waiting`. It then lets the lock go and watches for
+     120 s with nothing held. From the canary's `ready` to the watch's end,
+     every `prepare`, `commit` and `status` of a follower must be answered
+     `waiting`, `ready` or `retired`. A follower refused for any cause, an
+     after-effect of the lock included, fails the control by name. Before
+     `6e0631276d` such a refusal was recorded (`otherAnswers`) and passed.
+     `--lost-consume-ack` is the same drop and pause with no lock, so a
+     passing run differs from the control by the lock alone.
+
+     Trial runs of 2026-11-15 ("The shared-pool follow, trial runs of
+     2026-11-15", below), two of each mode:
+     - `s/p2` and `s2/p` passed. The followers' commits were taken 1.18 s
+       and 6.34 s, and 0.64 s and 0.83 s, after the canary's report, which
+       came 9.84 s and 10.39 s after the walls.
+     - `s/l1` and `s2/l` passed with the canary's consume ack lost. The
+       followers were taken 4.52 s and 4.79 s, and 4.85 s and 10.00 s,
+       after the report.
+     - `s/c1` and `s2/c`, the control, passed. Twenty and 19 reports were
+       answered `waiting` in the 7.75 s and 7.64 s the lock was held. Over
+       the next 120 s the followers were turned away 39 to 41 times each,
+       were answered nothing but `waiting`, `ready` and `retired`, and no
+       follower's commit was taken. The pool stayed unproven with 461.7 s
+       and 461.6 s of the hold left, although the canary's resumed turn had
+       been served on B.
+
+     So the followers' move in the follow runs is the report's doing:
+     without the report, no follower was moved or refused in 120 s, with
+     the canary hold standing. Not shown: that they would wait until the
+     hold's lapse at 600 s, or the lapse itself (a follower taking the
+     canary), since the control is capped well short of it; more than two
+     runs of a mode; and a live run.
    - A3 and C3 (the critique's addition, after A1, C1 and C2): the same
      report at the resumed turn's first served response, on a still
      Committed receipt, so a long resumed turn no longer holds followers for
@@ -557,7 +629,9 @@ is fixed (below, with what it leaves).
    repo's fakes only: quota recovery's `handoff_tests.rs` and the Autopilot's
    `renewal_follow_handoff_tests.rs`. The smoke case
    `five-hour-wall-far-unnamed` (`07b896c40b`) is written and its fixture tests
-   pass; the case itself has not been run and is not in `renewal_matrix.py`.
+   pass. Its one run, a trial on 2026-11-15, passed ("Trial runs against aterm
+   `7540b6d94f2` and codex-alab `cdfe65abe3`, 2026-11-15"); it is not in
+   `renewal_matrix.py`.
    What remains:
    - a usage wall no yes ended still carries the 429's reset, or none. That
      covers a 429 whose reset had already passed when it arrived, exec (which
@@ -571,7 +645,8 @@ is fixed (below, with what it leaves).
      The journal now records it beside the read's at every turn a yes ended
      (`the turn ended on the host's yes; its usage wall resets at the usage
      read's …`);
-   - no live run, no host run, and in no release or installed package.
+   - no live run, and in no release or installed package. The one host run
+     is the trial of `five-hour-wall-far-unnamed` on 2026-11-15.
 
 ## Implementation history
 
@@ -1290,7 +1365,7 @@ What the provider's record keeps for these cases:
 
 | Case | The refresh is refused with | Host's policy prints `codex_rotation_login=1` | Logins' issuer | Must end |
 | --- | --- | --- | --- | --- |
-| `lost-login-expired` | 401 `refresh_token_expired` | yes | the fixture's TLS listener | moved (the recorded host cannot, see below) |
+| `lost-login-expired` | 401 `refresh_token_expired` | yes | the fixture's TLS listener | moved (the host from `7f1450f9dda` cannot; one from `7540b6d94f2` does, see below) |
 | `lost-login-expired-plain-issuer` | 401 `refresh_token_expired` | yes | a second loopback listener, plain HTTP | moved |
 | `lost-login-invalidated` | 401 `refresh_token_invalidated` | yes | the fixture's TLS listener | not moved, nothing asked |
 | `lost-login-reused` | 401 `refresh_token_reused` | yes | the fixture's TLS listener | not moved, nothing asked |
@@ -1311,17 +1386,21 @@ it serves the issuer on a second loopback listener without TLS and writes
 that address into both login files. Both programs take a login's token
 endpoint from its recorded issuer and accept a loopback one without TLS
 (aterm `refresh_endpoint`, `codex_app_login.rs` line 1609). It exists
-because the recorded host cannot present a token under the fixture's
-certificate (the first finding below), so the standard layout cannot show a
-move at all. A pass of it would be evidence of the move with the host's
+because the host recorded from `7f1450f9dda` cannot present a token under
+the fixture's certificate (the first finding below), so with that host the
+standard layout cannot show a move at all. aterm closed that gap in
+`2e7aa348a76`. A pass of it would be evidence of the move with the host's
 refresh over plain HTTP and of nothing in the standard layout. It leaves its
 own record, `lostLoginMovedOverPlainIssuer`, so nothing that looks for
 `lostLoginMoved` is satisfied by it. Decided on 2026-11-14: a pass of it is
 accepted as trial evidence that the move's own steps work (the host's
 refusal, its settling minute, one read of the destination, the receipt, the
 successor on the other login) and of nothing more. The case that qualifies
-the move is `lost-login-expired` in the standard layout, which waits on
-aterm's fixture presenting a refresh under the run's test CA. Before
+the move is `lost-login-expired` in the standard layout. It waited on
+aterm's fixture presenting a refresh under the run's test CA, which the
+fixture does since `2e7aa348a76`, and a host built from aterm `7540b6d94f2`
+moved it in a trial run on 2026-11-15 ("Trial runs against aterm
+`7540b6d94f2` and codex-alab `cdfe65abe3`, 2026-11-15"). Before
 `ab3be75c24` six cases used the second listener and the move over it carried
 the name `lost-login-expired`.
 
@@ -1469,6 +1548,20 @@ Nothing in aterm at that commit drives the fixture's `lost_login` switch
 (`git grep lost_login 7f1450f9dda -- crates/aterm-gui` finds it only in
 `native_renewal_fixture.rs`), so aterm itself has not met the gap.
 
+Closed in aterm by `2e7aa348a76` (2026-11-14, on aterm main through
+`935adf75a93`), as its commit and source say: the fixture's read now posts
+the refresh over the same client that trusts the run's test CA, and only to
+a loopback token endpoint; every other path builds `http_client` as before,
+and no release build compiles a fixture client. `lost-login-expired`, its
+oracle unchanged since `ab3be75c24`, then passed in its first run against a
+host built from aterm `7540b6d94f2`, which holds that commit (`r/le` of
+2026-11-15). The host's token request reached the fixture's TLS listener
+5.32 s after the first 401 and was refused `refresh_token_expired`, no
+handshake was refused, and the host answered `ready` 65.47 s after its
+refusal ("Trial runs against aterm `7540b6d94f2` and codex-alab
+`cdfe65abe3`, 2026-11-15"). That is one trial run with an unverified
+package; it qualifies nothing.
+
 **codex-alab asks twice on its first pass.** In `ll/p1` the host traced
 `codex-login-rotation prepare` at 0.180 and 0.194 s after the first 401,
 each after its own session-status read, and then every 5.02 to 5.16
@@ -1495,6 +1588,22 @@ five-second timer is replaced by the second's. One earlier run
 (`ll/iv`) shows a single first ask, so the pair depends on timing. The
 usage-limit traces show similar pairs at later looks and a single first
 ask; those were not traced.
+
+codex-alab's `1702dbe1df` (2026-11-14) seeds the watch's
+`was_known_profile` from the decision that armed it, so the watch owes the
+profile no second pass. In the seven lost-login runs of 2026-11-15, with a
+package that holds it, no two asks were nearer than 5.02 s:
+`codex-login-rotation prepare` in the two moved runs, `codex-renewal
+prepare` in the five that stayed. The first ask came 0.04 to 0.05 s after
+codex-alab's own refused refresh in four of them (`lp`, `liv`, `lig`,
+`lnw`) and 5.05 s after it in three (`le`, `lru`, `lun`), one five-second
+pass later; both oracles allow either, and why it varies was not traced. At
+a usage wall the runs of 2026-11-15 show two `codex-rotation prepare` 0.11
+to 0.30 s apart on the first look in every run that asked, as `ll/rw2` and
+`trial-81ec56a/runs/weekly-quota` did (0.11 and 0.08 s); of the earlier
+runs read again for this, only `trial-81ec56a/runs/five-hour-wall-far` asked
+once there. No usage-wall oracle judges how often it is asked, and that pair
+was not traced either.
 
 What `ll/p1` measured, in seconds after the first 401, with the earlier
 moved runs for comparison (they ran under the earlier oracle, below):
@@ -1592,6 +1701,400 @@ What this shows, and what it does not:
 - The host's fixture policy for these cases prints `codex_rotation_login=1`
   without `codex_rotation=1`. A host with both was not run.
 
+### Trial runs against aterm `7540b6d94f2` and codex-alab `cdfe65abe3`, 2026-11-15
+
+Every run here is trial evidence and qualifies nothing. The package is an
+unverified development build, and every `result.json` says
+`package.qualifies: false`. The host was built on Trust's unverified lane,
+the provider is the fixture, and nothing ran live. Each account, login file,
+token and reply was generated inside the run's output directory.
+`renewal_matrix.py` refuses this package, so each case was run singly with
+`renewal_follow.py`.
+
+- **Host.** `host-7540b6d94f24/aterm-native-host`, built from a clean
+  checkout of aterm main `7540b6d94f2` with `targo --unverified test -p
+  aterm-gui --test native_host --no-run`. sha256 `719902cb207d0d5b…`,
+  205412688 bytes, self-run `PASS real-host shipping-qualified policy and
+  wrong-token refusal; worker EOF joined`. It is a trial host, built on
+  Trust's unverified lane, and qualifies nothing, as the package qualifies
+  nothing. Its record is `built-from-clean-commit` (schema 3), so every
+  `result.json` made with it says `nativeHost.qualifies: true`. That field
+  weighs only the record's attestation and self-run
+  (`native_host_record.not_qualifying`). The record has no field for the
+  lane: only its evidence sentence says that every run with it is trial
+  evidence. Paired with a qualified package, it would give a run a
+  top-level `qualifies: true` that no run here supports. The host of the
+  qualifying runs of 2026-11-13 (`host-q-40e8515`) was built with the same
+  command, so whether this lane can qualify a host is for the record's rule
+  to settle, not for these runs. Its source holds the
+  fixture's refresh under the run's roots (`2e7aa348a76`, through
+  `935adf75a93`), `codex-rotation complete` (A1 and A2, `9fb6fb041d7`) and
+  the fixture's launch shapes (`494e3f9976c`). Its fixture policy prints
+  `codex_rotation_login=1` alone for the lost-login cases. For every other
+  case it prints `codex_rotation=1 codex_rotation_five_hour=900
+  codex_rotation_refusal=1 codex_rotation_limits=1`.
+- **Package.** `pkg-cdfe65abe3`, version `0.9.0-trial+gcdfe65abe`,
+  assembled by `trial_package.py` from `targo --unverified build -p
+  codex-cli --bin codex` in a clean worktree at codex-alab main
+  `cdfe65abe3`. Binary sha256 `8ff7875159df8a58…`, 1112796504 bytes. It
+  holds the one ask at a lost login's wall (`1702dbe1df`), the background
+  terminals' hold (gap 1), the exec wall classifier (gap 4, S3) and the
+  `complete` client and report (gap 5, C1 and C2).
+- **Harness.** `renewal_follow.py` from that same clean tree. Its
+  controller sha256 is `70e34cf26af0…` in every `result.json`. The
+  lost-login oracle is the one that failed `ll/t1`: since `ab3be75c24` the
+  controller has changed only for `five-hour-wall-far-unnamed` and a
+  listener's close.
+
+Each case was run once, one at a time, under
+`$HOME/.aterm/.ubd/codex-rotation-2026-11-15/r/`, from 16:39 to 17:05
+-0800. The load average was 8 to 17. Every guardian returned 0 with no
+timeout, and every host exited 0 without stalling.
+
+| Case | Run | Result |
+| --- | --- | --- |
+| `lost-login-expired` | `r/le` | passed (`lostLoginMoved`): moved in the standard layout |
+| `lost-login-expired-plain-issuer` | `r/lp` | passed (`lostLoginMovedOverPlainIssuer`) |
+| `lost-login-invalidated` | `r/liv` | passed, veto `revoked` |
+| `lost-login-reused` | `r/lru` | passed, veto `exhausted` |
+| `lost-login-invalid-grant` | `r/lig` | passed, veto `other` |
+| `lost-login-unrecognised` | `r/lun` | passed, veto `other` |
+| `lost-login-no-word` | `r/lnw` | passed, no veto, policy without the word |
+| `weekly-quota` | `r/wq` | passed; `complete` answered `completed` |
+| `weekly-quota-exhausted` | `r/wqx` | passed; no move, so no `complete` |
+| `five-hour-wall-soon` | `r/fs` | passed; waited out on its own account, so no `complete` |
+| `five-hour-wall-far` | `r/ff` | passed; `complete` answered `completed` |
+| `five-hour-wall-far-unnamed` | `r/ffu` | passed, in its first run against a host; `complete` answered `completed` |
+| `weekly-quota-chain` | `r/wqc` | passed; `complete` for the second move only |
+| `weekly-quota-rollback` | `r/wqr` | passed; rolled back, so no `consume` and no `complete` |
+| `lost-consume-ack --quota` | `r/lcq` | passed; `complete` after the retried `consume` |
+
+The last four are the other cases of `renewal_follow.py` that move a
+session at a usage wall and so can reach the `complete` step. Run plainly,
+the file's fault cases move at a login wall, where codex-alab sends no
+report. With `--quota` they get distinct accounts and a usage wall
+instead. One was run that way: in `lost-consume-ack --quota` the host drops
+the first `consume` acknowledgment, so the report can only follow a
+confirmation that comes later. The other fault cases were not run with
+`--quota`. No case failed, so none was run again.
+
+**The lost-login move in the standard layout.** In `r/le` both token
+requests arrived at the fixture's one TLS listener. codex-alab presented the
+source's refresh token once and the host presented it once, and each was
+refused `refresh_token_expired`. No handshake was refused and no request was
+unrouted. Seconds after the first 401, beside the plain-issuer run:
+
+| | `le` | `lp` |
+| --- | ---: | ---: |
+| codex-alab's refresh refused | 0.25 | 0.27 |
+| first `codex-login-rotation prepare` | 5.30 | 0.31 |
+| host's own refresh refused | 5.32 | 0.33 |
+| host confirms the source (two usage reads, both 401) | 65.72 | 60.60 |
+| host reads the other account, once | 65.77 | 60.65 |
+| `ready` | 70.79 | 65.64 |
+| successor's turn answered on the other account | 79.93 | 74.94 |
+| the run stopped watching | 151.15 | 146.14 |
+
+`ready` came 65.47 s (`le`) and 65.31 s (`lp`) after the host's own
+refusal. Each run had 14 asks, 13 `waiting` and then `ready`, between 5.019
+and 5.088 s apart, so the doubled first ask of `ll/p1` is gone. The watch
+ran 80.36 and 80.50 s past `ready`, and in that time no token was presented
+and no ask was made. Other figures:
+
+- The host read the source's usage three times: once just before it
+  presented the token, and twice to confirm. It read the other account
+  once. The successor read the other account four times.
+- The receipt's purpose is `login_rotation`, and it names two accounts.
+- The pool's `active` is still `main`. No rotation was charged, and no
+  canary was set.
+- Both login files are unchanged, and one recovered turn was sent.
+- No `complete` line was traced. C1 sends none for a lost login's move.
+
+The whole of `le` took 164 s and `lp` took 150 s, inside the 270 s budget.
+In `le` the first ask came one five-second pass later than in `lp`, so the
+whole move came 5 s later. Its oracle bounds the first ask at 30 s
+(`LOGIN_ASK_SECONDS`).
+
+**The lost logins that stay.** In each of the five runs:
+
+- codex-alab's refresh was refused 0.21 to 0.29 s after the first 401, at
+  the fixture's TLS listener.
+- Two `codex-renewal prepare` asks came 60.02 to 60.03 s apart, both
+  answered `waiting`. The first came 0.04 s (`liv`, `lig`, `lnw`) or 5.05 s
+  (`lru`, `lun`) after that refusal.
+- The host presented no token and read no usage, and no handshake was
+  refused.
+- No `codex-login-rotation` or `codex-rotation` line was traced.
+- The wall was held for 70.02 to 70.09 s, and each run took 73 s.
+
+**The usage walls and `complete`.** In `wq`, `ff`, `ffu`, `lcq` and the
+second move of `wqc`, the host traced one `codex-rotation complete` 67 to
+129 ms after the last `consume`, each answered `OK codex-rotation
+state=completed` with the receipt's id. The pool's ledger then records
+`proven` for the destination, and its `state.json` holds `proven: true` and
+`canary: null`. In `lcq` the first `consume` came at 14.98 s and its
+acknowledgment was dropped. codex-alab read `status` (`consumed`) at
+16.03 s, sent `consume` again at 16.06 s and sent `complete` once, at
+16.12 s. Which of C2's three paths sent it is not in the run's files:
+codex-alab's journal is not kept there. In `wq`, for example:
+
+- the first 429 came at 0;
+- the earned-reset read at 0.13 s;
+- two asks at 0.27 and 0.41 s, both `waiting`;
+- `ready` at 5.46 s;
+- `committed` at 9.28 s;
+- the successor's turn answered at 14.67 s;
+- `consume` at 14.75 s;
+- `complete` at 14.82 s.
+
+In `wqc`, the first move's resumed turn was refused at the second account's
+own wall at 14.26 s. No report was sent for that receipt, as C2 specifies
+for a resumed turn that ended with an error. The pool holds the third
+account proven and the walled second never proven (`previous_proven:
+false`). `wqr` ends with its receipt `retired` at 70.76 s and no `consume`.
+Its pool's `active` stays the destination under a canary naming that
+receipt, with `proven: false`, as `trial-81ec56a/r/wqr` left it on
+2026-11-13. `ffu`'s refusal named no reset (`refusalNamedReset: false`).
+The host first asked 0.45 s after it and answered `ready` at 5.80 s, as
+`ff` did for a refusal that named one (0.31 s and 5.52 s).
+
+**A finding for S1, the shared-pool smoke (gap 5).** `renewal_follow.py`'s
+validators do not take `consume` to be the last rotation verb, and nothing
+failed on `complete`. Nor do they judge it:
+
+- No proof reads a `complete` line, its answer, or the pool's `proven` and
+  `canary` after a usage-wall move. A run whose report was never sent, or
+  was refused, would pass these cases as these runs did.
+- The loop stops the host once it sees the consumed receipt and the
+  successor at rest, and it does not wait for the report. In these runs the
+  report happened to reach the host before it was stopped.
+
+S1 needs a proof of its own:
+
+- the line;
+- its `completed` answer naming the receipt and the walled turn;
+- the pool proven with no canary;
+- a wait for the report, bounded by C2's 5 s.
+
+It also needs the follower walled on the same account that gap 5 is about.
+The controller was not changed here.
+
+Since then, `314f0ccd89` has changed it:
+
+- **The loop waits for the report.** It no longer stops a usage-wall host
+  when the successor comes to rest. It waits up to 10 s
+  (`COMPLETION_WAIT_SECONDS`) for `complete` to be answered `completed`.
+- **Weekly-quota moves are judged on it.** Each weekly-quota move with a
+  native receipt records `completionReported` (`completion_verdict`). That
+  requires:
+  - the report after the receipt's last consume;
+  - only `waiting` before the report, and nothing after it;
+  - the answer naming the receipt, its thread and the walled turn;
+  - the pool proven once on its active account, with no canary held or
+    taken.
+
+  A host without A1, or a package without C2, now fails these cases by
+  name. `s/wq` (`--case weekly-quota`, trial) passed with the report
+  answered 0.109 s after the consume.
+
+The shared-pool proof is `tui_shared_pool.py` (S1, gap 5).
+
+What this shows, and what it does not:
+
+- `lost-login-expired` moves in the standard layout with a host that holds
+  `2e7aa348a76`. The fixture gap found on 2026-11-14 is closed by aterm.
+  The case passed unchanged: the oracle that failed `ll/t1` passed `r/le`.
+  That is one trial run with an unverified package.
+- With the one-ask client, the four refusals that must stay a stop for a
+  person, and a host without the word, were neither moved nor asked about
+  in one run each. codex-alab asked once a pass in all seven lost-login
+  runs.
+- aterm's `codex-rotation complete` answered codex-alab's report in every
+  usage-wall move whose resumed turn was served, after a dropped `consume`
+  acknowledgment too, and it was sent once per receipt. The report proved
+  the destination in a pool of one session. Whether a follower walled on the
+  same account then moves at once, which is gap 5's point, was not run: no
+  case of this file has a follower. `tui_shared_pool.py` ran it afterwards
+  (next section).
+- `five-hour-wall-far-unnamed` passed its first run against a host, the
+  first evidence beyond the repo's fakes that a far wall whose 429 names no
+  reset is offered on its usage read alone (gap 6).
+- The six usage-limit cases that were run here before (2026-11-13, with
+  `trial-81ec56a/pkg`) pass with this package and host. No change since
+  then was seen to break them, in one run each.
+- Not run with this pair:
+  - `happy` and every same-account case;
+  - the fault cases with `--quota`, other than `lost-consume-ack`;
+  - a report from a successor restarted after `consume`;
+  - the exec smokes;
+  - any case more than once.
+
+  One run a case measures no failure rate. None of these runs counts toward
+  `renewal_matrix.py`.
+
+### The shared-pool follow, trial runs of 2026-11-15
+
+These are trial evidence and qualify nothing. The inputs are the same
+trial host and package as the runs above: `host-7540b6d94f24` and
+`pkg-cdfe65abe3`. Every `tui_shared_pool.py` result says `qualifies:
+false` and `package.qualifies: false`. `s/wq` is a `renewal_follow.py`
+result, which has no top-level `qualifies`; it says `package.qualifies:
+false`. Every result also says `nativeHost.qualifies: true`: that is the
+host record's own rule, not what these runs are worth (the host entry
+above). Every account, token and reply was generated under the run's
+output directory and served from loopback. The runs went one at a time,
+with three sessions each, under
+`$HOME/.aterm/.ubd/codex-rotation-2026-11-15/`. Times are seconds after the
+first wall.
+
+The controllers, each named by its result's `controllerSha256`:
+
+- `s/p2`, `s/l1` and `s/c1` ran `alab/smoke/tui_shared_pool.py` at
+  `314f0ccd89`, sha256 `1fab6fe248f5f6d0…`. `0a9570334b` changed only its
+  docstring after them.
+- `s/p1` ran an uncommitted first draft, sha256 `e6b31b47b602cdac…`, which
+  no commit holds.
+- `s2/p`, `s2/l` and `s2/c` ran it at `6e0631276d`, sha256
+  `f8e2b252d0ac678a…`, after the review's repairs to its oracles (below).
+
+| Run | Controller | Mode | Verdict | Walls spread | Canary ready / report | Followers' commit taken after the report |
+| --- | --- | --- | --- | ---: | --- | --- |
+| `s/p2` | `314f0ccd89` | follow | passed | 0.74 ms | 0.71 s / 9.84 s | 1.18 s, 6.34 s |
+| `s/l1` | `314f0ccd89` | lost-consume-ack | passed | 0.54 ms | 5.49 s / 16.41 s (2 consumes) | 4.52 s, 4.79 s |
+| `s/c1` | `314f0ccd89` | control, 120 s watch | passed | 0.72 ms | 5.74 s / none taken | none in 137.5 s after the canary's ready |
+| `s2/p` | `6e0631276d` | follow | passed | 0.98 ms | 0.74 s / 10.39 s | 0.64 s, 0.83 s |
+| `s2/l` | `6e0631276d` | lost-consume-ack | passed | 5.14 ms | 5.60 s / 16.80 s (2 consumes) | 4.85 s, 10.00 s |
+| `s2/c` | `6e0631276d` | control, 120 s watch | passed | 1.16 ms | 5.60 s / none taken | none in 137.4 s after the canary's ready |
+
+In these six runs, the guardian and each of the three hosts exited 0. In
+`s/p1` the three hosts exited 0 and the guardian returned 1, the
+controller's own exit for its failed verdict. Each session's walled input
+was resumed unchanged on B, except the control's followers, which never
+moved.
+
+- **`s/p2`.** Session 0 was the canary, and its commit was taken at
+  0.86 s. The followers were turned away differently:
+  - Session 2 was answered `ready` at 5.64 s, and that commit was
+    `retired`. Its next ask was taken at 11.02 s.
+  - Session 1 was told `waiting` four times before the report, two of
+    them after the canary's `ready`, and twice more just after the report,
+    with the pool proven. It was taken at 16.18 s. Nothing shows the
+    canary held it: the host answers `waiting` while a follower's own read
+    is pending too, as those two after the report show. What ties its
+    move to the report is the order: taken 6.34 s after it.
+
+  The ledger has one `rotate` (the canary's), one `proven` 9 s later, and
+  no `canary:` row. The pool's state ends `active: target`, `proven:
+  true`, `canary: null`, `rotations: 1`. Each successor's own report was
+  answered `completed`.
+- **`s/l1`.** The canary's first consume ack was dropped and released at
+  once. codex-alab asked again, and the report followed the second consume
+  by 0.08 s. The followers had 3 and 2 commits retired before it.
+- **`s/c1`.** The canary's successor resumed its walled turn, which was
+  served on B at 15.21 s, and then consumed its receipt at 15.30 s. The
+  host dropped and paused that consume's acknowledgment. The controller
+  took the destination's `auth.json.lock` at 15.37 s and let the ack go.
+  codex-alab read the receipt's status (`consumed`) at 16.48 s and
+  consumed again at 16.53 s. It then sent 20 reports from 16.54 s, over
+  4.97 s, all answered exactly `OK codex-rotation state=waiting`, and none
+  after. The lock was let go at 23.13 s, 7.75 s after it was taken. So the
+  lock covered the consume's retry and the reports; the turn had been
+  served before it, with nothing held. The run then watched for 120.09 s.
+  Over that time the two followers were turned away 41 and 39 times, the
+  last 4.7 s before the end. Of those, 5 and 6 were a `commit` answered
+  `retired`, and the rest a `prepare` answered `waiting`. After each
+  follower's last `ready` (46.58 s and 51.65 s), and the commit and status
+  read that followed it, every ask to the end was a `prepare` answered a
+  bare `waiting`. Every `prepare`, `commit` and `status` of theirs after
+  the canary's `ready` was answered `waiting`, `ready` or `retired`
+  (`otherAnswers` is empty, and the repaired oracle passes the run's
+  records). No follower's commit was taken, and nothing proved the pool.
+  The ledger ends at the canary's `rotate`, with no `proven` row and no
+  `canary:` row. The state ends `proven: false`, with the canary hold
+  naming the canary's sid and 461.7 s left.
+- **`s/p1`** is not counted. Under the smoke's first verdict, which took a
+  follower's first `ready` for its release, it failed: `follower 0 was
+  answered ready 9.755 s before the canary's report`. Its trace is what
+  showed the retire-at-commit hold described above. Judged again by the
+  committed verdict, at `314f0ccd89` and at `6e0631276d`, its records
+  pass, with request-arrival stamps standing in for the refusal stamps
+  that run did not record.
+- **`s/wq`.** This is `renewal_follow.py --case weekly-quota` at
+  `314f0ccd89`, and it passed. Its `completionReported` puts the report
+  0.109 s after the consume, with the pool proven once.
+
+A review of `314f0ccd89` found the oracles weaker than this section
+claimed, and `6e0631276d` repaired them:
+
+- The control recorded each follower's answers other than `waiting`,
+  `ready` and `retired` and never failed on them. A follower refused for
+  most of the watch, by an after-effect of the custody lock or anything
+  else, passed if it was turned away once in the last 15 s. Now every
+  `prepare`, `commit` and `status` of a follower, from the canary's `ready`
+  to the watch's end, must be answered `waiting`, `ready` or `retired`, and
+  any other answer or verb fails by name.
+- A `commit` answered a bare `OK codex-rotation state=waiting`, naming no
+  receipt, counted as taken. aterm answers it when `commit_pool` refuses
+  the selection and the receipt cannot be retired, which takes nothing. Now
+  a commit is taken only when its answer names the receipt. None of the
+  runs here had such an answer: each of the 17 `commit`s answered
+  `waiting` in their traces names its receipt.
+- The follow's check that a follower was turned away before the report
+  failed as "never held behind the canary". It shows the follower asked
+  and was not moved, not what held it (`s/p2`'s session 1, above), and it
+  now says so.
+
+Judged again from their traces by the repaired oracles, `s/p2`, `s/l1`
+and `s/c1` still pass, and so do `s/p1`'s records. The smoke was then run
+again in each mode:
+
+- **`s2/p`.** Session 0 was the canary, its commit taken at 0.90 s and its
+  report answered `completed` at 10.39 s, 0.10 s after its consume. Each
+  follower was answered `ready` at 5.6 s and 5.7 s and that commit
+  `retired`. Their next commits were taken at 11.21 s and 11.03 s.
+- **`s2/l`.** Session 2 was the canary. Its first consume ack was dropped
+  and released at once. codex-alab asked again, and the report followed
+  the second consume by 0.14 s. Each follower had 3 commits retired before
+  it.
+- **`s2/c`.** Session 1 was the canary. Its resumed turn was served on B
+  at 15.11 s, it consumed at 15.22 s, and the controller took the lock at
+  15.24 s. codex-alab read the receipt's status (`consumed`) at 16.31 s,
+  consumed again at 16.32 s and sent 19 reports from 16.33 s, over 4.79 s,
+  all answered `waiting`. The lock was let go at 22.89 s, after 7.64 s,
+  and the run watched for 120.07 s. From the canary's `ready` to the
+  watch's end, follower 0's `prepare` was answered `waiting` 39 times and
+  `ready` 6 times, its `commit` `retired` 6 times and its `status`
+  `retired` 6 times. Follower 2's were answered 38, 7, 7 and 7 times.
+  Nothing else: no refusal and no commit taken. After each follower's last
+  `ready` (47.07 s and 46.89 s), and the commit and status read that
+  followed it, every ask to the end was a `prepare` answered a bare
+  `waiting`. The ledger ends at the canary's `rotate`, with no `proven`
+  row and no `canary:` row. The state ends `proven: false`, with the
+  canary hold naming the canary's sid and 461.6 s left.
+
+What this shows:
+
+- A1, A2 and C2 together release followers walled on the same account
+  within seconds of the canary's report: 0.64 to 10.00 s in the four
+  follow and lost-ack runs.
+- With only the report withheld, no follower was moved or refused for
+  120 s in either control, with the pool unproven and the canary hold
+  standing. The report is the difference, and that is the gap 5 change.
+- Being turned away before the report shows that a follower asked then and
+  was not moved. It does not show what held it. A bare `waiting` names no
+  cause, and after each follower's last `ready` in the controls every
+  answer was one. What ties the follow runs' moves to the report is their
+  order against it, and the controls.
+
+What it does not show:
+
+- that the followers would wait until the hold's lapse at 600 s, or the
+  lapse itself;
+- more than three sessions;
+- more than two runs of a mode;
+- a host or package that qualifies;
+- a live provider.
+
 ### Running a case
 
 ```sh
@@ -1614,6 +2117,20 @@ a 93-byte output directory). Budgets are in
 `weekly-quota-exhausted`, `five-hour-wall-soon`, `five-hour-wall-far` and the
 two lost-login cases that must move, 180/210 s for the five lost-login cases
 that move nothing, 450/480 s for the chain and rollback cases.
+
+The shared-pool follow (gap 5, S1) runs the same way, one run at a time:
+
+```sh
+python3.14 -B <wt>/alab/smoke/tui_shared_pool.py --host <host> --package <pkg> \
+  --output <out> [--sessions 3] [--control [--control-watch 120] | --lost-consume-ack]
+```
+
+Each session's host has its own root, `<out>/w<i>`. That root holds its
+fixture, control trace, stdout, stderr and PTY log, and its control socket,
+so `<out>/w0/control.sock` must stay under 103 bytes. The shared pool is
+`<out>/host-state`. The budgets are `BUDGETS` in the controller: 270/300 s
+for `follow` and `--lost-consume-ack`. The control gets 150/180 s plus its
+watch, which runs 30 to 420 s so that it ends well short of the 600 s hold.
 
 A case that reaches the hang detector says what it saw: the host's
 live-snapshot outcomes and, for a quota case, what followed the first 429
@@ -2371,12 +2888,16 @@ Limits:
 ### Not run
 
 - Any case with a trial package more than once, or any case other than the
-  seven of "Trial runs of 2026-11-13", apart from the lost-login cases of
-  "Trial runs of the lost-login move".
+  seven of "Trial runs of 2026-11-13". The exceptions are the lost-login
+  cases of "Trial runs of the lost-login move", and the fifteen runs of
+  "Trial runs against aterm `7540b6d94f2` and codex-alab `cdfe65abe3`,
+  2026-11-15", each once with a second trial package.
 - `weekly-quota-*` with a package that carries the seal (`1eb3459fbe`),
   against aterm 0.199.0, 0.200.0 or a host without `2020f39c770`: no such
   package can be built here.
-- `lost-consume-ack` and every other same-account fault case.
+- `lost-consume-ack` and every other same-account fault case. Only
+  `lost-consume-ack --quota`, with distinct accounts, ran once on
+  2026-11-15.
 - `exec_shared_pool.py`, `exec_review.py` and every `exec_accounts.py` option
   other than `--chain`.
 - `exec_accounts.py --chain` since the review.
@@ -2396,9 +2917,12 @@ Limits:
   (`alab/design/accounts-lost-login.md`) with a certified package, in the
   matrix, or live. codex-alab's client is on main since `8bd759e3b6` and
   aterm's verb on aterm main since `7f1450f9dda`; 0.7.0 predates the client.
-  The only runs are the trial ones of "Trial runs of the lost-login move":
-  an unverified package, the fixture, one host. None of a case that must
-  move passes.
+  The only runs are trial ones, each with an unverified package, the
+  fixture and one host:
+  - those of "Trial runs of the lost-login move", where no case that must
+    move passes;
+  - those of 2026-11-15, where both such cases pass once,
+    `lost-login-expired` in the standard layout.
 - Of the lost-login move, these were not driven by any case:
   - a source account that is pinned (the plan's `lost-login-expired-pinned`
     and its variant). The fixture's config has no switch for a pin
@@ -2422,10 +2946,12 @@ Limits:
   - a login refused with 401 while its usage still reads (the plan's third
     negative), and a refusal that arrives in a later turn or in a `codex
     exec` run;
-  - a move with the issuer under the fixture's TLS, which the recorded host
-    cannot serve (`lost-login-expired` fails by name);
+  - a move with the issuer under the fixture's TLS more than once. The host
+    from `7f1450f9dda` cannot serve it (`lost-login-expired` fails by name).
+    One from `7540b6d94f2` moved it in the one run of 2026-11-15;
   - a host that prints the word and declines for a reason of its own
-    (`not-needed` after a real read), other than through that gap;
+    (`not-needed` after a real read), other than through the TLS gap of
+    `7f1450f9dda`;
   - each case more than once at `ab3be75c24`.
 
 Since `4b4a67dc1d` (in 0.7.0), `alab-quota-recovery` ends a turn refused on
@@ -2443,7 +2969,41 @@ python3.14 -B -m unittest discover -s <wt>/alab/tests -p 'test_*.py'
 cd <wt>/alab/smoke && python3.14 -B -m unittest renewal_follow_test
 ```
 
-`renewal_follow_test` now runs 78 tests and all pass (`ab3be75c24`); 72 ran
+At `314f0ccd89`, `renewal_follow_test` runs 84 tests and all pass. The 4
+in `UsageWallCompletion` hold `completion_verdict` and `completion_seen`:
+
+- a report answered `completed` after the consume, and a busy host's
+  `waiting` before it;
+- a dropped consume asked again;
+- each wrong report, by name: missing, refused, completed twice, naming
+  another receipt or turn, before the last consume, or sent before the
+  consume;
+- a pool left unproven, holding a canary, with a canary taken, or proven
+  other than once.
+
+`alab/tests/test_tui_shared_pool.py` (23 tests) holds the shared-pool
+smoke's oracles on records shaped as `s/p1` and `s/c1` traced them:
+
+- `pool_verdict`: a passing follow, and by name a follower that took the
+  canary, waited the hold out, was committed before the report, was never
+  turned away before it, or committed another receipt; also a second
+  rotation, a rotation charged to another session, walls more than 1 s
+  apart, and a missing report;
+- `commit_outcome`: a commit answered a bare `waiting` is turned away, not
+  taken, in a follow too, and a `waiting` that names a receipt is no
+  turn away;
+- `control_verdict`: a passing control, and a follower committed, a report
+  answered or sent outside the lock, the pool proven, the canary taken, the
+  hold lapsed or not the canary's, a follower that stopped asking, and a
+  follower refused after the lock was let go, refused while it was held,
+  or sending a verb no unmoved follower sends; what the hosts answered
+  after the watch's end is not judged, and a bare `waiting` commit does
+  not end the control;
+- `requests_verdict`;
+- the provider's barrier, and a barrier never met as a fixture fault;
+- the custody lock's exclusion and mode.
+
+Earlier, `renewal_follow_test` ran 78 tests and all passed (`ab3be75c24`); 72 ran
 at `023a7188d0`, 53 at `14f0f3a67c`, 49 at `c6c67e410c` and 34 before
 `five-hour-wall-far` was written. The 19 added with the lost-login cases
 hold the fixture's replies (what each login is answered before and after

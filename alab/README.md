@@ -28,7 +28,7 @@ it needs no functional hook.
 | [REQUEST-DIAGNOSTICS.md](REQUEST-DIAGNOSTICS.md) | read-only request evidence, process/attempt correlation, field meanings and limits |
 | `check.sh` | the gate a sync passes before it lands |
 | `qualification.py` | run the unchanged native gate and retain its log and exact before/after source identities outside the source tree |
-| `delta.sh`, `hook_topics.py` | upstream diff/conflict risk; `--topics [REV]` inventories committed local hooks without an upstream remote, using the shared Python 3.11+ extractor |
+| `delta.sh`, `hook_topics.py` | upstream diff/conflict risk; `--base=REV [SOURCE]` measures an explicit ancestor without upstream refs; `--topics [REV]` inventories committed local hooks without an upstream remote, using the shared Python 3.11+ extractor |
 | `upstream_intake.py` | snapshot an exact upstream range and validate complete, current review decisions; qualification remains separate |
 | `upstream_gate.py` | require committed review coverage before checking a newly integrated upstream range; reject missing, stale or ambiguous decisions |
 | `upstream_status.py` | report local main/upstream identities, integrated frontier and lag; fetch, qualification and installed adoption remain unknown without evidence |
@@ -396,7 +396,14 @@ Its steps:
    imports their modules. All remaining cases then run with normal unittest
    outcomes and without failfast. `ALAB_PYTHON_WORKFLOW` records phase results and
    exact started, finished and missing case IDs; interrupted or incomplete coverage
-   cannot report full success. The native command, profile, admission and 60-second
+   cannot report full success. Qualification also checks callback counts, selected
+   case identity and outcomes of the active case. Phase `integrity_errors` contains fixed
+   codes for inconsistent reporting; a phase's ordinary unittest `OK` footer alone
+   cannot establish workflow success. Normal skip/expected-failure handling remains
+   intact. The added codes contain no subtest parameters or exception text.
+   The [outcome-integrity review](reviews/python-outcome-integrity-2026-11-15.md)
+   records the false-success reproduction and focused checks.
+   The native command, profile, admission and 60-second
    fixture deadline remain unchanged. These are Python workflow results, not an
    application certificate.
    Measured contained on this Mac (2026-10-21, `alab_contained` as

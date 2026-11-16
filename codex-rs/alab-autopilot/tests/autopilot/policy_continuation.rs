@@ -20,19 +20,26 @@ pub(super) async fn assert_cyber_continuation(
             "This action was refused by the cybersecurity access policy.",
         ))
     };
+    let mut replies = vec![
+        refusal(),
+        if refused_again {
+            refusal()
+        } else {
+            responses::sse_response(reply(
+                "independent",
+                "Reviewed independently authorized tests.",
+            ))
+        },
+    ];
+    if refused_again {
+        replies.push(responses::sse_response(reply(
+            "other-root",
+            "Completed the unrelated root task.",
+        )));
+    }
     let h = harness_timed(
         Mode::Current,
-        vec![
-            refusal(),
-            if refused_again {
-                refusal()
-            } else {
-                responses::sse_response(reply(
-                    "independent",
-                    "Reviewed independently authorized tests.",
-                ))
-            },
-        ],
+        replies,
         &[("human_grace_s", "0")],
         &[],
         None,
@@ -112,6 +119,42 @@ pub(super) async fn assert_cyber_continuation(
         .await;
     }
     assert_eq!(h.fake.acts(), [words::RULE_POLICY_CONTINUE]);
+    if refused_again {
+        // A terminal error in one root must not stop receiving another root's messages.
+        // Disable ordinary follow-ups so this new root performs precisely its own turn.
+        h.fake.set_policy_key("continue", "false");
+        let other = h
+            .test
+            .thread_manager
+            .start_thread(codex_core::StartThreadOptions {
+                environments: Some(Vec::new()),
+                ..codex_core::StartThreadOptions::new(h.test.config.clone())
+            })
+            .await
+            .expect("unrelated root");
+        h.shared.note_root_thread(&other.thread_id.to_string());
+        other
+            .thread
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "Review the unrelated local test results.".into(),
+                text_elements: Vec::new(),
+            }]))
+            .await
+            .expect("unrelated root starts after terminal refusal");
+        wait_for_event_with_timeout(&other.thread, |event| {
+            matches!(event, EventMsg::TurnComplete(done)
+                if done.error.is_none() && done.last_agent_message.as_deref() == Some("Completed the unrelated root task."))
+        }, Duration::from_secs(60)).await;
+        assert!(
+            h.autopilot.supervisor().standing_attention().is_some(),
+            "receiving another root's response does not erase the original terminal error"
+        );
+        other
+            .thread
+            .shutdown_and_wait()
+            .await
+            .expect("unrelated root shutdown");
+    }
     h.test
         .codex
         .flush_rollout()
@@ -138,7 +181,7 @@ pub(super) async fn assert_cyber_continuation(
         .await
         .unwrap_or_else(|err| panic!("native shutdown: {err:?}"));
     let requests = h.mock.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), if refused_again { 3 } else { 2 });
     assert_eq!(
         requests[1]
             .message_input_texts("user")

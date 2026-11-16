@@ -340,6 +340,65 @@ async fn a_proven_claim_replaces_the_host_and_names_any_other_holder_busy() {
 }
 
 #[tokio::test]
+async fn a_refused_reclaim_forgets_the_previous_proof_before_any_more_acts() {
+    for refused in ["ERR busy supervisor=driver@lead", "ERR denied"] {
+        let (_dir, fake) = fake(Mode::Current).await;
+        let c = held(&fake).await;
+        let clone = c.clone();
+        assert!(clone.holds_claim());
+        if refused.starts_with("ERR busy") {
+            // A person's clear and another holder's take arrived before the
+            // subscription delivered its event. Use the host's real claim rule.
+            fake.clear_claim();
+            fake.claim_as("driver@lead");
+        } else {
+            fake.reply_once(
+                &format!("@{} meta set supervisor {}", fake.sid(), c.holder()),
+                &format!("{refused}\n"),
+            );
+        }
+        assert!(matches!(
+            c.claim().await.expect("the host answered the reclaim"),
+            ClaimOutcome::Busy { .. } | ClaimOutcome::Refused(_)
+        ));
+        assert!(
+            !clone.holds_claim(),
+            "a prior proof cannot survive this claim refusal: {refused}"
+        );
+        let requests = fake.requests();
+        assert_eq!(
+            clone
+                .harness_act("continue")
+                .await
+                .expect("local claim gate"),
+            ActOutcome::NotHeld
+        );
+        assert_eq!(fake.requests(), requests, "no act sent with a stale proof");
+        assert!(fake.acts().is_empty());
+        if refused.starts_with("ERR busy") {
+            assert_eq!(
+                fake.claim().map(|claim| claim.holder),
+                Some("driver@lead".to_string()),
+                "cache invalidation never releases the other holder"
+            );
+            fake.clear_claim();
+        }
+        assert_eq!(
+            c.claim()
+                .await
+                .expect("fresh native claim and status proof"),
+            ClaimOutcome::Held { changed: true }
+        );
+        assert!(clone.holds_claim());
+        assert_eq!(
+            clone.harness_act("continue").await.expect("new proven act"),
+            ActOutcome::Recorded
+        );
+        assert_eq!(fake.acts(), ["continue"]);
+    }
+}
+
+#[tokio::test]
 async fn an_unproven_claim_is_given_back_at_once() {
     let (_dir, fake) = fake(Mode::Current).await;
     // Not the foreground leader: aterm takes the claim but does not prove it.
@@ -2321,6 +2380,117 @@ async fn the_receipt_marks_the_row_and_the_report_travels_after_its_line() {
     // A sender that is no single token is never addressed.
     assert!(crate::mail::report(&c, "s lead", off, "x").await.is_err());
     assert_eq!(fake.posts().len(), 1);
+}
+
+#[tokio::test]
+async fn fleet_rows_keep_older_unhandled_tasks_visible() {
+    use codex_alab_core::mail::TriggerKind;
+    use codex_alab_core::mail::Verdict;
+    let (_dir, fake) = fake(Mode::Current).await;
+    let (fleet_id, _) = fake.deliver("fleet:lab", "task", "agent", "older task");
+    let (id, off) = fake.deliver("h-andrew", "task", "human", "newer task");
+    fake.reply_always(
+        &format!("@{} inbox --peek --meta", fake.sid()),
+        &format!(
+            "OK 4 seen=0\n\
+             msg {fleet_id} off=- t=1 from=fleet:lab kind=task trust=agent fleet=f1 len=10\n\
+             msg {id} off={off} t=2 from=h-andrew kind=task trust=human len=10\n\
+             post 1 to=h-andrew kind=note off=- len=1\n\
+             msg f2 from=fleet:lab kind=note trust=agent len=1\n"
+        ),
+    );
+    let c = client(&fake).await;
+    let (seen, rows) = crate::mail::rows(&c).await.expect("complete inbox");
+    assert_eq!(
+        rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![fleet_id, id]
+    );
+    let owed = [(id, Verdict::Handled)].into_iter().collect();
+    let (due, held) = crate::mail::receipts_due(seen, &rows, &owed);
+    assert!(due.is_empty(), "a receipt must not cross unread fleet mail");
+    let (_, blocker) = held.expect("older fleet task holds the receipt");
+    assert_eq!(blocker.id, fleet_id);
+    assert_eq!(blocker.off, None);
+    assert_eq!(blocker.reference(), format!("row {fleet_id}"));
+    assert_eq!(rows[1].reference(), format!("@{off}"));
+    assert_eq!(crate::mail::badge(&c).await.expect("badge").tasks, 2);
+    // No broker offset is synthesized for a fleet mailbox id.
+    assert!(
+        crate::mail::read(&c, TriggerKind::Task, 0, &|_| None)
+            .await
+            .is_err()
+    );
+    let mail = crate::mail::read(&c, TriggerKind::Task, off, &|_| None)
+        .await
+        .expect("broker trigger still reads the broker row");
+    assert_eq!(mail.id, id);
+    assert_eq!(mail.body, "newer task");
+    assert!(fake.receipts().is_empty());
+    // Once another consumer has handled the fleet row, the later receipt may go.
+    let (due, held) = crate::mail::receipts_due(fleet_id, &rows, &owed);
+    assert_eq!(due, vec![(id, Verdict::Handled)]);
+    assert!(held.is_none());
+}
+
+#[tokio::test]
+async fn malformed_inbox_rows_never_supply_a_partial_receipt_snapshot() {
+    use codex_alab_core::mail::TriggerKind;
+    let (_dir, fake) = fake(Mode::Current).await;
+    let (id, off) = fake.deliver("h-andrew", "task", "human", "newer task");
+    let c = client(&fake).await;
+    for invalid in [
+        "msg 0 off=invalid from=fleet:lab kind=task trust=agent len=1",
+        "msg 0 off=1 from=h-andrew kind=task len=1",
+        "msg 0 off=1 from=h-andrew kind=task trust=human len=invalid",
+        "msg 0 off=1 from=h-andrew kind=note kind=task trust=human len=1",
+        "msg 0 off=- off=1 from=h-andrew kind=task trust=human len=1",
+        "msg 0 off=1 from=h-andrew kind=task trust=human len=1 bare",
+        "unknown 0 off=1 kind=task",
+    ] {
+        fake.reply_always(
+            &format!("@{} inbox --peek --meta", fake.sid()),
+            &format!("OK 2 seen=0\n{invalid}\nmsg {id} off={off} from=h-andrew kind=task trust=human len=10\n"),
+        );
+        assert!(
+            matches!(crate::mail::rows(&c).await, Err(Error::Malformed(_))),
+            "{invalid}"
+        );
+        assert!(
+            matches!(crate::mail::badge(&c).await, Err(Error::Malformed(_))),
+            "{invalid}"
+        );
+        assert!(
+            matches!(
+                crate::mail::read(&c, TriggerKind::Task, off, &|_| None).await,
+                Err(Error::Malformed(_))
+            ),
+            "{invalid}"
+        );
+    }
+    fake.reply_always(
+        &format!("@{} inbox --peek --meta", fake.sid()),
+        "OK 1 seen=0 seen=99\nmsg 1 off=1 from=h-andrew kind=task trust=human len=1\n",
+    );
+    assert!(matches!(
+        crate::mail::rows(&c).await,
+        Err(Error::Malformed(_))
+    ));
+    assert!(fake.receipts().is_empty());
+    assert!(
+        !fake
+            .requests()
+            .iter()
+            .any(|request| request.contains("inbox get"))
+    );
+    assert!(fake.reply_always_clear(&format!("@{} inbox --peek --meta", fake.sid())));
+    assert_eq!(
+        crate::mail::rows(&c)
+            .await
+            .expect("next valid snapshot")
+            .1
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]

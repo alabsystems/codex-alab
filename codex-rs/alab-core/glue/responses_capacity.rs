@@ -11,10 +11,11 @@ use codex_http_client::RetryAfter;
 use serde_json::Value;
 use serde_json::json;
 
-/// Existing terminal event handling has precedence. Only the exact capacity codes
-/// take the shared response.failed parser, including its validation and deadline.
-/// Valid nested advice wins; otherwise the event envelope supplies its validated advice,
-/// in the same order as the WebSocket wrapper. A malformed error is never promoted.
+/// Existing terminal event handling has precedence. Exact capacity and request
+/// refusal codes share the response.failed parser and its typed validation.
+/// Request refusals discard retry advice. For capacity, valid nested advice wins;
+/// otherwise the event envelope supplies its validated advice, as in WebSockets.
+/// A malformed error is never promoted.
 pub(super) fn from_event(error: Option<&Value>, headers: Option<&Value>) -> Option<ApiError> {
     from_event_when_active(codex_alab_core::active(), error, headers)
 }
@@ -24,17 +25,21 @@ fn from_event_when_active(
     error: Option<&Value>,
     headers: Option<&Value>,
 ) -> Option<ApiError> {
-    let error = error?;
-    if !active
-        || error
-            .get("code")
-            .and_then(Value::as_str)
-            .and_then(CapacityReason::from_code)
-            .is_none()
+    if !active {
+        return None;
+    }
+    let error = error?.as_object()?;
+    let code = error.get("code")?.as_str()?;
+    // Ignored codes must not enter the parser, which can capture retry clock state.
+    if !matches!(code, "invalid_request" | "invalid_prompt")
+        && CapacityReason::from_code(code).is_none()
     {
         return None;
     }
     let mut error = parse_failed_response(Some(json!({ "error": error })));
+    if request_refusal(&error) {
+        return Some(error);
+    }
     let (ApiError::ServerOverloaded { retry_after }
     | ApiError::PolicyCapacityUnavailable { retry_after }) = &mut error
     else {
@@ -55,24 +60,31 @@ pub(super) fn emit_immediately(error: &ApiError) -> bool {
     emit_when_active(codex_alab_core::active(), error)
 }
 
+fn request_refusal(error: &ApiError) -> bool {
+    matches!(
+        error,
+        ApiError::InvalidRequest { .. } | ApiError::InvalidPrompt { .. }
+    )
+}
+
 fn emit_when_active(active: bool, error: &ApiError) -> bool {
     active
-        && matches!(
-            error,
-            ApiError::ServerOverloaded { .. }
-                | ApiError::PolicyCapacityUnavailable { .. }
-                | ApiError::RateLimitExceeded { .. }
-                | ApiError::ContextWindowExceeded
-                | ApiError::QuotaExceeded
-                | ApiError::UsageNotIncluded
-                | ApiError::ModelNotFound { .. }
-                | ApiError::InvalidPrompt { .. }
-                | ApiError::InvalidAudioInput { .. }
-                | ApiError::CyberPolicy { .. }
-                | ApiError::InferenceHookDenied { .. }
-                | ApiError::BioPolicy { .. }
-                | ApiError::MisalignmentPolicyViolation { .. }
-        )
+        && (request_refusal(error)
+            || matches!(
+                error,
+                ApiError::ServerOverloaded { .. }
+                    | ApiError::PolicyCapacityUnavailable { .. }
+                    | ApiError::RateLimitExceeded { .. }
+                    | ApiError::ContextWindowExceeded
+                    | ApiError::QuotaExceeded
+                    | ApiError::UsageNotIncluded
+                    | ApiError::ModelNotFound { .. }
+                    | ApiError::InvalidAudioInput { .. }
+                    | ApiError::CyberPolicy { .. }
+                    | ApiError::InferenceHookDenied { .. }
+                    | ApiError::BioPolicy { .. }
+                    | ApiError::MisalignmentPolicyViolation { .. }
+            ))
 }
 
 #[cfg(test)]
@@ -128,6 +140,9 @@ mod tests {
             ApiError::InvalidPrompt {
                 message: "invalid".into(),
             },
+            ApiError::InvalidRequest {
+                message: "invalid request".into(),
+            },
             ApiError::InvalidAudioInput {
                 message: "invalid recording".into(),
                 per_recording: true,
@@ -160,9 +175,6 @@ mod tests {
                 retry_after: None,
             },
             ApiError::RateLimit("untyped".into()),
-            ApiError::InvalidRequest {
-                message: "not a provider failure".into(),
-            },
         ] {
             assert!(!emit_when_active(false, &other));
             assert!(!emit_when_active(true, &other));

@@ -4,6 +4,7 @@
 //! Preserve explicit WebSocket status and safe error correlation metadata.
 
 use super::ApiError;
+use super::WrappedWebsocketError;
 use super::WrappedWebsocketErrorEvent;
 use super::alab_request_diagnostics::correlation;
 use crate::responses_headers::json_headers_to_http_headers;
@@ -87,7 +88,7 @@ pub(super) fn parse_for_stream(
     }) {
         return Ok(None);
     }
-    let mut fields: BTreeMap<&str, &RawValue> = raw
+    let fields: BTreeMap<&str, &RawValue> = raw
         .0
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_ref()))
@@ -104,13 +105,17 @@ pub(super) fn parse_for_stream(
         // Both aliases unambiguously identify the same HTTP failure. Remove only
         // the alias in this parse copy. Raw values preserve nested duplicate keys
         // for strict decoding; the mapper retains the original wire body.
-        fields.remove("status_code");
-        if let Some(event) = serde_json::to_string(&fields)
+        let mut normalized = fields.clone();
+        normalized.remove("status_code");
+        if let Some(event) = serde_json::to_string(&normalized)
             .ok()
             .and_then(|normalized| serde_json::from_str(&normalized).ok())
         {
             return Ok(Some(event));
         }
+    }
+    if let Some(event) = recover_explicit_status(&fields, raw.0.len()) {
+        return Ok(Some(event));
     }
     let errors: Vec<Value> = raw
         .0
@@ -157,6 +162,67 @@ pub(super) fn parse_for_stream(
         });
     }
     Ok(None)
+}
+
+// Optional body fields must not erase an independently valid HTTP route.
+// Keep strict decoding first; only unique, unambiguous wrappers reach this copy.
+fn recover_explicit_status(
+    fields: &BTreeMap<&str, &RawValue>,
+    field_count: usize,
+) -> Option<WrappedWebsocketErrorEvent> {
+    if fields.len() != field_count
+        || serde_json::from_str::<String>(fields.get("type")?.get()).ok()? != "error"
+    {
+        return None;
+    }
+    let status = match (fields.get("status"), fields.get("status_code")) {
+        (Some(status), None) | (None, Some(status)) => http_status(status)?,
+        (Some(status), Some(alias)) => {
+            let status = http_status(status)?;
+            if status != http_status(alias)? {
+                return None;
+            }
+            status
+        }
+        (None, None) => return None,
+    };
+    if status.is_success() {
+        return None;
+    }
+    let error = match fields.get("error") {
+        Some(raw) if raw.get().trim_start().starts_with('{') => {
+            let body = serde_json::from_str::<WireFields>(raw.get()).ok()?;
+            let body_fields: BTreeMap<&str, &RawValue> = body
+                .0
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_ref()))
+                .collect();
+            if body_fields.len() != body.0.len() {
+                return None;
+            }
+            let headers = body_fields
+                .get("headers")
+                .and_then(|headers| serde_json::from_str::<Value>(headers.get()).ok());
+            Some(WrappedWebsocketError {
+                code: None,
+                message: None,
+                headers,
+            })
+        }
+        _ => None,
+    };
+    let mut normalized = fields.clone();
+    normalized.remove("error");
+    if normalized.contains_key("status") && normalized.contains_key("status_code") {
+        normalized.remove("status_code");
+    }
+    let mut event: WrappedWebsocketErrorEvent = serde_json::to_string(&normalized)
+        .ok()
+        .and_then(|normalized| serde_json::from_str(&normalized).ok())?;
+    // Reattach only optional header metadata. The original payload stays with
+    // the caller, and malformed code/message cannot select a special retry.
+    event.error = error;
+    Some(event)
 }
 
 fn http_status(value: &RawValue) -> Option<StatusCode> {

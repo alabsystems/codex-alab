@@ -561,3 +561,14 @@ refusal controls pass. Ten related unit tests pass. The overall smoke remains
 an expected negative installed baseline. The successful overload control
 neither identifies the original backend rejection cause nor qualifies a
 fixed application build.
+
+## Positive managed-package recovery and live adoption — 2026-11-15
+
+The [live-session recovery](live-opaque-recovery-2026-11-15.md) finds a still-running
+0.7.0 process while managed 0.9.0 is already installed. After preserving the same
+conversation, the installed update is adopted and original work resumes. The
+actual managed 0.9.0 package passes all four request_recovery smoke cases, including
+opaque 400 recovery after Retry-After with the original completed tool history
+retained once. This separately recorded positive application-runtime result
+closes the earlier installed-smoke deferral; earlier negative baselines and
+certified build failures retain their original meanings.

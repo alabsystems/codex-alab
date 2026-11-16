@@ -8,6 +8,7 @@ the previously failed copies, after Cargo supplied their package cwd and environ
 """
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -69,6 +70,33 @@ def identity(copy):
     return tuple(copy[field] for field in IDENTITY)
 
 
+def _cleanup_after_error(action, primary, phase):
+    try:
+        action()
+    except BaseException as cleanup_error:
+        if isinstance(primary, Exception) and not isinstance(cleanup_error, Exception):
+            if hasattr(cleanup_error, "add_note"):
+                cleanup_error.add_note(f"{phase} failed: {primary!r}")
+            raise cleanup_error from primary
+        if hasattr(primary, "add_note"):
+            primary.add_note(f"{phase} cleanup failed: {cleanup_error!r}")
+
+
+def _close_directory_after_error(descriptor, primary, phase):
+    _cleanup_after_error(lambda: os.close(descriptor), primary, phase)
+
+
+@contextmanager
+def _owned_directory(descriptor, phase):
+    try:
+        yield descriptor
+    except BaseException as error:
+        _close_directory_after_error(descriptor, error, phase)
+        raise
+    else:
+        os.close(descriptor)
+
+
 def open_directory(path):
     path = Path(path)
     require(path.is_absolute() and path.anchor == "/" and ".." not in path.parts,
@@ -77,12 +105,13 @@ def open_directory(path):
     descriptor = os.open("/", flags)
     try:
         for part in path.parts[1:]:
-            child = os.open(part, flags, dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = child
+            previous, descriptor = descriptor, os.open(part, flags, dir_fd=descriptor)
+            # Own the child before close: the previous descriptor may already
+            # be consumed when close raises, so it must never be retried.
+            os.close(previous)
         return descriptor
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as error:
+        _close_directory_after_error(descriptor, error, "directory traversal")
         raise
 
 
@@ -100,8 +129,8 @@ def diagnostics_root(state):
     try:
         require(directory_identity(descriptor) == state["diagnostics_root_identity"],
                 "unit-test diagnostics root changed after preparation")
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as error:
+        _close_directory_after_error(descriptor, error, "unit-test diagnostics validation")
         raise
     return root, descriptor
 
@@ -121,14 +150,13 @@ def diagnostic_manifests(descriptor, path):
                                     | os.O_CLOEXEC, dir_fd=descriptor)
                 except OSError:
                     continue
-                try:
-                    manifest = os.stat(DIAGNOSTIC_MANIFEST, dir_fd=child, follow_symlinks=False)
-                    if stat.S_ISREG(manifest.st_mode) and manifest.st_size <= 1024 * 1024:
-                        manifests.append(str(path / entry.name / DIAGNOSTIC_MANIFEST))
-                except OSError:
-                    pass
-                finally:
-                    os.close(child)
+                with _owned_directory(child, "unit-test manifest indexing"):
+                    try:
+                        manifest = os.stat(DIAGNOSTIC_MANIFEST, dir_fd=child, follow_symlinks=False)
+                        if stat.S_ISREG(manifest.st_mode) and manifest.st_size <= 1024 * 1024:
+                            manifests.append(str(path / entry.name / DIAGNOSTIC_MANIFEST))
+                    except OSError:
+                        pass
     except OSError:
         # Missing or concurrently changed diagnostic content is advisory. The
         # prepared runner root and selected leaf identities are checked above.
@@ -199,39 +227,36 @@ def prepare(args):
             rounds[copy["library_key"]] = copy["round"] + 1
             copies.append(copy)
     round_count = max(rounds.values()) if rounds else 1
-    target_descriptor = open_directory(target)
     diagnostic_name = DIAGNOSTICS_PREFIX + os.urandom(16).hex()
     diagnostics = target / diagnostic_name
-    created = False
-    try:
-        os.mkdir(diagnostic_name, mode=0o700, dir_fd=target_descriptor)
-        created = True
-        descriptor = os.open(diagnostic_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-                             | os.O_CLOEXEC, dir_fd=target_descriptor)
+    with _owned_directory(open_directory(target), "unit-test target preparation") as target_descriptor:
+        created = False
         try:
-            diagnostic_identity = directory_identity(descriptor)
-        finally:
-            os.close(descriptor)
-        for library in libraries:
-            library["diagnostics_dirs"] = [
-                str(diagnostics / ("library-" + library["key"] + "-round-" + str(number)))
-                if not args.plan or any(copy["library_key"] == library["key"]
-                                        and copy["round"] == number for copy in copies) else None
-                for number in range(round_count)]
-        save(state / "state.json", {"repo": str(root), "target_dir": str(target),
-                               "diagnostics_root": str(diagnostics),
-                               "diagnostics_root_identity": diagnostic_identity,
-                               "mode": "compare" if args.plan else "record",
-                               "libraries": libraries, "copies": copies,
-                               "rounds": round_count,
-                               "runner_cfg": 'cfg(any(all(), target_os = "alab-unit-'
-                                             + os.urandom(16).hex() + '"))'}, exclusive=True)
-    except BaseException:
-        if created:
-            os.rmdir(diagnostic_name, dir_fd=target_descriptor)
-        raise
-    finally:
-        os.close(target_descriptor)
+            os.mkdir(diagnostic_name, mode=0o700, dir_fd=target_descriptor)
+            created = True
+            with _owned_directory(os.open(diagnostic_name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=target_descriptor), "unit-test diagnostics preparation") as descriptor:
+                diagnostic_identity = directory_identity(descriptor)
+            for library in libraries:
+                library["diagnostics_dirs"] = [
+                    str(diagnostics / ("library-" + library["key"] + "-round-" + str(number)))
+                    if not args.plan or any(copy["library_key"] == library["key"]
+                                            and copy["round"] == number for copy in copies) else None
+                    for number in range(round_count)]
+            save(state / "state.json", {"repo": str(root), "target_dir": str(target),
+                                   "diagnostics_root": str(diagnostics),
+                                   "diagnostics_root_identity": diagnostic_identity,
+                                   "mode": "compare" if args.plan else "record",
+                                   "libraries": libraries, "copies": copies,
+                                   "rounds": round_count,
+                                   "runner_cfg": 'cfg(any(all(), target_os = "alab-unit-'
+                                                 + os.urandom(16).hex() + '"))'}, exclusive=True)
+        except BaseException as error:
+            if created:
+                _cleanup_after_error(lambda: os.rmdir(diagnostic_name, dir_fd=target_descriptor),
+                                     error, "unit-test diagnostics rollback")
+            raise
 
 
 def result_text(path):
@@ -258,7 +283,7 @@ def collect(args):
         "a unit-test harness exited without a normal test outcome")
     receipts, diagnostics = {}, []
     diagnostic_root, root_descriptor = diagnostics_root(state)
-    try:
+    with _owned_directory(root_descriptor, "unit-test diagnostics collection"):
         for round_number in range(state["rounds"]):
             for library in state["libraries"]:
                 require(re.fullmatch(r"[0-9a-f]{64}", library["key"])
@@ -278,22 +303,18 @@ def collect(args):
                         and receipt["diagnostics_dir"] == expected,
                         "unit-test runtime diagnostics do not match their prepared leaf")
                 if selected:
-                    descriptor = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-                                         | os.O_CLOEXEC, dir_fd=root_descriptor)
-                    try:
+                    with _owned_directory(os.open(leaf,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=root_descriptor), "unit-test diagnostics leaf collection") as descriptor:
                         require(directory_identity(descriptor) == receipt["diagnostics_identity"],
                                 "unit-test diagnostics leaf changed after native execution")
                         diagnostics.append({"library_key": library["key"], "round": round_number,
                                             "directory": expected,
                                             "manifests": diagnostic_manifests(descriptor, Path(expected))})
-                    finally:
-                        os.close(descriptor)
                 else:
                     require(receipt["diagnostics_identity"] is None,
                             "an unselected unit-test round claimed a diagnostics directory")
                 receipts[(library["key"], round_number)] = receipt
-    finally:
-        os.close(root_descriptor)
     executions = state["libraries"] if state["mode"] == "record" else state["copies"]
     observations = {entry["key"]: {"results": [], "summaries": [], "details": False} for entry in executions}
     execution_round = {entry["key"]: entry.get("round", 0) for entry in executions}

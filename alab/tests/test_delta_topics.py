@@ -4,6 +4,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -260,6 +261,257 @@ class DeltaTopicsTests(unittest.TestCase):
             result = self.delta(*args)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, expected.stdout)
+
+    def test_explicit_base_measures_summary_and_patch_without_upstream(self):
+        self.write("src/hooks.rs", "// ALAB(gamma): measured change\n")
+        self.write("alab/new.txt", "owned addition\n")
+        self.commit("change after explicit base")
+        summary = self.delta("--base=" + self.initial)
+        self.assertEqual(summary.returncode, 0, summary.stderr)
+        self.assertIn("over explicit base", summary.stdout)
+        self.assertIn("upstream/main lag is unknown", summary.stdout)
+        self.assertIn("baseline file(s)", summary.stdout)
+        self.assertNotIn("upstream file(s)", summary.stdout)
+        self.assertIn("src/hooks.rs", summary.stdout)
+        patch = self.delta("--base=" + self.initial, "--patch")
+        self.assertEqual(patch.returncode, 0, patch.stderr)
+        self.assertIn("+// ALAB(gamma): measured change", patch.stdout)
+        self.assertNotIn("owned addition", patch.stdout)
+        self.assertEqual(self.run_git("remote"), "")
+        self.run_git("remote", "add", "upstream", str(self.repo / "unused-remote"))
+        self.run_git("update-ref", "refs/remotes/upstream/main", "HEAD")
+        with_ref = self.delta("--base=" + self.initial)
+        self.assertEqual(with_ref.returncode, 0, with_ref.stderr)
+        self.assertEqual(with_ref.stdout, summary.stdout,
+                         "an explicit baseline must not silently switch to a local upstream ref")
+
+    def test_patch_preserves_literal_paths_and_excludes_other_change_classes(self):
+        paths = ("src/[hook].rs", "src/a*b.rs", "src/tab\tname.rs", "src/line\nname.rs",
+                 ":(glob)src/colon.rs")
+        for index, path in enumerate(paths):
+            self.write(path, f"// before-{index}\n")
+        self.write("src/derived.rs", "// old derived\n")
+        self.write("src/deleted.rs", "// old deletion\n")
+        self.write("alab/merge-attributes", "src/derived.rs merge=alab-upstream\n")
+        baseline = self.commit("literal path baseline")
+        for index, path in enumerate(paths):
+            self.write(path, f"// changed-{index}\n")
+        self.write("src/derived.rs", "// changed-derived\n")
+        self.write("src/added.rs", "// added-file\n")
+        (self.repo / "src/deleted.rs").unlink()
+        self.commit("modify literal paths and other change classes")
+        result = self.delta("--base=" + baseline, "--patch")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for index in range(len(paths)):
+            self.assertEqual(result.stdout.count(f"+// changed-{index}\n"), 1,
+                             f"literal path omitted or duplicated: {paths[index]!r}")
+        self.assertNotIn("changed-derived", result.stdout)
+        self.assertNotIn("added-file", result.stdout)
+        self.assertNotIn("old deletion", result.stdout)
+        self.run_git("remote", "add", "upstream", str(self.repo / "unused-remote"))
+        self.run_git("update-ref", "refs/remotes/upstream/main", baseline)
+        default = self.delta("--patch")
+        self.assertEqual(default.returncode, 0, default.stderr)
+        self.assertEqual(default.stdout, result.stdout)
+        applicable = subprocess.run([self.git, "apply", "--reverse", "--check", "-"],
+                                   input=result.stdout, cwd=self.repo, env=self.env,
+                                   text=True, capture_output=True, timeout=15)
+        self.assertEqual(applicable.returncode, 0, applicable.stderr)
+
+    def test_reports_read_manifests_from_the_selected_commit(self):
+        self.write("src/derived.rs", "// original derived\n")
+        self.write("src/deleted.rs", "// original deletion\n")
+        self.write("alab/merge-attributes", "src/derived.rs merge=alab-upstream\n")
+        self.write("alab/removed-paths", "src/deleted.rs\n")
+        baseline = self.commit("baseline manifests")
+        self.write("src/derived.rs", "// regenerated derived\n")
+        self.write("src/hooks.rs", "// ALAB(changed): selected hook\n")
+        (self.repo / "src/deleted.rs").unlink()
+        selected = self.commit("selected source")
+        expected = {}
+        for mode in ((), ("--patch",)):
+            result = self.delta("--base=" + baseline, *mode, selected)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected[mode] = result.stdout
+        self.assertIn("derived     1 file(s)", expected[()])
+        self.assertIn("1 under alab/removed-paths", expected[()])
+        self.assertNotIn("regenerated derived", expected[("--patch",)])
+        self.write("alab/merge-attributes", "# uncommitted exclusion edit\n")
+        self.write("alab/removed-paths", "# uncommitted deletion edit\n")
+        for state in ("dirty", "later commit"):
+            if state == "later commit":
+                self.commit("later manifests")
+            for mode in ((), ("--patch",)):
+                with self.subTest(state=state, mode=mode):
+                    actual = self.delta("--base=" + baseline, *mode, selected)
+                    self.assertEqual(actual.returncode, 0, actual.stderr)
+                    self.assertEqual(actual.stdout, expected[mode])
+
+    def test_untracked_manifests_do_not_supply_policy_missing_from_source(self):
+        self.write("src/hooks.rs", "// ALAB(changed): selected hook\n")
+        selected = self.commit("selected source without manifests")
+        expected = self.delta("--base=" + self.initial, "--patch", selected)
+        self.assertEqual(expected.returncode, 0, expected.stderr)
+        self.write("alab/merge-attributes", "src/hooks.rs merge=alab-upstream\n")
+        actual = self.delta("--base=" + self.initial, "--patch", selected)
+        self.assertEqual(actual.returncode, 0, actual.stderr)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertIn("selected hook", actual.stdout)
+
+    def test_nonregular_source_manifests_fail_before_report_output(self):
+        manifest = self.repo / "alab/merge-attributes"
+        manifest.symlink_to("owned.rs")
+        linked = self.commit("symlink manifest")
+        manifest.unlink()
+        self.write("alab/merge-attributes/nested", "not a manifest\n")
+        directory = self.commit("directory manifest")
+        for selected in (linked, directory):
+            for mode in ((), ("--patch",)):
+                with self.subTest(source=selected, mode=mode):
+                    result = self.delta("--base=" + self.initial, *mode, selected)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("must be a regular file", result.stderr)
+
+    def test_manifest_read_errors_cannot_become_empty_exclusions(self):
+        self.write("alab/merge-attributes", "src/hooks.rs merge=alab-upstream\n")
+        selected = self.commit("source manifest")
+        tools = self.repo / "test-bin"
+        tools.mkdir()
+        wrapper = tools / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "show" ]; then\n'
+            "  printf 'synthetic source-manifest failure\\n' >&2\n"
+            "  exit 2\n"
+            "fi\n"
+            f"exec {shlex.quote(self.git)} \"$@\"\n"
+        )
+        wrapper.chmod(0o700)
+        env = dict(self.env, PATH=str(tools) + os.pathsep + self.env.get("PATH", ""))
+        result = self.delta("--base=" + self.initial, "--patch", selected, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("synthetic source-manifest failure", result.stderr)
+
+    def test_churn_ranking_preserves_filename_whitespace(self):
+        paths = ("src/ordinary.rs", "src/two  spaces.rs", " leading.rs")
+        for path in paths:
+            self.write(path, "// before\n")
+        baseline = self.commit("create ranked files")
+        for path in paths:
+            self.write(path, "// after\n")
+        self.commit("modify ranked files")
+        result = self.delta("--base=" + baseline)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = result.stdout.splitlines()
+        for path in paths:
+            with self.subTest(path=path):
+                matching = [row for row in rows if row.endswith(" " + path)]
+                self.assertEqual(len(matching), 1, result.stdout)
+                values = re.match(r"\s*(\d+)\s+(\d+)\s+\+1/-1\s+", matching[0])
+                self.assertIsNotNone(values, matching[0])
+                self.assertEqual(values.groups(), ("2", "1"), matching[0])
+
+    def test_explicit_base_rejects_a_nonancestor_without_reporting_a_delta(self):
+        unrelated = self.run_git("commit-tree", self.initial + "^{tree}", "-m", "unrelated")
+        result = self.delta("--base=" + unrelated)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("is not an ancestor", result.stderr)
+
+    def test_explicit_base_resolves_historical_source_and_empty_patch(self):
+        self.write("src/hooks.rs", "// ALAB(gamma): later change\n")
+        self.commit("later source")
+        result = self.delta("--base=" + self.initial, "--patch", self.initial)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_explicit_base_rejects_empty_unknown_and_topic_only_requests(self):
+        for option in ("--base=", "--base=missing-commit"):
+            with self.subTest(option=option):
+                result = self.delta(option)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+        result = self.delta("--base=" + self.initial, "--topics")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("--base cannot be combined with --topics", result.stderr)
+        repeated = self.delta("--base=" + self.initial, "--base=" + self.initial)
+        self.assertNotEqual(repeated.returncode, 0)
+        self.assertEqual(repeated.stdout, "")
+        self.assertIn("--base may be specified only once", repeated.stderr)
+
+    def synced_history_with_stale_upstream(self):
+        self.run_git("checkout", "-q", "-b", "upstream-work", self.initial)
+        self.write("src/upstream.rs", "// integrated upstream change\n")
+        upstream = self.commit("upstream change")
+        self.run_git("checkout", "-q", "main")
+        self.write("src/hooks.rs", "// ALAB(local): carried local hook\n")
+        self.commit("local hook before sync")
+        self.run_git("merge", "--no-ff", "upstream-work", "-m",
+                     "alab sync: merge upstream openai/codex@" + upstream)
+        self.sync_merge = self.run_git("rev-parse", "HEAD")
+        self.run_git("remote", "add", "upstream", str(self.repo / "unused-remote"))
+        self.run_git("update-ref", "refs/remotes/upstream/main", self.initial)
+        return upstream
+
+    def test_stale_upstream_ref_keeps_the_committed_sync_baseline(self):
+        upstream = self.synced_history_with_stale_upstream()
+        summary = self.delta()
+        self.assertEqual(summary.returncode, 0, summary.stderr)
+        self.assertIn("over upstream " + self.run_git("rev-parse", "--short", upstream),
+                      summary.stdout)
+        patch = self.delta("--patch")
+        self.assertEqual(patch.returncode, 0, patch.stderr)
+        self.assertIn("+// ALAB(local): carried local hook", patch.stdout)
+        self.assertNotIn("integrated upstream change", patch.stdout)
+
+    def test_sync_marker_quoted_in_a_merge_body_cannot_select_its_local_parent(self):
+        upstream = self.synced_history_with_stale_upstream()
+        self.run_git("checkout", "-q", "-b", "maintenance")
+        self.write("src/maintenance.rs", "// local maintenance change\n")
+        self.commit("maintenance branch work")
+        self.run_git("checkout", "-q", "main")
+        self.write("alab/maintenance.txt", "independent local work\n")
+        self.commit("main work before maintenance merge")
+        self.run_git("merge", "--no-ff", "maintenance", "-m",
+                     "alab(maintenance): compose local work", "-m",
+                     "alab sync: merge upstream openai/codex@" + upstream)
+        history = subprocess.run(
+            ["/bin/bash", "-c", 'set -euo pipefail; . "$1"; alab_sync_merges HEAD; alab_last_sync_upstream HEAD',
+             "sync-subject-fixture", str(self.repo / "alab/lib.sh")],
+            cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
+        self.assertEqual(history.returncode, 0, history.stderr)
+        self.assertEqual(history.stdout.splitlines(), [self.sync_merge, upstream])
+        summary = self.delta()
+        self.assertEqual(summary.returncode, 0, summary.stderr)
+        self.assertIn("over upstream " + self.run_git("rev-parse", "--short", upstream),
+                      summary.stdout)
+        patch = self.delta("--patch")
+        self.assertEqual(patch.returncode, 0, patch.stderr)
+        self.assertIn("+// ALAB(local): carried local hook", patch.stdout)
+
+    def test_sync_history_read_errors_cannot_become_a_fallback_baseline(self):
+        self.run_git("remote", "add", "upstream", str(self.repo / "unused-remote"))
+        self.run_git("update-ref", "refs/remotes/upstream/main", self.initial)
+        tools = self.repo / "test-bin"
+        tools.mkdir()
+        wrapper = tools / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "log" ]; then\n'
+            "  printf 'synthetic sync-history failure\\n' >&2\n"
+            "  exit 2\n"
+            "fi\n"
+            f"exec {shlex.quote(self.git)} \"$@\"\n"
+        )
+        wrapper.chmod(0o700)
+        env = dict(self.env, PATH=str(tools) + os.pathsep + self.env.get("PATH", ""))
+        result = self.delta(env=env)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("synthetic sync-history failure", result.stderr)
 
     def test_summary_and_patch_still_compare_upstream_when_available(self):
         self.run_git("remote", "add", "upstream", str(self.repo / "unused-remote"))

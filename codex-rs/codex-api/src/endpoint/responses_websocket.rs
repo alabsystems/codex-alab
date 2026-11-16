@@ -330,7 +330,7 @@ impl ResponsesWebsocketConnection {
             connection_reused,
         };
         let request_text = serialize_websocket_request(&request)?;
-        let alab_diagnostic = alab_request_diagnostics::websocket(&request, request_text.len(), connection_reused); // ALAB(recovery): count the full or incremental payload actually serialized.
+        let (alab_diagnostic, telemetry) = alab_request_diagnostics::websocket(&request, request_text.len(), connection_reused, telemetry); // ALAB(recovery): count the serialized payload and retain safe selected-error correlation.
 
         let current_span = Span::current();
         tokio::spawn(

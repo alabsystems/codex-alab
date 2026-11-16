@@ -46,6 +46,9 @@ pub const MAX_LINE_BYTES: usize = 8 << 20;
 /// The most data lines a Lines reply may announce (`aterm-ctl`'s `MAX_STREAM_LINES`).
 const MAX_LINES: usize = 200_000;
 
+/// The aggregate wire bytes of a Lines reply (`aterm-ctl`'s `MAX_BODY_BYTES`).
+const MAX_LINES_BYTES: usize = 256 << 20;
+
 /// The longest Bytes reply read (`inbox get`'s 256 KiB body cap, with room to spare).
 const MAX_BYTES: usize = 1 << 20;
 
@@ -194,6 +197,16 @@ async fn read_line_bounded<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     maximum: usize,
 ) -> Result<Option<String>, Error> {
+    Ok(read_line_frame(reader, maximum)
+        .await?
+        .map(|(line, _)| line))
+}
+
+/// Retain the wire length too: CRLF and UTF-8 bytes count before text conversion.
+async fn read_line_frame<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    maximum: usize,
+) -> Result<Option<(String, usize)>, Error> {
     let mut buf = Vec::new();
     let n = (&mut *reader)
         .take(maximum as u64 + 1)
@@ -217,7 +230,7 @@ async fn read_line_bounded<R: AsyncBufRead + Unpin>(
     if buf.last() == Some(&b'\r') {
         buf.pop();
     }
-    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+    Ok(Some((String::from_utf8_lossy(&buf).into_owned(), n)))
 }
 
 /// Read one reply framed as `framing`.
@@ -225,6 +238,15 @@ async fn read_reply<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     framing: Framing,
     maximum_status: usize,
+) -> Result<Reply, Error> {
+    read_reply_bounded(reader, framing, maximum_status, MAX_LINES_BYTES).await
+}
+
+async fn read_reply_bounded<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    framing: Framing,
+    maximum_status: usize,
+    maximum_lines_bytes: usize,
 ) -> Result<Reply, Error> {
     let status = read_line_bounded(reader, maximum_status)
         .await?
@@ -244,8 +266,23 @@ async fn read_reply<R: AsyncBufRead + Unpin>(
             .filter(|n| *n <= max)
             .ok_or_else(|| Error::Malformed(format!("{framing:?} header: {status}")))?;
         if framing == Framing::Lines {
+            let mut bytes_left = maximum_lines_bytes;
             for _ in 0..n {
-                lines.push(read_line(reader).await?.ok_or(Error::Closed)?);
+                // Limit the allocation itself, rather than charge a whole 8 MiB line
+                // after reading it. The line reader admits one extra byte for LF.
+                let maximum = bytes_left
+                    .checked_sub(1)
+                    .ok_or_else(lines_too_large)?
+                    .min(MAX_LINE_BYTES);
+                let (line, wire_bytes) = read_line_frame(reader, maximum)
+                    .await
+                    .map_err(|error| match error {
+                        Error::Malformed(_) if maximum < MAX_LINE_BYTES => lines_too_large(),
+                        other => other,
+                    })?
+                    .ok_or(Error::Closed)?;
+                bytes_left -= wire_bytes;
+                lines.push(line);
             }
         } else {
             bytes = vec![0; n];
@@ -264,6 +301,14 @@ async fn read_reply<R: AsyncBufRead + Unpin>(
         bytes,
     })
 }
+
+fn lines_too_large() -> Error {
+    Error::Malformed("reply body exceeds the 256 MiB aggregate bound".into())
+}
+
+#[cfg(test)]
+#[path = "conn_tests.rs"]
+mod tests;
 
 struct Job {
     line: String,

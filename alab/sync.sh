@@ -473,12 +473,17 @@ run_check() {
 # Someone landed ALab work on main while this sync ran: merge it into the sync (the sync
 # merge stays on main's first-parent line), so the result is again a fast-forward of main.
 take_concurrent_main() {
-  local main_upstream target own
+  local main_upstream target own ancestry_rc=0
   # Another clone's sync landed a newer upstream meanwhile: this merge is superseded, and its
   # lockfile (kept below) would roll back upstream's or fail the drift check.
   target="$(sync_target)"
-  main_upstream="$(git log -1 --first-parent --merges --grep='^alab sync:' --format=%P origin/main | awk '{ print $2 }')"
-  if [[ -n "${main_upstream}" ]] && ! git merge-base --is-ancestor "${main_upstream}" "${target}"; then
+  main_upstream="$(alab_last_sync_upstream origin/main)" || alab_die "cannot read main's last upstream sync"
+  if [[ -n "${main_upstream}" ]]; then
+    git merge-base --is-ancestor "${main_upstream}" "${target}" || ancestry_rc=$?
+    [[ "${ancestry_rc}" -le 1 ]] \
+      || alab_die "cannot read upstream ancestry for main's last sync (git exit ${ancestry_rc})"
+  fi
+  if [[ "${ancestry_rc}" -eq 1 ]]; then
     # A person's commits on the sync (a fix-forward after exit 4) would go with --abort.
     own="$(in_wt log --no-merges --format='  %h %s' origin/main..HEAD)"
     exit_with 3 "main merged upstream ${main_upstream:0:9} meanwhile, past this sync's: \
@@ -819,8 +824,7 @@ target="$(git rev-parse --verify "${ref}^{commit}")" || alab_die "no such upstre
 git merge-base --is-ancestor "${target}" upstream/main || alab_die "${ref} is not on upstream/main \
 (a release tag? those are cut off main): main tracks upstream/main only (alab/README.md, 'Releases')"
 # Whatever upstream commit main merged last must still be upstream history.
-last_merged="$(git log -1 --first-parent --merges --grep='^alab sync:' --format=%P origin/main \
-  | awk '{ print $2 }')"
+last_merged="$(alab_last_sync_upstream origin/main)" || alab_die "cannot read main's last upstream sync"
 [[ -z "${last_merged}" ]] || git merge-base --is-ancestor "${last_merged}" upstream/main \
   || alab_die "upstream/main no longer contains ${last_merged:0:9}, the upstream commit main \
 merged last: upstream rewrote its history (alab/README.md, 'If upstream rewrites history')"

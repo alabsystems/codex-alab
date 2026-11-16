@@ -17,16 +17,121 @@ native_v8_env() (
     --target "${native_target}" --cache "${cache}/alab-v8-inputs"
 )
 
+# native_test_requirements: plan once from the caller's packages array. The caller
+# declares the four need_* locals and uses the same plan for allocation and prep.
+native_test_requirements() {
+  local package
+  need_metadata=0 need_v8=0 need_stdio=0 need_host=0
+  for package in "${packages[@]}"; do
+    case "${package}" in
+      codex-core | codex-app-server)
+        need_stdio=1 need_host=1 need_metadata=1 need_v8=1
+        ;;
+      codex-alab-autopilot)
+        need_host=1 need_metadata=1 need_v8=1
+        ;;
+      codex-code-mode-host | codex-code-mode-runtime)
+        need_v8=1
+        ;;
+      codex-mcp)
+        # Its CLI preparation remains specific to unit_tests below.
+        need_metadata=1
+        ;;
+    esac
+  done
+}
+
+# native_test_prerequisites <tree> <target-dir> <helper-dir> <metadata-required:0|1>
+#   <retain-artifacts:0|1>:
+# consume the caller's need_* plan, cargo, tree_config and test_command. The caller
+# owns helper-dir (unused/possibly empty for helperless runs) and EXIT cleanup.
+native_test_prerequisites() {
+  local tree="$1" target_dir="$2" helper_root="$3" metadata_required="$4" retain_artifacts="$5"
+  local v8 archive binding artifacts helpers stdio host requirement
+  local result_python="${ALAB_PYTHON:-/usr/bin/python3}"
+  local helper_metadata="${helper_root}/metadata.json"
+  local native_helper_build=() native_helper_selectors=()
+  for requirement in "${metadata_required}" "${retain_artifacts}" "${need_metadata:-}" "${need_v8:-}" \
+      "${need_stdio:-}" "${need_host:-}"; do
+    [[ "${requirement}" == 0 || "${requirement}" == 1 ]] || return 1
+  done
+  if [[ "${metadata_required}" == 1 || "${need_metadata}" == 1 ]]; then
+    [[ -n "${helper_root}" && -d "${helper_root}" ]] || return 1
+  fi
+  if [[ "${need_v8}" == 1 ]]; then
+    v8="$(native_v8_env "${tree}")" || return $?
+    archive="$(printf '%s\n' "${v8}" | jq -e -r '.RUSTY_V8_ARCHIVE | strings | select(length > 0)')" || return 1
+    binding="$(printf '%s\n' "${v8}" | jq -e -r '.RUSTY_V8_SRC_BINDING_PATH | strings | select(length > 0)')" || return 1
+    export RUSTY_V8_ARCHIVE="${archive}" RUSTY_V8_SRC_BINDING_PATH="${binding}"
+    test_command+=("RUSTY_V8_ARCHIVE=${archive}" "RUSTY_V8_SRC_BINDING_PATH=${binding}")
+  fi
+  if [[ "${metadata_required}" == 1 || "${need_metadata}" == 1 ]]; then
+    (cd "${tree}/codex-rs" && "${cargo}" metadata --locked \
+      ${tree_config[@]+"${tree_config[@]}"} --no-deps --format-version 1) \
+      >"${helper_metadata}" || return $?
+  fi
+  if [[ "${need_stdio}" == 1 ]]; then
+    native_helper_build+=(-p codex-rmcp-client --bin test_stdio_server)
+    native_helper_selectors+=(--helper codex-rmcp-client/test_stdio_server)
+  fi
+  if [[ "${need_host}" == 1 ]]; then
+    native_helper_build+=(-p codex-code-mode-host --bin codex-code-mode-host)
+    native_helper_selectors+=(--helper codex-code-mode-host/codex-code-mode-host)
+  fi
+  if [[ "${need_stdio}" == 1 || "${need_host}" == 1 ]]; then
+    # Library and raw Cargo scopes both need the independently built runtime.
+    artifacts="$(cd "${tree}/codex-rs" && alab_build_command "${cargo}" --unverified build --locked ${tree_config[@]+"${tree_config[@]}"} \
+      "${native_helper_build[@]}" --message-format=json-render-diagnostics)" || return $?
+    if [[ "${retain_artifacts}" == 1 ]]; then
+      printf '%s\n' "${artifacts}" >"${helper_root}/helper-native.jsonl" || return $?
+    fi
+    helpers="$(printf '%s\n' "${artifacts}" | "${result_python}" -I "${alab_library_root}/alab/native_helpers.py" \
+      --repo "${tree}" --target-dir "${target_dir}" --metadata "${helper_metadata}" \
+      "${native_helper_selectors[@]}")" || return $?
+    if [[ "${need_stdio}" == 1 ]]; then
+      stdio="$(printf '%s\n' "${helpers}" | jq -e -r '.["test_stdio_server"]')" || return $?
+      test_command+=("CARGO_BIN_EXE_test_stdio_server=${stdio}")
+    fi
+    if [[ "${need_host}" == 1 ]]; then
+      host="$(printf '%s\n' "${helpers}" | jq -e -r '.["codex-code-mode-host"]')" || return $?
+      # cargo_bin checks the original name first. Replace both inherited aliases.
+      test_command+=("CARGO_BIN_EXE_codex-code-mode-host=${host}"
+        "CARGO_BIN_EXE_codex_code_mode_host=${host}")
+    fi
+  fi
+}
+
+# all_alab_tests <tree> <target-dir> <helper-dir> <-p package>...: preserve Cargo's
+# complete default target scope while supplying the same authenticated prerequisites.
+all_alab_tests() (
+  [[ $# -gt 3 ]] || return 1
+  local tree="$1" target_dir="$2" helper_root="$3"
+  local need_metadata need_v8 need_stdio need_host
+  local test_command=(/usr/bin/env) tree_config=() packages=()
+  shift 3
+  packages=("$@")
+  cd "${tree}/codex-rs" || return $?
+  export CARGO_TARGET_DIR="${target_dir}"
+  native_test_requirements
+  if [[ "${need_metadata}" == 1 ]]; then
+    mkdir -m 700 "${helper_root}" || return $?
+  fi
+  native_test_prerequisites "${tree}" "${target_dir}" "${helper_root}" 0 1 || return $?
+  alab_build_command "${test_command[@]}" "${cargo}" --unverified test --locked --no-fail-fast "${packages[@]}"
+)
+
 # unit_tests <tree> <target-dir> [--config <value>]... [libtest args...]: the packages in
 # `packages`, with the upstream native runtime prerequisites in that same tree and target.
 # cargo and packages are supplied by check.sh, including its pristine comparisons, whose
 # --config every cargo call in the tree takes (lib.sh, alab_pristine_config).
 unit_tests() (
-  local tree="$1" target_dir="$2" package artifacts stdio host cli v8 archive binding
+  local tree="$1" target_dir="$2" package artifacts cli
   local result_mode="" result_state="" result_plan="" result_parser result_runner result_python runner_config
   local runner_key result_round result_rounds result_status result_overall=0
-  local proxy_home helper_scratch helper_metadata helpers need_helpers=0 need_v8=0 need_stdio=0 need_host=0
-  local test_command=(/usr/bin/env) tree_config=() native_helper_build=() native_helper_selectors=()
+  local proxy_home helper_scratch helper_metadata helpers helper_root metadata_required=0
+  local need_metadata need_v8 need_stdio need_host
+  local test_command=(/usr/bin/env) tree_config=()
+  trap '[[ -z "${helper_scratch:-}" ]] || rm -rf -- "${helper_scratch}"; [[ -z "${proxy_home:-}" ]] || rm -rf -- "${proxy_home}"' EXIT
   shift 2
   while [[ "${1:-}" == --config ]]; do
     [[ $# -ge 2 ]] || return 1
@@ -58,7 +163,6 @@ unit_tests() (
       # Managed MITM tests create CA files through find_codex_home. Keep both
       # candidate and pristine runs inside their admitted target, never the owner home.
       proxy_home="$(mktemp -d "${target_dir}/alab-network-proxy-home.XXXXXX")" || return $?
-      trap 'rm -rf -- "${proxy_home}"' EXIT
       test_command+=("CODEX_HOME=${proxy_home}")
       break
     fi
@@ -68,79 +172,23 @@ unit_tests() (
   if [[ -z "${CARGO_BUILD_BUILD_DIR:-}" && "${target_dir}/" != *.noindex/* ]]; then
     export CARGO_BUILD_BUILD_DIR="${target_dir}/build.noindex"
   fi
-  for package in "${packages[@]}"; do
-    case "${package}" in
-      codex-core | codex-app-server)
-        # These suites use both upstream runtime helpers through cargo_bin.
-        need_stdio=1 need_host=1 need_helpers=1 need_v8=1
-        ;;
-      codex-alab-autopilot)
-        # Its in-process Core fixtures discover Code Mode's default host.
-        need_host=1 need_helpers=1 need_v8=1
-        ;;
-      codex-code-mode-host | codex-code-mode-runtime)
-        need_v8=1
-        ;;
-      codex-mcp)
-        need_helpers=1
-        ;;
-    esac
-  done
-  if [[ "${need_v8}" == 1 ]]; then
-    v8="$(native_v8_env "${tree}")" || return $?
-    archive="$(printf '%s\n' "${v8}" | jq -e -r '.RUSTY_V8_ARCHIVE | strings | select(length > 0)')" || return 1
-    binding="$(printf '%s\n' "${v8}" | jq -e -r '.RUSTY_V8_SRC_BINDING_PATH | strings | select(length > 0)')" || return 1
-    export RUSTY_V8_ARCHIVE="${archive}" RUSTY_V8_SRC_BINDING_PATH="${binding}"
-    test_command+=("RUSTY_V8_ARCHIVE=${archive}" "RUSTY_V8_SRC_BINDING_PATH=${binding}")
-  fi
   result_python="${ALAB_PYTHON:-/usr/bin/python3}"
-  # Bind runtime artifacts to this tree's package/target metadata, not just a
-  # binary name. A bin target's libtest harness has the same target name/kind.
-  if [[ -n "${result_mode}" || "${need_helpers}" == 1 ]]; then
-    if [[ -n "${result_mode}" ]]; then
-      helper_metadata="${result_state}/metadata.json"
-    else
-      helper_scratch="$(mktemp -d "${target_dir}/alab-helpers.XXXXXX")" || return $?
-      trap 'rm -rf -- "${helper_scratch}"; [[ -z "${proxy_home:-}" ]] || rm -rf -- "${proxy_home}"' EXIT
-      helper_metadata="${helper_scratch}/metadata.json"
-    fi
-    "${cargo}" metadata --locked ${tree_config[@]+"${tree_config[@]}"} --no-deps --format-version 1 \
-      >"${helper_metadata}" || return $?
+  native_test_requirements
+  helper_root=""
+  if [[ -n "${result_mode}" ]]; then
+    helper_root="${result_state}"
+    metadata_required=1
+  elif [[ "${need_metadata}" == 1 ]]; then
+    helper_scratch="$(mktemp -d "${target_dir}/alab-helpers.XXXXXX")" || return $?
+    helper_root="${helper_scratch}"
   fi
+  helper_metadata="${helper_root:+${helper_root}/metadata.json}"
+  native_test_prerequisites "${tree}" "${target_dir}" "${helper_root}" \
+    "${metadata_required}" "${metadata_required}" || return $?
   select_helpers() {
     printf '%s\n' "${artifacts}" | "${result_python}" -I "${alab_library_root}/alab/native_helpers.py" \
       --repo "${tree}" --target-dir "${target_dir}" --metadata "${helper_metadata}" "$@"
   }
-  if [[ "${need_stdio}" == 1 ]]; then
-    native_helper_build+=(-p codex-rmcp-client --bin test_stdio_server)
-    native_helper_selectors+=(--helper codex-rmcp-client/test_stdio_server)
-  fi
-  if [[ "${need_host}" == 1 ]]; then
-    native_helper_build+=(-p codex-code-mode-host --bin codex-code-mode-host)
-    native_helper_selectors+=(--helper codex-code-mode-host/codex-code-mode-host)
-  fi
-  if [[ "${need_stdio}" == 1 || "${need_host}" == 1 ]]; then
-    # A --lib build does not build runtime binaries. Prepare the union once,
-    # independent of package order, and authenticate only the required helpers.
-    artifacts="$(RUSTY_V8_ARCHIVE="${archive}" RUSTY_V8_SRC_BINDING_PATH="${binding}" \
-      alab_build_command "${cargo}" --unverified build --locked ${tree_config[@]+"${tree_config[@]}"} \
-      "${native_helper_build[@]}" --message-format=json-render-diagnostics)" || return $?
-    if [[ -n "${result_mode}" ]]; then
-      printf '%s\n' "${artifacts}" >"${result_state}/helper-native.jsonl" || return $?
-    fi
-    helpers="$(select_helpers "${native_helper_selectors[@]}")" || return $?
-    if [[ "${need_stdio}" == 1 ]]; then
-      stdio="$(printf '%s\n' "${helpers}" | jq -e -r '.["test_stdio_server"]')" || return $?
-      test_command+=("CARGO_BIN_EXE_test_stdio_server=${stdio}")
-    fi
-    if [[ "${need_host}" == 1 ]]; then
-      host="$(printf '%s\n' "${helpers}" | jq -e -r '.["codex-code-mode-host"]')" || return $?
-      # cargo_bin checks the original name before its underscore alias. Bind
-      # both to the actual artifact so inherited overrides cannot cross trees.
-      test_command+=("CARGO_BIN_EXE_codex-code-mode-host=${host}"
-        "CARGO_BIN_EXE_codex_code_mode_host=${host}")
-    fi
-  fi
   for package in "${packages[@]}"; do
     case "${package}" in
       codex-mcp)

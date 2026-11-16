@@ -410,6 +410,23 @@ _alab_package_cache_guard() {
   "${guardian[@]}"
 }
 
+# Sync identity is in the subject, never a marker quoted in a merge's body.
+# Read all candidates before filtering so Git errors propagate without early-pipe SIGPIPE.
+alab_sync_merges() {
+  local history
+  history="$(git log --first-parent --merges --grep='^alab sync:' \
+    --format='%H%x09%s' "$1" --)" || return
+  printf '%s\n' "${history}" | awk -F '\t' '$2 ~ /^alab sync:/ { print $1 }'
+}
+
+alab_last_sync_upstream() {
+  local merges merge
+  merges="$(alab_sync_merges "$1")" || return
+  [[ -n "${merges}" ]] || return 0
+  merge="${merges%%$'\n'*}"
+  git rev-parse --verify "${merge}^2"
+}
+
 # alab_upstream_ready: the upstream remote and its refs exist (alab/setup.sh makes them).
 alab_upstream_ready() {
   git remote get-url upstream >/dev/null 2>&1 \

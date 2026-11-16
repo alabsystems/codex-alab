@@ -8938,15 +8938,6 @@ pub fn classify(
                 cut_off: false,
                 retry_at: None,
             },
-            CodexErrorDetails::InvalidRequest(message)
-                if codex_alab_core::request_error::opaque_bad_request(message) =>
-            {
-                Wall::Server {
-                    what: "an API error (opaque backend HTTP 400)".to_string(),
-                    cut_off: false,
-                    retry_at: None,
-                }
-            }
             CodexErrorDetails::InvalidRequest(_)
             | CodexErrorDetails::InvalidImageRequest()
             | CodexErrorDetails::ToolCollision(_) => Wall::Fatal {

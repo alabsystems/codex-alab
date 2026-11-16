@@ -82,21 +82,67 @@ fn a_blocked_goal_is_surfaced_before_a_provider_retry_wait() {
     });
 }
 
-/// A Daybreak refusal ends its own turn, never the goal: the native idle continuation runs next.
+/// A server refusal ends its turn; two later automatic turns still receive ordinary replies.
 #[test]
-fn a_daybreak_refusal_keeps_the_goal_active_and_continues_it() {
-    big_stack(|| async {
-        let h = harness_goals(
+fn a_daybreak_refusal_keeps_receiving_later_independent_goal_turns() {
+    assert_goal_continues_after_refusal(responses::sse_response(responses::sse_failed(
+        "refused",
+        "cyber_policy",
+        "This action was refused by the cybersecurity access policy.",
+    )));
+}
+
+#[test]
+fn an_http_policy_refusal_keeps_receiving_later_independent_goal_turns() {
+    assert_goal_continues_after_refusal(wiremock::ResponseTemplate::new(400).set_body_json(
+        serde_json::json!({
+            "error": {
+                "code": "cyber_policy",
+                "message": "This action was refused by the cybersecurity access policy."
+            }
+        }),
+    ));
+}
+
+fn assert_goal_continues_after_refusal(refusal: wiremock::ResponseTemplate) {
+    big_stack(move || async move {
+        #[derive(Default)]
+        struct ThirdTurnGate {
+            starts: std::sync::atomic::AtomicUsize,
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+        }
+
+        impl TurnLifecycleContributor for ThirdTurnGate {
+            fn on_turn_start<'a>(
+                &'a self,
+                _input: codex_extension_api::TurnStartInput<'a>,
+            ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+                Box::pin(async move {
+                    if self
+                        .starts
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        == 2
+                    {
+                        self.entered.notify_one();
+                        self.release.notified().await;
+                    }
+                })
+            }
+        }
+
+        let gate = Arc::new(ThirdTurnGate::default());
+        let h = harness_login_with_error_hook(
             Mode::Current,
             vec![
-                responses::sse_response(responses::sse_failed(
-                    "refused",
-                    "cyber_policy",
-                    "This action was refused by the cybersecurity access policy.",
-                )),
+                refusal,
                 responses::sse_response(reply(
                     "ordinary-work",
                     "Continued the ordinary goal work.",
+                )),
+                responses::sse_response(reply(
+                    "more-independent-work",
+                    "Completed the next independent task.",
                 )),
             ],
             &[("human_grace_s", "0"), ("continue", "false")],
@@ -109,6 +155,10 @@ fn a_daybreak_refusal_keeps_the_goal_active_and_continues_it() {
             },
             |_| {},
             Some(Arc::new(codex_goal_extension::GoalService::new())),
+            ErrorHooks {
+                before: Some(Arc::clone(&gate) as _),
+                ..Default::default()
+            },
         )
         .await;
         let db = h
@@ -117,12 +167,13 @@ fn a_daybreak_refusal_keeps_the_goal_active_and_continues_it() {
             .state_db()
             .unwrap_or_else(|| panic!("goal database"));
         let id = h.test.session_configured.thread_id;
-        db.thread_goals()
+        let original = db
+            .thread_goals()
             .replace_thread_goal(
                 id,
                 "finish the ordinary task",
                 codex_state::ThreadGoalStatus::Active,
-                None,
+                Some(1000),
             )
             .await
             .unwrap_or_else(|err| panic!("the active goal: {err}"));
@@ -135,21 +186,81 @@ fn a_daybreak_refusal_keeps_the_goal_active_and_continues_it() {
             .await
             .unwrap_or_else(|err| panic!("start the refused turn: {err}"));
 
+        wait_for_event_with_timeout(
+            &h.test.codex,
+            |event| {
+                matches!(event, EventMsg::TurnComplete(done)
+                if done.error.as_ref().and_then(|error| error.codex_error_info.as_ref())
+                    == Some(&codex_protocol::protocol::CodexErrorInfo::CyberPolicy))
+            },
+            Duration::from_secs(60),
+        )
+        .await;
+
+        wait_for_event_with_timeout(
+            &h.test.codex,
+            |event| {
+                matches!(event, EventMsg::TurnComplete(done)
+                if done.last_agent_message.as_deref() == Some("Continued the ordinary goal work."))
+            },
+            Duration::from_secs(60),
+        )
+        .await;
+
+        let continued = db
+            .thread_goals()
+            .get_thread_goal(id)
+            .await
+            .expect("read active goal")
+            .expect("goal remains");
+        assert_eq!(continued.status, codex_state::ThreadGoalStatus::Active);
+        assert_eq!(
+            continued.goal_id, original.goal_id,
+            "recovery preserves goal identity"
+        );
+        assert_eq!(continued.objective, original.objective);
+        assert_eq!(continued.token_budget, original.token_budget);
+        tokio::time::timeout(Duration::from_secs(60), gate.entered.notified())
+            .await
+            .expect("the next automatic turn reaches its native start");
+        assert_eq!(
+            h.mock.requests().len(),
+            2,
+            "the third turn is gated before I/O"
+        );
+        // Pause future scheduling while the third turn is already admitted, then release
+        // its ordinary server request. No timing margin decides which operation wins.
+        db.thread_goals()
+            .update_thread_goal(
+                id,
+                codex_state::GoalUpdate {
+                    objective: None,
+                    status: Some(codex_state::ThreadGoalStatus::Paused),
+                    token_budget: None,
+                    expected_goal_id: None,
+                },
+            )
+            .await
+            .expect("pause only future goal turns");
+        gate.release.notify_one();
         wait_for_event_with_timeout(&h.test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(done)
-                if done.last_agent_message.as_deref() == Some("Continued the ordinary goal work."))
+                if done.last_agent_message.as_deref() == Some("Completed the next independent task."))
         }, Duration::from_secs(60)).await;
-
-        assert_eq!(h.mock.requests().len(), 2);
+        assert_eq!(h.mock.requests().len(), 3);
+        let paused = db
+            .thread_goals()
+            .get_thread_goal(id)
+            .await
+            .expect("read paused goal")
+            .expect("goal remains");
+        assert_eq!(paused.status, codex_state::ThreadGoalStatus::Paused);
         assert_eq!(
-            db.thread_goals()
-                .get_thread_goal(id)
-                .await
-                .unwrap_or_else(|err| panic!("read goal: {err}"))
-                .unwrap_or_else(|| panic!("same goal"))
-                .status,
-            codex_state::ThreadGoalStatus::Active
+            paused.goal_id, original.goal_id,
+            "completion preserves the paused goal"
         );
+        assert_eq!(paused.objective, original.objective);
+        assert_eq!(paused.token_budget, original.token_budget);
         h.test
             .codex
             .shutdown_and_wait()

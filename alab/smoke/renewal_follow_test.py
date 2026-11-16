@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Negative controls for the production-bound pre-Signal Stop oracle."""
 import copy
+import re
 import unittest
 
 from renewal_follow import validate_presignal_stop
@@ -1167,6 +1168,105 @@ class FiveHourWallMoved(unittest.TestCase):
         # A case with no oracle of its own is not asked for one.
         for case in ("weekly-quota", "happy", "owner-stop"):
             require_case_proof(case, {})
+
+
+class UsageWallCompletion(unittest.TestCase):
+    """The usage-wall successor's report after its consume (completion_verdict), and when the
+    loop may stop the host (completion_seen)."""
+
+    RECEIPT = "ab" * 16
+    THREAD = "01a1e1d7-ead3-7681-babc-69c2bb854b46"
+    WALL = "01a1e1d7-eb09-7c40-8fa0-435cd49284a7"
+    IDENTITY = " source_account=s source_user=u target_account=t target_user=v"
+
+    def answer(self, state, receipt=None, thread=None, turn=None):
+        return (f"OK codex-rotation state={state} id={receipt or self.RECEIPT} "
+                f"thread={thread or self.THREAD} turn={turn or self.WALL}" + self.IDENTITY)
+
+    def receipt(self):
+        return {"id": self.RECEIPT, "intent": {"thread": self.THREAD, "wall": self.WALL}}
+
+    def calls(self, *tail):
+        """The traced calls of r/wq (2026-11-15) up to its consume, then `tail`."""
+        return [("prepare", "OK codex-rotation state=waiting", 100),
+                ("prepare", self.answer("ready"), 5_000_000),
+                ("commit", self.answer("committed"), 8_000_000),
+                ("consume", self.answer("consumed"), 14_000_000), *tail]
+
+    @staticmethod
+    def pool(**changes):
+        state = dict({"active": "target", "proven": True, "canary": None, "rotations": [1]}, **changes)
+        ledger = [{"account": "main", "kind": "wall", "sid": None, "why": "seven_day until 1"},
+                  {"account": "main", "kind": "rotate", "sid": "host", "to": "target", "why": ""},
+                  {"account": "target", "kind": "proven", "sid": None, "why": ""}]
+        return state, ledger
+
+    def test_a_report_answered_completed_after_the_consume_passes_and_ends_the_wait(self):
+        from renewal_follow import completion_seen, completion_verdict
+        calls = self.calls(("complete", self.answer("completed"), 14_070_000))
+        self.assertEqual(completion_seen(calls, self.RECEIPT), 14_070_000)
+        self.assertIsNone(completion_seen(calls, "cd" * 16))
+        self.assertIsNone(completion_seen(self.calls(), self.RECEIPT))
+        proof = completion_verdict(calls, self.receipt(), *self.pool())
+        self.assertEqual(proof, {"completedUs": 14_070_000, "secondsAfterLastConsume": 0.07,
+                                 "waitingBefore": 0, "consumes": 1, "provenAccount": "target"})
+        # Without the pool's records the report alone is judged.
+        self.assertNotIn("provenAccount", completion_verdict(calls, self.receipt()))
+
+    def test_a_busy_host_answers_waiting_first_and_a_dropped_consume_is_asked_again(self):
+        from renewal_follow import completion_verdict
+        calls = self.calls(("consume", self.answer("consumed"), 15_000_000),
+                           ("complete", "OK codex-rotation state=waiting", 15_100_000),
+                           ("complete", "OK codex-rotation state=waiting", 15_350_000),
+                           ("complete", self.answer("completed"), 15_600_000))
+        proof = completion_verdict(calls, self.receipt(), *self.pool())
+        self.assertEqual((proof["waitingBefore"], proof["consumes"], proof["secondsAfterLastConsume"]),
+                         (2, 2, 0.6))
+
+    def test_each_wrong_report_fails_by_name(self):
+        from renewal_follow import completion_verdict
+        done = ("complete", self.answer("completed"), 14_070_000)
+        cases = {
+            "no `codex-rotation complete` followed the successor's consume": self.calls(),
+            "the successor never consumed its receipt": [call for call in self.calls(done)
+                                                         if call[0] != "consume"],
+            "answered the successor's report completed 0 times, not once: ERR codex-rotation "
+            "selection changed": self.calls(("complete", "ERR codex-rotation selection changed", 14_070_000)),
+            "answered the successor's report completed 2 times": self.calls(
+                done, ("complete", self.answer("completed"), 14_200_000)),
+            "names another receipt, thread or turn": self.calls(
+                ("complete", self.answer("completed", receipt="cd" * 16), 14_070_000)),
+            "names another receipt, thread or turn ": self.calls(
+                ("complete", self.answer("completed", turn="other-turn"), 14_070_000)),
+            "answered completed before the receipt's last consume": self.calls(
+                done, ("consume", self.answer("consumed"), 14_100_000)),
+            "answered otherwise than waiting": self.calls(
+                ("complete", "ERR codex-rotation wrong process", 14_030_000), done),
+            "sent before the consume": [("complete", "OK codex-rotation state=waiting", 13_000_000),
+                                        *self.calls(done)],
+        }
+        for message, calls in cases.items():
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, re.escape(message.strip())):
+                completion_verdict(calls, self.receipt(), *self.pool())
+
+    def test_a_pool_left_unproven_or_with_a_canary_fails_by_name(self):
+        from renewal_follow import completion_verdict
+        calls = self.calls(("complete", self.answer("completed"), 14_070_000))
+        state, ledger = self.pool()
+        taken = ledger + [{"account": "target", "kind": "rotate", "sid": "other", "to": "target",
+                           "why": "canary: in place of host, which did not answer"}]
+        cases = {
+            "did not end proven on its active account": self.pool(proven=False),
+            "did not end proven on its active account ": self.pool(canary={"sid": "host", "at": 1}),
+            "a session took the canary: canary: in place of host": (state, taken),
+            "the pool's active account was proven 0 times, not once": (state, ledger[:-1]),
+            "the pool's active account was proven 2 times, not once": (state, ledger + ledger[-1:]),
+        }
+        for message, (state_, ledger_) in cases.items():
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, re.escape(message.strip())):
+                completion_verdict(calls, self.receipt(), state_, ledger_)
+        with self.assertRaisesRegex(RuntimeError, "by its state and its ledger together"):
+            completion_verdict(calls, self.receipt(), state, None)
 
 
 class FiveHourWallHeld(unittest.TestCase):

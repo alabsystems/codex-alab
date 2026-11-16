@@ -1513,5 +1513,7 @@
       ],
       "revisit": "Before integration, run native recipe and Linux network policy tests and the certified application gate; retain whole-path removal policy."
     }
-  ]
+  ],
+  "superseded_by": "alab/upstream/d87330d91e-from-0593016153-intake.json",
+  "supersession_reason": "Preserve all historical decisions unchanged in the active 66-commit prefix through d87330d91e; point directly to its current replacement rather than a superseded intermediate batch."
 }

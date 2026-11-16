@@ -68,6 +68,30 @@ struct ReaderObservation {
     request_woke_ns: Option<u64>,
 }
 
+fn same_birth(
+    left_pid: u32,
+    left: &ProcessIdentity,
+    right_pid: u32,
+    right: &ProcessIdentity,
+) -> bool {
+    (left_pid, left) == (right_pid, right)
+}
+
+#[test]
+fn linux_birth_includes_pid_when_processes_share_a_start_tick() {
+    let first = ProcessIdentity::Linux {
+        boot_id: "same-native-boot".into(),
+        start_ticks: 42,
+    };
+    let later = ProcessIdentity::Linux {
+        boot_id: "same-native-boot".into(),
+        start_ticks: 43,
+    };
+    assert!(!same_birth(101, &first, 102, &first));
+    assert!(same_birth(101, &first, 101, &first));
+    assert!(!same_birth(101, &first, 101, &later));
+}
+
 fn required(value: Option<OsString>, name: &str) -> io::Result<OsString> {
     value.ok_or_else(|| io::Error::other(format!("missing private child input: {name}")))
 }
@@ -252,8 +276,10 @@ async fn reader_process(home: &Path, case: &str) -> TestResult<()> {
     let old_identity = ProcessIdentity::from(control.identity.clone());
     assert!(!identity::is_live(control.pid, Some(&old_identity)));
     let identity = identity::current()?;
-    assert_ne!(std::process::id(), control.pid);
-    assert_ne!(identity, old_identity, "distinct actual native births");
+    assert!(
+        !same_birth(std::process::id(), &identity, control.pid, &old_identity),
+        "distinct actual native births include the PID"
+    );
     let source = record::read(&record::path_for(home, control.pid))
         .ok_or_else(|| io::Error::other("orphaned source record missing"))?;
     assert_eq!(source.identity, Some(control.identity.clone()));
@@ -497,7 +523,7 @@ fn native_process_transition_preserves_provider_waits() -> TestResult<()> {
             std::fs::copy(source_home.join("control.json"), home.join("control.json"))?;
             homes.push((case, home));
         }
-        let mut observations = Vec::new();
+        let mut observations: Vec<ReaderObservation> = Vec::new();
         for (case, home) in homes {
             let marker = format!("ALAB_NATIVE_WAIT_READER_OK {case}");
             let timeout = if case == "matching" { 30 } else { 15 };
@@ -513,7 +539,16 @@ fn native_process_transition_preserves_provider_waits() -> TestResult<()> {
                 serde_json::from_slice(&std::fs::read(home.join("reader.json"))?)?;
             assert_eq!(actual.case, case);
             let birth = ProcessIdentity::from(actual.identity.clone());
-            assert_ne!(birth, old_identity);
+            assert!(!same_birth(actual.pid, &birth, control.pid, &old_identity));
+            for previous in &observations {
+                let previous_birth = ProcessIdentity::from(previous.identity.clone());
+                assert!(!same_birth(
+                    actual.pid,
+                    &birth,
+                    previous.pid,
+                    &previous_birth
+                ));
+            }
             assert!(!identity::is_live(actual.pid, Some(&birth)));
             assert_eq!(actual.recovery_clock_verified, case == "matching");
             assert_eq!(actual.request_clock_verified, case == "matching");

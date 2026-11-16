@@ -4,9 +4,10 @@
 //! The switch every ALab behavior keys off, and ALab's packaged defaults.
 //!
 //! codex-alab changes upstream behavior only in the `codex` binary: its `main` calls
-//! [`activate`] after installing its running identity (`cli/src/main.rs`), and every
-//! behavioral hook asks [`active`]. Explicit credential custody uses [`is_alab_binary`]
-//! and remains available with the enhanced interface off. Upstream's unit tests never run that `main`, in any crate, so
+//! [`activate`] at entry before request dispatch (`cli/src/main.rs`), and every
+//! interface hook asks [`active`]. Explicit credential custody and internal error-message
+//! provenance use [`is_alab_binary`] across live vanilla/enhanced changes. These product
+//! invariants remain available with the enhanced interface off. Upstream's unit tests never run that `main`, in any crate, so
 //! they keep testing upstream's behavior; `alab/check.sh` gates on them. ALab's own tests
 //! activate the switch themselves.
 

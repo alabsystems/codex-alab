@@ -683,7 +683,88 @@ def reply_state(reply):
     """The `state=` word of a traced control reply, or None for a refusal."""
     if not reply.startswith("OK "):
         return None
-    return dict(word.split("=", 1) for word in reply.split() if "=" in word).get("state")
+    return reply_fields(reply).get("state")
+
+
+def reply_fields(reply):
+    """The `key=value` words of a traced control reply."""
+    return dict(word.split("=", 1) for word in reply.split() if "=" in word)
+
+
+# How long the loop waits, once a usage-wall successor is at rest on its consumed receipt,
+# for the host to answer that successor's report (`codex-rotation complete`) completed
+# before it stops the host. codex-alab sends the report once its resumed turn was served
+# and asks again while the host answers `waiting`, for 5 s at most (alab-autopilot
+# renewal_completion.rs, COMPLETION_BUDGET). The successor is at rest before its report is
+# traced as often as not, so a loop that stopped the host there cut the report off.
+COMPLETION_WAIT_SECONDS = 10
+# The host's answer to a report it cannot record yet (a busy receipt writer, sign-in turn
+# or auth lock: aterm codex_rotation_control.rs `complete`). It names no receipt.
+WAITING_REPLY = "OK codex-rotation state=waiting"
+
+
+def completion_seen(calls, receipt_id):
+    """When the host answered the report of receipt `receipt_id`'s successor completed, or
+    None. `calls` are one host's traced `codex-rotation` calls (rotation_calls)."""
+    return next((stamp for verb, reply, stamp in calls if verb == "complete"
+                 and reply_state(reply) == "completed" and reply_fields(reply).get("id") == receipt_id), None)
+
+
+def completion_verdict(calls, receipt, state=None, ledger=None):
+    """The successor's report that its resumed turn was served, and the pool it proved.
+
+    `calls` are the traced `codex-rotation` calls of the host of the session `receipt`
+    moved, in order. The successor consumes its receipt, resumes the walled turn on the
+    destination and, once that turn was served, reports it (`complete`). The host answers
+    `completed`, naming the receipt, its thread and the walled turn, and proves the
+    destination for the pool, which releases every session walled behind this one at its
+    next ask. Before that it may answer `waiting`, and nothing else; the report follows
+    the receipt's last consume, a dropped consume's retry included, and is answered
+    completed once. With `state` and `ledger` (the pool's state.json and its ledger.jsonl
+    rows), the pool ends proven on its active account with no canary held, proven once,
+    and no session took the canary.
+    """
+    consumes = [stamp for verb, reply, stamp in calls
+                if verb == "consume" and reply_fields(reply).get("id") == receipt["id"]]
+    probe.require(bool(consumes), "the successor never consumed its receipt")
+    reports = [(reply, stamp) for verb, reply, stamp in calls if verb == "complete"]
+    probe.require(bool(reports), "no `codex-rotation complete` followed the successor's consume: "
+                  "the report that its resumed turn was served never reached the host")
+    completed = [(reply, stamp) for reply, stamp in reports if reply_state(reply) == "completed"]
+    probe.require(len(completed) == 1, f"the host answered the successor's report completed "
+        f"{len(completed)} times, not once: " + ", ".join(sorted({reply[:60] for reply, _ in reports})))
+    reply, stamp = completed[0]
+    fields = reply_fields(reply)
+    probe.require(fields.get("id") == receipt["id"] and fields.get("thread") == receipt["intent"]["thread"]
+        and fields.get("turn") == receipt["intent"]["wall"],
+        "the completed report names another receipt, thread or turn than the consumed receipt's")
+    probe.require(stamp > consumes[-1], "the report was answered completed before the receipt's last consume")
+    before = [(answer, at) for answer, at in reports if at < stamp]
+    probe.require(all(answer == WAITING_REPLY and at > consumes[0] for answer, at in before),
+        "before it was answered completed the report was answered otherwise than waiting, or sent "
+        "before the consume: " + ", ".join(sorted({answer[:60] for answer, _ in before})))
+    probe.require(not any(at > stamp for _, at in reports),
+        "the successor reported again after its report was answered completed")
+    proof = {"completedUs": stamp, "secondsAfterLastConsume": round((stamp - consumes[-1]) / 1_000_000, 3),
+             "waitingBefore": len(before), "consumes": len(consumes)}
+    probe.require((state is None) == (ledger is None), "the pool is judged by its state and its ledger together")
+    if state is not None:
+        probe.require(state.get("proven") is True and state.get("canary") is None
+            and isinstance(state.get("active"), str),
+            "the pool did not end proven on its active account with no canary held")
+        canaries = [event for event in ledger if event.get("kind") == "rotate"
+                    and str(event.get("why") or "").startswith("canary:")]
+        probe.require(not canaries, "a session took the canary: " + str(canaries[0].get("why") if canaries else ""))
+        proven = [event for event in ledger if event.get("kind") == "proven"
+                  and event.get("account") == state["active"]]
+        probe.require(len(proven) == 1, f"the pool's active account was proven {len(proven)} times, not once")
+        proof["provenAccount"] = state["active"]
+    return proof
+
+
+def pool_ledger(pool):
+    """The rows of a pool's ledger.jsonl, in order."""
+    return [json.loads(line) for line in (pool / "ledger.jsonl").read_text().splitlines() if line.strip()]
 
 
 def login_policy(reply):
@@ -2793,6 +2874,8 @@ def main():
             hold_set = False
             hold_released = False
             observe_expired_after = None
+            # When the loop first saw a usage-wall successor at rest on its receipt.
+            completion_wait_from = None
             last_source_records = None
             source_record_transitions = 0
             try:
@@ -3486,7 +3569,19 @@ def main():
                         with model.lock:
                             count = len(model.requests)
                         receipt = consumed_receipt(root, report["thread"], report["wall"], candidate["pid"] if candidate else None)
-                        if candidate and receipt and count > report["requestsBeforeRenewal"] and successor_rest(candidate, report["thread"]) is not None:
+                        settled = bool(candidate and receipt and count > report["requestsBeforeRenewal"]
+                                       and successor_rest(candidate, report["thread"]) is not None)
+                        if settled and weekly_quota:
+                            # A usage-wall successor at rest has yet to have its report
+                            # answered as often as not: the host stops once that is
+                            # traced, or COMPLETION_WAIT_SECONDS on (completion_verdict).
+                            if completion_wait_from is None:
+                                completion_wait_from = time.monotonic()
+                            if (completion_seen(rotation_calls(root / "renewal-control-trace.jsonl"),
+                                                receipt["id"]) is None
+                                    and time.monotonic() < completion_wait_from + COMPLETION_WAIT_SECONDS):
+                                continue
+                        if settled:
                             report["successorRest"] = successor_rest(candidate, report["thread"])
                             probe.require(count == report["requestsBeforeRenewal"] + (2 if chain else 1), "renewal replayed model work")
                             source_process = report["rollback"]["process"] if rollback_case else report["originalProcess"]
@@ -3730,6 +3825,14 @@ def main():
                 events = list(model.http_events)
             report["creditlessWallsYieldedToRotation"] = validate_creditless_yield(
                 events, rotation_prepares(root / "renewal-control-trace.jsonl"))
+            if "nativeReceipt" in report:
+                # The handoff's successor reported its resumed turn served, and that proved
+                # the destination (aterm A1, codex-alab C2): a host or package without the
+                # report fails here by name.
+                pool = root / "host-state" / "accounts-codex"
+                report["completionReported"] = completion_verdict(
+                    rotation_calls(root / "renewal-control-trace.jsonl"), report["nativeReceipt"],
+                    json.loads((pool / "state.json").read_text()), pool_ledger(pool))
             if far_wall:
                 report["fiveHourWallHandedOver"] = far_wall_verdict(root, events, model.requests,
                     report["nativeReceipt"], report.get("hostFiveHourPolicy"), old, login_digests,
