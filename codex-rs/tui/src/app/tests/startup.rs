@@ -1173,6 +1173,7 @@ async fn fresh_startup_thread_drains_buffered_approval_before_draft_handoff() ->
         AppEvent::StartupThreadStarted {
             backend_id,
             result: Ok(AppServerStartedThread {
+                #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
                 session: test_thread_session(thread_id, test_path_buf("/tmp/project")),
                 turns: Vec::new(),
                 blocks_direct_input: false,
@@ -1394,6 +1395,7 @@ async fn startup_thread_started_submits_queued_startup_input() {
     app.handle_startup_thread_started(
         &mut app_server,
         Ok(AppServerStartedThread {
+            #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
             session,
             turns: Vec::new(),
             blocks_direct_input: false,
@@ -1445,6 +1447,7 @@ async fn fresh_startup_notice_follows_session_attachment() {
     app.handle_startup_thread_started(
         &mut app_server,
         Ok(AppServerStartedThread {
+            #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
             session: test_thread_session(ThreadId::new(), test_path_buf("/tmp/project")),
             turns: Vec::new(),
             blocks_direct_input: false,
@@ -1590,6 +1593,7 @@ async fn startup_thread_started_discards_another_threads_buffered_events() {
     app.handle_startup_thread_started(
         &mut app_server,
         Ok(AppServerStartedThread {
+            #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
             session: test_thread_session(thread_id, test_path_buf("/tmp/project")),
             turns: Vec::new(),
             blocks_direct_input: false,
@@ -1639,6 +1643,7 @@ async fn startup_thread_started_does_not_replay_resolved_approval() -> Result<()
     app.handle_startup_thread_started(
         &mut app_server,
         Ok(AppServerStartedThread {
+            #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
             session: test_thread_session(thread_id, test_path_buf("/tmp/project")),
             turns: Vec::new(),
             blocks_direct_input: false,
@@ -1836,6 +1841,7 @@ fn stale_startup_thread_started_removes_local_routing_state() -> Result<()> {
             app.handle_startup_thread_started(
                 &mut app_server,
                 Ok(AppServerStartedThread {
+                    #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
                     session: test_thread_session(stale_thread_id, test_path_buf("/tmp/project")),
                     turns: Vec::new(),
                     blocks_direct_input: false,

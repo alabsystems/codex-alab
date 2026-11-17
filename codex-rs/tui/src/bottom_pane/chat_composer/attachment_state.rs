@@ -1,6 +1,10 @@
 //! Attachment bookkeeping for the chat composer, including local image placeholders,
 //! remote-image rows, and keyboard selection over those rows.
 
+#[cfg(unix)]
+#[path = "../../../../alab-tui/glue/editor_upgrade_attachment_state.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): carry native structured draft data and register relationships.
+
 use std::collections::HashSet;
 use std::path::PathBuf;
 

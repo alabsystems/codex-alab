@@ -74,6 +74,7 @@ pub(super) async fn reconnect(
             stage = "connecting to the server";
             let client = crate::app_server_connection::connect(&target).await?;
             let mut session = AppServerSession::new(backend_id, client, mode)
+                .with_selected_target(&target)? // ALAB(owned-local): retain the same controller and backend-owned task tools on reconnection.
                 .with_local_codex_home(&config.codex_home)
                 .with_remote_cwd_override(remote_cwd.clone())
                 .with_thread_tool_transport(task_tools.clone());
@@ -330,6 +331,7 @@ impl App {
         app_server: &AppServerSession,
         search_dir: PathBuf,
     ) {
+        #[cfg(unix)] self.chat_widget.alab_bind_retained_startup(&self.app_server_target); // ALAB(retained-frontier): real target rebinding preserves the exact UI-only startup hold.
         self.chat_widget.snapshot_local_images = self.app_server_target.uses_remote_workspace();
         self.chat_widget.set_local_worktree_operations(
             !crate::uses_remote_workspace_or_environment(

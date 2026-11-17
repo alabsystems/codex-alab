@@ -1,5 +1,7 @@
 //! Root of the `codex-core` library.
 
+#![recursion_limit = "256"] // ALAB(toolchain): check Guardian's Send future at a finite solver depth.
+
 // Prevent accidental direct writes to stdout/stderr in library code. All
 // user-visible output must go through the appropriate abstraction (e.g.,
 // the TUI or the tracing stack).
@@ -57,6 +59,7 @@ pub use codex_protocol::mcp_policy::EnvironmentMcpPolicy;
 pub use codex_protocol::protocol::EnvironmentConfig;
 pub use codex_thread::BackgroundTerminalInfo;
 pub use codex_thread::CodexThread;
+pub use codex_thread::{PreparedSideBoundary, RecordedSideBoundary}; // ALAB(retained-side): opaque original Core recording facts, never admission/currentness.
 pub use codex_thread::CodexThreadSettingsOverrides;
 pub use codex_thread::ConfigRefreshOutcome;
 pub use codex_thread::GuardianAuthorizationVersion;
@@ -305,3 +308,5 @@ pub use environment_selection::validate_environment_ids_and_cwds;
 
 mod runtime_auth;
 pub use runtime_auth::build_runtime_auth_manager;
+
+pub use codex_thread::alab_retained_side::RetainedSideMarker; // ALAB(retained-side): marker DATA from the existing opaque Core occurrence API.

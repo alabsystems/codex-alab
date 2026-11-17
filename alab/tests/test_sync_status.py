@@ -228,6 +228,22 @@ class SyncStatusTests(unittest.TestCase):
         self.assertNotIn("none yet", result.stdout)
         self.no_recovery_advice(result)
 
+    def test_unreadable_stop_record_does_not_advise_unattended_resume(self):
+        self.stop.mkdir()
+        result = self.readonly_status()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("cannot read sync stop record", result.stderr)
+        self.assertNotIn("next alab/sync.sh resumes", result.stdout)
+        self.no_recovery_advice(result)
+
+    def test_invalid_stop_record_does_not_advise_unattended_resume(self):
+        self.stop.write_text("unknown-hold\nkeep waiting\n")
+        result = self.readonly_status()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("cannot read sync stop record", result.stderr)
+        self.assertNotIn("next alab/sync.sh resumes", result.stdout)
+        self.no_recovery_advice(result)
+
     def ensure_without_changes(self):
         source = (self.repo / "alab/sync.sh").read_text()
         functions = []
@@ -252,6 +268,31 @@ class SyncStatusTests(unittest.TestCase):
         self.assertIn("alab-sync holds commits main lacks", result.stderr)
         self.assertIn(str(holder), result.stderr)
         self.assertTrue(self.git("rev-list", "origin/main..alab-sync"))
+
+    def failed_missing_holder_history(self, output):
+        holder = self.holder()
+        holder.rename(self.repo / "unavailable history checkout")
+        wrappers = self.repo / "history wrappers"
+        wrappers.mkdir()
+        wrapper = wrappers / "git"
+        wrapper.write_text(
+            '#!/bin/sh\nif [ "$1" = rev-list ]; then\n'
+            + "  printf %s " + shlex.quote(output) + "\n"
+            + "  echo 'fixture history read failed' >&2\n  exit 128\nfi\n"
+            + "exec " + shlex.quote(self.git_executable) + ' "$@"\n')
+        wrapper.chmod(0o755)
+        self.environment["PATH"] = str(wrappers) + os.pathsep + self.environment["PATH"]
+        result = self.ensure_without_changes()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("cannot read missing sync worktree history", result.stderr)
+        self.assertIn("fixture history read failed", result.stderr)
+        self.no_recovery_advice(result)
+
+    def test_missing_holder_empty_history_read_failure_preserves_registration(self):
+        self.failed_missing_holder_history("")
+
+    def test_missing_holder_partial_history_read_failure_is_not_unique_commit_advice(self):
+        self.failed_missing_holder_history("partial-id\n")
 
     def test_startup_refuses_live_newline_holder_elsewhere_without_changes(self):
         holder = self.holder(name="startup\nholder\n")

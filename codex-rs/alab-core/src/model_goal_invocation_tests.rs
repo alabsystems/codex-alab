@@ -5,6 +5,7 @@ use super::Invocation;
 use super::ScopeFuture;
 use super::current;
 use crate::goal_persistence::State;
+use crate::model_goal_stops::CommittedMutation;
 use crate::model_goal_stops::CommittedStop;
 use crate::model_goal_stops::PreviousStatus;
 use crate::model_goal_stops::committed;
@@ -19,21 +20,26 @@ use std::task::Poll;
 
 const TURN: &str = "reused-turn";
 const CALL: &str = "reused-provider-id";
+const MODE_EPOCH: u64 = 7;
 
-fn acknowledged(state: &Arc<State>, previous_status: PreviousStatus) -> CommittedStop {
-    CommittedStop {
-        goal: WallGoal {
-            goal_id: "original-goal".into(),
-            objective: "finish the original task".into(),
-            token_budget: Some(500),
-            turn: TURN.into(),
-            person_stops: 0,
-        },
-        previous_status,
-        receipt: state
+fn acknowledged(state: &Arc<State>, previous_status: PreviousStatus) -> CommittedMutation {
+    CommittedMutation {
+        transition: state
             .begin_mutation()
-            .commit_mutation_with_receipt()
+            .commit_mutation()
             .expect("an acknowledged native State mutation"),
+        stop: Some(CommittedStop {
+            goal: WallGoal {
+                goal_id: "original-goal".into(),
+                objective: "finish the original task".into(),
+                token_budget: Some(500),
+                chronology_fence_generation: None,
+                turn: TURN.into(),
+                person_stops: 0,
+            },
+            previous_status,
+        }),
+        mode_epoch: MODE_EPOCH,
     }
 }
 

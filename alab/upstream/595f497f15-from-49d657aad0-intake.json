@@ -1,0 +1,195 @@
+{
+  "schema": 1,
+  "base": "49d657aad0e878fb7ab156b91126828c21a0005f",
+  "target": "595f497f15a3e3239a62f6b99cf61067df00f0d0",
+  "frontier": "49d657aad0e878fb7ab156b91126828c21a0005f",
+  "commits": [
+    {
+      "sha": "05ae1b0fdd5ab412d24248acc76c5d9f6f275440",
+      "subject": "Centralize sandbox network and shell credential setup (#62050)",
+      "paths": [
+        "codex-rs/cli/src/debug_sandbox.rs",
+        "codex-rs/core/src/exec.rs",
+        "codex-rs/core/src/shell_snapshot_sandbox.rs",
+        "codex-rs/core/src/tools/runtimes/unified_exec.rs",
+        "codex-rs/core/src/tools/sandboxing.rs",
+        "codex-rs/core/src/tools/sandboxing_tests.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/core/tests/windows_sandbox.rs",
+        "codex-rs/exec-server/src/fs_sandbox.rs",
+        "codex-rs/exec-server/src/process_sandbox.rs",
+        "codex-rs/exec-server/src/shell_snapshot.rs",
+        "codex-rs/network-proxy/src/credential_broker.rs",
+        "codex-rs/network-proxy/src/lib.rs",
+        "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/sandboxing/src/manager_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "security",
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff",
+        "account-isolation",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve managed-network enforcement when executor proxy launch settings are missing; suppress it only for explicitly disabled settings, and centralize existing shell startup credential handling.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 4f34e970c886cf6cf06c58c1f0f3476286309479342e2ee65c263a84006b4c83; 40557 bytes / 871 lines. Exact single-parent/path identity is bound by raw index 6a293abd577f28a5677daa060d9a722bf2a511dd0eaaf87e3fa0d8bb7f35122f.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after49d.md. Fixed comparison bef9ffc4faaf418899e21c838b9581be11e9f3c4; metadata only, no source import or runtime/compile/Send/lint/qualification credit.",
+        "Root reading abdeefcee0dc58422d57ede92eebe52c4ca2c7d16690546adc4d58850ad86dd2; independent source/control packet dfc8cc48f9c01f5fb2429f4d056ce9ef4b86ffc97ec65145caf8082646534e8d (43 Git identities), additive body-span packet ce37fcf95996965f2efe9f491bf896bdc7be1d913f519b5caffb7e1d5b343e95. All selected controls UNRUN. Root independent source-control review 11ffe870d02b5df0e7eb9d4975c08712cb35dbb7e56121aeb767c81debad1da6 binds eight actual bodies/attributes/lines, package targets and nine module frontiers.",
+        "Existing Core env_for_exec_server control is expanded for missing versus explicit-disabled proxy settings. Selected Core/Sandboxing library controls return request/selection/argv data; linux_helper additionally starts a local NetworkProxy listener but executes no helper. One INHERITED exec-server integration declaration has seven literal cases before Unix/Linux/macOS gates and its actual current-test-binary helper dispatch/shell/curl/TLS/bwrap-skip/serial prerequisites; no new classifier unit tests.",
+        "Preserve live proxy/enforcement/environment custody, original pre-rewrite credential classification, supported zsh/bash eligibility and intentional unmasked fallback. Bounded fixed-owned API census has no direct matches; eventual exec.rs integration must preserve native-retained original IO/root/FD/cancellation settlement hooks."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "5a4aff84319b4376658b4cac50fcd15fa976f6fa",
+      "subject": "Expand the `spawn_agent` model listing cap to 16 (#62051)",
+      "paths": [
+        "codex-rs/core/src/agent/child_config.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__model_visible_layout__model_visible_layout_resume_override_matches_rollout_model.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_absent.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_blank.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_custom.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_disabled.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_empty.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_null.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_oversized.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__agent_eviction__idle_eviction_followup.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__agent_message_board__remote__remote_board_permissions_direct.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_active_environment_selection.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_compaction_with_live_suffix.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_question_and_answer.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_code_mode_call_timing.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_disabled_executor_skills.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_executor_plugin_policy_refresh.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_interrupts_response.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_yields_code_mode_cell.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_kickoff_remote_compaction_windows.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_policy_limits_visible_skills.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_policy_without_skill_descriptions.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh_simplified_selection_hints_off.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh_simplified_selection_hints_on.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_settings_release_check_tool_shapes.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__attached_side_chat_preserves_model_context_on_cold_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__budget_context__host_budget_context_after_compaction.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__cached_stdio_stays_dormant_in_a_new_chat_until_first_use.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_selected_plugin_wording_apps_false_simplified_false.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_selected_plugin_wording_apps_true_simplified_false.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_selected_plugin_wording_apps_true_simplified_true.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__child_completion_wakes_parent_after_final_answer.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages_ranked_search.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_mcp_schema_limits.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_settled_helpers__code_mode_settled_helpers.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__command_sessions__command_sessions_world_state.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__compaction__remote_slash_compact.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__dynamic_tools__dynamic_tools_update_preserves_pending_calls_and_survives_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__frozen_cloud_skills__frozen_cloud_skills_with_named_executor_request_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tool_removals.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tool_removals_regular_responses.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tools_catalog_messages.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__prediction_fork_inherited_tools.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__indirect_namespace_prefixes__catalog_indirect_namespace_prefixes.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_ema__enterprise_failure_preserves_ordinary_mcp_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_ema__enterprise_revocation_preserves_history_and_ordinary_tools.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_resource_messages__mcp_resource_messages.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_sharing__shared_mcp_keeps_tools_and_model_requested_input_per_chat.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_tool_discovery_CodeModeOnly.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_tool_discovery_Direct.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_catalog_parameters.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_environment_mcp__same_named_executor_mcps_keep_calls_and_approvals_separate.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__partial_answers__preserved_answer_fork.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__prediction_fork_preserves_context_above_compaction_threshold.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__retained_tool_outputs__retained_tool_output_retention_disabled.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__retained_tool_outputs__retained_tool_output_survives_compaction_and_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_before_budgeting.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_without_descriptions.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__skill_catalog_deltas.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_read_installation_recovery_request_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__strict_3p_cache__strict_3p_mcp_catalog_cache.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__unavailable_images_are_rechecked_without_rewriting_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__world_state_prefix__extension_window_prefix_local.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__world_state_prefix__extension_window_prefix_remote.snap",
+        "codex-rs/core/tests/suite/spawn_agent_description.rs"
+      ],
+      "classes": [
+        "feature",
+        "model"
+      ],
+      "features": [
+        "model-discovery",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Raise the shared spawn model listing/error cap to sixteen while retaining supported-model selection semantics and the existing bounded context rendering.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 fccd8dc60c92906119628a89b5f465156d738a1a5ebc3e74696026fd4c90999e; 132560 bytes / 2028 lines. Exact single-parent/path identity is bound by raw index 6a293abd577f28a5677daa060d9a722bf2a511dd0eaaf87e3fa0d8bb7f35122f.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after49d.md. Fixed comparison bef9ffc4faaf418899e21c838b9581be11e9f3c4; metadata only, no source import or runtime/compile/Send/lint/qualification credit.",
+        "Root reading abdeefcee0dc58422d57ede92eebe52c4ca2c7d16690546adc4d58850ad86dd2; independent source/control packet dfc8cc48f9c01f5fb2429f4d056ce9ef4b86ffc97ec65145caf8082646534e8d (43 Git identities), additive body-span packet ce37fcf95996965f2efe9f491bf896bdc7be1d913f519b5caffb7e1d5b343e95. All selected controls UNRUN. Root independent source-control review 11ffe870d02b5df0e7eb9d4975c08712cb35dbb7e56121aeb767c81debad1da6 binds eight actual bodies/attributes/lines, package targets and nine module frontiers.",
+        "One NEW codex-core --test all source declaration has two literal schema/context cases under non-Windows cfg, local model/SSE mocks and actual TestCodex/test auth. It checks the visible list and rejected unknown-model error, not a successful child-model service call. Ordinary loops and snapshots are not extra cases.",
+        "The shared display/error cap is sixteen, with unchanged 1000-byte rendered context/250-character description bounds and omitted notice; context may list fewer. Exact supported lookup remains uncapped by this listing. Sixty-three snapshots are mechanically hash-only and one adds eleven context/window lines; no repeated-hash whole-text reading or runtime credit."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "640b86dc879ceaaa126cdf183b417731e291f476",
+      "subject": "Escape installer PATH entries for shell metacharacters (#62055)",
+      "paths": [
+        "scripts/install/install.sh",
+        "scripts/install/test_install_sh.py"
+      ],
+      "classes": [
+        "removed-path",
+        "packaging",
+        "fix"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "superseded",
+      "reason": "Keep upstream standalone installer paths removed: ALab uses atpkg distribution and already removes scripts/install; the upstream quoting repair does not add a second distribution path.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 fa23640024adfa24ac239e9f9c6d24537c9bf8d17293d8875fe2baa58ddedcdc; 6803 bytes / 176 lines. Exact single-parent/path identity is bound by raw index 6a293abd577f28a5677daa060d9a722bf2a511dd0eaaf87e3fa0d8bb7f35122f.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after49d.md. Fixed comparison bef9ffc4faaf418899e21c838b9581be11e9f3c4; metadata only, no source import or runtime/compile/Send/lint/qualification credit.",
+        "Root reading abdeefcee0dc58422d57ede92eebe52c4ca2c7d16690546adc4d58850ad86dd2; independent source/control packet dfc8cc48f9c01f5fb2429f4d056ce9ef4b86ffc97ec65145caf8082646534e8d (43 Git identities), additive body-span packet ce37fcf95996965f2efe9f491bf896bdc7be1d913f519b5caffb7e1d5b343e95. All selected controls UNRUN. Root independent source-control review 11ffe870d02b5df0e7eb9d4975c08712cb35dbb7e56121aeb767c81debad1da6 binds eight actual bodies/attributes/lines, package targets and nine module frontiers.",
+        "Both changed paths remain omitted under alab/removed-paths entry scripts/install. The omitted InstallShTest Python control is one declaration with two ordinary metacharacter-directory loop values, not two formal cases; no installer execution or new ALab distribution path.",
+        "Formal decision superseded uses existing atpkg distribution/removal policy. No removed compatibility installer or machine PATH changes are restored."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "595f497f15a3e3239a62f6b99cf61067df00f0d0",
+      "subject": "Stop masking system SSH configuration drop-ins in Linux sandboxes (#62058)",
+      "paths": [
+        "codex-rs/linux-sandbox/README.md",
+        "codex-rs/linux-sandbox/src/bwrap.rs",
+        "codex-rs/linux-sandbox/tests/fixtures/ssh_handshake.sh",
+        "codex-rs/linux-sandbox/tests/suite/sandbox.rs",
+        "codex-rs/linux-sandbox/tests/suite/ssh_config_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "exec-handoff",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Remove the special empty system SSH drop-in overlay so configured filesystem policy governs access without a new SSH permission grant.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 cdcde6f0920da0fb2018ff4ff3cbb47e8095eaee2e69ccef5ae6d9cd48c0a546; 10015 bytes / 234 lines. Exact single-parent/path identity is bound by raw index 6a293abd577f28a5677daa060d9a722bf2a511dd0eaaf87e3fa0d8bb7f35122f.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after49d.md. Fixed comparison bef9ffc4faaf418899e21c838b9581be11e9f3c4; metadata only, no source import or runtime/compile/Send/lint/qualification credit.",
+        "Root reading abdeefcee0dc58422d57ede92eebe52c4ca2c7d16690546adc4d58850ad86dd2; independent source/control packet dfc8cc48f9c01f5fb2429f4d056ce9ef4b86ffc97ec65145caf8082646534e8d (43 Git identities), additive body-span packet ce37fcf95996965f2efe9f491bf896bdc7be1d913f519b5caffb7e1d5b343e95. All selected controls UNRUN. Root independent source-control review 11ffe870d02b5df0e7eb9d4975c08712cb35dbb7e56121aeb767c81debad1da6 binds eight actual bodies/attributes/lines, package targets and nine module frontiers.",
+        "Two retained codex-linux-sandbox --lib Linux/cfg(test) declarations inspect scoped read roots and carveout argv ordering. Temporary paths and generated arguments do not exercise bwrap/SSH/host keys. The deleted SSH fixture/control provides no retained coverage or inherited live-tool requirements for these pure argv controls.",
+        "Remove only the special empty /etc/ssh/ssh_config.d overlay; actual configured filesystem policy still governs read access/denials. Preserve native sandbox/root/FD/network boundaries; no blanket SSH permission or host-key qualification."
+      ],
+      "revisit": ""
+    }
+  ]
+}

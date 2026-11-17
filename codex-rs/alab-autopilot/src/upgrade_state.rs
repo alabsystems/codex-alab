@@ -13,10 +13,17 @@ impl Captured {
         let startup = self
             .startup_snapshot()
             .ok_or("source capture lacks its actual TUI startup state")?;
-        encode(self, startup)
+        let editor = self
+            .editor_snapshot()
+            .ok_or("source capture lacks its actual native editor state")?;
+        encode(self, startup, editor)
     }
 }
-fn encode(source: &Captured, startup: &upgrade_startup::Snapshot) -> Result<Vec<u8>, String> {
+fn encode(
+    source: &Captured,
+    startup: &upgrade_startup::Snapshot,
+    editor: &[u8],
+) -> Result<Vec<u8>, String> {
     let goals = source.goals.encode_state(source.primary)?;
     codex_alab_tui::upgrade_state::encode(
         &source.primary.to_string(),
@@ -24,6 +31,7 @@ fn encode(source: &Captured, startup: &upgrade_startup::Snapshot) -> Result<Vec<
         source.input_snapshot(),
         source.mode_snapshot(),
         startup,
+        editor,
     )
     .map_err(|error| error.to_string())
 }
@@ -65,7 +73,7 @@ pub(crate) fn qualify_frame(source: &Captured) {
         alt_screen_enabled: true,
         mouse_capture: 0,
     };
-    let encoded = encode(source, &startup).unwrap();
+    let encoded = encode(source, &startup, br#"{"synthetic_core_only_fixture":true}"#).unwrap();
     let decoded = decode_state(&encoded, source.primary).unwrap();
     assert_eq!(decoded.goals, source.goals.goals);
     assert_eq!(decoded.forest.roots(), source.goals.forest.roots());
@@ -86,7 +94,7 @@ pub(crate) fn qualify_frame(source: &Captured) {
             .unwrap(),
     )
     .unwrap();
-    for alteration in 0..6 {
+    for alteration in 0..8 {
         let mut changed = original.clone();
         match alteration {
             0 => changed["version"] = serde_json::json!(99),
@@ -99,6 +107,13 @@ pub(crate) fn qualify_frame(source: &Captured) {
                 changed["terminal"].as_object_mut().unwrap().remove("input");
             }
             5 => changed["grant"] = serde_json::json!(true),
+            6 => {
+                changed["terminal"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("editor");
+            }
+            7 => changed["version"] = serde_json::json!(1),
             _ => unreachable!(),
         }
         let mut bytes = codex_alab_tui::upgrade_state::MAGIC.to_vec();

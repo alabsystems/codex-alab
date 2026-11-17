@@ -114,6 +114,287 @@ fn open_work_reads_heads_and_status_words_and_never_a_negation() {
     assert!(open_work(None).is_empty());
 }
 
+/// A historical skipped state is no current open work once that same probe
+/// explicitly runs and passes. Land's existing historical reading is a native
+/// positive control; the new behavior under test belongs only to Cruise.
+#[test]
+fn open_work_settles_explicitly_recovered_historical_skips() {
+    let mut open = Vec::new();
+    let mut land_open = Vec::new();
+    for marker in [
+        "previously",
+        "formerly",
+        "once",
+        "earlier",
+        "initially",
+        "originally",
+    ] {
+        for (subject, predicates) in [
+            ("probe", ["now passes", "now runs and passes"]),
+            ("test", ["now passes", "now runs and passes"]),
+            ("check", ["now passes", "now runs and passes"]),
+            ("probes", ["now pass", "now run and pass"]),
+            ("tests", ["now pass", "now run and pass"]),
+            ("checks", ["now pass", "now run and pass"]),
+        ] {
+            for predicate in predicates {
+                let report = format!("Nothing left. The {marker} skipped {subject} {predicate}.");
+                let tail = format!("{report}\n{FINISHED}");
+                let land = open_work_strict(Some(&tail));
+                let cruise = open_work(Some(&tail));
+                if !land.is_empty() {
+                    land_open.push((report.clone(), land));
+                }
+                if !cruise.is_empty() {
+                    open.push((report, cruise));
+                }
+            }
+        }
+    }
+    assert!(
+        land_open.is_empty(),
+        "existing Land reading changed: {land_open:?}"
+    );
+    assert!(
+        open.is_empty(),
+        "completed historical probes read open: {open:?}"
+    );
+}
+
+/// An old skip alone, a partial subject, a different subject's success, or a
+/// conditional passing claim must not erase current work. Nonzero generic
+/// skip tallies retain their existing conservative meaning.
+#[test]
+fn open_work_keeps_unsettled_historical_skips_open() {
+    for report in [
+        "The previously skipped probe still fails.",
+        "The formerly skipped probe needs a re-run.",
+        "The initially skipped probe will run after approval.",
+        "The previously skipped probe would pass.",
+        "The previously skipped probe now runs.",
+        "The previously skipped probe now passes if CI passes.",
+        "If CI passes, the previously skipped probe now passes.",
+        "If CI passed and the previously skipped probe now runs and passes.",
+        "The previously skipped probe now passes?",
+        "Some previously skipped probes now pass.",
+        "Two of three previously skipped probes now pass.",
+        "Only one previously skipped probe now passes.",
+        "The documentation for the previously skipped probe now passes.",
+        "The audit of the previously skipped probe now passes.",
+        "The previously skipped probe now passes, except for the final check.",
+        "The previously skipped probe now passes, pending approval.",
+        "Tests: 12 passed, 2 skipped, no failures.",
+    ] {
+        let tail = format!("{report}\n{FINISHED}");
+        assert!(!open_work(Some(&tail)).is_empty(), "{report:?}");
+    }
+}
+
+/// A recovered historical probe settles no independent check or reported work.
+#[test]
+fn open_work_retains_independent_work_after_recovered_historical_skips() {
+    for (report, expected) in [
+        (
+            "The previously skipped probe now runs and passes. The audit was not verified.",
+            &["not verified"][..],
+        ),
+        (
+            "The formerly skipped probe now passes; still open: finish the independent review.",
+            &["still open"],
+        ),
+        (
+            "The initially skipped probe now passes. Another probe was skipped.",
+            &["skipped"],
+        ),
+    ] {
+        let tail = format!("{report}\n{FINISHED}");
+        assert_eq!(open_work(Some(&tail)), expected, "{report:?}");
+    }
+}
+
+/// Current pending work remains open independently of a completed historical
+/// probe. Collect every result before asserting, retaining actual Land data in
+/// a failing diagnostic without prescribing a new Land reading.
+#[test]
+fn open_work_keeps_explicit_current_pending_work_open() {
+    let mut mismatches = Vec::new();
+    for (report, expected) in [
+        ("The audit remains pending.", &["remains pending"][..]),
+        (
+            "The previously skipped probe now passes. The audit remains pending.",
+            &["remains pending"],
+        ),
+        (
+            "The review remains pending until approval.",
+            &["remains pending"],
+        ),
+        ("The audit remains open.", &["remains open"]),
+        (
+            "The audit remains pending and is not verified.",
+            &["not verified"],
+        ),
+    ] {
+        let tail = format!("{report}\n{FINISHED}");
+        let land = open_work_strict(Some(&tail));
+        let found = open_work(Some(&tail));
+        if found != expected {
+            mismatches.push((report, expected, found, land));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "current pending work was lost (report, expected, Cruise, Land): {mismatches:?}"
+    );
+}
+
+/// Reuse the current status reader's negation, quotation and no-work reason
+/// guards; a formerly pending state alone is not current pending work.
+#[test]
+fn open_work_keeps_negated_quoted_and_past_pending_work_clear() {
+    let mut unexpected = Vec::new();
+    for report in [
+        "No audit remains pending.",
+        "The phrase \"remains pending\" is documentation.",
+        "The phrase “remains pending” is documentation.",
+        "The audit previously remained pending and is now complete.",
+        "The audit remains pending, because no contract was added.",
+        "The previously skipped probe now passes. No audit remains pending.",
+    ] {
+        let tail = format!("{report}\n{FINISHED}");
+        let land = open_work_strict(Some(&tail));
+        let found = open_work(Some(&tail));
+        if !found.is_empty() {
+            unexpected.push((report, found, land));
+        }
+    }
+    assert!(
+        unexpected.is_empty(),
+        "noncurrent pending wording read open (report, Cruise, Land): {unexpected:?}"
+    );
+}
+
+#[test]
+fn open_work_accepts_the_completed_follow_ups_report() {
+    for report in [
+        "Available follow-ups were already complete.",
+        "Nothing left: available follow-ups were already complete; unavailable native work remains \
+         deferred. Fixed workflow false-success exits and landed at `610696ddc1`.",
+        "Completed follow-ups.",
+    ] {
+        let tail = format!("{report}\n{FINISHED}");
+        assert!(open_work(Some(&tail)).is_empty(), "{report:?}");
+    }
+}
+
+#[test]
+fn open_work_settles_follow_ups_only_when_their_own_clause_is_complete() {
+    for report in [
+        "I completed the follow-up.",
+        "I completed the follow-ups.",
+        "We completed all follow-ups.",
+        "The follow-up is complete.",
+        "The follow-ups are complete.",
+        "The follow-up was completed.",
+        "The follow-ups were completed.",
+        "The follow-up has been completed.",
+        "The follow-ups have been completed.",
+        "The follow-ups are now done.",
+        "The follow-up is finished.",
+        "We addressed the follow-up.",
+        "The follow-ups are resolved.",
+        "Both follow-ups are complete.",
+        "The follow-up was completed after CI passed.",
+    ] {
+        let tail = format!("{report}\n{FINISHED}");
+        assert!(open_work(Some(&tail)).is_empty(), "{report:?}");
+    }
+}
+
+#[test]
+fn open_work_keeps_incomplete_and_conditional_follow_ups_open() {
+    for report in [
+        "The follow-up is pending.",
+        "The follow-ups remain pending.",
+        "The follow-up is deferred.",
+        "The follow-ups are deferred.",
+        "The follow-up is partially complete.",
+        "The follow-ups are partly completed.",
+        "The follow-up is not yet complete.",
+        "The follow-ups have not yet been completed.",
+        "Only one of three follow-ups is completed.",
+        "Some follow-ups are complete.",
+        "Several follow-ups are complete.",
+        "Many follow-ups are complete.",
+        "Two of three follow-ups are completed.",
+        "Both of the three follow-ups are complete.",
+        "The follow-ups are complete except docs.",
+        "The follow-ups are complete, except docs.",
+        "The follow-ups are green.",
+        "The follow-up passes.",
+        "The follow-ups will be completed tomorrow.",
+        "The follow-up is complete if CI passes.",
+        "The follow-up is complete after CI passes.",
+        "The follow-ups are complete pending approval.",
+        "The follow-ups are done once approval arrives.",
+        "We plan to complete the follow-ups.",
+        "The follow-up can be completed after review.",
+        "The follow-ups are complete?",
+        "Completed follow-ups?",
+        "If CI passed and I completed the follow-up.",
+        "The audit then completed the follow-up.",
+        "I will verify CI and completed the follow-up.",
+    ] {
+        let tail = format!("{report}\n{FINISHED}");
+        assert!(!open_work(Some(&tail)).is_empty(), "{report:?}");
+    }
+}
+
+#[test]
+fn open_work_does_not_settle_follow_ups_with_another_clause_or_subject() {
+    for report in [
+        "The measurement is completed; the follow-ups are pending.",
+        "The follow-up is pending; the measurement is completed.",
+        "The follow-ups are deferred, but the measurement is complete.",
+        "The follow-up is pending and the measurement is completed.",
+        "The follow-up remains pending. The audit is complete.",
+        "The report is complete. The follow-ups are still pending.",
+        "The follow-ups documentation is complete.",
+        "The audit of the follow-ups is complete.",
+    ] {
+        let tail = format!("{report}\n{FINISHED}");
+        assert!(!open_work(Some(&tail)).is_empty(), "{report:?}");
+    }
+}
+
+#[test]
+fn open_work_retains_genuine_work_after_completed_follow_ups() {
+    for (report, expected) in [
+        (
+            "I completed the follow-up. The tests were not run.",
+            &["not run"][..],
+        ),
+        (
+            "The follow-ups are complete; the audit was not verified.",
+            &["not verified"],
+        ),
+        (
+            "We completed the follow-up. Still open: finish the independent review.",
+            &["still open"],
+        ),
+        (
+            "I completed the follow-up; another follow-up is pending.",
+            &["follow-up"],
+        ),
+        (
+            "The follow-ups are completed. Remaining work: finish the migration.",
+            &["remaining"],
+        ),
+    ] {
+        let tail = format!("{report}\n{FINISHED}");
+        assert_eq!(open_work(Some(&tail)), expected, "{report:?}");
+    }
+}
+
 #[test]
 fn open_work_keeps_fenced_examples_out_of_the_report() {
     for tail in [

@@ -10,9 +10,12 @@ pub(crate) struct ManagedTuiWorktree {
     manager: codex_worktree::WorktreeManager,
     checkout: codex_worktree::ManagedWorktree,
     recovery: Arc<StartupRecovery>,
+    backend_binding: codex_alab_task_worktree::StartupBinding, // ALAB(owned-local): actual allocated object shared with the accepted initial worker.
 }
 
 impl ManagedTuiWorktree {
+    pub(crate) fn backend_binding(&self) -> codex_alab_task_worktree::StartupBinding { self.backend_binding.clone() } // ALAB(owned-local): consumed by actual prepared initial plan.
+
     pub(crate) fn bind(&self, thread_id: ThreadId) -> color_eyre::Result<()> {
         self.manager
             .bind_thread(&self.checkout.root, &thread_id.to_string())
@@ -56,7 +59,7 @@ impl ManagedTuiWorktree {
 /// Shared by startup and its background thread request; reports at most once.
 struct StartupRecovery {
     root: PathBuf,
-    finished: AtomicBool,
+    finished: Arc<AtomicBool>, // ALAB(owned-local): SAME original recovery cell moves with the actual backend binding.
 }
 
 impl StartupRecovery {
@@ -193,7 +196,7 @@ pub(super) async fn prepare(
         if cli.cwd.is_none() {
             let cwd = latest_thread_cwd(thread.path, thread.cwd.into_path_buf()).await;
             let cwd = AbsolutePathBuf::from_absolute_path(cwd)?;
-            let bootstrap = load_bootstrap_config_or_exit(
+            let bootstrap = crate::owned_local_backend_policy::bootstrap(
                 &source.codex_home,
                 Some(&cwd),
                 cli_overrides.clone(),
@@ -201,7 +204,7 @@ pub(super) async fn prepare(
                 strict_config,
                 CloudConfigBundleLoader::default(),
             )
-            .await;
+            .await?;
             let source_bundle = cloud_config_bundle_for_app_server_target(
                 target,
                 &bootstrap,
@@ -210,14 +213,14 @@ pub(super) async fn prepare(
             )
             .await?;
             overrides.cwd = Some(cwd.into_path_buf());
-            source = load_config_or_exit(
+            source = crate::owned_local_backend_policy::config(
                 cli_overrides.clone(),
                 overrides.clone(),
                 loader_overrides.clone(),
                 source_bundle,
                 strict_config,
             )
-            .await;
+            .await?;
         }
     }
     if source.active_project.is_untrusted() {
@@ -231,7 +234,7 @@ pub(super) async fn prepare(
             *path = invocation_cwd.join(&*path);
         }
     }
-    let host = load_bootstrap_config_or_exit(
+    let host = crate::owned_local_backend_policy::bootstrap(
         &source.codex_home,
         /*cwd*/ None,
         Vec::new(),
@@ -239,7 +242,7 @@ pub(super) async fn prepare(
         strict_config,
         CloudConfigBundleLoader::default(),
     )
-    .await;
+    .await?;
     let manager = codex_worktree::WorktreeManager::new(
         codex_worktree::WorktreeSettings::for_cli(
             &source.codex_home,
@@ -255,12 +258,14 @@ pub(super) async fn prepare(
         .map_err(std::io::Error::other)?;
     let recovery = Arc::new(StartupRecovery {
         root: checkout.root.clone(),
-        finished: AtomicBool::new(false),
+        finished: Arc::new(AtomicBool::new(false)),
     });
+    let backend_binding = codex_alab_task_worktree::StartupBinding::from_allocated(manager.clone(), checkout.clone(), recovery.finished.clone()); // ALAB(owned-local): capture SAME allocation before original resources move.
     let managed = ManagedTuiWorktree {
         manager,
         checkout,
         recovery,
+        backend_binding, // ALAB(owned-local): no path/first-thread inference.
     };
     let destination = AbsolutePathBuf::from_absolute_path(managed.checkout.cwd.clone())?;
     let bootstrap = load_config_toml_with_layer_stack(

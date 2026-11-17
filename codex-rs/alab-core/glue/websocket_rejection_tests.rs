@@ -6,6 +6,8 @@
 use super::*;
 use futures::StreamExt;
 use std::collections::VecDeque;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use tokio::io::AsyncReadExt;
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
@@ -105,6 +107,64 @@ impl AsyncWrite for ScriptedIo {
     }
 }
 
+#[derive(Default)]
+struct IoOwnership {
+    polls: AtomicUsize,
+    pending_reads: AtomicUsize,
+    drops: AtomicUsize,
+}
+
+struct DropProbe {
+    inner: ScriptedIo,
+    ownership: Arc<IoOwnership>,
+}
+
+impl AsyncRead for DropProbe {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.ownership.polls.fetch_add(1, Ordering::SeqCst);
+        let result = Pin::new(&mut this.inner).poll_read(cx, output);
+        if result.is_pending() {
+            this.ownership.pending_reads.fetch_add(1, Ordering::SeqCst);
+        }
+        result
+    }
+}
+
+impl AsyncWrite for DropProbe {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        this.ownership.polls.fetch_add(1, Ordering::SeqCst);
+        Pin::new(&mut this.inner).poll_write(cx, bytes)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.ownership.polls.fetch_add(1, Ordering::SeqCst);
+        Pin::new(&mut this.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.ownership.polls.fetch_add(1, Ordering::SeqCst);
+        Pin::new(&mut this.inner).poll_shutdown(cx)
+    }
+}
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        self.ownership.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 fn request() -> Request {
     "ws://127.0.0.1/v1/responses".into_client_request().unwrap()
 }
@@ -146,6 +206,298 @@ fn evidence(response: &Response, status: u16, body: Option<&[u8]>, outcome: Reje
     assert_eq!(metadata.outcome, outcome);
     assert!(metadata.retry_after.is_some());
     assert_eq!(metadata.decoded_body_bytes, body.map(<[u8]>::len));
+}
+
+fn progress_evidence(
+    response: &Response,
+    body: Option<&[u8]>,
+    outcome: RejectionBodyOutcome,
+    accepted: Option<usize>,
+) {
+    evidence(response, 403, body, outcome);
+    let metadata = response.extensions().get::<RejectionMetadata>().unwrap();
+    assert!(
+        metadata
+            .entity_bytes_accepted
+            .is_none_or(|bytes| bytes <= MAX_BODY)
+    );
+    assert_eq!(metadata.entity_bytes_accepted, accepted);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_pending_rejection_retires_io_without_capture_or_later_polls() {
+    // This is the real plain-stream adapter and Tungstenite handshake boundary,
+    // before the outer TLS wrapper attaches captured metadata to an HTTP error.
+    let capture = Arc::new(Mutex::new(None));
+    let ownership = Arc::new(IoOwnership::default());
+    let guarded = RejectionStream::new(
+        MaybeTlsStream::Plain(DropProbe {
+            inner: ScriptedIo::new(
+                vec![
+                    head(403, &format!("Content-Length: {}\r\n", BODY.len())),
+                    BODY.to_vec(),
+                ],
+                End::Pending,
+            ),
+            ownership: ownership.clone(),
+        }),
+        capture.clone(),
+    );
+    let error = match tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio_tungstenite::client_async_with_config(request(), guarded, None),
+    )
+    .await
+    .expect("bounded healthy capture control")
+    {
+        Err(error) => error,
+        Ok(_) => panic!("the healthy capture control must retain the HTTP rejection"),
+    };
+    let WebSocketError::Http(response) = error else {
+        panic!("the healthy capture control must preserve its original HTTP type");
+    };
+    assert_eq!(response.status().as_u16(), 403);
+    assert_eq!(response.headers()["x-request-id"], "req_framing-1");
+    assert_eq!(response.headers()["retry-after"], "10");
+    let captured = capture
+        .lock()
+        .unwrap()
+        .take()
+        .expect("healthy completed capture");
+    assert_eq!(captured.body.as_deref(), Some(BODY));
+    assert_eq!(captured.metadata.outcome, RejectionBodyOutcome::Complete);
+    assert_eq!(captured.metadata.decoded_body_bytes, Some(BODY.len()));
+    assert_eq!(captured.metadata.entity_bytes_accepted, Some(BODY.len()));
+    assert!(captured.metadata.retry_after.is_some());
+    assert_eq!(ownership.pending_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(ownership.drops.load(Ordering::SeqCst), 1);
+
+    for prefix in [false, true] {
+        for deadline_ready in [false, true] {
+            let capture = Arc::new(Mutex::new(None));
+            let ownership = Arc::new(IoOwnership::default());
+            let mut fragments = vec![head(
+                403,
+                &format!("Content-Length: {}\r\n", BODY.len() + 1),
+            )];
+            if prefix {
+                fragments.push(BODY.to_vec());
+            }
+            let guarded = RejectionStream::new(
+                MaybeTlsStream::Plain(DropProbe {
+                    inner: ScriptedIo::new(fragments, End::Pending),
+                    ownership: ownership.clone(),
+                }),
+                capture.clone(),
+            );
+            let started = Instant::now();
+            let mut handshake = Box::pin(tokio_tungstenite::client_async_with_config(
+                request(),
+                guarded,
+                None,
+            ));
+            assert!(futures::poll!(&mut handshake).is_pending());
+            // The pending underlying read follows all ready header/prefix reads,
+            // so the adapter has already processed those bytes at this point.
+            let pending_reads = ownership.pending_reads.load(Ordering::SeqCst);
+            assert!(pending_reads > 0);
+            assert_eq!(Instant::now(), started);
+            assert_eq!(ownership.drops.load(Ordering::SeqCst), 0);
+            assert!(capture.lock().unwrap().is_none());
+            let polls = ownership.polls.load(Ordering::SeqCst);
+            if deadline_ready {
+                tokio::time::advance(BODY_TIMEOUT).await;
+                assert_eq!(Instant::now() - started, BODY_TIMEOUT);
+                // Waking a timer does not poll this locally owned future.
+                assert_eq!(ownership.polls.load(Ordering::SeqCst), polls);
+                assert!(capture.lock().unwrap().is_none());
+            }
+            drop(handshake);
+            assert_eq!(ownership.drops.load(Ordering::SeqCst), 1);
+            assert!(capture.lock().unwrap().is_none());
+            tokio::time::advance(BODY_TIMEOUT + Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+            assert_eq!(ownership.polls.load(Ordering::SeqCst), polls);
+            assert_eq!(
+                ownership.pending_reads.load(Ordering::SeqCst),
+                pending_reads
+            );
+            assert_eq!(ownership.drops.load(Ordering::SeqCst), 1);
+            assert!(capture.lock().unwrap().is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn accepted_entity_progress_distinguishes_absent_decoder_from_measured_zero() {
+    for (fields, outcome) in [
+        (
+            format!("Content-Length: {}\r\n", MAX_BODY + 1),
+            RejectionBodyOutcome::TooLarge,
+        ),
+        (
+            "Content-Length: 1\r\nContent-Length: 2\r\n".to_owned(),
+            RejectionBodyOutcome::Malformed,
+        ),
+        (
+            "Transfer-Encoding: gzip, chunked\r\n".to_owned(),
+            RejectionBodyOutcome::Unsupported,
+        ),
+        (
+            "Content-Encoding: gzip\r\nContent-Length: 1\r\n".to_owned(),
+            RejectionBodyOutcome::Unsupported,
+        ),
+    ] {
+        let response = rejected(ScriptedIo::new(
+            vec![head(403, &fields), BODY.to_vec()],
+            End::Eof,
+        ))
+        .await;
+        progress_evidence(&response, None, outcome, None);
+    }
+
+    for (fields, bytes, end, outcome, body) in [
+        (
+            "Content-Length: 0\r\n",
+            Vec::new(),
+            End::Pending,
+            RejectionBodyOutcome::Complete,
+            Some(b"".as_slice()),
+        ),
+        (
+            "Content-Length: 1\r\n",
+            Vec::new(),
+            End::Eof,
+            RejectionBodyOutcome::Truncated,
+            None,
+        ),
+        (
+            "Transfer-Encoding: chunked\r\n",
+            format!("{:x}\r\n", MAX_BODY + 1).into_bytes(),
+            End::Pending,
+            RejectionBodyOutcome::TooLarge,
+            None,
+        ),
+    ] {
+        let response = rejected(ScriptedIo::new(vec![head(403, fields), bytes], end)).await;
+        progress_evidence(&response, body, outcome, Some(0));
+    }
+}
+
+#[tokio::test]
+async fn accepted_entity_progress_preserves_partial_and_complete_decoder_counts() {
+    for (end, outcome) in [
+        (End::Eof, RejectionBodyOutcome::Truncated),
+        (End::Error, RejectionBodyOutcome::ReadError),
+    ] {
+        let response = rejected(ScriptedIo::new(
+            vec![
+                head(403, &format!("Content-Length: {}\r\n", BODY.len() + 1)),
+                BODY.to_vec(),
+            ],
+            end,
+        ))
+        .await;
+        progress_evidence(&response, None, outcome, Some(BODY.len()));
+    }
+
+    for (tail, outcome, body) in [
+        (
+            b"\r\n0\r\nmalformed-trailer\r\n\r\n".to_vec(),
+            RejectionBodyOutcome::Malformed,
+            None,
+        ),
+        (
+            format!("\r\n{:x}\r\n", MAX_BODY - BODY.len() + 1).into_bytes(),
+            RejectionBodyOutcome::TooLarge,
+            None,
+        ),
+        (
+            b"\r\n0\r\nx-finished: yes\r\n\r\n".to_vec(),
+            RejectionBodyOutcome::Complete,
+            Some(BODY),
+        ),
+    ] {
+        let wire = [
+            format!("{:x};part=body\r\n", BODY.len()).into_bytes(),
+            BODY.to_vec(),
+            tail,
+        ]
+        .concat();
+        assert!(
+            wire.len() > BODY.len(),
+            "framing must not count as entity data"
+        );
+        let response = rejected(ScriptedIo::new(
+            vec![head(403, "Transfer-Encoding: chunked\r\n"), wire],
+            End::Pending,
+        ))
+        .await;
+        progress_evidence(&response, body, outcome, Some(BODY.len()));
+    }
+
+    let response = rejected(ScriptedIo::new(
+        vec![head(403, ""), BODY.to_vec()],
+        End::Eof,
+    ))
+    .await;
+    progress_evidence(
+        &response,
+        Some(BODY),
+        RejectionBodyOutcome::Complete,
+        Some(BODY.len()),
+    );
+
+    let body = vec![b'x'; MAX_BODY];
+    let response = rejected(ScriptedIo::new(
+        vec![
+            head(403, &format!("Content-Length: {MAX_BODY}\r\n")),
+            body.clone(),
+        ],
+        End::Pending,
+    ))
+    .await;
+    progress_evidence(
+        &response,
+        Some(&body),
+        RejectionBodyOutcome::Complete,
+        Some(MAX_BODY),
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn accepted_entity_progress_survives_empty_and_partial_body_timeouts() {
+    for prefix in [Vec::new(), BODY.to_vec()] {
+        let accepted = prefix.len();
+        let started = Instant::now();
+        let mut fragments = vec![head(
+            403,
+            &format!("Content-Length: {}\r\n", BODY.len() + 1),
+        )];
+        if !prefix.is_empty() {
+            fragments.push(prefix);
+        }
+        let mut handshake = Box::pin(rejected(ScriptedIo::new(fragments, End::Pending)));
+        // Ready scripted bytes pass through the decoder before the pending read.
+        assert!(futures::poll!(&mut handshake).is_pending());
+        assert_eq!(Instant::now(), started);
+        let response = handshake.await;
+        assert_eq!(Instant::now() - started, BODY_TIMEOUT);
+        assert_eq!(
+            response
+                .extensions()
+                .get::<RejectionMetadata>()
+                .unwrap()
+                .capture_elapsed,
+            BODY_TIMEOUT
+        );
+        progress_evidence(
+            &response,
+            None,
+            RejectionBodyOutcome::TimedOut,
+            Some(accepted),
+        );
+    }
 }
 
 #[tokio::test]

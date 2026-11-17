@@ -5,6 +5,7 @@
 
 use super::ResponsesStreamRequest;
 use super::ResponsesStreamRetryState;
+use crate::client::ModelClientSession;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_alab_core::capacity::CapacityBackoff;
@@ -24,29 +25,290 @@ use codex_protocol::protocol::StreamErrorEvent;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-/// An opaque rejection does not identify corrupt history. Rebuild the request
-/// over HTTPS before spending retries on the same socket's continuation state.
-/// This only requests a switch: an already-HTTP request keeps its bounded budget.
-pub(super) fn prefer_clean_transport(err: &CodexErr) -> bool {
-    prefer_clean_transport_when_active(codex_alab_core::active(), err)
+#[path = "reset_notices.rs"]
+mod reset_notices;
+
+/// What follows an opaque rejection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpaqueReplay {
+    /// The same request again, routing token included.
+    Unchanged,
+    /// The request without the turn's routing state.
+    WithoutRoutingState,
+    /// A rejected WebSocket handshake. It carried no token, so there is none to drop.
+    Handshake,
+    /// The retry budget is spent: the turn ends with this rejection.
+    None,
 }
 
-fn prefer_clean_transport_when_active(active: bool, err: &CodexErr) -> bool {
-    active
-        && matches!(err.details(), CodexErrorDetails::Stream(message)
-            if codex_alab_core::request_error::opaque_bad_request_stream(message))
+/// Where an opaque rejection arrived and what the request had already been through.
+#[derive(Clone, Copy, Debug)]
+struct OpaqueRejection {
+    websocket: bool,
+    /// Opaque rejections of this request over HTTPS, this one included.
+    https_rejections: u32,
+    retries: u64,
+    max_retries: u64,
+}
+
+/// Hook at the top of core's retry handler. The request that starts next is this one's
+/// retry, which the HTTPS fallback's return leaves on its transport.
+///
+/// Returns true when this request was the one that returned to the WebSocket and the
+/// socket did not carry it. The session is then back on HTTPS and the caller replays the
+/// request there with its retry budget unspent, as upstream's own fallback does: the
+/// socket's failure, even a terminal one, is not this request's.
+///
+/// An opaque rejection names no fault in the request. Over HTTPS the request carries the
+/// routing token the turn's first response issued, and its first replay is unchanged, as
+/// upstream's turn-state contract asks of a retry. Rejected again, the replay drops the
+/// token, as upstream does when auth ownership changes. The transport is kept: a
+/// rejection recorded with its transport was an HTTPS reply in a session an earlier
+/// outage had moved off WebSocket, so moving a session to HTTPS does not answer it.
+pub(super) async fn request_failed(
+    err: &CodexErr,
+    retry_state: &mut ResponsesStreamRetryState,
+    max_retries: u64,
+    client_session: &mut ModelClientSession,
+    turn_context: &TurnContext,
+) -> bool {
+    client_session.alab_request_failed(unwell(err));
+    note_opaque_rejection(err, retry_state, max_retries, client_session);
+    if !give_up_returned_socket(err, client_session, turn_context) {
+        return false;
+    }
+    retry_state.retries = 0;
+    if let Some(retry_after) = err.retry_after() {
+        // Changing transport does not bypass the server's retry deadline.
+        wait_after(retry_after, turn_context).await;
+    }
+    true
+}
+
+/// A failure in which the transport did not carry the request to an answer. A refused
+/// upgrade is an HTTP status with the URL it was asked of; a status inside an error
+/// frame has none and is the server's answer. An unclassified stream failure counts
+/// whichever side produced it.
+fn transport_failed(err: &CodexErr) -> bool {
+    match err.details() {
+        CodexErrorDetails::Stream(_)
+        | CodexErrorDetails::ConnectionFailed(_)
+        | CodexErrorDetails::RequestTimeout => true,
+        CodexErrorDetails::UnexpectedStatus(response) => response.url.is_some(),
+        _ => false,
+    }
+}
+
+/// A failure that says the network or the backend is unwell, which postpones a return to
+/// the WebSocket. A refusal, a filter or a capacity limit is the server working, and an
+/// opaque rejection over HTTPS is no reason to stay there.
+fn unwell(err: &CodexErr) -> bool {
+    match err.details() {
+        CodexErrorDetails::Stream(_) => !opaque(err),
+        CodexErrorDetails::ConnectionFailed(_)
+        | CodexErrorDetails::RequestTimeout
+        | CodexErrorDetails::InternalServerError => true,
+        CodexErrorDetails::UnexpectedStatus(response) => response.status.is_server_error(),
+        _ => false,
+    }
+}
+
+/// The request that returned a session to the WebSocket is a trial. If the socket did not
+/// carry it, the session goes back to HTTPS now, without the routing token the socket may
+/// have issued, so no later request meets the same socket.
+fn give_up_returned_socket(
+    err: &CodexErr,
+    client_session: &mut ModelClientSession,
+    turn_context: &TurnContext,
+) -> bool {
+    let gave_up = client_session.alab_returned_socket_on_trial()
+        && transport_failed(err)
+        && client_session.try_switch_fallback_transport(
+            &turn_context.session_telemetry,
+            turn_context.model_info(),
+        );
+    if gave_up {
+        client_session.alab_discard_routing_state();
+    }
+    gave_up
+}
+
+fn note_opaque_rejection(
+    err: &CodexErr,
+    retry_state: &mut ResponsesStreamRetryState,
+    max_retries: u64,
+    client_session: &mut ModelClientSession,
+) {
+    if !(codex_alab_core::active() && opaque(err)) {
+        return;
+    }
+    let websocket = client_session.alab_uses_websocket();
+    let rejection = OpaqueRejection {
+        websocket,
+        https_rejections: if websocket {
+            0
+        } else {
+            retry_state.capacity.note_opaque_https_rejection()
+        },
+        retries: retry_state.retries,
+        max_retries,
+    };
+    let replay = opaque_replay(rejection);
+    let held = client_session.alab_replays_turn_state();
+    let turn_state = match replay {
+        OpaqueReplay::Handshake => "not_sent",
+        _ if !held => "absent",
+        OpaqueReplay::WithoutRoutingState => {
+            client_session.alab_discard_routing_state();
+            "dropped"
+        }
+        OpaqueReplay::Unchanged | OpaqueReplay::None => "kept",
+    };
+    // Which replay clears a rejection is the evidence its cause lacks. No field is
+    // request content.
+    tracing::info!(
+        transport = if websocket { "websocket" } else { "https" },
+        replay = match replay {
+            OpaqueReplay::Unchanged => "unchanged",
+            OpaqueReplay::WithoutRoutingState => "without_routing_state",
+            OpaqueReplay::Handshake => "handshake",
+            OpaqueReplay::None => "none",
+        },
+        turn_state,
+        https_rejections = rejection.https_rejections,
+        retries = rejection.retries,
+        "Opaque backend rejection"
+    );
+}
+
+fn opaque(err: &CodexErr) -> bool {
+    matches!(err.details(), CodexErrorDetails::Stream(message)
+        if codex_alab_core::request_error::opaque_bad_request_stream(message))
+}
+
+fn opaque_replay(rejection: OpaqueRejection) -> OpaqueReplay {
+    if rejection.websocket {
+        // Core retries the handshake, or moves the turn to HTTPS once the budget is spent.
+        OpaqueReplay::Handshake
+    } else if rejection.retries >= rejection.max_retries {
+        OpaqueReplay::None
+    } else if rejection.https_rejections <= 1 {
+        OpaqueReplay::Unchanged
+    } else {
+        OpaqueReplay::WithoutRoutingState
+    }
 }
 
 #[cfg(test)]
 #[test]
-fn clean_transport_requires_the_normalized_opaque_rejection() {
-    let opaque = CodexErr::Stream(format!(
+fn only_a_repeated_https_rejection_with_budget_left_drops_routing_state() {
+    let https = |https_rejections, retries, max_retries| {
+        opaque_replay(OpaqueRejection {
+            websocket: false,
+            https_rejections,
+            retries,
+            max_retries,
+        })
+    };
+    assert_eq!(https(1, 0, 5), OpaqueReplay::Unchanged);
+    // Another kind of failure was retried first: this is still the first opaque one.
+    assert_eq!(https(1, 3, 5), OpaqueReplay::Unchanged);
+    assert_eq!(https(2, 1, 5), OpaqueReplay::WithoutRoutingState);
+    assert_eq!(https(5, 4, 5), OpaqueReplay::WithoutRoutingState);
+    // Nothing is replayed once the budget is spent, so nothing is dropped.
+    assert_eq!(https(6, 5, 5), OpaqueReplay::None);
+    assert_eq!(https(2, 1, 1), OpaqueReplay::None);
+    assert_eq!(https(1, 0, 0), OpaqueReplay::None);
+    for (retries, max_retries) in [(0, 5), (5, 5), (0, 0)] {
+        assert_eq!(
+            opaque_replay(OpaqueRejection {
+                websocket: true,
+                https_rejections: 0,
+                retries,
+                max_retries,
+            }),
+            OpaqueReplay::Handshake
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_server_answer_is_not_a_failed_transport() {
+    let status = |code: u16, url: Option<&str>| {
+        CodexErr::UnexpectedStatus(codex_protocol::error::UnexpectedResponseError {
+            status: http::StatusCode::from_u16(code).unwrap_or(http::StatusCode::IM_A_TEAPOT),
+            body: String::new(),
+            user_message: None,
+            url: url.map(str::to_owned),
+            cf_ray: None,
+            request_id: None,
+            identity_authorization_error: None,
+            identity_error_code: None,
+        })
+    };
+    let opaque_rejection = CodexErr::Stream(format!(
         "{}{}",
         codex_alab_core::request_error::OPAQUE_BAD_REQUEST_PREFIX,
         r#"{"detail":"Bad Request"}"#,
     ));
-    assert!(prefer_clean_transport_when_active(true, &opaque));
-    assert!(!prefer_clean_transport_when_active(false, &opaque));
+    // (error, the transport failed, the network or backend is unwell)
+    let cases = [
+        (
+            CodexErr::Stream("closed before response.completed".into()),
+            true,
+            true,
+        ),
+        (CodexErr::RequestTimeout, true, true),
+        // A middlebox refuses the upgrade: a status with the URL it was asked of.
+        (
+            status(403, Some("wss://example.test/v1/responses")),
+            true,
+            false,
+        ),
+        (
+            status(503, Some("https://example.test/v1/responses")),
+            true,
+            true,
+        ),
+        // The same statuses inside an error frame are the server's answer.
+        (status(403, None), false, false),
+        (status(503, None), false, true),
+        // A rejected handshake is a failed return; over HTTPS it does not hold one back.
+        (opaque_rejection, true, false),
+        (CodexErr::InternalServerError, false, true),
+        (
+            CodexErr::new(CodexErrorDetails::ContentFilter),
+            false,
+            false,
+        ),
+        (CodexErr::ContextWindowExceeded, false, false),
+        (
+            CodexErr::new(CodexErrorDetails::RateLimitExceeded("slow down".into())),
+            false,
+            false,
+        ),
+        (
+            CodexErr::InvalidRequest("unsupported parameter".into()),
+            false,
+            false,
+        ),
+        (CodexErr::ServerOverloaded, false, false),
+    ];
+    for (error, failed, is_unwell) in cases {
+        assert_eq!(transport_failed(&error), failed, "{error:?}");
+        assert_eq!(unwell(&error), is_unwell, "{error:?}");
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn only_the_normalized_opaque_rejection_is_opaque() {
+    assert!(opaque(&CodexErr::Stream(format!(
+        "{}{}",
+        codex_alab_core::request_error::OPAQUE_BAD_REQUEST_PREFIX,
+        r#"{"detail":"Bad Request"}"#,
+    ))));
     for error in [
         CodexErr::InvalidRequest(r#"{"detail":"Bad Request"}"#.into()),
         CodexErr::Stream("connection interrupted".into()),
@@ -56,7 +318,7 @@ fn clean_transport_requires_the_normalized_opaque_rejection() {
             r#"{"detail":"Bad Request","code":"invalid_prompt"}"#,
         )),
     ] {
-        assert!(!prefer_clean_transport_when_active(true, &error));
+        assert!(!opaque(&error));
     }
 }
 
@@ -256,11 +518,24 @@ pub(super) fn should_stop(err: &CodexErr) -> bool {
 
 /// Legacy compaction predates the shared retry handler. Keep its context-shrinking
 /// recovery, but do not replay refusals or errors core already calls terminal.
-pub(crate) fn compact_should_stop(err: &CodexErr, turn_context: &TurnContext) -> bool {
+///
+/// The two rules the shared handler applies to an HTTPS fallback's return are applied
+/// here: what follows is this request's retry, and a returned socket that did not carry
+/// its first request is given up.
+pub(crate) fn compact_should_stop(
+    err: &CodexErr,
+    turn_context: &TurnContext,
+    client_session: &mut ModelClientSession,
+) -> bool {
     if !codex_alab_core::active() {
         return false;
     }
     remember(err, turn_context);
+    client_session.alab_request_failed(unwell(err));
+    if give_up_returned_socket(err, client_session, turn_context) {
+        // The socket's failure is not this request's: the loop's retry arm replays it.
+        return false;
+    }
     should_stop(err)
         || (!matches!(err.details(), CodexErrorDetails::ContextWindowExceeded)
             && err.retry_delay(1).is_none())
@@ -658,6 +933,15 @@ async fn hidden_helper_thread(sess: &Session) -> bool {
         )
 }
 
+/// A helper has no visible conversation for its reset decisions. An exec run
+/// owns its request even when its thread uses a helper's source name.
+async fn reset_request_visible(sess: &Session, turn: &TurnContext) -> bool {
+    turn.extension_data
+        .get::<codex_alab_core::quota::HeadlessExec>()
+        .is_some()
+        || !hidden_helper_thread(sess).await
+}
+
 /// Redeem before deciding whether the original quota wall is terminal.
 pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnContext) -> bool {
     use codex_protocol::protocol::SessionSource;
@@ -677,9 +961,6 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
     let CodexErrorDetails::UsageLimitReached(details) = err.details() else {
         return false;
     };
-    if !codex_alab_quota_recovery::ordinary_weekly_wall(details) {
-        return false;
-    }
     // A hidden helper's turn is nobody's conversation: no handoff is ever ready
     // for its thread, so recovery would poll until the wall's reset and the
     // session would say busy for as long. Its usage error ends it instead.
@@ -687,13 +968,28 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
     // thread identity (`codex exec --ephemeral --thread-source system`) is the
     // run's own request, and returning here would leave it waiting out the wall
     // with no further look for an earned reset.
-    if !exec && hidden_helper_thread(sess).await {
+    if !reset_request_visible(sess, turn).await {
+        return false;
+    }
+    if !codex_alab_quota_recovery::ordinary_weekly_wall(details) {
+        reset_notice(
+            sess,
+            turn,
+            "Reset not used: this limit is outside the ordinary Codex allowance, so an earned reset cannot clear it.".into(),
+        )
+        .await;
         return false;
     }
     let Some(state) = turn
         .extension_data
         .get::<codex_alab_quota_recovery::State>()
     else {
+        reset_notice(
+            sess,
+            turn,
+            "Reset not used: the current request has no authenticated reset-recovery state; availability and expiry could not be verified.".into(),
+        )
+        .await;
         return false;
     };
     // Recovery can keep polling until an earned reset arrives. Keep the exact
@@ -713,19 +1009,48 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
                 .get::<codex_alab_core::quota::WallHandoff>()
         })
         .flatten();
-    codex_alab_quota_recovery::recover_weekly(
-        &sess.services.auth_manager,
-        &turn.config.codex_home,
-        &turn.config.chatgpt_base_url,
-        turn.config.http_client_factory(),
-        &turn.sub_id,
+    with_reset_notices(
+        sess,
+        turn,
         &state,
-        codex_alab_quota_recovery::Wall {
-            reset_at: details.resets_at.as_ref().map(chrono::DateTime::timestamp),
-            handoff: handoff.as_deref(),
-        },
+        codex_alab_quota_recovery::recover_weekly(
+            &sess.services.auth_manager,
+            &turn.config.codex_home,
+            &turn.config.chatgpt_base_url,
+            turn.config.http_client_factory(),
+            &turn.sub_id,
+            &state,
+            codex_alab_quota_recovery::Wall {
+                reset_at: details.resets_at.as_ref().map(chrono::DateTime::timestamp),
+                handoff: handoff.as_deref(),
+            },
+        ),
     )
     .await
+}
+
+async fn with_reset_notices<T>(
+    sess: &Session,
+    turn: &TurnContext,
+    state: &codex_alab_quota_recovery::State,
+    operation: impl std::future::Future<Output = T>,
+) -> T {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    state.set_notice_sender(sender);
+    reset_notices::forward(receiver, operation, |message| {
+        reset_notice(sess, turn, message)
+    })
+    .await
+}
+
+async fn reset_notice(sess: &Session, turn: &TurnContext, message: String) {
+    sess.send_event(
+        turn,
+        EventMsg::Warning(codex_protocol::protocol::WarningEvent {
+            message: format!("[codex-alab reset] {message}"),
+        }),
+    )
+    .await;
 }
 
 pub(crate) async fn bind_weekly(sess: &Session, turn: &TurnContext) {
@@ -805,6 +1130,7 @@ pub(crate) async fn preflight_weekly(sess: &Session, turn: &TurnContext) {
             .extension_data
             .get::<codex_alab_core::quota::HeadlessExec>()
             .is_some())
+        && reset_request_visible(sess, turn).await
         && let Some(state) = turn
             .extension_data
             .get::<codex_alab_quota_recovery::State>()
@@ -814,14 +1140,19 @@ pub(crate) async fn preflight_weekly(sess: &Session, turn: &TurnContext) {
         let observed =
             crate::session::alab_exec_recovery_options::quota_observation::response_limits(sess)
                 .await;
-        codex_alab_quota_recovery::preflight(
-            &sess.services.auth_manager,
-            &turn.config.codex_home,
-            &turn.config.chatgpt_base_url,
-            turn.config.http_client_factory(),
-            &turn.sub_id,
+        with_reset_notices(
+            sess,
+            turn,
             &state,
-            observed.as_ref(),
+            codex_alab_quota_recovery::preflight(
+                &sess.services.auth_manager,
+                &turn.config.codex_home,
+                &turn.config.chatgpt_base_url,
+                turn.config.http_client_factory(),
+                &turn.sub_id,
+                &state,
+                observed.as_ref(),
+            ),
         )
         .await;
     }

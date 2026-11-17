@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import tomllib
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -29,7 +30,8 @@ def trace():
     requests = [{'body': {'input': original}},
                 {'body': {'input': completed}, 'headerStartedAt': 10.0, 'headerAt': 10.001},
                 {'body': {'input': copy.deepcopy(completed)}, 'requestStartedAt': 12.002}]
-    events = [{'type': 'item.completed', 'item': {'type': 'agent_message',
+    events = [{'type': 'turn.started'},
+              {'type': 'item.completed', 'item': {'type': 'agent_message',
                                                 'text': SMOKE.probe.ANSWER}},
               {'type': 'turn.completed'}]
     return events, requests
@@ -177,6 +179,72 @@ class RequestRecoverySmokeTests(unittest.TestCase):
         events, requests = trace()
         self.assertAlmostEqual(SMOKE.check_result(0, events, requests, True), 2.001)
 
+    def test_recovery_requires_one_ordered_turn(self):
+        for change in ('missing-start', 'repeated-start', 'missing-end', 'repeated-end',
+                       'reversed', 'answer-before-start', 'answer-after-end'):
+            with self.subTest(change=change):
+                events, requests = trace()
+                if change == 'missing-start':
+                    events.pop(0)
+                elif change == 'repeated-start':
+                    events.insert(0, events[0])
+                elif change == 'missing-end':
+                    events.pop()
+                elif change == 'repeated-end':
+                    events.append(events[-1])
+                elif change == 'reversed':
+                    events[0], events[-1] = events[-1], events[0]
+                else:
+                    answer = events.pop(1)
+                    events.insert(0 if change == 'answer-before-start' else len(events), answer)
+                with self.assertRaises(RuntimeError):
+                    SMOKE.check_result(0, events, requests, True)
+
+    def test_case_cannot_report_success_without_its_original_turn(self):
+        for change in ('missing-start', 'repeated-start', 'reversed',
+                       'answer-before-start', 'answer-after-end'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                events, requests = trace()
+                if change == 'missing-start':
+                    events.pop(0)
+                elif change == 'repeated-start':
+                    events.insert(0, events[0])
+                elif change == 'reversed':
+                    events[0], events[-1] = events[-1], events[0]
+                else:
+                    answer = events.pop(1)
+                    events.insert(0 if change == 'answer-before-start' else len(events), answer)
+                server = SimpleNamespace(server_port=1234, shutdown=mock.Mock(), server_close=mock.Mock())
+                thread = SimpleNamespace(join=mock.Mock())
+
+                def serve(model):
+                    model.requests = requests
+                    return server, thread
+
+                def run(_binary, _args, output, _env, _label):
+                    with (output / 'exec-stdout.jsonl').open('x') as stream:
+                        for event in events:
+                            stream.write(json.dumps(event) + '\n')
+                    return 0
+
+                with mock.patch.object(SMOKE.probe, 'serve', side_effect=serve), \
+                        mock.patch.object(SMOKE.probe, 'run', side_effect=run):
+                    result = SMOKE.case(Path('/unexecuted-fixture/codex'), root,
+                                        'opaque', 400, {'detail': 'Bad Request'}, True)
+                self.assertFalse(result['passed'])
+                self.assertIn('error', result)
+                self.assertEqual(json.loads((root / 'opaque/requests.json').read_text()), requests)
+                server.shutdown.assert_called_once_with()
+                thread.join.assert_called_once_with()
+                server.server_close.assert_called_once_with()
+
+    def test_successful_turn_allows_nonfatal_warning_items(self):
+        events, requests = trace()
+        events.insert(1, {'type': 'item.completed', 'item': {'type': 'error',
+                                                         'message': 'Retrying the original request'}})
+        self.assertAlmostEqual(SMOKE.check_result(0, events, requests, True), 2.001)
+
     def test_preserved_fixture_allows_unrelated_reasoning_items(self):
         events, requests = trace()
         requests[1]['body']['input'].insert(1, {'type': 'reasoning', 'summary': []})
@@ -197,7 +265,7 @@ class RequestRecoverySmokeTests(unittest.TestCase):
                 elif change == 'count':
                     requests.pop()
                 elif change == 'answer':
-                    events.insert(0, events[0])
+                    events.insert(1, events[1])
                 elif change == 'failed':
                     events.append({'type': 'turn.failed'})
                 elif change == 'empty':

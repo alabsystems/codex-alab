@@ -599,3 +599,7 @@ impl TranscriptOverlay {
         render_key_hints(second, buf, &pairs);
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_transcript_overlay.rs"]
+pub(crate) mod alab_retained; // ALAB(retained-ui): preserve actual transcript overlay chrome and shared native viewport.

@@ -277,9 +277,13 @@ pub struct ThreadRt {
     /// as a person's is the wall's this process saw (the forever-persist lane, item a).
     wall_goal: Mutex<Option<codex_alab_core::session::WallGoal>>,
     /// A positively observed model block, recovered only through the same goal.
-    model_blocked_goal: Mutex<Option<codex_alab_core::model_goal_stops::Binding>>,
+    model_blocked_goal: Mutex<Option<model_blocked_goal::ModelGoalBinding>>,
     /// Carried provenance awaits readable history before it can authorize recovery.
     model_goal_import: Mutex<model_blocked_goal::PendingImport>,
+    /// Linearizes the local mode generation with every binding/import read or write.
+    model_goal_sources: Mutex<()>,
+    /// Any live Enhanced/Vanilla transition permanently revokes older model provenance.
+    model_goal_mode_epoch: Mutex<Option<u64>>,
     quota_request: Mutex<Option<(QuotaIdentity, u64)>>,
     auth_wall_scope: Mutex<Option<Arc<codex_alab_core::renewal::AuthRequestScope>>>,
     auth_observation: Mutex<Option<Arc<AuthWallObservation>>>,
@@ -774,6 +778,10 @@ impl Drop for UpgradeAttempt<'_> {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/progress.rs"]
+mod test_progress;
+
+#[cfg(test)]
 #[path = "upgrade_handoff_tests.rs"]
 mod upgrade_handoff_tests;
 
@@ -950,6 +958,8 @@ impl ThreadRt {
             wall_goal: Mutex::new(None),
             model_blocked_goal: Mutex::new(None),
             model_goal_import: Mutex::new(model_blocked_goal::PendingImport::default()),
+            model_goal_sources: Mutex::new(()),
+            model_goal_mode_epoch: Mutex::new(codex_alab_core::mode_epoch()),
             quota_request: Mutex::new(None),
             auth_wall_scope: Mutex::new(None),
             auth_observation: Mutex::new(None),
@@ -1354,6 +1364,11 @@ struct TrackData {
     limited_goal_at_start: Option<codex_state::ThreadGoal>,
     /// The goal active when the turn began ([`wall_goal_after`]).
     active_goal_at_start: Option<codex_state::ThreadGoal>,
+    /// A successful stable read of the durable host-mutation generation around
+    /// the goal snapshot. The outer `None` is unread or raced; inner `None` is
+    /// the valid initial generation before any host mutation.
+    goal_chronology_at_start:
+        Option<Option<codex_alab_core::goal_chronology_fence::FenceGeneration>>,
     /// A person's stops of the thread's goal as the turn began
     /// ([`codex_alab_core::session::Shared::person_goal_stops`], read before the goal): one since
     /// makes the goal's stop no wall's ([`wall_goal_after`]).
@@ -1462,6 +1477,8 @@ pub struct Autopilot {
     #[cfg(test)]
     upgrade_target_fixture: Mutex<Option<UpgradeTargetFixture>>,
     #[cfg(test)]
+    upgrade_invocation_fixture: Mutex<Option<codex_core::config::ExecConfiguration>>,
+    #[cfg(test)]
     upgrade_begin: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -1540,6 +1557,14 @@ pub struct Autopilot {
     /// the resume scan's restore with no thread manager.
     #[cfg(test)]
     history_seam: Mutex<Option<Result<Vec<codex_history::RolloutItem>, String>>>,
+    /// Pause after pace captures local model provenance, before it publishes to
+    /// the process-wide session source (tests).
+    #[cfg(test)]
+    before_pace_source_publish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// One transient failure before a committed model stop reads its exact
+    /// chronology generation (tests).
+    #[cfg(test)]
+    model_goal_generation_read_failure: Mutex<Option<String>>,
     #[cfg(test)]
     before_upgrade_restore: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
@@ -1605,6 +1630,8 @@ impl Autopilot {
             #[cfg(test)]
             upgrade_target_fixture: Mutex::new(None),
             #[cfg(test)]
+            upgrade_invocation_fixture: Mutex::new(None),
+            #[cfg(test)]
             upgrade_begin: Mutex::new(None),
             #[cfg(test)]
             before_upgrade_take: Mutex::new(None),
@@ -1635,6 +1662,10 @@ impl Autopilot {
             terminals_seam: Mutex::new(None),
             #[cfg(test)]
             history_seam: Mutex::new(None),
+            #[cfg(test)]
+            before_pace_source_publish: Mutex::new(None),
+            #[cfg(test)]
+            model_goal_generation_read_failure: Mutex::new(None),
             #[cfg(test)]
             before_upgrade_restore: Mutex::new(None),
             #[cfg(test)]
@@ -2657,28 +2688,24 @@ impl Autopilot {
             );
             return;
         };
-        // The twin's directory, not the twin: a twin that is a symlink is re-pointed by a
-        // rename in that directory, and a watch on the link itself follows its target.
+        // Every mutable link/shim location can publish a new selected image.
+        // Re-register the resolved chain after hints and reconciliation.
+        let mut watched = codex_alab_tui::upgrade::watch_directories(&argv0);
         let mut changes = None;
         let mut watch = None;
         match codex_file_watcher::FileWatcher::new() {
             Ok(watcher) => {
                 let watcher = Arc::new(watcher);
                 let (subscriber, receiver) = watcher.add_subscriber();
-                if let Some(dir) = argv0.parent() {
-                    let registration =
-                        subscriber.register_paths(vec![codex_file_watcher::WatchPath {
-                            path: dir.to_path_buf(),
-                            recursive: false,
-                        }]);
-                    if !registration.registration_succeeded() {
-                        codex_alab_tui::upgrade::update_watch_error(
-                            "the launch directory could not be watched",
-                        );
-                    }
-                    changes = Some(receiver);
-                    watch = Some((watcher, subscriber, registration));
+                let registration =
+                    subscriber.register_paths(crate::upgrade_monitor::watch_paths(&watched));
+                if watched.is_empty() || !registration.registration_succeeded() {
+                    codex_alab_tui::upgrade::update_watch_error(
+                        "the launch chain could not be watched",
+                    );
                 }
+                changes = Some(receiver);
+                watch = Some((watcher, subscriber, registration));
             }
             Err(e) => {
                 self.sup.note(format!(
@@ -2689,7 +2716,6 @@ impl Autopilot {
         }
         let me = Arc::downgrade(self);
         tokio::spawn(async move {
-            let _watch = watch;
             let mut monitor = crate::upgrade_monitor::Monitor::new();
             loop {
                 let wake = monitor
@@ -2704,6 +2730,21 @@ impl Autopilot {
                     changes = None;
                     codex_alab_tui::upgrade::update_watch_error("the launch watcher stopped");
                     continue;
+                }
+                let current = codex_alab_tui::upgrade::watch_directories(&argv0);
+                if current != watched
+                    && let Some((_, subscriber, registration)) = &mut watch
+                {
+                    let replacement =
+                        subscriber.register_paths(crate::upgrade_monitor::watch_paths(&current));
+                    if current.is_empty() || !replacement.registration_succeeded() {
+                        codex_alab_tui::upgrade::update_watch_error(
+                            "the changed launch chain could not be watched",
+                        );
+                    }
+                    // Register first so shared locations never lose their watch.
+                    *registration = replacement;
+                    watched = current;
                 }
                 let Some(me) = me.upgrade() else {
                     return;
@@ -2876,20 +2917,14 @@ impl Autopilot {
         };
         for thread in loaded {
             let id = thread.exec_thread_id();
-            let goal_active = match goal_status_read(&thread, id).await {
-                Ok(status) => status == Some(codex_state::ThreadGoalStatus::Active),
-                Err(error) => {
-                    unresumable.get_or_insert_with(|| {
-                        format!("could not read thread {id}'s goal: {error}")
-                    });
-                    false
-                }
-            };
+            if let Err(error) = goal_status_read(&thread, id).await {
+                unresumable
+                    .get_or_insert_with(|| format!("could not read thread {id}'s goal: {error}"));
+            }
             threads.push(upgrade::LoadedThread {
                 id: id.to_string(),
                 idle: at_rest(&thread.agent_status().await),
                 background_terminals: thread.list_background_terminals().await.len(),
-                goal_active,
             });
         }
         // A paced act's wait crosses the re-exec in the record (FOREVER CRUISE: one is almost
@@ -3011,20 +3046,15 @@ impl Autopilot {
     /// decision ([`ThreadState::upgrade_notice`]); the decider types it only at a clean point.
     fn upgrade_notice_for(&self, rt: &ThreadRt, policy: &decide::Policy) -> Option<String> {
         let shared = self.sup.shared();
+        let model_goal_pending = self.model_goal_mode_current(rt).is_some_and(|_sources| {
+            lock(&rt.model_blocked_goal).is_some() || lock(&rt.model_goal_import).goal.is_some()
+        });
         if self.upgrade_requested.load(Ordering::SeqCst)
             || !shared.is_root_thread(&rt.key)
             || !shared.displays(&rt.key)
             // The original goal must resume before another notice can be delivered.
             // Keep the upgrade round pending instead of falsely booking its notice.
-            || lock(&rt.model_blocked_goal).as_ref().is_some_and(|binding| {
-                self.model_epoch_current(rt.id, &binding.epoch)
-            })
-            || {
-                let pending = lock(&rt.model_goal_import);
-                pending.goal.is_some() && pending.lease.as_ref().is_some_and(|lease| {
-                    self.model_epoch_current(rt.id, lease)
-                })
-            }
+            || model_goal_pending
         {
             return None;
         }
@@ -3421,7 +3451,7 @@ impl Autopilot {
                 );
                 break 'handoff false;
             };
-            let mut inventory = match self.prepare_upgrade_inventory().await {
+            let inventory = match self.prepare_upgrade_forest().await {
                 Ok(inventory) => inventory,
                 Err(why) => {
                     codex_alab_tui::upgrade::update_pending(format!("Update pending: {why}"));
@@ -3472,22 +3502,148 @@ impl Autopilot {
                     .note("upgrade: the carried act was not written; keeping this session");
                 break 'handoff false;
             }
+            let primary = inventory.roots()[0];
+            let source =
+                match crate::upgrade_source::Prepared::from_forest(primary, inventory).await {
+                    Ok(source) => source,
+                    Err(why) => {
+                        codex_alab_tui::upgrade::update_pending(format!("Update pending: {why}"));
+                        self.relook_upgrade(clock() + UPGRADE_RELOOK, self.sup.claims());
+                        break 'handoff false;
+                    }
+                };
+            // Active goals cross through the held native checkpoints, including
+            // their final source accounting. A status read alone neither grants
+            // nor refuses this transfer; source.valid/commit own that decision.
+            let (source_build, target_build) = match prepared.native_builds() {
+                Ok(builds) => builds,
+                Err(why) => {
+                    codex_alab_tui::upgrade::update_pending(format!("Update pending: {why}"));
+                    self.sup.note(format!("upgrade native image recipe: {why}"));
+                    break 'handoff false;
+                }
+            };
+            let reservation = tokio::select! {
+                biased;
+                () = source.invalidated() => {
+                    self.relook_upgrade(clock() + UPGRADE_RELOOK, self.sup.claims());
+                    break 'handoff false;
+                }
+                reservation = codex_alab_tui::upgrade_runtime_data::Reservation::reserve(
+                    client.clone(),
+                    source_build,
+                    target_build,
+                    primary.to_string(),
+                    Instant::now() + Duration::from_secs(10),
+                ) => match reservation {
+                    Ok(reservation) => reservation,
+                    Err(why) => {
+                        codex_alab_tui::upgrade::update_pending(format!("Update pending: {why}"));
+                        self.relook_upgrade(clock() + UPGRADE_RELOOK, self.sup.claims());
+                        break 'handoff false;
+                    }
+                },
+            };
             let supervisor = Arc::clone(&self.sup);
             let resume = prepared.plan().clone();
-            if codex_alab_tui::upgrade::request_admitted(shared, prepared, move || {
-                if !upgrade_inventory::resume_matches(shared, &resume) {
-                    supervisor.note("upgrade: the prepared resume no longer matches this session");
-                    return false;
+            let result = codex_alab_tui::upgrade_capture::request(
+                shared,
+                Duration::from_secs(60),
+                move |terminal: codex_alab_tui::upgrade_terminal::Prepared| {
+                    if prepared.validate_launch(shared).is_err()
+                        || !upgrade_inventory::resume_matches(shared, &resume)
+                        || !source.valid()
+                    {
+                        supervisor.note("upgrade: source or admitted resume was superseded");
+                        return None;
+                    }
+                    let capture = match source.commit(terminal, || {
+                        supervisor.commit_upgrade(&checked_policy, native_generation)
+                    }) {
+                        Ok(Some(capture)) => capture,
+                        Ok(None) => return None,
+                        Err(why) => {
+                            supervisor.note(format!("upgrade: source commitment failed: {why}"));
+                            return shared.exec_pending().then(|| {
+                                codex_alab_core::upgrade_completion::UpgradeCompletion::new(
+                                    async move { Err(why) },
+                                )
+                            });
+                        }
+                    };
+                    Some(codex_alab_core::upgrade_completion::UpgradeCompletion::new(
+                        async move {
+                            let captured = match capture.capture().await {
+                                Ok(captured) => captured,
+                                Err(why) => {
+                                    if let Err(error) = capture.restore_after_failure() {
+                                        return Err(format!(
+                                            "{why}; terminal recovery failed: {error}"
+                                        ));
+                                    }
+                                    return Err(why);
+                                }
+                            };
+                            let state = match captured.encode_state() {
+                                Ok(state) => state,
+                                Err(why) => {
+                                    if let Err(error) = captured.restore_after_failure() {
+                                        return Err(format!(
+                                            "{why}; terminal recovery failed: {error}"
+                                        ));
+                                    }
+                                    return Err(why);
+                                }
+                            };
+                            let mut reservation = reservation;
+                            if let Err(why) = reservation
+                                .retain(
+                                    Arc::from(state.as_slice()),
+                                    Instant::now() + Duration::from_secs(60),
+                                )
+                                .await
+                            {
+                                if let Err(error) = captured.restore_after_failure() {
+                                    return Err(format!(
+                                        "{why}; terminal recovery failed: {error}"
+                                    ));
+                                }
+                                return Err(why);
+                            }
+                            let execution = match reservation
+                                .admit_execution(&state, Instant::now() + Duration::from_secs(60))
+                                .await
+                            {
+                                Ok(execution) => execution,
+                                Err(why) => {
+                                    if let Err(error) = captured.restore_after_failure() {
+                                        return Err(format!(
+                                            "{why}; terminal recovery failed: {error}"
+                                        ));
+                                    }
+                                    return Err(why);
+                                }
+                            };
+                            prepared.install_native_captured(shared, &state, execution, move || {
+                                let _retained = reservation;
+                                captured.restore_after_failure()
+                            })
+                        },
+                    ))
+                },
+            )
+            .await;
+            let accepted = match result {
+                Ok(accepted) => accepted,
+                Err(why) => {
+                    // The real TUI receives this same committed completion error
+                    // and takes its fatal recovery path. Never restore old work.
+                    self.sup
+                        .note(format!("upgrade: committed source capture failed: {why}"));
+                    break 'handoff true;
                 }
-                if !inventory.valid() {
-                    supervisor.note("upgrade: native start or queued input revoked the inventory");
-                    return false;
-                }
-                inventory
-                    .commit_if(|| supervisor.commit_upgrade(&checked_policy, native_generation))
-            })
-            .await
-            {
+            };
+            if accepted {
                 codex_alab_tui::upgrade::update_state(format!(
                     "Restarting on {target}, resuming this session"
                 ));
@@ -3530,6 +3686,11 @@ impl Autopilot {
                 return fixture(shared);
             }
         }
+        codex_alab_tui::upgrade_runtime_data::check_execution(
+            client,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .await?;
         codex_alab_tui::upgrade::prepare_admitted(
             shared,
             client,
@@ -4495,14 +4656,18 @@ impl Autopilot {
                 let goal_runtime = thread
                     .thread_extension_data()
                     .get::<codex_goal_extension::GoalRuntimeHandle>();
+                let stopped_goal = match (&wall_goal, &model_blocked_goal) {
+                    (Some(goal), _) => Some(GoalAdmissionStop::Wall(goal)),
+                    (_, Some(goal)) => Some(GoalAdmissionStop::Model(goal)),
+                    _ => None,
+                };
                 let Ok(goal_permit) = self
                     .goal_admission(
                         &rt,
                         &thread,
                         &authority,
                         goal_runtime.as_deref(),
-                        wall_goal.as_ref(),
-                        model_blocked_goal.as_ref(),
+                        stopped_goal,
                     )
                     .await
                 else {
@@ -4860,10 +5025,22 @@ impl Autopilot {
         id: ThreadId,
         bound: codex_alab_core::session::WallGoal,
     ) -> Option<codex_alab_core::session::WallGoal> {
+        let codex_home = thread.config().await.codex_home.clone();
+        let thread_id = id.to_string();
+        let chronology_current = || {
+            matches!(
+                codex_alab_core::goal_chronology_fence::read_current(&codex_home, &thread_id),
+                Ok(generation) if generation == bound.chronology_fence_generation
+            )
+        };
+        if !chronology_current() {
+            return None;
+        } // ALAB(goal-recovery): provider-wall proof cannot cross any later host mutation generation.
         let db = thread.state_db()?;
         let current = db.thread_goals().get_thread_goal(id).await.ok().flatten()?;
         let stops = self.sup.shared().person_goal_stops(&id.to_string());
-        same_wall_goal(&bound, &current, stops).then_some(bound)
+        let standing = chronology_current() && same_wall_goal(&bound, &current, stops);
+        standing.then_some(bound)
     }
 
     async fn goal_owns_pace(
@@ -5193,9 +5370,8 @@ impl Autopilot {
         thread: &Arc<CodexThread>,
         authority: &DecisionAuthority,
         runtime: Option<&'a codex_goal_extension::GoalRuntimeHandle>,
-        wall_goal: Option<&codex_alab_core::session::WallGoal>,
-        model_goal: Option<&codex_alab_core::model_goal_stops::Binding>,
-    ) -> Result<Option<tokio::sync::SemaphorePermit<'a>>, ()> {
+        stopped_goal: Option<GoalAdmissionStop<'_>>,
+    ) -> Result<GoalAdmissionPermit<'a>, ()> {
         let permit = match runtime {
             Some(runtime) => match runtime.alab_automatic_input_permit().await {
                 Ok(permit) => Some(permit),
@@ -5218,25 +5394,89 @@ impl Autopilot {
                 authority.unwritten(self, rt);
                 return Err(());
             }
-            None => None,
+            None => match thread
+                .thread_extension_data()
+                .get::<codex_alab_core::retained_goal_gate::Gate>()
+            {
+                Some(gate) => match gate.admit().await {
+                    Some(admission) => Some(
+                        codex_alab_core::retained_goal_gate::AutomaticPermit::retained_only(
+                            admission,
+                        ),
+                    ),
+                    None => {
+                        self.recheck_decided_wait(rt, authority);
+                        authority.unwritten(self, rt);
+                        return Err(());
+                    }
+                },
+                None => None,
+            },
+        };
+        let chronology = if let Some(stopped) = stopped_goal {
+            let expected = match stopped {
+                GoalAdmissionStop::Wall(bound) => bound.chronology_fence_generation,
+                GoalAdmissionStop::Model(bound) => bound.goal.chronology_fence_generation,
+            };
+            let codex_home = thread.config().await.codex_home.clone();
+            codex_alab_core::goal_chronology_fence::lock_current(&codex_home, &rt.id.to_string())
+                .ok()
+                .filter(|guard| guard.generation() == expected)
+        } else {
+            None
         };
         // The goal a turn error blocked at the wall this act answers admits it while it stands
         // as that wall left it ([`wall_goal_after`]).
-        if let Some(bound) = wall_goal
-            && self
-                .wall_goal_standing(thread, rt.id, bound.clone())
-                .await
-                .is_some()
-        {
-            return Ok(permit);
-        }
-        if let Some(bound) = model_goal
-            && self
-                .model_goal_standing(thread, rt.id, bound.clone())
-                .await
-                .is_ok_and(|current| current.is_some())
-        {
-            return Ok(permit);
+        if let Some(stopped) = stopped_goal {
+            let standing = chronology.is_some()
+                && match stopped {
+                    GoalAdmissionStop::Wall(bound) => {
+                        let current = match thread.state_db() {
+                            Some(db) => db.thread_goals().get_thread_goal(rt.id).await,
+                            None => Ok(None),
+                        };
+                        current.ok().flatten().is_some_and(|goal| {
+                            same_wall_goal(
+                                bound,
+                                &goal,
+                                self.sup.shared().person_goal_stops(&rt.key),
+                            )
+                        })
+                    }
+                    GoalAdmissionStop::Model(bound) => {
+                        let Some(goals) = &self.goals else {
+                            return Err(());
+                        };
+                        if codex_alab_core::mode_epoch() != Some(bound.mode_epoch)
+                            || goals
+                                .alab_with_current_goal_mutation_epoch(rt.id, &bound.epoch, || ())
+                                .is_none()
+                        {
+                            false
+                        } else {
+                            let current = match thread.state_db() {
+                                Some(db) => db.thread_goals().get_thread_goal(rt.id).await,
+                                None => Ok(None),
+                            };
+                            current.ok().flatten().is_some_and(|goal| {
+                                same_wall_goal(
+                                    &bound.goal,
+                                    &goal,
+                                    self.sup.shared().person_goal_stops(&rt.key),
+                                )
+                            }) && goals
+                                .alab_with_current_goal_mutation_epoch(rt.id, &bound.epoch, || ())
+                                .is_some()
+                                && codex_alab_core::mode_epoch() == Some(bound.mode_epoch)
+                        }
+                    }
+                };
+            if standing {
+                return Ok(GoalAdmissionPermit {
+                    _runtime: permit,
+                    _chronology: chronology,
+                });
+            }
         }
         let goal = goal_status_read(thread, rt.id).await;
         if !matches!(
@@ -5244,11 +5484,14 @@ impl Autopilot {
             Ok(None) | Ok(Some(codex_state::ThreadGoalStatus::Complete))
         ) {
             // Attention transport must not hold up another goal mutation.
-            drop(permit);
+            drop((permit, chronology));
             self.goal_read_owns_pace(rt, goal, authority).await;
             return Err(());
         }
-        Ok(permit)
+        Ok(GoalAdmissionPermit {
+            _runtime: permit,
+            _chronology: chronology,
+        })
     }
 
     /// ATERM'S FACT FOR AN ACT UNDER `rule` TYPED INTO `rt` (CONTRACT §5 "aterm fact", gap 23),
@@ -5401,9 +5644,9 @@ impl Autopilot {
             let _ = release.await;
         }
         let Ok(goal_permit) = (if auth_goal {
-            Ok(None)
+            Ok(GoalAdmissionPermit::empty())
         } else {
-            self.goal_admission(rt, thread, authority, goal_runtime.as_deref(), None, None)
+            self.goal_admission(rt, thread, authority, goal_runtime.as_deref(), None)
                 .await
         }) else {
             return false;
@@ -5620,14 +5863,11 @@ impl Autopilot {
                 GoalStop::Wall(bound, _) => {
                     same_wall_goal(bound, current, self.sup.shared().person_goal_stops(&rt.key))
                 }
-                GoalStop::ModelBlocked(bound, _) => {
-                    self.model_epoch_current(rt.id, &bound.epoch)
-                        && same_wall_goal(
-                            &bound.goal,
-                            current,
-                            self.sup.shared().person_goal_stops(&rt.key),
-                        )
-                }
+                GoalStop::ModelBlocked(bound, _) => same_wall_goal(
+                    &bound.goal,
+                    current,
+                    self.sup.shared().person_goal_stops(&rt.key),
+                ),
             };
         let original = match (db.thread_goals().get_thread_goal(rt.id).await, stop) {
             (Ok(Some(goal)), GoalStop::Usage(_))
@@ -5641,12 +5881,11 @@ impl Autopilot {
                 goal
             }
             (Ok(Some(goal)), GoalStop::ModelBlocked(bound, _))
-                if self.model_epoch_current(rt.id, &bound.epoch)
-                    && same_wall_goal(
-                        &bound.goal,
-                        &goal,
-                        self.sup.shared().person_goal_stops(&rt.key),
-                    ) =>
+                if same_wall_goal(
+                    &bound.goal,
+                    &goal,
+                    self.sup.shared().person_goal_stops(&rt.key),
+                ) =>
             {
                 goal
             }
@@ -5720,7 +5959,20 @@ impl Autopilot {
         // GoalService runs this future under the runtime's mutation permit, after any
         // earlier person's set has finished. Its initial read above is no authority to
         // reactivate a goal that was paused, replaced or edited while the permit waited.
-        let instruction = async {
+        let dispatch_authorization: Option<codex_alab_core::goal_dispatch::Authorization> =
+            match stop {
+                GoalStop::ModelBlocked(bound, _) => {
+                    let autopilot = Arc::clone(self);
+                    let rt = Arc::clone(rt);
+                    let goals = Arc::clone(goals);
+                    let expected = bound.clone();
+                    Some(Arc::new(move || {
+                        autopilot.model_goal_dispatch_current(&rt, &goals, &expected)
+                    }))
+                }
+                GoalStop::Usage(_) | GoalStop::Wall(..) => None,
+            };
+        let operation = goals.set_thread_goal(&db, request, async {
             let current = db
                 .thread_goals()
                 .get_thread_goal(rt.id)
@@ -5728,9 +5980,28 @@ impl Autopilot {
                 .map_err(|error| {
                     GoalServiceError::Internal(format!("could not recheck the goal: {error}"))
                 })?;
+            let stop_source_current = match stop {
+                GoalStop::Wall(bound, _) => {
+                    matches!(
+                        codex_alab_core::goal_chronology_fence::read_current(
+                            &thread.config().await.codex_home,
+                            &rt.id.to_string(),
+                        ),
+                        Ok(generation) if generation == bound.chronology_fence_generation
+                    )
+                }
+                GoalStop::ModelBlocked(bound, _) => {
+                    codex_alab_core::mode_epoch() == Some(bound.mode_epoch)
+                        && goals
+                            .alab_with_current_goal_mutation_epoch(rt.id, &bound.epoch, || ())
+                            .is_some()
+                }
+                _ => true,
+            };
             if !current
                 .as_ref()
                 .is_some_and(|goal| stopped_here(&original, goal))
+                || !stop_source_current
                 || !authority.current(self, rt)
             {
                 changed = true;
@@ -5778,14 +6049,35 @@ impl Autopilot {
             // The try is booked: a store a test has fail returns its error here, as a
             // goal write that fails after this record does, the goal unchanged.
             self.goal_set_fault()
-        };
-        let result = match stop {
-            GoalStop::ModelBlocked(bound, _) => {
-                goals
-                    .alab_resume_model_goal(&db, request, &bound.epoch, instruction)
+        });
+        let codex_home = thread.config().await.codex_home.clone();
+        let operation = async {
+            goals
+                .alab_scope_host_goal_mutation(rt.id, async {
+                    codex_alab_core::goal_chronology_fence::scope(
+                        codex_home.to_path_buf(),
+                        rt.id.to_string(),
+                        operation,
+                    )
                     .await
+                    .map_err(|error| {
+                        GoalServiceError::Internal(format!(
+                            "could not acquire cross-process goal chronology custody: {error}"
+                        ))
+                    })?
+                })
+                .await
+                .map_err(|error| {
+                    GoalServiceError::Internal(format!(
+                        "could not acquire native goal mutation custody: {error}"
+                    ))
+                })?
+        };
+        let result = match dispatch_authorization {
+            Some(authorization) => {
+                codex_alab_core::goal_dispatch::scope(authorization, operation).await
             }
-            _ => goals.set_thread_goal(&db, request, instruction).await,
+            None => operation.await,
         };
         match result {
             Ok(outcome) => {
@@ -7195,8 +7487,17 @@ impl Autopilot {
                     let person_stopped = history.is_none_or(|items| {
                         crate::resume_history::person_goal_stop_since(items, &goal.turn)
                     });
+                    let chronology_current = rt.config.as_ref().map_or(cfg!(test), |config| {
+                        matches!(
+                            codex_alab_core::goal_chronology_fence::read_current(
+                                &config.codex_home,
+                                &rt.id.to_string(),
+                            ),
+                            Ok(generation) if generation == goal.chronology_fence_generation
+                        )
+                    });
                     let mut bound = lock(&rt.wall_goal);
-                    if bound.is_none() && !person_stopped {
+                    if bound.is_none() && !person_stopped && chronology_current {
                         *bound = Some(goal.clone());
                     }
                 }
@@ -7265,18 +7566,20 @@ impl Autopilot {
             return;
         }
         self.stage_model_goal_stop(rt);
-        let binding = lock(&rt.model_blocked_goal).clone();
-        let model_blocked_goal = binding
-            .filter(|binding| self.model_epoch_current(rt.id, &binding.epoch))
-            .map(|binding| binding.goal)
-            .or_else(|| {
-                let pending = lock(&rt.model_goal_import);
-                pending
-                    .lease
-                    .as_ref()
-                    .filter(|lease| self.model_epoch_current(rt.id, lease))
-                    .and_then(|_| pending.goal.clone())
-            });
+        let (sources, source_current) = self.lock_model_goal_mode(rt);
+        let (model_blocked_goal, model_goal_mode_epoch) = if source_current {
+            lock(&rt.model_blocked_goal)
+                .as_ref()
+                .map(|bound| (Some(bound.goal.clone()), Some(bound.mode_epoch)))
+                .unwrap_or_else(|| {
+                    (
+                        lock(&rt.model_goal_import).goal.clone(),
+                        *lock(&rt.model_goal_mode_epoch),
+                    )
+                })
+        } else {
+            (None, None)
+        };
         let pace = {
             let state = lock(&rt.state);
             let now = clock();
@@ -7353,7 +7656,14 @@ impl Autopilot {
                 model_blocked_goal,
             }
         };
-        self.sup.shared().set_pace(&rt.key, pace);
+        #[cfg(test)]
+        if let Some(hook) = lock(&self.before_pace_source_publish).take() {
+            run_hook(hook);
+        }
+        self.sup
+            .shared()
+            .set_pace_at_mode(&rt.key, pace, model_goal_mode_epoch);
+        drop(sources);
     }
 
     /// THE NEEDS ON THE PERSON'S SCREEN (NEEDS YOU, aterm owner direction 2026-10-19: "be
@@ -7551,6 +7861,7 @@ impl Autopilot {
                 end.aborted,
                 TurnGoal {
                     active_at_start: data.active_goal_at_start,
+                    chronology_generation: data.goal_chronology_at_start,
                     goal_tool: data.goal_tool,
                     person_stops: (
                         data.person_stops_at_start,
@@ -8153,6 +8464,9 @@ struct SubAgentOf(String);
 pub(crate) struct TurnGoal {
     /// The goal active when the turn began.
     pub(crate) active_at_start: Option<codex_state::ThreadGoal>,
+    /// The durable host-mutation generation read consistently around that goal.
+    pub(crate) chronology_generation:
+        Option<Option<codex_alab_core::goal_chronology_fence::FenceGeneration>>,
     /// The turn called a goal tool (`update_goal`, `create_goal`).
     pub(crate) goal_tool: bool,
     /// A person's stops of the thread's goal
@@ -8202,6 +8516,7 @@ pub(crate) fn wall_goal_after(
     let (stops_at_start, stops_now) = turn.person_stops;
     let goal_tool = turn.goal_tool;
     let walled_turn = turn.turn;
+    let chronology_generation = turn.chronology_generation?;
     turn.active_at_start
         .filter(|goal| {
             turn_error
@@ -8214,6 +8529,7 @@ pub(crate) fn wall_goal_after(
             goal_id: goal.goal_id,
             objective: goal.objective,
             token_budget: goal.token_budget,
+            chronology_fence_generation: chronology_generation,
             turn: walled_turn,
             person_stops: stops_at_start,
         })
@@ -8238,6 +8554,27 @@ fn same_wall_goal(
             .is_some_and(|budget| current.tokens_used >= budget)
 }
 
+#[derive(Clone, Copy)]
+enum GoalAdmissionStop<'a> {
+    Wall(&'a codex_alab_core::session::WallGoal),
+    Model(&'a model_blocked_goal::ModelGoalBinding),
+}
+
+/// Native and cross-process chronology custody retained through queue admission.
+struct GoalAdmissionPermit<'a> {
+    _runtime: Option<codex_alab_core::retained_goal_gate::AutomaticPermit<'a>>,
+    _chronology: Option<codex_alab_core::goal_chronology_fence::ReadGuard>,
+}
+
+impl<'a> GoalAdmissionPermit<'a> {
+    fn empty() -> Self {
+        Self {
+            _runtime: None,
+            _chronology: None,
+        }
+    }
+}
+
 /// WHICH STOP A GOAL'S RESUME LIFTS ([`Autopilot::resume_goal_with_origin`]).
 #[derive(Clone, Copy)]
 enum GoalStop<'a> {
@@ -8247,7 +8584,7 @@ enum GoalStop<'a> {
     /// A turn error's at the wall this try answers ([`wall_goal_after`]), booked as that try.
     Wall(&'a codex_alab_core::session::WallGoal, &'a Act),
     /// The model's successful native block, challenged at the next paced act.
-    ModelBlocked(&'a codex_alab_core::model_goal_stops::Binding, &'a Act),
+    ModelBlocked(&'a model_blocked_goal::ModelGoalBinding, &'a Act),
 }
 
 /// What resuming a usage-limited goal at the reset came to.
@@ -9212,6 +9549,9 @@ impl TurnLifecycleContributor for Autopilot {
             // A person's stop counted before the goal is read: one that races the read is the
             // turn's own, so its goal is no wall's.
             let person_stops_at_start = self.sup.shared().person_goal_stops(&rt.key);
+            let chronology_before = rt.config.as_ref().map(|config| {
+                codex_alab_core::goal_chronology_fence::read_current(&config.codex_home, &rt.key)
+            });
             let goal_at_start = if let Some(thread) = self.thread(rt.id).await
                 && let Some(db) = thread.state_db()
             {
@@ -9223,9 +9563,17 @@ impl TurnLifecycleContributor for Autopilot {
             } else {
                 None
             };
+            let chronology_after = rt.config.as_ref().map(|config| {
+                codex_alab_core::goal_chronology_fence::read_current(&config.codex_home, &rt.key)
+            });
+            let goal_chronology_at_start = match (chronology_before, chronology_after) {
+                (Some(Ok(before)), Some(Ok(after))) if before == after => Some(before),
+                _ => None,
+            };
             let goal_at = |status| goal_at_start.clone().filter(|goal| goal.status == status);
             let limited_goal_at_start = goal_at(codex_state::ThreadGoalStatus::UsageLimited);
-            let active_goal_at_start = goal_at(codex_state::ThreadGoalStatus::Active);
+            let active_goal_at_start = goal_chronology_at_start
+                .and_then(|_| goal_at(codex_state::ThreadGoalStatus::Active));
             // Only this thread's async lifecycle gate is held while waiting. Core awaits
             // this hook before the turn runs; no synchronous state lock crosses the wait.
             // An older task-face write must have settled first.
@@ -9335,6 +9683,7 @@ impl TurnLifecycleContributor for Autopilot {
                     data.native_epoch = Some(accepted_turns);
                     data.limited_goal_at_start = limited_goal_at_start;
                     data.active_goal_at_start = active_goal_at_start;
+                    data.goal_chronology_at_start = goal_chronology_at_start;
                     data.person_stops_at_start = person_stops_at_start;
                 }
                 let unread = {

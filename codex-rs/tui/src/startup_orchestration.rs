@@ -13,6 +13,8 @@ pub(super) async fn run_main_inner(
     loader_overrides: LoaderOverrides,
     mut explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
 ) -> std::io::Result<AppExitInfo> {
+    #[cfg(unix)]
+    let alab_constructor = crate::owned_local_entered_readers::constructor::Constructor::prepare(|| crate::chatwidget::create_initial_user_message(cli.prompt.clone(), cli.shared.images.clone(), Vec::new()))?; // ALAB(retained-ui): retain actual original CLI/E1 initial message before the first startup await.
     if cli.no_daemon && explicit_remote_endpoint.is_some() {
         return Err(std::io::Error::other(
             "--no-daemon cannot be used with --remote.",
@@ -48,37 +50,9 @@ pub(super) async fn run_main_inner(
             ));
         }
     }
-    let (sandbox_mode, approval_policy) = if cli.dangerously_bypass_approvals_and_sandbox {
-        (
-            Some(SandboxMode::DangerFullAccess),
-            Some(AskForApproval::Never.to_core()),
-        )
-    } else {
-        (
-            cli.sandbox_mode.map(Into::<SandboxMode>::into),
-            cli.approval_policy.map(Into::into),
-        )
-    };
-
-    cli.shared
-        .take_auto_review_config_overrides(&mut cli.config_overrides);
-
-    // Map the legacy --search flag to the canonical web_search mode.
-    let overrides_before_search = cli.config_overrides.raw_overrides.len();
-    if cli.web_search {
-        cli.config_overrides
-            .raw_overrides
-            .push("web_search=\"live\"".to_string());
-    }
-
-    // When using `--oss`, let the bootstrapper pick the model (defaulting to
-    // gpt-oss:20b) and ensure it is present locally. Also, force the built‑in
-    let raw_overrides = cli.config_overrides.raw_overrides.clone();
-    // `oss` model provider.
-    let overrides_cli = codex_utils_cli::CliConfigOverrides { raw_overrides };
-    let mut cli_kv_overrides = match overrides_cli.parse_overrides() {
-        // Parse `-c` overrides from the CLI.
-        Ok(v) => v,
+    let (sandbox_mode, approval_policy) = owned_local_launch_policy::permissions(&cli); // ALAB(owned-local): backend and foreground share original CLI policy.
+    let (mut cli_kv_overrides, overrides_before_search) = match owned_local_launch_policy::config_overrides(&mut cli) { // ALAB(owned-local): retain original search/override order and foreground error delivery.
+        Ok(overrides) => overrides,
         #[allow(clippy::print_stderr)]
         Err(e) => {
             eprintln!("Error parsing -c overrides: {e}");
@@ -133,12 +107,7 @@ pub(super) async fn run_main_inner(
         });
     }
 
-    let mut launch_loader_overrides = loader_overrides.clone();
-    if let Some(profile_v2) = cli.config_profile_v2.as_ref() {
-        let user_config_path = resolve_profile_v2_config_path(&codex_home, profile_v2);
-        launch_loader_overrides.user_config_path = Some(user_config_path);
-        launch_loader_overrides.user_config_profile = Some(profile_v2.clone());
-    }
+    let launch_loader_overrides = owned_local_launch_policy::profile(&cli, &codex_home, loader_overrides.clone()); // ALAB(owned-local): original profile selection shared with backend preparation.
     let embedded_network_policy =
         codex_app_server_client::EmbeddedNetworkPolicy::load(&launch_loader_overrides).await;
     let workload_identity_selected = is_workload_identity_selected();
@@ -268,6 +237,8 @@ pub(super) async fn run_main_inner(
         workload_identity_selected,
         std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
     )?;
+    #[cfg(unix)]
+    let presentation_target = crate::owned_local_entered_readers::startup_target(presentation_target)?; // ALAB(retained-ui): SAME decoded E1 target precedes original environment/config work.
     let prepared_environment_manager =
         if should_load_configured_environments(&launch_loader_overrides, &presentation_target) {
             EnvironmentManager::prepare_from_codex_home(&codex_home).await
@@ -314,11 +285,11 @@ pub(super) async fn run_main_inner(
         }
     })?;
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        codex_cloud_config::ensure_config_server_login(
-            embedded_network_policy.bind_bootstrap_auth(bootstrap_auth_config(
+        crate::owned_local_managed_readers::ensure_original_config_server_login( // ALAB(retained-readers): actual E1 consumes frozen backend policy; ordinary foreground OAuth completes before preparation.
+            || Ok(embedded_network_policy.bind_bootstrap_auth(bootstrap_auth_config(
                 &codex_home,
                 &presentation.bootstrap_config,
-            )?),
+            )?)),
             presentation
                 .bootstrap_config
                 .config_layer_stack
@@ -358,9 +329,15 @@ pub(super) async fn run_main_inner(
         session_action,
         screen,
     )?;
+    #[cfg(unix)]
+    startup_draft.alab_retain_constructor(alab_constructor)?; // ALAB(retained-ui): same Entry/PreparedMessages moves to actual pump before event/input work.
 
     let implicit_connection = explicit_remote_endpoint.is_none();
-    let default_daemon = if implicit_connection && reuse_implicit_local_daemon {
+    #[cfg(unix)]
+    let entered_frontend = crate::owned_local_entered_readers::has_entered_target()?; // ALAB(retained-ui): real entered scope owns its retained endpoint.
+    #[cfg(not(unix))]
+    let entered_frontend = false;
+    let default_daemon = if implicit_connection && reuse_implicit_local_daemon && !entered_frontend {
         startup_draft
             .run_until(maybe_probe_default_daemon_socket(&codex_home))
             .await?
@@ -374,6 +351,8 @@ pub(super) async fn run_main_inner(
         workload_identity_selected,
         std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
     )?;
+    #[cfg(unix)]
+    { app_server_target = crate::owned_local_entered_readers::startup_target(app_server_target)?; } // ALAB(retained-ui): preserve SAME E1 target and restored initial operation through final connection.
     let cloud_preview_available = app_server_target.uses_embedded_network_policy();
     let remote_cwd_override = cli
         .cwd
@@ -411,8 +390,9 @@ pub(super) async fn run_main_inner(
         cwd.clone()
     };
 
+    #[cfg(unix)] let cwd_override = crate::owned_local_frontend_startup::selected_cwd(&app_server_target, cwd_override)?; // ALAB(owned-local): retain the actual worktree/launch destination selected by shared backend preparation.
     let mut manually_selected_oss_provider = None;
-    let model_provider_override = if cli.oss {
+    let model_provider_override = if cli.oss && !app_server_target.is_owned_local() { // ALAB(owned-local): the real backend preparation already selected the provider once.
         let bootstrap_config_with_cloud_config;
         let config_toml_for_oss = if cli.oss_provider.is_none() {
             // The first load intentionally skips cloud config so we can read
@@ -471,6 +451,8 @@ pub(super) async fn run_main_inner(
         None
     };
 
+    #[cfg(unix)] let model_provider_override = crate::owned_local_frontend_startup::oss_choice(
+        &app_server_target, cli.oss, model_provider_override, &mut manually_selected_oss_provider)?; // ALAB(owned-local): consume exact selected backend DATA, never run a second picker.
     // Pass the --oss provider to the embedded app-server so catalog reloads keep
     // the launch choice after workspace requirements are removed.
     if let Some(provider) = &model_provider_override {
@@ -480,34 +462,10 @@ pub(super) async fn run_main_inner(
         ));
     }
 
-    // When using `--oss`, let the bootstrapper pick the model based on selected provider
-    let model = if let Some(model) = &cli.model {
-        Some(model.clone())
-    } else if cli.oss {
-        // Use the provider from model_provider_override
-        model_provider_override
-            .as_ref()
-            .and_then(|provider_id| get_default_model_for_oss_provider(provider_id))
-            .map(std::borrow::ToOwned::to_owned)
-    } else {
-        None // No model specified, will use the default.
-    };
-
-    let additional_dirs = cli.add_dir.clone();
-
-    let mut overrides = ConfigOverrides {
-        model,
-        approval_policy,
-        sandbox_mode,
-        cwd: cwd_override,
-        model_provider: model_provider_override.clone(),
-        codex_self_exe: arg0_paths.codex_self_exe.clone(),
-        codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
-        show_raw_agent_reasoning: cli.oss.then_some(true),
-        bypass_hook_trust: cli.bypass_hook_trust.then_some(true),
-        additional_writable_roots: additional_dirs,
-        ..Default::default()
-    };
+    let mut overrides = crate::alab_local_config::configuration_overrides( // ALAB(owned-local): the real foreground and headless preparation share this exact CLI/Arg0 mapping.
+        &cli, &arg0_paths, approval_policy, sandbox_mode, cwd_override,
+        model_provider_override.as_deref(),
+    );
 
     let mut config = startup_draft
         .run_until(load_config_or_exit(
@@ -526,12 +484,12 @@ pub(super) async fn run_main_inner(
         config.cwd.as_path(),
     );
 
-    let mut cloud_config_bundle = if workload_identity_selected {
+    let mut cloud_config_bundle = if app_server_target.is_owned_local() { cloud_config_bundle } else if workload_identity_selected { // ALAB(owned-local): UI DATA must not construct a second foreground AuthManager/refresh owner.
         cloud_config_bundle
     } else {
         startup_draft
-            .run_until(managed_config_bundle_loader_for_storage(
-                embedded_network_policy.bind_bootstrap_auth(
+            .run_until(crate::owned_local_managed_readers::startup_loader(
+                &app_server_target, embedded_network_policy.bind_bootstrap_auth(
                     app_server_target.auth_config_for_cloud_loader(config.auth_config()),
                 ),
                 config.config_layer_stack.requirements_toml(),
@@ -539,7 +497,7 @@ pub(super) async fn run_main_inner(
             ))
             .await??
     };
-    let managed_worktree = if cli.shared.worktree {
+    let managed_worktree = if cli.shared.worktree && !app_server_target.is_owned_local() { // ALAB(owned-local): the actual backend retains and binds its worktree lease.
         let (destination, bundle, worktree) = startup_draft
             .run_until(worktree_startup::prepare(
                 &mut cli,
@@ -568,7 +526,7 @@ pub(super) async fn run_main_inner(
     } else {
         None
     };
-    let auto_start_daemon = cfg!(any(unix, windows))
+    let auto_start_daemon = !app_server_target.is_owned_local() && cfg!(any(unix, windows)) // ALAB(owned-local): no shared-daemon selection or frontend credential probe after retained selection.
         && (cli.agents_overview || config.features.enabled(Feature::DaemonAutoStart))
         && implicit_connection
         && !cli.no_daemon
@@ -726,17 +684,9 @@ pub(super) async fn run_main_inner(
             None
         }
     };
-    let metrics = otel
-        .as_ref()
-        .and_then(codex_otel::OtelProvider::metrics)
-        .cloned();
-    if let Some(metrics) = &metrics {
-        let _ = codex_otel::record_process_start_once(metrics, otel_originator.as_str());
-        let telemetry =
-            codex_rollout::sqlite_telemetry_recorder(metrics.clone(), otel_originator.as_str());
-        let _ = codex_state::install_process_db_telemetry(telemetry);
-    }
+    let metrics = owned_local_logging::process_metrics(otel.as_ref(), otel_originator.as_str()); // ALAB(owned-local): exact per-process recorder shared with backend startup.
     let selection_reason = match (&app_server_target, daemon_exclusion) {
+        #[cfg(unix)] (AppServerTarget::OwnedLocal { .. }, _) => "owned_local", // ALAB(owned-local): preserve the explicit local selection in startup telemetry.
         (AppServerTarget::Remote { .. }, _) => "explicit_remote",
         (AppServerTarget::Cloud, _) => "cloud",
         _ if cli.agents_overview => "agents",
@@ -850,17 +800,6 @@ pub(super) async fn run_main_inner(
             &app_server_target,
         ))
         .await??;
-    let config_toml_log_dir_configured = config
-        .config_layer_stack
-        .effective_config()
-        .as_table()
-        .is_some_and(|table| table.contains_key("log_dir"))
-        || config
-            .config_layer_stack
-            .requirements_toml()
-            .log_dir
-            .is_some();
-
     set_default_client_residency_requirement(config.enforce_residency.value());
 
     if let Some(warning) = add_dir_warning_message(
@@ -885,7 +824,7 @@ pub(super) async fn run_main_inner(
         }
     }
 
-    if !app_server_target.uses_remote_workspace() && !workload_identity_selected {
+    if !app_server_target.uses_remote_workspace() && !workload_identity_selected && !app_server_target.is_owned_local() { // ALAB(owned-local): the backend performs the original local login restriction check with its actual manager.
         #[allow(clippy::print_stderr)]
         if let Err(err) = startup_draft
             .run_until(enforce_login_restrictions(&config.auth_config()))
@@ -906,45 +845,9 @@ pub(super) async fn run_main_inner(
         }
     }
 
-    let (tui_file_layer, _tui_file_log_guard) = if config_toml_log_dir_configured {
-        let log_dir = config.log_dir.clone();
-        std::fs::create_dir_all(&log_dir)?;
-        let mut log_file_opts = OpenOptions::new();
-        log_file_opts.create(true).append(true);
-
-        // Ensure the file is only readable and writable by the current user.
-        // Doing the equivalent to `chmod 600` on Windows is quite a bit more
-        // code and requires the Windows API crates.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            log_file_opts.mode(0o600);
-        }
-
-        let log_file = log_file_opts.open(log_dir.join(TUI_LOG_FILE_NAME))?;
-        let (non_blocking, guard) = non_blocking(log_file);
-        let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new(
-                "codex_core=info,codex_tui=info,codex_rmcp_client=info,codex_realtime_webrtc=warn",
-            )
-        });
-        let file_layer = tracing_subscriber::fmt::layer()
-            .with_writer(non_blocking)
-            .with_target(true)
-            .with_ansi(false)
-            .with_span_events(
-                tracing_subscriber::fmt::format::FmtSpan::NEW
-                    | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
-            )
-            .with_filter(env_filter);
-        (Some(file_layer), Some(guard))
-    } else {
-        (None, None)
-    };
+    let prepared_file_logging = owned_local_logging::prepare_file(&config)?; // ALAB(owned-local): same original file/filter policy in its actual owning process.
 
     let feedback = codex_feedback::CodexFeedback::new();
-    let feedback_layer = feedback.logger_layer();
-    let feedback_metadata_layer = feedback.metadata_layer();
 
     if cli.oss && model_provider_override.is_some() {
         // We're in the oss section, so provider_id should be Some
@@ -970,25 +873,10 @@ pub(super) async fn run_main_inner(
             .await?;
     }
 
-    let otel_logger_layer = otel.as_ref().and_then(|o| o.logger_layer());
-
-    let otel_tracing_layer = otel.as_ref().and_then(|o| o.tracing_layer());
-
     let log_db = state_db
         .clone()
         .map(|state_db| log_db::start(state_db, std::sync::Arc::new(feedback.clone())));
-    let log_db_layer = log_db
-        .clone()
-        .map(|layer| layer.with_filter(alab_live_logs::filter(log_db::default_filter()))); // ALAB(quiet-logs): restore native diagnostics when the live experience changes
-
-    let _ = tracing_subscriber::registry()
-        .with(tui_file_layer)
-        .with(feedback_layer)
-        .with(feedback_metadata_layer)
-        .with(log_db_layer)
-        .with(otel_logger_layer)
-        .with(otel_tracing_layer)
-        .try_init();
+    let _tui_file_log_guard = owned_local_logging::install(prepared_file_logging, &feedback, log_db.clone(), otel.as_ref()); // ALAB(owned-local): original subscriber layer order and retained writer guard.
     codex_alab_tui::daemon_packages::tidy(&codex_home, config.features.enabled(Feature::DaemonAutoStart)); // ALAB(no-daemon): with the daemon off, the vendor daemon's superseded packages go, off-thread, once logging is up
     if let Some(error) = state_db.as_ref().and_then(|db| db.diagnostic_logs_error()) {
         tracing::warn!(
@@ -1067,5 +955,3 @@ pub(super) async fn run_main_inner(
 
     app_result
 }
-
-#[path = "../../alab-core/glue/state_log_filter.rs"] mod alab_live_logs; // ALAB(quiet-logs): mode-aware SQLite filter

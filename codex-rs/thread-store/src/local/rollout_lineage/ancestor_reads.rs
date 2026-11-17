@@ -100,6 +100,7 @@ impl RolloutLineage {
     {
         let requested_thread_id = self.requested_thread_id;
         let mode = self.mode;
+        let initial_end = self.initial_end; // ALAB(retained-history): first inherited segment remains tracked on every fallback.
         let leaf = self
             .segments
             .last()
@@ -137,6 +138,7 @@ impl RolloutLineage {
                 .resolve_rollout_lineage_with_mode(
                     requested_thread_id,
                     mode,
+                    initial_end, // ALAB(retained-history): retry SAME deferred base, not parent's current leaf.
                     leaf.clone(),
                     &excluded,
                 )

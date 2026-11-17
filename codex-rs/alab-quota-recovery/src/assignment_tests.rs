@@ -78,7 +78,7 @@ impl codex_login::ExternalAuth for ReplacementAuth {
 #[tokio::test]
 async fn account_switch_during_redemption_cannot_release_the_destination_retry() {
     let fixture = Fixture::new().await;
-    let cycle = chrono::Utc::now().timestamp() + 3600;
+    let cycle = chrono::Utc::now().timestamp() + 72 * 3600;
     Mock::given(method("GET"))
         .and(path("/api/codex/usage"))
         .respond_with(move |request: &wiremock::Request| {
@@ -88,7 +88,7 @@ async fn account_switch_during_redemption_cannot_release_the_destination_retry()
                 "account_id":account, "user_id":"user", "plan_type":"plus",
                 "rate_limit":{"allowed":destination,"limit_reached":!destination,
                     "secondary_window":{"used_percent":if destination {0}else{100},
-                        "limit_window_seconds":604800,"reset_at":cycle,"reset_after_seconds":3600}}
+                        "limit_window_seconds":604800,"reset_at":cycle,"reset_after_seconds":259200}}
             }))
         })
         .expect(3)
@@ -241,13 +241,14 @@ async fn source_retirement_drains_a_quota_http_attempt_until_cancellation() {
 #[tokio::test]
 async fn source_retirement_can_finish_while_quota_wait_sleeps() {
     let fixture = Fixture::new().await;
+    // Keep redemption eligible so the credit-list observation witnesses the poll.
     Mock::given(method("GET"))
         .and(path("/api/codex/usage"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "account_id":"account", "user_id":"user", "plan_type":"plus",
             "rate_limit":{"allowed":false,"limit_reached":true,
                 "secondary_window":{"used_percent":100,"limit_window_seconds":604800,
-                    "reset_at":chrono::Utc::now().timestamp() + 3600,"reset_after_seconds":3600}}
+                    "reset_at":chrono::Utc::now().timestamp() + 72 * 3600,"reset_after_seconds":259200}}
         })))
         .expect(1)
         .mount(&fixture.server)

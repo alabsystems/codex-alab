@@ -325,7 +325,7 @@ impl HistoryCell for ClearScreenHeader {
 /// Session banner with a model label already resolved for presentation by its caller.
 #[derive(Debug)]
 pub(crate) struct SessionHeaderHistoryCell {
-    version: &'static str,
+    version: std::borrow::Cow<'static, str>, // ALAB(retained-ui): own historical banner text after native restoration without leaking it.
     model: String,
     reasoning_effort: Option<ReasoningEffortConfig>,
     directory: PathBuf,
@@ -340,7 +340,7 @@ impl SessionHeaderHistoryCell {
         version: &'static str,
     ) -> Self {
         Self {
-            version,
+            version: version.into(), // ALAB(retained-ui): ordinary banners retain their borrowed static version.
             model,
             reasoning_effort,
             directory,
@@ -391,7 +391,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let width = usize::from(width);
         let mut title = vec!["  ".into()];
-        title.extend(codex_title(self.version));
+        title.extend(codex_title(&self.version)); // ALAB(retained-ui): borrowed and restored historical banner text share the original renderer.
         let mut lines = vec![
             Line::default(),
             Line::from(title),
@@ -441,3 +441,10 @@ mod alab_banner;
 #[cfg(test)]
 #[path = "session_transcript_tests.rs"]
 mod transcript_tests; // ALAB(banner): the banner's cell lives in codex-rs/alab-tui; HistoryCell is pub(crate)
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_session_cells.rs"]
+pub(in crate::history_cell) mod alab_retained; // ALAB(retained-ui): restore exact native session/header cell types and fields.
+
+#[cfg(unix)]
+pub(in crate::history_cell) use alab_banner::alab_retained_banner::Data as AlabRetainedBannerData; // ALAB(retained-ui): owned banner codec keeps native launch cell private.

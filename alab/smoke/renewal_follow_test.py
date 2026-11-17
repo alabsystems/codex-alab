@@ -1542,19 +1542,19 @@ class ImageDigest(unittest.TestCase):
             image = Path(directory) / "codex"
             image.write_bytes(b"first image")
             with mock.patch.dict(renewal_follow.IMAGE_DIGESTS, clear=True), \
-                    mock.patch.object(hashlib, "file_digest", wraps=hashlib.file_digest) as read:
+                    mock.patch.object(os, "read", wraps=os.read) as read:
                 for _ in range(3):
                     stat, digest = renewal_follow.image_digest(image)
                     self.assertEqual(digest, hashlib.sha256(b"first image").hexdigest())
                     self.assertEqual((stat.st_dev, stat.st_ino), (image.stat().st_dev, image.stat().st_ino))
-                self.assertEqual(read.call_count, 1)
+                self.assertEqual(read.call_count, 2)
                 # Same size, mtime put back: the ctime still names the new contents.
                 before = image.stat()
                 image.write_bytes(b"other image")
                 os.utime(image, ns=(before.st_atime_ns, before.st_mtime_ns))
                 self.assertEqual(renewal_follow.image_digest(image)[1],
                                  hashlib.sha256(b"other image").hexdigest())
-                self.assertEqual(read.call_count, 2)
+                self.assertEqual(read.call_count, 4)
 
 
 class HostExitDiagnostics(unittest.TestCase):

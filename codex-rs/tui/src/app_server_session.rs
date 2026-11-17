@@ -4,6 +4,13 @@
 //! request/response plumbing out of `App` and `ChatWidget`.
 
 mod account;
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_ui_frontier_state.rs"]
+pub(crate) mod alab_retained_ui; // ALAB(retained-frontier): same physical projection/result custody.
+#[path = "../../alab-tui/glue/initial_session_frontend.rs"]
+pub(crate) mod alab_construction; // ALAB(source-selection): retain the same original operation before any construction await.
+#[path = "../../alab-tui/glue/prospective_task_projection.rs"]
+mod alab_prospective_task; // ALAB(source-selection): reuse the full original new-task parameter projection.
 pub(crate) use account::SessionAccount;
 mod cloud_project;
 mod daybreak_api_key_compat;
@@ -170,9 +177,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
-use futures::FutureExt;
 use futures::future::Either;
-use futures::future::RemoteHandle;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -268,33 +273,10 @@ pub(crate) fn is_method_not_found(error: &TypedRequestError) -> bool {
                 || source.message.contains("unknown method")))
 }
 
+#[path = "../../alab-core/glue/task_history_support.rs"]
+mod alab_task_history_support; // ALAB(upgrade): identical read/history support policy for local and remote hosts.
 pub(crate) fn is_history_pagination_unsupported(source: &JSONRPCErrorError) -> bool {
-    if source.code == JSONRPC_METHOD_NOT_FOUND {
-        return true;
-    }
-
-    if !matches!(
-        source.code,
-        JSONRPC_INVALID_REQUEST | JSONRPC_INVALID_PARAMS
-    ) {
-        return false;
-    }
-
-    let message = source.message.to_ascii_lowercase();
-    [
-        "historymode",
-        "history mode",
-        "excludeturns",
-        "exclude turns",
-        "thread/turns/list",
-        "thread/items/list",
-    ]
-    .into_iter()
-    .any(|field| message.contains(field))
-        || (message.contains("paginated")
-            && ["unknown variant", "unsupported variant", "invalid enum"]
-                .into_iter()
-                .any(|error| message.contains(error)))
+    alab_task_history_support::is_history_pagination_unsupported(source) // ALAB(upgrade): preserve the exact existing support predicate.
 }
 
 pub(crate) async fn request_thread_start_with_history_fallback(
@@ -390,11 +372,23 @@ pub(crate) struct AttachmentMetadata {
     pub(crate) subscribed: bool,
 }
 
+#[path = "../../alab-tui/glue/owned_local_session.rs"]
+mod alab_owned_local; // ALAB(owned-local): selected target semantics and controller tenure stay outside upstream session bodies.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_configured_events.rs"]
+mod alab_configured_events; // ALAB(retained-ui): preserve original FIFO events while the real configured tail is awaited.
+
 pub(crate) struct AppServerSession {
+    #[cfg(unix)]
+    alab_configured_events: std::collections::VecDeque<AppServerSessionEvent>, // ALAB(retained-ui): same-session deferred event custody.
+    #[cfg(unix)]
+    alab_retained_ui: Option<std::sync::Arc<alab_retained_ui::Pending>>, // ALAB(retained-frontier): accepted before first RPC poll.
     backend_id: crate::backend_id::BackendId,
     /// Owns events and the connection lifetime for live sessions. Request-only views share the
     /// request handle below and have no connection owner.
     connection_owner: Option<AppServerClient>,
+    #[cfg(unix)] owned_local: Option<crate::owned_local_frontend::FrontendTenure>, // ALAB(owned-local): frontend connection custody, never backend runtime ownership.
     request_handle: AppServerRequestHandle,
     request_id_namespace: Option<Uuid>,
     next_request_id: i64,
@@ -419,13 +413,15 @@ pub(crate) struct AppServerSession {
     cloud_model_selections: HashMap<ThreadId, user_message_submission::CloudModelSelection>,
     default_model: Option<String>,
     available_models: Vec<ModelPreset>,
-    prefetched_model_list: Option<RemoteHandle<Result<Vec<ModelPreset>>>>,
+    prefetched_model_list: Option<alab_session_models::Prefetch>, // ALAB(retained-ui): same original task/result survives canceled observers.
+    alab_original_work: alab_session_work::Book, // ALAB(retained-ui): original title/picker/helper task resources are retained before spawn.
+    alab_model_jobs: alab_session_models::Book, // ALAB(retained-ui): owning session retains all original model jobs until real join.
     daybreak_api_key_compat: Arc<tokio::sync::Semaphore>,
     managed_new_thread_defaults: Option<NewThreadModelDefaults>,
     external_agent_config_import_id: Mutex<Option<String>>,
     dynamic_tool_mcp: Option<Arc<DynamicToolMcpServer>>,
     pub(crate) worktree_source_config_builder:
-        Option<Box<crate::legacy_core::config::ConfigBuilder>>,
+        Option<alab_builder_owner::Owned>,
 }
 
 /// An automatic save holds the gate only while writing, so a manual rename can skip a slow read.
@@ -507,6 +503,8 @@ impl ThreadParamsMode {
 
 #[derive(Debug)]
 pub(crate) struct SidebarFork {
+    #[cfg(unix)]
+    pub(crate) alab_retained_replay: Option<crate::app::alab_retained_passive::CreationReplay>, // ALAB(retained-ui): pair the actual protected result with original side creation.
     pub(crate) thread: AppServerStartedThread,
     pub(crate) boundary: Result<(), String>,
     pub(crate) inherited_profile: bool,
@@ -516,6 +514,7 @@ pub(crate) struct SidebarFork {
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppServerStartedThread {
+    #[cfg(unix)] pub(crate) alab_construction: Option<std::sync::Arc<crate::owned_local_frontend::ConstructionRecord>>, // ALAB(source-selection): original result retains actual caller custody, never a UI grant.
     pub(crate) session: ThreadSessionState,
     pub(crate) turns: Vec<Turn>,
     pub(crate) blocks_direct_input: bool,
@@ -617,6 +616,10 @@ impl AppServerSession {
         Self {
             backend_id,
             connection_owner,
+            #[cfg(unix)]
+            alab_configured_events: Default::default(), // ALAB(retained-ui): request-only views own no physical event queue.
+            #[cfg(unix)] alab_retained_ui: None, // ALAB(retained-frontier): only the actual final-session caller installs this owner.
+            #[cfg(unix)] owned_local: None, // ALAB(owned-local): only actual selected frontend custody installs this field.
             request_handle,
             request_id_namespace: None,
             next_request_id: 1,
@@ -640,6 +643,8 @@ impl AppServerSession {
             default_model: None,
             available_models: Vec::new(),
             prefetched_model_list: None,
+            alab_original_work: alab_session_work::Book::new(), // ALAB(retained-ui): actual physical Session creates its local task owner.
+            alab_model_jobs: Default::default(), // ALAB(retained-ui): actual per-session model-job owner; request views share it.
             daybreak_api_key_compat: Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
             managed_new_thread_defaults: None,
             external_agent_config_import_id: Mutex::default(),
@@ -711,6 +716,9 @@ impl AppServerSession {
             self.thread_params_mode,
         );
         view.request_id_namespace = Some(Uuid::new_v4());
+        view.alab_original_work = self.alab_original_work.clone(); // ALAB(retained-ui): request views share the SAME original task domain.
+        view.alab_model_jobs = self.alab_model_jobs.clone(); // ALAB(retained-ui): views preserve the SAME original job/resource lineage.
+        #[cfg(unix)] { view.owned_local = self.owned_local.clone(); } // ALAB(owned-local): views retain the same real controller allocation.
         view.remote_cwd_override = self.remote_cwd_override.clone();
         view.model_provider_override = self.model_provider_override.clone();
         view.history_support = self.history_support;
@@ -726,6 +734,7 @@ impl AppServerSession {
         app_event_tx: AppEventSender,
         status_updates: tokio::sync::broadcast::Sender<ThreadStatusChangedNotification>,
     ) -> std::io::Result<()> {
+        #[cfg(unix)] if self.owned_local.is_some() { return Ok(()); } // ALAB(owned-local): actual backend task host owns all task-tool calls.
         if self.thread_params_mode == ThreadParamsMode::Cloud {
             return Ok(());
         }
@@ -807,6 +816,7 @@ impl AppServerSession {
     }
 
     pub(crate) fn thread_tool_transport(&self) -> ThreadToolTransport {
+        #[cfg(unix)] if self.owned_local.is_some() { return ThreadToolTransport::BackendOwned; } // ALAB(owned-local): no dynamic delegation or duplicate frontend MCP server.
         if let Some(server) = self.dynamic_tool_mcp.as_ref() {
             ThreadToolTransport::Mcp(Arc::clone(server))
         } else {
@@ -847,6 +857,10 @@ impl AppServerSession {
     }
 
     pub(crate) fn task_tools_available(&self, thread_id: ThreadId) -> bool {
+        #[cfg(unix)]
+        if let Some(tenure) = self.retained_frontend() { // ALAB(source-selection): only this physical tenure's observation supplies retained capability; absence stays unavailable.
+            return tenure.task_tools_observation(thread_id).unwrap_or(false);
+        }
         self.task_tool_threads.contains(&thread_id)
             || self
                 .task_tool_capabilities_dir
@@ -892,9 +906,7 @@ impl AppServerSession {
     }
 
     pub(crate) fn prefetch_model_list(&mut self) {
-        let (request, models) = self.request_model_list().remote_handle();
-        tokio::spawn(request);
-        self.prefetched_model_list = Some(models);
+        alab_session_models::start(self); // ALAB(retained-ui): retain original task/late result before spawn; no repeated RPC on observer cancellation.
     }
 
     fn request_model_list(&mut self) -> impl Future<Output = Result<Vec<ModelPreset>>> + use<> {
@@ -952,7 +964,7 @@ impl AppServerSession {
         fallback: EmptyCatalogFallback,
     ) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
-        let models = match self.prefetched_model_list.take() {
+        let models = match alab_session_models::observer(self) { // ALAB(retained-ui): only actual ordinary consumption retires the same prefetched result.
             Some(models) => Either::Left(models),
             None => Either::Right(self.request_model_list()),
         };
@@ -1083,8 +1095,16 @@ impl AppServerSession {
             .map_err(|err| bootstrap_request_error("account/read failed", err))
     }
 
+    #[cfg(not(unix))]
     pub(crate) async fn next_event(&mut self) -> Option<AppServerSessionEvent> {
+        self.alab_next_physical_event().await
+    }
+    async fn alab_next_physical_event(&mut self) -> Option<AppServerSessionEvent> { // ALAB(retained-ui): original once-only physical event/state path; Unix FIFO wrapper is owned.
         let event = self.connection_owner.as_mut()?.next_event().await?;
+        #[cfg(unix)] // ALAB(retained-frontier): record the physical tail before hidden-thread buffering; malformed state stays closed.
+        if let (Some(pending), codex_app_server_client::AppServerEvent::ServerNotification(notification)) = (&self.alab_retained_ui, &event)
+            && let codex_app_server_protocol::ServerNotification::AlabRetainedFrontier(tail) = notification.as_ref()
+        { let _correlation = pending.received_tail(tail); }
         if let codex_app_server_client::AppServerEvent::ServerNotification(notification) = &event
             && let codex_app_server_protocol::ServerNotification::ThreadReadStateChanged(change) =
                 notification.as_ref()
@@ -1120,6 +1140,8 @@ impl AppServerSession {
         selected_profile: Option<&PermissionProfileSelection>,
         host_project_cwd: Option<&std::path::Path>,
     ) -> Result<AppServerStartedThread> {
+        let construction_scope = self.alab_original_construction(codex_app_server_client::InitialAction::Start, config, codex_app_server_client::ClientPresentation::Primary)?; // ALAB(source-selection): actual owner precedes the unchanged original future.
+        construction_scope.run(async move { // ALAB(source-selection): retain original policy, hydration, conversion and errors in the same scope.
         if self.thread_params_mode.settings_owner() == ThreadSettingsOwner::Server
             && selected_profile.is_some()
         {
@@ -1207,6 +1229,8 @@ impl AppServerSession {
             self.remember_task_tool_thread(started.session.thread_id);
         }
         Ok(started)
+        }).await // ALAB(source-selection): no new request, result or default is reconstructed.
+
     }
 
     #[cfg(test)]
@@ -1345,9 +1369,17 @@ impl AppServerSession {
             };
             let child = thread.session.thread_id;
             let items = storage.policy().fork_items();
-            let boundary = match view.thread_inject_items(child, items).await {
+            #[cfg(unix)]
+            let injected=view.alab_original_side_inject(&thread,storage,profile.is_some(),items).await; // ALAB(retained-side): SAME original caller/whole pre-await outer fields and operation.
+            #[cfg(not(unix))]
+            let injected=view.thread_inject_items(child,items).await;
+            let boundary = match injected {
                 Ok(_) if storage == SideChatStorage::Attached => {
-                    match side_context_checkpoint(thread.session.rollout_path.as_deref()).await {
+                    #[cfg(unix)]
+                    let saved=alab_side_creation::checkpoint_policy(&thread,side_context_checkpoint(thread.session.rollout_path.as_deref())).await; // ALAB(retained-side): actual accepted occurrence, original scan only for ordinary target.
+                    #[cfg(not(unix))]
+                    let saved=side_context_checkpoint(thread.session.rollout_path.as_deref()).await;
+                    match saved {
                         Ok(Some(_)) => Ok(()),
                         Ok(None) => Err("Side conversation context was not saved".to_string()),
                         Err(err) => Err(err.to_string()),
@@ -1355,10 +1387,18 @@ impl AppServerSession {
                 }
                 result => result.map(|_| ()).map_err(|err| err.to_string()),
             };
+            #[cfg(unix)]
+            if let Some(actual)=alab_side_creation::owner(&thread) {actual.boundary(&boundary);} // ALAB(retained-side): retain exact original post-checkpoint outcome before any rollback await.
             if let Err(message) = &boundary
                 && storage == SideChatStorage::Attached
             {
-                if let Err(error) = view.thread_delete(child).await {
+                #[cfg(unix)]
+                let deleted=view.alab_original_side_rollback(&thread,&boundary).await; // ALAB(retained-side): SAME owned original delete survives observer EOF and replays only its cached outcome.
+                #[cfg(not(unix))]
+                let deleted=view.thread_delete(child).await;
+                #[cfg(unix)]
+                if let Some(actual)=alab_side_creation::owner(&thread) {actual.rollback(&boundary,deleted.as_ref().map(|_|()).map_err(ToString::to_string)); actual.observe_rollback(&view).await;} // ALAB(retained-side): exact original result, no deletion retry from DATA.
+                if let Err(error) = deleted {
                     tracing::warn!(%child, %error, "failed to roll back attached side chat");
                 } else {
                     color_eyre::eyre::bail!(
@@ -1366,7 +1406,11 @@ impl AppServerSession {
                     );
                 }
             }
+            #[cfg(unix)]
+            if let Some(actual)=alab_side_creation::owner(&thread) {actual.sidebar(&boundary);} // ALAB(retained-side): whole original object is now actually observed, no fabricated outer fields.
             Ok(SidebarFork {
+                #[cfg(unix)]
+                alab_retained_replay: None, // ALAB(retained-ui): actual Source producer installs its non-clone replay separately.
                 thread,
                 boundary,
                 inherited_profile: profile.is_some(),
@@ -1426,6 +1470,8 @@ impl AppServerSession {
         permission_mode: ForkPermissionMode,
         config_source: ForkConfigSource,
     ) -> Result<AppServerStartedThread> {
+        let construction_scope = self.alab_original_construction(codex_app_server_client::InitialAction::Fork(thread_id.to_string()), &config, if presentation == ForkPresentation::Regular { codex_app_server_client::ClientPresentation::Primary } else { codex_app_server_client::ClientPresentation::SideConversation })?; // ALAB(source-selection): actual owner precedes the unchanged original future.
+        construction_scope.run(async move { // ALAB(source-selection): retain original policy, hydration, conversion and errors in the same scope.
         if self.thread_params_mode == ThreadParamsMode::Cloud {
             color_eyre::eyre::bail!("Cloud conversations cannot be forked in the TUI yet.");
         }
@@ -1583,6 +1629,8 @@ impl AppServerSession {
             self.remember_task_tool_thread(started.session.thread_id);
         }
         Ok(started)
+        }).await // ALAB(source-selection): no new request, result or default is reconstructed.
+
     }
 
     pub(crate) fn thread_params_mode(&self) -> ThreadParamsMode {
@@ -2287,10 +2335,8 @@ impl AppServerSession {
     }
 
     pub(crate) async fn shutdown(self) -> std::io::Result<()> {
-        match self.connection_owner {
-            Some(client) => client.shutdown().await,
-            None => Ok(()),
-        }
+        #[cfg(unix)] if self.owned_local.is_some() { return self.alab_shutdown_owned().await; } // ALAB(owned-local): observe original physical-client and exact Native-controller close before successful shutdown.
+        alab_session_models::shutdown_actual(self).await // ALAB(retained-ui): only actual client owners close/join original IO; views close nothing.
     }
 
     pub(crate) fn request_handle(&self) -> AppServerRequestHandle {
@@ -2896,6 +2942,7 @@ async fn started_thread_from_start_response(
     .await
     .map_err(color_eyre::eyre::Report::msg)?;
     Ok(AppServerStartedThread {
+        #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
         session,
         turns: response.thread.turns,
         blocks_direct_input,
@@ -2917,6 +2964,7 @@ async fn started_thread_from_resume_response(
     .await
     .map_err(color_eyre::eyre::Report::msg)?;
     Ok(AppServerStartedThread {
+        #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
         session,
         turns: response.thread.turns,
         blocks_direct_input,
@@ -2940,6 +2988,7 @@ async fn started_thread_from_fork_response(
     .await
     .map_err(color_eyre::eyre::Report::msg)?;
     Ok(AppServerStartedThread {
+        #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
         session,
         turns: response.thread.turns,
         blocks_direct_input,
@@ -5408,3 +5457,24 @@ mod tests {
 }
 
 #[path = "../../alab-tui/glue/upgrade_receiver.rs"] pub(crate) mod alab_upgrade_receiver; // ALAB(exec-recovery): restore the retained forest before local thread lookup.
+
+#[cfg(unix)]
+#[path="../../alab-tui/glue/owned_local_side_creation.rs"]
+pub(crate) mod alab_side_creation; // ALAB(retained-side): same Record pre-await payload/phase capture; UI DATA only.
+
+#[path = "../../alab-tui/glue/retained_session_models.rs"]
+pub(crate) mod alab_session_models; // ALAB(retained-ui): original prefetch custody and pre-H1 capture are not new work authority.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_session_metadata.rs"]
+pub(crate) mod alab_session_metadata; // ALAB(retained-ui): exact native metadata keeps actual original resource aliases; no DTO-created Session.
+
+#[path = "../../alab-tui/glue/retained_session_builder_owner.rs"]
+pub(crate) mod alab_builder_owner; // ALAB(retained-ui): actual original builder incarnation prevents address-reuse identity guesses.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_backend_session_state.rs"]
+mod alab_retained_backend_state; // ALAB(retained-ui): preserve the same physical deferred events when aggregating sessions.
+
+#[path = "../../alab-tui/glue/retained_session_work.rs"]
+pub(crate) mod alab_session_work; // ALAB(retained-ui): actual worker/descendant joins, never reconstructed jobs or Source permission.

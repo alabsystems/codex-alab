@@ -257,3 +257,7 @@ impl LiveCommandOutputLine {
 #[cfg(test)]
 #[path = "live_output_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_live_output.rs"]
+pub(super) mod alab_retained_live; // ALAB(retained-ui): preserve exact native activity state and shared graph identity.

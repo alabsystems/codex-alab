@@ -152,6 +152,10 @@
 //!   [`PasteBurst::clear_window_after_non_char`] to prevent the next keystroke from being
 //!   incorrectly grouped into a previous burst.
 
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/editor_upgrade_paste_burst.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): preserve accepted paste data and native monotonic deadlines.
+
 use std::time::Duration;
 use std::time::Instant;
 

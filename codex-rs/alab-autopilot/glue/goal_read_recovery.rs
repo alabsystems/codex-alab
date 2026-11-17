@@ -3,6 +3,23 @@
 
 //! Compiled in codex-state, where SQLite's typed error chain is already available.
 
+#[derive(Debug)]
+pub struct MutationOutcomeUnknown;
+
+impl std::fmt::Display for MutationOutcomeUnknown {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("goal mutation committed before its result read failed")
+    }
+}
+
+impl std::error::Error for MutationOutcomeUnknown {}
+
+/// Tag a read which occurs after an autocommit mutation. Its underlying typed
+/// error may ordinarily prove a command never ran, but this command already did.
+pub fn after_mutation_commit(error: anyhow::Error) -> anyhow::Error {
+    error.context(MutationOutcomeUnknown)
+}
+
 /// Only transient contention or interrupted reads authorize another admission read.
 /// Display text is never used to classify a refusal, corruption, or credential error.
 pub fn retryable(error: &anyhow::Error) -> bool {
@@ -120,6 +137,31 @@ pub fn write_definitely_uncommitted(error: &anyhow::Error) -> bool {
     false
 }
 
+/// A failed single goal-mutation transaction also proves rollback for SQLite
+/// constraint/RAISE(ABORT) errors. Additive callers keep their narrower replay
+/// classification because they may have broader transaction context.
+pub fn mutation_definitely_uncommitted(error: &anyhow::Error) -> bool {
+    if error.is::<MutationOutcomeUnknown>() {
+        return false;
+    }
+    if write_definitely_uncommitted(error) {
+        return true;
+    }
+    error.chain().any(|source| {
+        if let Some(error) = source.downcast_ref::<libsqlite3_sys::Error>() {
+            return error.code == libsqlite3_sys::ErrorCode::ConstraintViolation;
+        }
+        source
+            .downcast_ref::<sqlx::Error>()
+            .and_then(|error| match error {
+                sqlx::Error::Database(database) => database.code(),
+                _ => None,
+            })
+            .and_then(|code| code.parse::<i32>().ok())
+            .is_some_and(|code| code & 0xff == 19)
+    })
+}
+
 #[cfg(test)]
 mod write_tests {
     use super::*;
@@ -143,5 +185,14 @@ mod write_tests {
         assert!(!write_definitely_uncommitted(&anyhow::Error::from(
             sqlx::Error::Io(std::io::Error::from(std::io::ErrorKind::Other))
         )));
+        assert!(mutation_definitely_uncommitted(&anyhow::Error::from(
+            libsqlite3_sys::Error::new(19)
+        )));
+        assert!(!write_definitely_uncommitted(&anyhow::Error::from(
+            libsqlite3_sys::Error::new(19)
+        )));
+        let after_commit =
+            after_mutation_commit(anyhow::Error::from(libsqlite3_sys::Error::new(5)));
+        assert!(!mutation_definitely_uncommitted(&after_commit));
     }
 }

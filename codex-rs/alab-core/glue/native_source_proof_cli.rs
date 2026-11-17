@@ -31,6 +31,10 @@ const STEP_BOUND: Duration = Duration::from_secs(120);
 #[serde(rename_all = "lowercase")]
 enum Action {
     Startup,
+    #[cfg(unix)]
+    Rootstart,
+    #[cfg(unix)]
+    Rootstop,
     Contextual,
     Resample,
     Derived,
@@ -71,6 +75,10 @@ struct Reply {
 }
 #[derive(Default)]
 struct Proof {
+    #[cfg(unix)]
+    controller: Option<codex_alab_tui::frontend_control::Controller>,
+    #[cfg(unix)]
+    root_operation: Option<String>,
     config: Option<Config>,
     manager: Option<Arc<AuthManager>>,
     activity: Option<Activity>,
@@ -80,6 +88,12 @@ struct Proof {
 }
 fn unavailable() -> io::Error {
     io::Error::other("native source proof unavailable")
+}
+fn startup_error(phase: &'static str) -> io::Error {
+    // Closed phase labels only: configuration and authentication errors may
+    // contain private paths or credential data and must never be echoed.
+    eprintln!("Source qualification SDK: startup failed phase={phase}");
+    unavailable()
 }
 fn actual_state(manager: &AuthManager) -> ActualState {
     let state = *manager.auth_change_state_receiver().borrow();
@@ -105,20 +119,74 @@ impl Proof {
     }
     async fn step_inner(&mut self, action: Action) -> io::Result<Option<ActualState>> {
         match action {
+            #[cfg(unix)]
+            Action::Rootstart => {
+                if self.root_operation.is_some() {
+                    return Err(unavailable());
+                }
+                if self.controller.is_none() {
+                    self.controller = Some(codex_alab_tui::frontend_control::open().await?);
+                }
+                let operation = format!(
+                    "{:016x}{:016x}",
+                    codex_alab_core::native_source::connection_request_prefix(),
+                    codex_alab_core::native_source::connection_request_prefix()
+                );
+                // Retain the logical operation even if its terminal reply is
+                // uncertain. Never turn a retry into another backend birth.
+                self.root_operation = Some(operation.clone());
+                self.controller
+                    .as_ref()
+                    .ok_or_else(unavailable)?
+                    .start_backend(&operation, &[])
+                    .await?;
+                Ok(None)
+            }
+            #[cfg(unix)]
+            Action::Rootstop => {
+                if self.root_operation.is_none() {
+                    return Err(unavailable());
+                }
+                self.controller
+                    .as_ref()
+                    .ok_or_else(unavailable)?
+                    .stop_backend()
+                    .await?;
+                self.root_operation = None;
+                if let Some(controller) = self.controller.take() {
+                    controller.close().await?;
+                }
+                Ok(None)
+            }
             Action::Startup => {
                 if self.manager.is_some() {
                     return Err(unavailable());
                 }
+                #[cfg(unix)]
+                {
+                    self.controller = Some(
+                        codex_alab_tui::frontend_control::open()
+                            .await
+                            .map_err(|_| startup_error("controller"))?,
+                    );
+                }
                 let config = ConfigBuilder::default()
                     .build()
                     .await
-                    .map_err(|_| unavailable())?;
+                    .map_err(|_| startup_error("configuration"))?;
                 let manager = AuthManager::shared_from_config(&config, false)
                     .await
-                    .map_err(|_| unavailable())?;
-                self.observers.push(manager.alab_debug_native_retirement()?);
-                let auth = manager.auth_cached().ok_or_else(unavailable)?;
-                prove_snapshot(&auth)?;
+                    .map_err(|_| startup_error("manager"))?;
+                self.observers.push(
+                    manager
+                        .alab_debug_native_retirement()
+                        .map_err(|_| startup_error("retirement-observer"))?,
+                );
+                let auth = manager
+                    .auth()
+                    .await
+                    .ok_or_else(|| startup_error("snapshot"))?;
+                prove_snapshot(&auth).map_err(|_| startup_error("snapshot-admission"))?;
                 let state = actual_state(&manager);
                 self.snapshots.push(auth);
                 self.manager = Some(manager);
@@ -230,16 +298,27 @@ impl Proof {
                     return Err(unavailable());
                 }
                 self.snapshots.clear();
+                eprintln!("Source qualification SDK: stop snapshots released");
                 self.derived.take();
+                eprintln!("Source qualification SDK: stop derived released");
                 self.activity.take();
+                eprintln!("Source qualification SDK: stop activity released");
                 self.manager.take();
+                eprintln!("Source qualification SDK: stop manager released");
                 self.config.take();
+                eprintln!("Source qualification SDK: stop configuration released");
                 // Observer metadata retains no reader/manager/use ownership.
                 // EOF and a successful local Drop are never Closed receipts.
-                for observer in &self.observers {
+                for (index, observer) in self.observers.iter().enumerate() {
+                    eprintln!("Source qualification SDK: stop retirement index={index} waiting");
                     observer.closed().await?;
+                    eprintln!("Source qualification SDK: stop retirement index={index} closed");
                 }
                 self.observers.clear();
+                #[cfg(unix)]
+                if let Some(controller) = self.controller.take() {
+                    controller.close().await?;
+                }
                 Ok(None)
             }
         }
@@ -261,8 +340,8 @@ fn parse(line: &[u8]) -> io::Result<Command> {
     }
     Ok(command)
 }
-async fn read_command(
-    reader: &mut tokio::io::BufReader<tokio::io::Stdin>,
+async fn read_command<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
 ) -> io::Result<Option<Command>> {
     let mut line = Vec::new();
     loop {
@@ -294,12 +373,68 @@ pub(crate) async fn run() -> io::Result<()> {
     // environment variable, config setting or native image override enables it.
     std::hint::black_box(SOURCE_V1_MARK);
     std::hint::black_box(CANDIDATE_MARK);
-    if std::env::args_os().count() != 2 || !codex_alab_core::native_source_launch::requested() {
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    let owned = arguments.len() == 3 && arguments[2] == "--owned-control";
+    #[cfg(unix)]
+    let terminal = arguments.len() == 4 && arguments[2] == "--terminal-control";
+    #[cfg(not(unix))]
+    let terminal = false;
+    if (arguments.len() != 2 && !owned && !terminal)
+        || !codex_alab_core::native_source_launch::requested()
+    {
+        return Err(unavailable());
+    }
+    #[cfg(unix)]
+    let terminal = if terminal {
+        Some(
+            tokio::net::UnixStream::connect(&arguments[3])
+                .await?
+                .into_split(),
+        )
+    } else {
+        None
+    };
+    #[cfg(unix)]
+    let mut owned_control = if owned {
+        use std::os::fd::AsFd;
+        let input = std::io::stdin().as_fd().try_clone_to_owned()?;
+        let bound = codex_alab_core::native_source_launch::bind_owned_control(
+            std::os::unix::net::UnixStream::from(input),
+        )
+        .await?;
+        eprintln!("Source qualification SDK: owned bootstrap bound");
+        Some(bound)
+    } else {
+        None
+    };
+    #[cfg(not(unix))]
+    if owned {
         return Err(unavailable());
     }
     let mut proof = Proof::default();
     let mut seen = BTreeMap::<String, (Action, Reply)>::new();
-    let mut input = tokio::io::BufReader::new(tokio::io::stdin());
+    #[cfg(unix)]
+    let (terminal_input, terminal_output) = match terminal {
+        Some((reader, writer)) => (Some(reader), Some(writer)),
+        None => (None, None),
+    };
+    #[cfg(unix)]
+    let input: Box<dyn tokio::io::AsyncRead + Unpin> =
+        match (owned_control.as_mut(), terminal_input) {
+            (Some(control), None) => Box::new(control.stream()),
+            (None, Some(reader)) => Box::new(reader),
+            (None, None) => Box::new(tokio::io::stdin()),
+            _ => return Err(unavailable()),
+        };
+    #[cfg(not(unix))]
+    let input: Box<dyn tokio::io::AsyncRead + Unpin> = Box::new(tokio::io::stdin());
+    let mut input = tokio::io::BufReader::new(input);
+    #[cfg(unix)]
+    let mut output: Box<dyn tokio::io::AsyncWrite + Unpin> = match terminal_output {
+        Some(writer) => Box::new(writer),
+        None => Box::new(tokio::io::stdout()),
+    };
+    #[cfg(not(unix))]
     let mut output = tokio::io::stdout();
     while let Some(command) = read_command(&mut input).await? {
         let reply = if let Some((action, reply)) = seen.get(&command.request) {
@@ -340,7 +475,10 @@ pub(crate) async fn run() -> io::Result<()> {
         bytes.push(b'\n');
         output.write_all(&bytes).await?;
         output.flush().await?;
-        if command.action == Action::Stop {
+        let stopping = command.action == Action::Stop;
+        #[cfg(unix)]
+        let stopping = stopping || command.action == Action::Rootstop;
+        if stopping {
             return if reply.outcome == "ok" {
                 Ok(())
             } else {
@@ -353,9 +491,10 @@ pub(crate) async fn run() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[test]
     fn proof_protocol_is_closed_bounded_and_never_echoes_unvalidated_data() {
+        use super::MAX_COMMAND;
+        use super::parse;
         let good =
             br#"{"schema":1,"request":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","action":"startup"}"#;
         assert!(parse(good).is_ok());

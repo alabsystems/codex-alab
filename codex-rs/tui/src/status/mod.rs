@@ -38,3 +38,6 @@ pub(crate) use thread_usage::thread_cost_micros;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(unix)]
+pub(crate) use card::alab_retained_status; // ALAB(retained-ui): owned alias codec keeps the native card private.

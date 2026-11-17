@@ -393,3 +393,7 @@ impl dyn HistoryCell {
         self
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_cell_graph.rs"]
+pub(crate) mod alab_retained_cells; // ALAB(retained-ui): preserve actual cell identity and typed native bodies through the shared view graph.

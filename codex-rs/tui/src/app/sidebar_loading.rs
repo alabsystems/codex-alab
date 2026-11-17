@@ -214,10 +214,7 @@ impl App {
             && incoming.owns_channel(self.thread_event_channels.get(&child), target.backend_id);
         if current
             && incoming.received.close == CloseState::Reported
-            && matches!(
-                prepared.result,
-                Ok(thread_attachment::PreparedAttachment::Live(_))
-            )
+            && prepared.result.as_ref().is_ok_and(super::alab_attachment::is_live) // ALAB(source-selection): the same real close check also covers a retained live attachment.
         {
             incoming.received.close = CloseState::Checking;
             flight.incoming = Some(incoming);
@@ -307,3 +304,7 @@ impl App {
         }
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/owned_local_side_history_capture.rs"]
+mod alab_retained_side_capture; // ALAB(retained-ui): reuse actual Incoming/Openings observer custody for S2.

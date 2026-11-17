@@ -1,6 +1,9 @@
 //! Atomic ranges in the single-entry register. The composer resolves copied element IDs into
 //! rich payloads and attaches them to fresh IDs after each paste, before pruning deleted elements.
 
+#[path = "../../../../alab-tui/glue/editor_upgrade_register.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): preserve native editor transactions as data for runtime transfer.
+
 use super::TextArea;
 use super::TextElementSnapshot;
 use std::ops::Range;

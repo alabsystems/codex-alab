@@ -22,6 +22,9 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+#[path = "api_http_attempt_diagnostics.rs"]
+pub(crate) mod http_operations;
+
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(1);
 
 /// Captured absence is authoritative too: only old responses without the typed
@@ -47,6 +50,8 @@ pub(crate) fn websocket_rejection_retry_after(
                 u64::try_from(metadata.capture_elapsed.as_millis()).unwrap_or(u64::MAX)
             }),
             rejection_body_bytes = metadata.and_then(|metadata| metadata.decoded_body_bytes),
+            rejection_body_bytes_accepted =
+                metadata.and_then(|metadata| metadata.entity_bytes_accepted),
             retry_advised = advice.is_some(),
             upgrade_request_id = correlation(headers, "x-request-id")
                 .or_else(|| correlation(headers, "x-oai-request-id")),
@@ -283,6 +288,47 @@ pub(crate) fn websocket(
     websocket_diagnostics::wrap(Some(diagnostic), inner)
 }
 
+// Only typed terminal provider failures selected from error/response.failed
+// share the current frame's correlation. Keep HTTP-qualified and stream/socket
+// failures outside this family; deciding metadata ownership never asks retry policy.
+// An exhaustive match makes every future ApiError variant a deliberate decision.
+fn websocket_terminal_error_uses_event_ids(error: &ApiError) -> bool {
+    match error {
+        ApiError::ContextWindowExceeded
+        | ApiError::QuotaExceeded
+        | ApiError::UsageNotIncluded
+        | ApiError::SessionBudgetExceeded
+        | ApiError::InvalidRequest { .. }
+        | ApiError::AccessProgramNotEnabled { .. }
+        | ApiError::InvalidAudioInput { .. }
+        | ApiError::ModelNotFound { status: None, .. }
+        | ApiError::InvalidPrompt { .. }
+        | ApiError::InferenceHookDenied { .. }
+        | ApiError::ContentPolicyViolation { status: None, .. }
+        | ApiError::CyberPolicy { .. }
+        | ApiError::BioPolicy { .. }
+        | ApiError::MisalignmentPolicyViolation { .. }
+        | ApiError::FlexUnavailable => true,
+        ApiError::Transport(_)
+        | ApiError::Api { .. }
+        | ApiError::Stream(_)
+        | ApiError::WebsocketMessageTooLarge
+        | ApiError::ContentFilter
+        | ApiError::ResponseIncomplete(_)
+        | ApiError::Retryable { .. }
+        | ApiError::RateLimitExceeded { .. }
+        | ApiError::RateLimit(_)
+        | ApiError::ServerOverloaded { .. }
+        | ApiError::PolicyCapacityUnavailable { .. }
+        | ApiError::ModelNotFound {
+            status: Some(_), ..
+        }
+        | ApiError::ContentPolicyViolation {
+            status: Some(_), ..
+        } => false,
+    }
+}
+
 /// Observe the selected terminal result without changing completion-preserving
 /// cancellation cleanup or the response consumer's original error value.
 pub(crate) fn websocket_result(
@@ -290,10 +336,7 @@ pub(crate) fn websocket_result(
     result: Result<ResponseEvent, ApiError>,
 ) -> Result<ResponseEvent, ApiError> {
     result.inspect_err(|error| {
-        if matches!(
-            error,
-            ApiError::InvalidRequest { .. } | ApiError::InvalidPrompt { .. }
-        ) {
+        if websocket_terminal_error_uses_event_ids(error) {
             let ids = websocket_diagnostics::selected_ids(diagnostic);
             failed_with_response_ids(
                 diagnostic,
@@ -486,12 +529,12 @@ fn token(value: &str, max: usize) -> bool {
 }
 
 pub(super) fn correlation<'a>(headers: Option<&'a http::HeaderMap>, name: &str) -> Option<&'a str> {
-    let value = headers?.get(name)?.to_str().ok()?;
-    (token(value, 128)
-        && value
-            .bytes()
-            .all(|byte| !matches!(byte, b'.' | b'/' | b':')))
-    .then_some(value)
+    codex_alab_core::diagnostic_id::first_safe(
+        headers?
+            .get_all(name)
+            .iter()
+            .filter_map(|value| value.to_str().ok()),
+    )
 }
 
 #[cfg(test)]

@@ -70,3 +70,6 @@ mod schema_fixtures_tests;
 use tests::export;
 #[cfg(test)]
 use tests::schema_fixtures;
+
+#[path = "../../alab-core/glue/response_metadata_payload.rs"]
+pub mod alab_response_metadata; // ALAB(owned-local): typed response metadata, never Raw result or authority.

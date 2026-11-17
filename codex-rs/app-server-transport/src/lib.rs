@@ -45,6 +45,8 @@ pub use transport::start_stdio_connection;
 pub use transport::start_websocket_acceptor;
 pub use transport::take_remote_control_disabled_env;
 pub use transport::verified_local_daemon_socket;
+#[cfg(unix)]
+pub use transport::start_native_incoming_acceptor; // ALAB(upgrade): accept retained native descriptors without a named listener.
 pub use websocket_compression::CompressionConnection;
 pub use websocket_compression::WEBSOCKET_COMPRESSION_HEADER;
 pub use websocket_compression::WebSocketCompression;

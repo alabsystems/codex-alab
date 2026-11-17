@@ -1,0 +1,463 @@
+{
+  "schema": 1,
+  "base": "61f59108263da04deaacd51f12991b454d6b6b52",
+  "target": "e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1",
+  "frontier": "61f59108263da04deaacd51f12991b454d6b6b52",
+  "commits": [
+    {
+      "sha": "490394c184eba25ebf4ec728e64f9af485a4cced",
+      "subject": "Keep TUI quota state scoped to the active provider (#61977)",
+      "paths": [
+        "codex-rs/tui/src/app/backend_selection.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/backend_banner_recovery_tests.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app/tests/rate_limits.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/tests/startup.rs",
+        "codex-rs/tui/src/app/tests/streaming_interleave_e2e.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/backend_banners.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/rate_limits.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "provider-recovery",
+        "account-isolation"
+      ],
+      "decision": "adapt",
+      "reason": "Integrate native provider-scoped quota, banners and pending recovery with actual ALab selected/cached chat, shared interface, account and allowance ownership before importing.",
+      "evidence": [
+        "Canonical patch SHA256 21c50c898da68e1d40dafb75994c13e23470fc55fd0daf12a81089f96c773fc9; 41944 bytes / 940 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Preserve provider-change/lost-account recovery invalidation, same-provider quota/pending recovery, task-list inherited provider and real selected/cached chat refresh. Integrate actual owned selected-widget refresh/interface/cache/allowance behavior without stale global publishing or duplicate reads; new provider string is runtime UI state, never account/Goal/source authority. Retained state may preserve supported field or explicitly refuse unsupported ownership; no held-route activation.",
+        "Integration requirement: Adapt actual owned selected-widget quota refresh, observed_plan/catalog/shared-interface cache and same-plan notifications; new inherited_quota_provider is runtime UI data, not account/Goal authority. Required selected-versus-parked/different-provider and same-provider controls remain open.",
+        "Coverage limit: Real new-session/side-thread/native recovery UI controls are substantive, with explicit local/synthetic account fixtures. Five providers or task-list branches inside a body are not macro cases.",
+        "Coverage limit: No observed owned runtime regression or current enabled transfer regression. Additional owned shared-interface/same-plan/provider-scope migration controls remain required."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "7e59b276677a2ee970c741390fb06aada0b01ad6",
+      "subject": "Use the current billing plan for TUI thread usage (#61978)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/account_status.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app/tests/rate_limits.rs",
+        "codex-rs/tui/src/app/tests/security_setup_tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/backend_banners.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/rate_limits.rs",
+        "codex-rs/tui/src/chatwidget/settings.rs",
+        "codex-rs/tui/src/chatwidget/status_controls.rs",
+        "codex-rs/tui/src/chatwidget/tests/status_and_layout.rs",
+        "codex-rs/tui/src/chatwidget/thread_usage.rs",
+        "codex-rs/tui/src/chatwidget/thread_usage_tests.rs",
+        "codex-rs/tui/src/status/card.rs",
+        "codex-rs/tui/src/status/thread_usage.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "account-isolation"
+      ],
+      "decision": "adapt",
+      "reason": "Adapt the actual verified account/read producer and owned callers for mandatory typed plan_type while preserving failure, UUID and source custody.",
+      "evidence": [
+        "Canonical patch SHA256 1aed958afae45508e82fbb63190babfe72155efeb70b295e54d267f7c4efe4c8; 29285 bytes / 678 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Carry actual typed Account::Chatgpt account/read plan through Identity, verified response and honest failure fallback; preserve actual original UUID, connected server, cancellation, cooldown and slot release. Never substitute quota-preferred current_plan_type, parse display strings, or invent Unknown from a failed read. Preserve quota_plan/account_plan distinction: known full Codex quota wins in either reply order, Unknown does not overwrite known, rolling quota cannot restore old billing; status estimate and corrected plan travel together, including Ent26 native dollars. Align owned observed_plan/catalog and selected/parked interface against this native precedence.",
+        "Integration requirement: Exact fixed19e sites: account_identity.rs53 Identity has no typed plan;79 Account::Chatgpt match discards it;142 failed-batch fallback has display identity only;168 production AccountEmailLoaded emitter lacks mandatory plan_type. Event literals account_identity_tests.rs276/313 also omit it.",
+        "Integration requirement: Actual old two-argument on_account_email_loaded calls are account_details_tests.rs204, allowance_tests.rs1058, interface_status.rs810/833/836/1044. Carry the actual typed account/read plan through the supported verified/failure path. Do not parse display text, substitute quota-preferred current_plan_type or invent Unknown on a FAILED account read and overwrite cached account_plan.",
+        "Integration requirement: Unknown-refusal/known-plan precedence describes FULL Codex quota updates: known full-quota plan wins over account plan in either order; rolling quota cannot restore obsolete billing. It is not a license to fabricate Unknown for failed account lookup. Preserve atomic status estimate+corrected plan and Ent26 native dollar rendering.",
+        "Coverage limit: One production emitter, two owned event literals and six two-argument calls are concrete source API adaptation sites. Identity currently discards typed plan; failed-batch fallback has no typed plan field.",
+        "Coverage limit: Billing/plan display and a supplied ThreadUsage are not actual provider charge or current native Goal-budget enforcement. Owned body declarations remain fixed19e and need adaptation before integrated compilation."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "46f5a1df9f2ade44cb9712d574cde9401a755d21",
+      "subject": "Render selected MCP statusline providers in the TUI footer (#61979)",
+      "paths": [
+        "codex-rs/rmcp-client/src/bin/test_stdio_server.rs",
+        "codex-rs/tui/BUILD.bazel",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/mcp_startup.rs",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader_tests.rs",
+        "codex-rs/tui/src/chatwidget/statusline_state.rs",
+        "codex-rs/tui/src/chatwidget/thread_usage.rs",
+        "codex-rs/tui/src/statusline_provider.rs",
+        "codex-rs/tui/tests/suite/mod.rs",
+        "codex-rs/tui/tests/suite/provider_defaults.rs",
+        "codex-rs/tui/tests/suite/statusline_provider.rs",
+        "codex-rs/tui/tests/suite/unix_daemon.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy",
+        "account-isolation"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Keep selected MCP rendering under the existing under-development/default-false feature and an explicit saved provider choice; UI data does not confer native permission.",
+      "evidence": [
+        "Canonical patch SHA256 2e7136a5db58d0e002d6eb84cdf992cad10a1ffe2b3d20a20961c7f370eedf44; 41446 bytes / 1035 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Retain feature gate, read-only/history and voice/backend/thread/provider/cwd/token stale-result checks, builtin fallback and custom headline/usage events. Validate exactly one advertised-URI application/json text envelope and UiTree schema. Respect effective trusted config layers/global-vs-thread plugin ownership checks; data does not grant Goal/account/root permission. Derive actual CLI/stdio/PTY prerequisites through maintained normal planning for selected Unix integration, never force helper flags.",
+        "Coverage limit: UiTree64KiB UTF8 input checked before serde; depth16, nonnull nodes256 and leaf text16KiB checked after deserialization. This does not bound allocated MCP response or global parser/wire/memory/CPU.",
+        "Coverage limit: Provider.read explicitly documents name-based reload/thread-start command and same-owner plugin replacements as indistinguishable. Current checks are not an incarnation lease or complete owner/capability proof.",
+        "Coverage limit: Unix integration is one declaration looping Embedded/Remote/ProjectShadow; direct widget Finished injections and fake channel controls are labeled separately from genuine CLI/app-server/stdio path. Fixed19e helper planner lacks codex-tui stdio arm, an explicit integration prerequisite."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "10a3126a030fa47dbcd93c449d936c870d8329cc",
+      "subject": "Poll MCP statusline providers with fresh state and bounded reads (#61981)",
+      "paths": [
+        "codex-rs/rmcp-client/src/bin/test_stdio_server.rs",
+        "codex-rs/tui/src/chatwidget/realtime_navigation.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader_tests.rs",
+        "codex-rs/tui/tests/suite/statusline_provider.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Poll one second after successful completion with a fresh UI snapshot and a one-second resource wait, retaining late-ready rejection and original reader identity.",
+      "evidence": [
+        "Canonical patch SHA256 86e8db50d67316723cfadcfb8ff64fe0ee031fe7e0f510372cdc1a4d030603d8; 23312 bytes / 555 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Read fresh UI snapshot each cycle, then resource with one-second deadline and explicit post-return now<deadline check; successful completion schedules next poll after one second including empty tree. Preserve five-second startup lookup, error-stop behavior, reader Drop/voice retirement, token/cwd/thread/backend guards and fresh same-thread reader generation.",
+        "Coverage limit: Resource1second starts only after awaited UI snapshot, not a total pipeline bound. Final cohort also includes later shared lookup/resource failure refinements owned by rows5\u201312 review.",
+        "Coverage limit: Paused-time fake request-channel controls prove local future/receiver closure and late-ready timeout ordering. They do not prove wire cancellation, remote server completion/join or complete lifecycle ownership."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "47d9cde20e96eed528edcc155c6c0dc4daf7a33d",
+      "subject": "Refresh status line providers on config and connection changes (#61985)",
+      "paths": [
+        "codex-rs/tui/src/app/config_persistence.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/status_line_settings.rs",
+        "codex-rs/tui/src/app/status_line_settings_tests.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/reconnect.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader_tests.rs",
+        "codex-rs/tui/tests/suite/statusline_provider.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Refresh the explicit statusline preference after effective config reload, reselection, disconnect and reconnect without enabling it by default.",
+      "evidence": [
+        "Canonical patch SHA256 29959e3a5d8de94f516e6c67ddf0eb1e55415097929cce24adb6d4031da2bbe2; 13917 bytes / 301 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Keep effective native feature gate default false; absent local ALab defaults remain absent. A reader is selected only by explicit preference, not by discovery or reconnect identity.",
+        "Integration requirement: Preserve actual thread/backend/provider/cwd/token rejection and cancellation when reader is replaced; remote save writes the active LOCAL profile, not a remote host registration.",
+        "Integration requirement: Keep ALab selected-widget status/allowance ownership coordinated with native reader refresh; no new Goal/account grant from TUI status data.",
+        "Coverage limit: Cancels reader futures, not proof of server-side request cancellation or all process cleanup. No latency/efficiency measurement."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "7fb4014d52b5bc5049c389f9df015ff8c7e6e37c",
+      "subject": "Preserve statusline provider selections across thread startup (#61986)",
+      "paths": [
+        "codex-rs/tui/src/app/status_line_settings.rs",
+        "codex-rs/tui/src/app/status_line_settings_tests.rs",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader_tests.rs",
+        "codex-rs/tui/src/chatwidget/thread_usage.rs",
+        "codex-rs/tui/src/statusline_provider.rs",
+        "codex-rs/tui/src/statusline_provider/test_support.rs"
+      ],
+      "classes": [
+        "fix",
+        "feature"
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Retain an explicit same-choice advertisement before thread startup and stop failed-reader-only work while preserving actual per-thread resolution.",
+      "evidence": [
+        "Canonical patch SHA256 7c5d7132f0ce57623faeab619fcabb7c84bc90301ecf1875a2fb5f12297b9e7f; 18501 bytes / 432 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Preserve advertisement only for the same explicit choice; actual displayed-thread catalog/config-layer resolution still validates before read.",
+        "Integration requirement: No substitution of provider ID, advertised URI, UI UUID or current absence for original account/root/callback authority. Reader failures remain explicit and reselect may restart.",
+        "Coverage limit: Snapshot headline/billing selection is UI state, not native Goal budget or mutation authority. Same-name reload/replacement ambiguity remains explicit in resolver."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "568cccd4f55764bcc253fbb8843fcbaa99953094",
+      "subject": "Add a status line provider picker to `/statusline` (#61988)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__statusline_picker__tests__discovery_batch_keeps_the_highlight.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__statusline_picker__tests__statusline_providers_disconnected.snap",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/status_line_settings.rs",
+        "codex-rs/tui/src/app/statusline_picker.rs",
+        "codex-rs/tui/src/app/statusline_picker_tests.rs",
+        "codex-rs/tui/src/app/test_support.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/bottom_pane/list_selection_view.rs",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/bottom_pane/multi_select_picker.rs",
+        "codex-rs/tui/src/bottom_pane/status_line_setup.rs",
+        "codex-rs/tui/src/bottom_pane/title_setup.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__status_line_setup_popup_live_only.snap",
+        "codex-rs/tui/src/chatwidget/status_controls.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader.rs",
+        "codex-rs/tui/src/statusline_provider.rs",
+        "codex-rs/tui/src/statusline_provider/discovery.rs",
+        "codex-rs/tui/src/statusline_provider/test_support.rs",
+        "codex-rs/tui/src/ui_tree.rs",
+        "codex-rs/tui/src/ui_tree/render.rs",
+        "codex-rs/tui/tests/suite/statusline_provider.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Add opt-in discovery and explicit selection while preserving native picker/backend/thread/key ownership and unsupported live-view refusal.",
+      "evidence": [
+        "Canonical patch SHA256 8dc45c18379fa50ccd27fa86d84357cf3d4edcb4d08b8c793d2c413295acff88; 58159 bytes / 1394 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Keep feature opt-in and original native App/ChatWidget ownership. Opening/discovery alone must not start a provider; only the explicit chosen row does. Offline retains builtin editor and disables external choice.",
+        "Integration requirement: Preserve real physical key through SelectionItem.on_accept_key/MultiSelectItem.on_activate and BottomPane guard; actual owned TasksView forwards original key, DetailsView uses public KeymapContextSet constructor.",
+        "Integration requirement: All nine owned SelectionItem literals use existing Default; no owned MultiSelectItem/StatusLineSetupView constructor or replace_chat_widget_with_account caller was found in bounded fixed19e census. Do not restore obsolete APIs or invent ninth-argument sampling adaptations.",
+        "Integration requirement: Retained pending views are a CLOSED DATA codec; actual BottomPaneView default refuses unsupported live variants with WouldBlock. New picker/setup workers/closures cannot be reconstructed from scan/provider IDs; preserve exact original owner or retain refusal. Full new live actor migration is not claimed.",
+        "Coverage limit: stream.collect() delays picker batch until discovery completes; source has no measured responsiveness claim. Probe limits do not bound total inventory memory. Highlight position is not durable identity."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "a3fc418fb29d15fff9df779575aee3a5ca1ea73d",
+      "subject": "Classify status line provider failures and shorten error messages (#61990)",
+      "paths": [
+        "codex-rs/tui/src/chatwidget/statusline_reader.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader/resource.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader_tests.rs",
+        "codex-rs/tui/src/statusline_provider.rs",
+        "codex-rs/tui/src/statusline_provider_tests.rs",
+        "codex-rs/tui/tests/suite/statusline_provider.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "security-notices"
+      ],
+      "decision": "adopt",
+      "reason": "Expose safe typed failure categories while preserving resource URI, envelope and runtime validation without raw error-body diagnostics.",
+      "evidence": [
+        "Canonical patch SHA256 1cf7fd4b2d2b74209f64eb569d20e77d2d33c8b3463873c94ec6a2ab91783457; 21726 bytes / 509 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Preserve exact advertised URI, one Text resource and JSON MIME validation before UiTree decode; keep original input/account/permission boundaries.",
+        "Integration requirement: Issue labels/codes are diagnostics only. No raw RPC error/resource content should become diagnostic metadata or a recovery/Goal grant.",
+        "Coverage limit: One-second resource wait begins AFTER native snapshot creation; no universal operation/server deadline or transport-envelope memory bound. Default UiTree bounds constrain decoded resource, not all MCP transport."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "59ac39addbbcd3499319c805a916846ca8ac5fef",
+      "subject": "Surface status line discovery failures and lookup timeouts (#61993)",
+      "paths": [
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__statusline_picker__tests__statusline_discovery_warning_in_f2.snap",
+        "codex-rs/tui/src/app/statusline_picker.rs",
+        "codex-rs/tui/src/app/statusline_picker_tests.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader/resource.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader_tests.rs",
+        "codex-rs/tui/src/chatwidget/warnings.rs",
+        "codex-rs/tui/src/history_cell/warnings.rs",
+        "codex-rs/tui/src/statusline_provider.rs",
+        "codex-rs/tui/src/statusline_provider/discovery.rs",
+        "codex-rs/tui/src/statusline_provider/discovery_tests.rs",
+        "codex-rs/tui/src/statusline_provider_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "security-notices"
+      ],
+      "decision": "adopt",
+      "reason": "Bound visible discovery warning details and preserve one native lookup deadline across retries, without claiming a backend catalog or process-incarnation bound.",
+      "evidence": [
+        "Canonical patch SHA256 ee854f4b3af6e07c909117f64498715cda672aca7785be93e4ca7b4d717ce9a9; 22872 bytes / 513 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Keep warnings keyed to actual picker scan and native backend/thread ownership. Cancellation does not fabricate a completed success that clears a warning.",
+        "Integration requirement: Preserve a single five-second lookup deadline including actual config/catalog waits and late-ready rejection; retain independent picker vs configured-provider deadline instances.",
+        "Integration requirement: Native provider resolver explicitly cannot distinguish certain same-name config reload/thread-start override/same-owner plugin replacement between lookup and read. Do not call this proof of original process/credential identity. httpOrigin:null also includes invalid/unsupported HTTP mapping, so null alone does not prove actual stdio process custody.",
+        "Coverage limit: At most four sanitized server descriptions of at most80chars plus omitted count bounds visible warning details, not backend catalog/channel/global memory. Global inventory limitNone and unbounded result channel remain. Named probe concurrency4/headstart2s/lookup5s are source behavior, not measured timing."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "7df454ceb5a6f0ef51555ba59f920e9dd2e70dee",
+      "subject": "Add TypeScript contracts for custom statusline providers (#62034)",
+      "paths": [
+        ".gitattributes",
+        ".prettierignore",
+        "codex-rs/Cargo.lock",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/skills/src/assets/samples/create-statusline/references/statusline.d.ts",
+        "codex-rs/tui/Cargo.toml",
+        "codex-rs/tui/src/bottom_pane/status_line_style.rs",
+        "codex-rs/tui/src/chatwidget/statusline_contract_tests.rs",
+        "codex-rs/tui/src/chatwidget/statusline_state.rs",
+        "codex-rs/tui/src/chatwidget/statusline_state/account.rs",
+        "codex-rs/tui/src/chatwidget/statusline_state/usage.rs",
+        "codex-rs/tui/src/history_cell/mod.rs",
+        "codex-rs/tui/src/ui_tree.rs",
+        "codex-rs/tui/src/ui_tree/theme.rs",
+        "codex-rs/tui/tests/fixtures/statusline/contract.check.ts",
+        "codex-rs/tui/tests/fixtures/statusline/tsconfig.json"
+      ],
+      "classes": [
+        "protocol",
+        "packaging"
+      ],
+      "features": [
+        "native-ui",
+        "skill-discovery",
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Carry bundled TypeScript reference and source fixtures while retaining actual Rust validators and honest partial generator/compile coverage.",
+      "evidence": [
+        "Canonical patch SHA256 3d3f6625feef59710a7453edab3fdae73cf8dbf5916366fb03bc35ad745aea50; 60283 bytes / 1283 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Use native Rust runtime validation as contract for values: TS HexRgb=#${string}, string links and numeric gap are broader than six-hex color/HTTP(S) no-control link/safe-integer runtime constraints.",
+        "Integration requirement: Keep generated schema/source boundaries exact. Bounded zstd decode and nested-JSON comparison proves only one generated schema description leaf changed; no generator, resolver, TypeScript compiler or Cargo execution occurred.",
+        "Integration requirement: Actual test-only dev dependencies are upstream source data; future integration must use maintained resolver, never manually edit upstream lock entries.",
+        "Coverage limit: Rust contract control default branch installs actual bundle and checks FIVE export-name substrings, not full generated equality/TS compilation. UPDATE_STATUSLINE_TYPES branch regenerates then returns. UiTree64KiB text limit is pre-parse; depth16/node256/text16KiB structural checks occur after deserialization and do not prove arbitrary deserialization stack or whole-envelope/catalog memory bounds."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "b47df356af83e099a047e78ef9d694003d4a8c77",
+      "subject": "Add a bundled skill for authoring MCP statuslines (#62036)",
+      "paths": [
+        "codex-rs/core/tests/suite/scenarios.rs",
+        "codex-rs/core/tests/suite/scenarios_statusline_authoring_tests.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__statusline_authoring__explicit_statusline_mention_loads_the_bundled_skill.snap",
+        "codex-rs/skills/src/assets/samples/create-statusline/SKILL.md",
+        "codex-rs/skills/src/assets/samples/create-statusline/agents/openai.yaml",
+        "codex-rs/skills/src/assets/samples/create-statusline/assets/statusline.py",
+        "codex-rs/skills/tests/test_statusline_starter.py"
+      ],
+      "classes": [
+        "feature",
+        "packaging"
+      ],
+      "features": [
+        "skill-discovery",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Package explicitly invoked authoring instructions and a sample without enabling the feature, registering a provider or treating skill source as operator instructions.",
+      "evidence": [
+        "Canonical patch SHA256 e50b45730bb33a6d07b09e0e2eb414a826422175017c3eb8a304155eda74deb4; 17001 bytes / 384 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Treat upstream SKILL.md as reviewed source DATA, not instructions to activate it. agents/openai.yaml allow_implicit_invocation:false remains. Shipping content does not enable native feature, register MCP, restart service, submit prompt or authorize held remote/all-root routes.",
+        "Integration requirement: Preserve local host correct stdio registration/config and explicit user permission boundary when skill is actually invoked later. No copied credential/account/root/Goal authority from sample request metadata.",
+        "Integration requirement: Native bundle installer fingerprints and replaces packaged .system content; user same-name skill separation must survive explicit system binding.",
+        "Coverage limit: Python sample is illustrative newline JSON stdin/stdout, with no general input byte/memory/deadline hardening. One Python unittest launches actual sample with10s timeout/ASCII environment and Unicode snapshots; not executed. Core explicit-mention test has network skip and dummy auth; no real registration/render or external account activation proof."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1",
+      "subject": "Add custom status line authoring to `/statusline` (#62037)",
+      "paths": [
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__statusline_authoring__explicit_statusline_mention_loads_the_bundled_skill.snap",
+        "codex-rs/skills/src/assets/samples/create-statusline/SKILL.md",
+        "codex-rs/tui/src/activation_key_guard.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/statusline_picker_tests.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/bottom_pane/multi_select_picker.rs",
+        "codex-rs/tui/src/bottom_pane/status_line_setup.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__status_line_setup_popup_live_only.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__status_line_setup_popup_native_cloud.snap",
+        "codex-rs/tui/src/chatwidget/status_controls.rs",
+        "codex-rs/tui/src/chatwidget/tests/status_surface_command_tests.rs",
+        "codex-rs/tui/src/chatwidget/tests/status_surface_previews.rs",
+        "codex-rs/tui/tests/suite/statusline_provider.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "skill-discovery",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Create a supported fresh local conversation with an editable explicit System-skill draft and preserve original source input without auto-submission.",
+      "evidence": [
+        "Canonical patch SHA256 5b3ad80d58a029da0f344446cba117c201a943eae6efef0c3b12c60ea910be7f; 41937 bytes / 875 lines. Root whole-read rows1\u20134; author whole-read textual rows5\u201312 and bounded-decoded row10 generated schema, with C independent first4 critical/oracle/owned checks. Attribution is source reading, not runtime qualification.",
+        "alab/reviews/upstream-intake-2026-11-17-after61f591.md; proposal base 3cd0f624e8a610d9ac11afc444c4ab4c87b16d4c, owned-code comparison 19e8121509c556fdd0c7fad0093976977324f6e6, final cohort e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1. 61 per-commit control assignments /56 distinct Rust declarations /56 declared cases; all not_run/UNRUN/final_binding null. Python unittest1 and TypeScript fixture are separate.",
+        "Integration requirement: Keep actual setup/feature/backend/displayed-thread owner checks; Cloud hides Create and stale dismissed action cannot contact server. New conversation receives no initial UserTurn.",
+        "Integration requirement: Use actual new-thread cwd skills_list response and enabled System scope/name for explicit binding; same-name User skill does not supply system path. Missing system skill yields plain editable draft, not synthesized permission.",
+        "Integration requirement: Preserve actual handoff pause, source-thread queue/drain/input restoration and original backend/account/cwd/root/FD/start leases. Live callbacks/requests cannot be recreated from IDs or strings; held routes remain held.",
+        "Integration requirement: Preserve original physical activation key and monotonic suppression deadline. Owned retained activation codec stores actual key/until/legacy/active, not an exhaustive serialized ActivationKeySuppression enum; new PressOnlyFallback is not an automatic owned codec break.",
+        "Integration requirement: No owned direct replace_chat_widget_with_account/StatuslineProviderActions constructor was found. Future source composition still must preserve original native input/cancel behavior, and full source/newactor retained migration remains separate.",
+        "Coverage limit: One embedded creation fixture checks system shadow/no auto-submit/editability/source queue; separate mocked Cloud unsubscribe/interrupted-notification control covers late restored input. Neither proves activation of held Cloud/all-root ownership. Source key-guard behavior has no measured latency/repeat performance claim."
+      ],
+      "revisit": ""
+    }
+  ]
+}

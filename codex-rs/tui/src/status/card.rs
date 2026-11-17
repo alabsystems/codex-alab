@@ -1013,3 +1013,7 @@ impl HistoryCell for Arc<StatusHistoryCell> {
         self.display_hyperlink_lines(width)
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_status_cells.rs"]
+pub(crate) mod alab_retained_status; // ALAB(retained-ui): preserve native status/handle shared UI state without a callback or account constructor.

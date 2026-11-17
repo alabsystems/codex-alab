@@ -35,9 +35,9 @@ impl ThreadEventStore {
             return;
         }
 
-        self.push_buffered_event(ThreadBufferedEvent::Notification(Box::new(
-            notification.into_owned(),
-        )));
+        let notification=Box::new(notification.into_owned());
+        #[cfg(unix)] self.alab_side_delivery.buffered(&notification,&self.buffer); // ALAB(retained-side): real new buffered allocation, rebase retains its receipt.
+        self.push_buffered_event(ThreadBufferedEvent::Notification(notification));
     }
 
     pub(super) fn push_buffered_event(&mut self, event: ThreadBufferedEvent) {

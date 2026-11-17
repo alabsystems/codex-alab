@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run the complete Python workflow after its native prerequisites succeed.
 
-Discovery imports the fixed test tree once. NativeRunnerTests then runs as one
+Discovery imports the fixed test tree and three smoke test modules once.
+NativeRunnerTests then runs as one
 ordinary unittest phase, including its class and module cleanup, before any
 remaining test bodies run. Native admission, environment and deadlines belong
 to the existing native fixture and are not changed here.
@@ -13,11 +14,14 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+import runpy
 import sys
 import unittest
 
 
 TESTS = Path(__file__).resolve().parent / "tests"
+SMOKE = Path(__file__).resolve().parent / "smoke"
+SMOKE_TEST_FILES = ("history_pagination_test.py", "renewal_follow_test.py", "weekly_reset_test.py")
 NATIVE_CLASS = "test_unit_runner_native.NativeRunnerTests"
 REQUIRED_NATIVE = (
     NATIVE_CLASS + ".test_existing_matching_cfg_runner_is_preserved_and_conflicts",
@@ -26,6 +30,7 @@ REQUIRED_NATIVE = (
 )
 MANIFEST_PREFIX = "ALAB_PYTHON_MANIFEST "
 SUMMARY_PREFIX = "ALAB_PYTHON_WORKFLOW "
+CLI = runpy.run_path(str(Path(__file__).with_name("cli_status.py")))
 
 
 def _flatten(suite):
@@ -41,7 +46,16 @@ def _flatten(suite):
 def _discover():
     loader = unittest.TestLoader()
     suite = loader.discover(str(TESTS), pattern="test_*.py", top_level_dir=str(TESTS))
-    return tuple(_flatten(suite)), tuple(loader.errors)
+    cases = list(_flatten(suite))
+    for name in SMOKE_TEST_FILES:
+        if not (SMOKE / name).is_file():
+            raise ImportError("required smoke unittest module is missing")
+        suite = loader.discover(str(SMOKE), pattern=name, top_level_dir=str(SMOKE))
+        selected = tuple(_flatten(suite))
+        if not selected:
+            raise ImportError("required smoke unittest module contains no cases")
+        cases.extend(selected)
+    return tuple(cases), tuple(loader.errors)
 
 
 def _native_class():
@@ -62,6 +76,7 @@ class _TrackingResult(unittest.TextTestResult):
         self.active_id = None
         self.outcome_seen = False
         self.success_seen = False
+        self.expected_failure_seen = False
 
     def integrity_error(self, code):
         if code not in self.phase["integrity_errors"]:
@@ -100,6 +115,7 @@ class _TrackingResult(unittest.TextTestResult):
             self.integrity_error("start_identity_mismatch")
         self.active, self.active_id = test, name
         self.outcome_seen = self.success_seen = False
+        self.expected_failure_seen = False
         super().startTest(test)
 
     def stopTest(self, test):
@@ -140,6 +156,10 @@ class _TrackingResult(unittest.TextTestResult):
 
     def addExpectedFailure(self, test, err):
         self.observe_outcome(test)
+        if test is self.active:
+            if self.expected_failure_seen:
+                self.integrity_error("duplicate_expected_failure")
+            self.expected_failure_seen = True
         super().addExpectedFailure(test, err)
 
     def addUnexpectedSuccess(self, test):
@@ -296,35 +316,49 @@ def _run_cases(cases, *, discovery_errors=(), preflight_errors=(), stdout=None, 
     return 0 if success else 1
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
+def _diagnostic(message):
+    """Protect the existing formatted messages without exposing exception values."""
+    return CLI["report_failure"]("", message)
+
+
+def _run_cli(argv):
     if argv:
-        print("python_tests.py takes no arguments", file=sys.stderr)
+        _diagnostic("python_tests.py takes no arguments")
         return _run_cases((), preflight_errors=("unsupported_arguments",))
     try:
         cases, errors = _discover()
     except SystemExit as error:
-        if error.code is not None and error.code != 0:
+        if not CLI["successful_exit"](error):
             raise
-        print("Python discovery incomplete: requested a successful process exit",
-              file=sys.stderr)
+        _diagnostic("Python discovery incomplete: requested a successful process exit")
         return _run_cases((), discovery_errors=("SystemExit",))
     except Exception as error:
-        print(f"Python discovery failed: {type(error).__name__}", file=sys.stderr)
+        _diagnostic(f"Python discovery failed: {type(error).__name__}")
         return _run_cases((), discovery_errors=(type(error).__name__,))
     if errors:
         for error in errors:
-            print(error, file=sys.stderr)
+            _diagnostic(error)
     try:
         return _run_cases(cases, discovery_errors=errors)
     except SystemExit as error:
         # A fixture's successful process exit is still an incomplete workflow.
         # The private runner has already reported the interruption and preserves it.
-        if error.code is None or error.code == 0:
-            print("Python workflow incomplete: fixture requested a successful process exit",
-                  file=sys.stderr)
+        if CLI["successful_exit"](error):
+            _diagnostic("Python workflow incomplete: fixture requested a successful process exit")
             return 1
         raise
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        return _run_cli(argv)
+    except SystemExit as error:
+        if not CLI["successful_exit"](error):
+            raise
+        return _diagnostic("Python workflow incomplete: requested a successful process exit")
+    except Exception as error:
+        return _diagnostic(f"Python workflow failed: {type(error).__name__}")
 
 
 if __name__ == "__main__":

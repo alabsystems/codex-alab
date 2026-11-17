@@ -8,7 +8,7 @@ fn recovery_message_names_checkout_and_safe_manual_action() {
     let recovery = StartupRecovery {
         root: PathBuf::from("checkout with spaces"),
         // This test inspects rendering without printing or changing terminal state on drop.
-        finished: AtomicBool::new(true),
+        finished: Arc::new(AtomicBool::new(true)), // ALAB(owned-local): original recovery resource is now shared.
     };
     insta::assert_snapshot!(recovery.message(), @r#"
     Startup did not finish binding a thread to this worktree: "checkout with spaces"
@@ -90,12 +90,14 @@ async fn refreshed_bundle_rechecks_source_during_config_reload() -> anyhow::Resu
     };
     let recovery = Arc::new(StartupRecovery {
         root: destination.clone(),
-        finished: AtomicBool::new(true),
+        finished: Arc::new(AtomicBool::new(true)), // ALAB(owned-local): original recovery resource is now shared.
     });
+    let backend_binding = codex_alab_task_worktree::StartupBinding::from_allocated(manager.clone(), checkout.clone(), recovery.finished.clone()); // ALAB(owned-local): genuine fixture allocation resource.
     let worktree = ManagedTuiWorktree {
         manager,
         checkout,
         recovery,
+        backend_binding, // ALAB(owned-local): same object as ordinary preparation.
     };
     let overrides = ConfigOverrides {
         cwd: Some(destination),

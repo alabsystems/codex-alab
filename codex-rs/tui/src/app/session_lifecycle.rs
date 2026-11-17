@@ -400,14 +400,7 @@ impl App {
         } else {
             ResumeModelSettings::PreserveExistingThread
         };
-        let prepared = super::thread_attachment::prepare(
-            app_server,
-            &self.local_settings,
-            &self.config,
-            thread_id,
-            resume_settings,
-        )
-        .await?;
+        let prepared = super::alab_attachment::prepare_selection(self, app_server, thread_id, resume_settings).await?; // ALAB(source-selection): the actual App caller distinguishes Side from primary/agent selection before Resume.
         Ok(self
             .install_thread_attachment(app_server, thread_id, prepared, ChannelMode::ReplaceLive)
             .await)
@@ -420,6 +413,10 @@ impl App {
         prepared: PreparedAttachment,
         channel_mode: ChannelMode<'_>,
     ) -> bool {
+        #[cfg(unix)] let (prepared, retained_install) = match super::alab_attachment::begin_install(app_server, thread_id, prepared) { // ALAB(source-selection): keep the one replay before the original store awaits.
+            Ok(actual) => actual,
+            Err(error) => { self.app_event_tx.send(AppEvent::FatalExitRequest(error.to_string())); return false; }
+        };
         let incoming = match channel_mode {
             ChannelMode::ReplaceLive => None,
             ChannelMode::Reuse(updates) => Some(updates),
@@ -431,6 +428,7 @@ impl App {
             .get(&thread_id)
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ExternalWriter);
         let (mut session, turns, live_attached) = match prepared {
+            #[cfg(unix)] PreparedAttachment::Retained(_) => return false, // ALAB(source-selection): an unentered retained carrier cannot become ordinary replay.
             PreparedAttachment::Live(started) => {
                 if let Some(entry) = self.agent_navigation.get(&thread_id).cloned() {
                     self.upsert_agent_picker_thread(
@@ -535,6 +533,8 @@ impl App {
         store.replay_may_have_output |= replay_may_have_output;
         store.merge_recap_progress(recap_progress);
         store.rebase_buffer_after_session_refresh();
+        #[cfg(unix)] drop(store); // ALAB(source-selection): original store application finishes before publishing its replay boundary.
+        #[cfg(unix)] if let Err(error) = super::alab_attachment::finish_install(self, retained_install, live_attached) { self.app_event_tx.send(AppEvent::FatalExitRequest(error.to_string())); return false; } // ALAB(source-selection): finish only after the unchanged original store/update application.
         live_attached
     }
 
@@ -545,6 +545,7 @@ impl App {
     /// This helper copies every known nickname/role from `AgentNavigationState` into the
     /// replacement widget so that replayed collab items render agent names immediately.
     pub(super) fn replace_chat_widget(&mut self, mut chat_widget: ChatWidget) {
+        #[cfg(unix)] chat_widget.alab_bind_retained_startup(&self.app_server_target); // ALAB(retained-frontier): reconnect/thread UI replacement preserves the same physical-target input hold.
         chat_widget.inherit_view_transition_key_guard(&mut self.chat_widget);
         chat_widget.fork_in_progress = self.chat_widget.fork_in_progress;
         self.pending_right_click_paste = None;
@@ -828,7 +829,11 @@ impl App {
             });
         }
         self.render_thread_snapshot(tui, app_server, thread_id, snapshot, !is_replay_only)?;
-        if !is_replay_only
+        let retained_opening_allowed = { // ALAB(retained-ui): an actual pending frontier inhibits only taking the original owned message.
+            #[cfg(unix)] { super::alab_retained_passive::may_release_opening(self) }
+            #[cfg(not(unix))] { true }
+        };
+        if !is_replay_only && retained_opening_allowed
             && let Some(message) = self
                 .side_threads
                 .get_mut(&thread_id)
@@ -977,6 +982,8 @@ impl App {
     pub(super) async fn reset_thread_event_state(&mut self) {
         let voice_owner = self.voice_owner_thread_id();
         let mut previous_pending = std::mem::take(&mut self.pending_app_server_requests);
+        #[cfg(unix)]
+        { self.pending_app_server_requests.alab_retained_replies = previous_pending.alab_retained_replies.clone(); } // ALAB(retained-ui): same unconfirmed reply owner survives original request-map reset before await.
         // Move retained tasks' approvals to background routing before clearing request bookkeeping.
         for (thread_id, requests) in &mut self.agents_overview.dispatched_requests {
             if let Some(channel) = self.thread_event_channels.get(thread_id) {
@@ -1092,6 +1099,7 @@ impl App {
             .set_queue_submissions_until_session_configured(/*queue*/ false);
         match result {
             Ok(started) => {
+                let (started, alab_installation) = super::alab_construction_app::prepare_primary(self, Some(app_server), started).await?; // ALAB(source-selection): keep the whole result before startup UI mutation.
                 self.chat_widget.mark_fresh_task_for_sparkle(&started);
                 let thread_id = started.session.thread_id;
                 if started.task_tools_available {
@@ -1111,6 +1119,8 @@ impl App {
                     | ThreadBufferedEvent::FeedbackSubmission(_) => true,
                 });
                 let previous_pending = std::mem::take(&mut self.pending_app_server_requests);
+                #[cfg(unix)]
+                { self.pending_app_server_requests.alab_retained_replies = previous_pending.alab_retained_replies.clone(); } // ALAB(retained-ui): background routing must not discard already submitted human replies.
                 for event in &self.pending_primary_events {
                     if let ThreadBufferedEvent::Request(request) = event {
                         let retained = previous_pending.buffered_request((**request).clone());
@@ -1155,8 +1165,7 @@ impl App {
                         started.session.approval_policy,
                     )?;
                 }
-                self.enqueue_primary_thread_session(started.session, started.turns)
-                    .await?;
+                alab_installation.install(self, Some(app_server), started, ThreadAttachPresentation::SessionLineage).await?; // ALAB(source-selection): original startup replay consumes its single carrier.
                 self.apply_backend_banner_fallback(app_server).await;
                 if let Some(model) = self.harness_overrides.model.as_deref()
                     && model == self.chat_widget.current_model()
@@ -1427,6 +1436,7 @@ impl App {
         if let Err(err) = self
             .replace_chat_widget_with_account(
                 tui,
+                Some(app_server), // ALAB(source-selection): preserve the original session through UI replacement.
                 started,
                 presentation,
                 initial_user_message,
@@ -1453,12 +1463,14 @@ impl App {
     pub(super) async fn replace_chat_widget_with_app_server_thread(
         &mut self,
         tui: &mut tui::Tui,
+        app_server: Option<&mut AppServerSession>, // ALAB(source-selection): actual retained replay must keep its live session.
         started: AppServerStartedThread,
         presentation: ThreadAttachPresentation,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
     ) -> Result<()> {
         self.replace_chat_widget_with_account(
             tui,
+            app_server, // ALAB(source-selection): preserve the original session through UI replacement.
             started,
             presentation,
             initial_user_message,
@@ -1470,11 +1482,14 @@ impl App {
     async fn replace_chat_widget_with_account(
         &mut self,
         tui: &mut tui::Tui,
+        mut app_server: Option<&mut AppServerSession>, // ALAB(source-selection): actual retained replay must keep its live session.
         started: AppServerStartedThread,
         presentation: ThreadAttachPresentation,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
         account: Option<SessionAccount>,
     ) -> Result<()> {
+        let (started, alab_installation) = super::alab_construction_app::prepare_primary(self, app_server.as_deref_mut(), started).await?; // ALAB(source-selection): original result and replay precede UI changes.
+
         // Initial messages are for freshly attached primary threads only. Thread switches and
         // resume/fork flows pass `None` so they cannot replay old history and then auto-submit a new
         // user turn by accident.
@@ -1543,11 +1558,7 @@ impl App {
         if started.blocks_direct_input {
             self.mark_primary_thread_parent_owned(started.session.thread_id);
         }
-        self.enqueue_primary_thread_session_with_presentation(
-            started.session,
-            started.turns,
-            presentation,
-        )
+        alab_installation.install(self, app_server, started, presentation) // ALAB(source-selection): consume the exact original replay with its chosen presentation.
         .await?;
         Ok(())
     }
@@ -1790,6 +1801,7 @@ impl App {
         match self
             .replace_chat_widget_with_app_server_thread(
                 tui,
+                Some(app_server), // ALAB(source-selection): retain actual session context for a retained construction.
                 resumed,
                 ThreadAttachPresentation::SessionLineage,
                 /*initial_user_message*/ None,

@@ -28,9 +28,41 @@ impl<M> Default for Group<M> {
 }
 pub struct Host<M>(Arc<Handle<M>>);
 struct Handle<M> {
-    group: Arc<Group<M>>,
+    // A manager may itself contain a Host<Manager>. Keep the group's storage
+    // representation behind its checked thread-safe interface so proving the
+    // manager's auto traits does not recursively unfold its context table.
+    group: Arc<dyn GroupAccess<M>>,
     id: u64,
     closed: AtomicBool,
+}
+trait GroupAccess<M>: Send + Sync {
+    fn same_group(&self, group: &Group<M>) -> bool;
+    fn current(&self, id: u64) -> Option<Arc<M>>;
+    fn changed(&self) -> &Notify;
+    fn remove(&self, id: u64);
+}
+impl<M: Send + Sync + 'static> GroupAccess<M> for Group<M> {
+    fn same_group(&self, group: &Group<M>) -> bool {
+        std::ptr::eq(self, group)
+    }
+    fn current(&self, id: u64) -> Option<Arc<M>> {
+        self.contexts.load().get(&id).cloned()
+    }
+    fn changed(&self) -> &Notify {
+        &self.changed
+    }
+    fn remove(&self, id: u64) {
+        loop {
+            let observed = self.contexts.load_full();
+            let mut next = (*observed).clone();
+            next.remove(&id);
+            let previous = self.contexts.compare_and_swap(&observed, Arc::new(next));
+            if Arc::ptr_eq(&previous, &observed) {
+                self.changed.notify_waiters();
+                return;
+            }
+        }
+    }
 }
 impl<M> Clone for Host<M> {
     fn clone(&self) -> Self {
@@ -51,7 +83,10 @@ fn unavailable() -> io::Error {
     io::Error::other("source context selection unavailable")
 }
 impl<M> Group<M> {
-    pub fn register(self: &Arc<Self>, initial: Arc<M>) -> io::Result<Host<M>> {
+    pub fn register(self: &Arc<Self>, initial: Arc<M>) -> io::Result<Host<M>>
+    where
+        M: Send + Sync + 'static,
+    {
         let id = self
             .next
             .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -87,7 +122,7 @@ impl<M> Group<M> {
             let mut seen = std::collections::BTreeSet::new();
             for replacement in replacements {
                 let handle = &replacement.host.0;
-                if !Arc::ptr_eq(&handle.group, self)
+                if !handle.group.same_group(self)
                     || handle.closed.load(Ordering::Acquire)
                     || !seen.insert(handle.id)
                     || !observed
@@ -109,7 +144,10 @@ impl<M> Group<M> {
 impl<M> Host<M> {
     /// Preserve genuine metadata when registration cannot issue a live host.
     /// The isolated, permanently closed handle cannot join any publication.
-    pub fn closed(initial: Arc<M>) -> Self {
+    pub fn closed(initial: Arc<M>) -> Self
+    where
+        M: Send + Sync + 'static,
+    {
         let group = Arc::new(Group {
             contexts: ArcSwap::from_pointee(BTreeMap::from([(0, initial)])),
             next: AtomicU64::new(1),
@@ -125,13 +163,7 @@ impl<M> Host<M> {
     /// Metadata selection is always a real initialized context. Existing
     /// references keep the old context; no cache is transplanted into it.
     pub fn metadata_current(&self) -> io::Result<Arc<M>> {
-        self.0
-            .group
-            .contexts
-            .load()
-            .get(&self.0.id)
-            .cloned()
-            .ok_or_else(unavailable)
+        self.0.group.current(self.0.id).ok_or_else(unavailable)
     }
     pub fn capture(&self) -> io::Result<Arc<M>> {
         if self.0.closed.load(Ordering::Acquire) {
@@ -145,11 +177,11 @@ impl<M> Host<M> {
     }
     pub fn close(&self) {
         self.0.closed.store(true, Ordering::Release);
-        self.0.group.changed.notify_waiters();
+        self.0.group.changed().notify_waiters();
     }
     pub async fn changed(&self, previous: &Arc<M>) -> io::Result<()> {
         loop {
-            let changed = self.0.group.changed.notified();
+            let changed = self.0.group.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             let current = self.capture()?;
@@ -162,19 +194,7 @@ impl<M> Host<M> {
 }
 impl<M> Drop for Handle<M> {
     fn drop(&mut self) {
-        loop {
-            let observed = self.group.contexts.load_full();
-            let mut next = (*observed).clone();
-            next.remove(&self.id);
-            let previous = self
-                .group
-                .contexts
-                .compare_and_swap(&observed, Arc::new(next));
-            if Arc::ptr_eq(&previous, &observed) {
-                self.group.changed.notify_waiters();
-                return;
-            }
-        }
+        self.group.remove(self.id);
     }
 }
 
@@ -205,12 +225,13 @@ mod tests {
                 }])
                 .is_err()
         );
+        let standalone = Arc::new(Group::default());
+        let standalone_host = standalone.register(original.clone()).unwrap();
+        standalone_host.close();
         assert!(
-            closed
-                .0
-                .group
+            standalone
                 .publish(&[Replacement {
-                    host: &closed,
+                    host: &standalone_host,
                     expected: &original,
                     next,
                 }])
@@ -226,7 +247,7 @@ mod tests {
         ));
         let private = observer.0.group.clone();
         drop(observer);
-        assert!(private.contexts.load().is_empty());
+        assert!(private.current(0).is_none());
     }
 
     #[test]
@@ -247,6 +268,20 @@ mod tests {
         let first = group.register(a.clone()).unwrap();
         let second = group.register(other.clone()).unwrap();
         let captured = first.capture().unwrap();
+        let foreign_group = Arc::new(Group::default());
+        let foreign = foreign_group.register(a.clone()).unwrap();
+        assert_eq!(first.0.id, foreign.0.id);
+        assert!(
+            group
+                .publish(&[Replacement {
+                    host: &foreign,
+                    expected: &a,
+                    next: b.clone(),
+                }])
+                .is_err()
+        );
+        assert!(Arc::ptr_eq(&first.capture().unwrap(), &a));
+        assert!(Arc::ptr_eq(&foreign.capture().unwrap(), &a));
         assert!(
             group
                 .publish(&[
@@ -294,17 +329,25 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn pointer_change_wakes_with_equal_data_and_closed_capture_refuses() {
+    #[test]
+    fn pointer_change_wakes_with_equal_data_and_closed_capture_refuses() {
+        struct CountWake(AtomicU64);
+        impl std::task::Wake for CountWake {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
         let group = Arc::new(Group::default());
         let a = Arc::new(7);
         let b = Arc::new(7);
         let host = group.register(a.clone()).unwrap();
-        let changed = host.changed(&a);
-        tokio::pin!(changed);
-        assert!(
-            std::future::poll_fn(|cx| Poll::Ready(changed.as_mut().poll(cx).is_pending())).await
-        );
+        let wakes = Arc::new(CountWake(AtomicU64::new(0)));
+        let waker = std::task::Waker::from(wakes.clone());
+        let mut context = std::task::Context::from_waker(&waker);
+        let mut changed = std::pin::pin!(host.changed(&a));
+        assert!(changed.as_mut().poll(&mut context).is_pending());
+        let before_publish = wakes.0.load(Ordering::Relaxed);
         group
             .publish(&[Replacement {
                 host: &host,
@@ -312,10 +355,26 @@ mod tests {
                 next: b.clone(),
             }])
             .unwrap();
-        changed.await.unwrap();
+        assert!(wakes.0.load(Ordering::Relaxed) > before_publish);
+        assert!(matches!(
+            changed.as_mut().poll(&mut context),
+            Poll::Ready(Ok(()))
+        ));
+        let mut closing = std::pin::pin!(host.changed(&b));
+        assert!(closing.as_mut().poll(&mut context).is_pending());
+        let before_close = wakes.0.load(Ordering::Relaxed);
         host.close();
+        assert!(wakes.0.load(Ordering::Relaxed) > before_close);
+        assert!(matches!(
+            closing.as_mut().poll(&mut context),
+            Poll::Ready(Err(_))
+        ));
         assert!(host.capture().is_err());
-        assert!(host.changed(&b).await.is_err());
+        let mut closed = std::pin::pin!(host.changed(&b));
+        assert!(matches!(
+            closed.as_mut().poll(&mut context),
+            Poll::Ready(Err(_))
+        ));
         assert!(Arc::ptr_eq(&host.metadata_current().unwrap(), &b));
         assert!(
             group

@@ -57,7 +57,9 @@ async fn model_catalog_prefetch_and_refresh_use_server_discovery() -> color_eyre
         let client = AppServerClient::Cloud(client);
         let mut session = AppServerSession::new(BackendId::new(), client, mode);
         session.prefetch_model_list();
-        let initial = session.prefetched_model_list.take().unwrap().await;
+        let initial = crate::app_server_session::alab_session_models::observer(&mut session) // ALAB(retained-ui): observe the SAME retained prefetch through its original consumer.
+            .ok_or_else(|| color_eyre::eyre::eyre!("original prefetch observer missing"))?
+            .await;
         match error_code {
             _ if cloud => assert!(initial?.is_empty()),
             None => assert_eq!(initial?, vec![preset.clone()]),

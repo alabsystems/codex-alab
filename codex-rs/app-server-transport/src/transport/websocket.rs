@@ -144,6 +144,7 @@ async fn websocket_upgrade_handler(
                 websocket_reader,
                 state.transport_event_tx,
                 compression,
+                None, // ALAB(owned-local): ordinary listener has no native resource.
             )
             .await;
         })
@@ -174,6 +175,7 @@ pub async fn start_websocket_acceptor(
     }
     let listener = TcpListener::bind(bind_address).await?;
     let local_addr = listener.local_addr()?;
+    #[cfg(unix)] codex_alab_core::native_backend_owner::publish_listener(&listener).await?; // ALAB(live-update): publish the actual listener on its original bound native channel.
     print_websocket_startup_banner(local_addr);
     info!("app-server websocket listening on ws://{local_addr}");
 
@@ -207,6 +209,7 @@ pub(crate) async fn run_websocket_connection<M, SinkError, StreamError>(
     websocket_reader: impl futures::stream::Stream<Item = Result<M, StreamError>> + Send + 'static,
     transport_event_tx: mpsc::Sender<TransportEvent>,
     compression: WebSocketCompression,
+    resource: Option<codex_alab_core::connection_resource::ConnectionResource>, // ALAB(owned-local): retain physical-delivery custody through real connection allocation.
 ) where
     M: AppServerWebSocketMessage + Send + 'static,
     SinkError: Send + 'static,
@@ -237,6 +240,7 @@ pub(crate) async fn run_websocket_connection<M, SinkError, StreamError>(
             connection_id,
             origin: ConnectionOrigin::WebSocket,
             auth: None,
+            resource, // ALAB(owned-local): carry the original accepted allocation through this real ConnectionId.
             writer: writer_tx,
             disconnect_sender: Some(disconnect_token.clone()),
         })
@@ -268,16 +272,19 @@ pub(crate) async fn run_websocket_connection<M, SinkError, StreamError>(
         _ = &mut outbound_task => {
             disconnect_token.cancel();
             inbound_task.abort();
+            let _ = (&mut inbound_task).await; // ALAB(retained-ui): join SAME reader before publishing its drain.
         }
         _ = &mut inbound_task => {
             disconnect_token.cancel();
             outbound_task.abort();
+            let _ = (&mut outbound_task).await; // ALAB(retained-ui): retain real socket task cleanup, no detached loser.
         }
     }
 
     let _ = transport_event_tx
         .send(TransportEvent::ConnectionClosed { connection_id })
         .await;
+    let _ = transport_event_tx.send(TransportEvent::AlabIngressDrained { connection_id }).await; // ALAB(retained-ui): ordered after actual joined reader and all its event sends.
 }
 
 pub(crate) enum IncomingWebSocketMessage {

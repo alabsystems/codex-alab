@@ -50,3 +50,7 @@ impl ActivityDetails {
             .collect()
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_activity_details.rs"]
+pub(in crate::history_cell) mod alab_retained_details; // ALAB(retained-ui): preserve exact native activity state and shared graph identity.

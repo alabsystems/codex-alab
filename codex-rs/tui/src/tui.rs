@@ -63,6 +63,9 @@ use codex_config::types::NotificationCondition;
 use codex_config::types::NotificationMethod;
 
 mod alternate_screen;
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_ui_frontier_draw.rs"]
+pub(crate) mod alab_retained_draw; // ALAB(retained-frontier): successful terminal draws belong to this actual Tui.
 mod event_stream;
 mod frame_rate_limiter;
 mod frame_requester;
@@ -710,6 +713,10 @@ pub(crate) fn tmux_fullscreen_image_base() -> Option<u32> {
 }
 
 pub struct Tui {
+    #[cfg(unix)] pub(crate) alab_image_renderer: Option<Arc<crate::retained_image_renderer::Binding>>, // ALAB(retained-ui): actual Config/Entered/pre-ACK renderer, never decoded defaults.
+    #[cfg(unix)] pub(crate) alab_image_owner: crate::retained_tui_images::Book, // ALAB(retained-ui): actual original unlink owners stay on this Tui through uncertainty.
+    #[cfg(unix)] alab_retained_draws: alab_retained_draw::Draws, // ALAB(retained-frontier): exact owner and non-wrapping completion sequence.
+    alab_external_handoff: Option<Arc<alab_external_handoff::State>>, // ALAB(retained-editor): actual parent TTY/event handoff, including uncertainty.
     pub(crate) link_hover: link_pointer::LinkHover,
     frame_requester: FrameRequester,
     shortcut_hud: Option<crate::bottom_pane::ShortcutHud>,
@@ -791,6 +798,10 @@ impl Tui {
         );
 
         alab_upgrade_startup::finish(Self { // ALAB(upgrade): transfer initialized view ownership before event consumers.
+            #[cfg(unix)] alab_image_renderer: None, // ALAB(retained-ui): only actual original Config and retained resources create this binding.
+            #[cfg(unix)] alab_image_owner: Default::default(), // ALAB(retained-ui): genuine fresh owner, no decoded pathname admission.
+            #[cfg(unix)] alab_retained_draws: Default::default(), // ALAB(retained-frontier): fresh actual terminal owner, no readiness.
+            alab_external_handoff: None, // ALAB(retained-editor): no original child has taken this new Tui.
             link_hover: link_pointer::LinkHover::default(),
             frame_requester,
             shortcut_hud: None,
@@ -988,6 +999,7 @@ impl Tui {
     /// Pause the event stream and drain all input through crossterm so incomplete bracketed paste
     /// remains safely framed.
     pub(crate) fn discard_pending_input_before_interactive_screen(&mut self) -> Result<()> {
+        #[cfg(unix)] codex_alab_tui::upgrade_editor_startup::check_input_discard()?; // ALAB(upgrade): refuse before pausing or replacing the input source.
         self.pause_events();
         let drain_result = discard_pending_terminal_input();
         self.resume_events();
@@ -1004,87 +1016,14 @@ impl Tui {
         F: FnOnce() -> Fut,
         Fut: Future<Output = R>,
     {
-        // Pause crossterm events to avoid stdin conflicts with external program `f`.
-        self.pause_events();
-
-        // Restore both screens' input modes before giving the terminal to an editor. Repaint the
-        // last frame on the alternate screen so separate-window editors leave Codex visible.
-        let was_alt_screen = self.is_alt_screen_active();
-        if let Err(err) = self.terminal.clear_frame_images(&mut self.retained_images) {
-            tracing::warn!(%err, "failed to clear images before terminal handoff");
-        }
-        let visible_frame = (was_alt_screen && matches!(handoff, TerminalHandoff::KeepScreen))
-            .then(|| self.terminal.previous_buffer().clone());
-        let restore_result = if let Some(visible_frame) = visible_frame {
-            stdout()
-                .sync_update(|_| {
-                    let leave_result = self.leave_alt_screen_for_handoff();
-                    let main_result = restore_keep_raw(TerminalHandoff::Restore);
-                    let enter_result = self.enter_alt_screen();
-                    if !self.is_alt_screen_active() {
-                        return leave_result.and(main_result).and(enter_result);
-                    }
-                    let draw_result = if enter_result.is_ok() {
-                        self.terminal.draw(|frame| {
-                            let area = frame.area().intersection(visible_frame.area);
-                            for y in area.top()..area.bottom() {
-                                for x in area.left()..area.right() {
-                                    frame.buffer_mut()[(x, y)] = visible_frame[(x, y)].clone();
-                                }
-                            }
-                        })
-                    } else {
-                        Ok(())
-                    };
-                    let input_result = restore_keep_raw(TerminalHandoff::KeepScreen);
-                    leave_result
-                        .and(main_result)
-                        .and(enter_result)
-                        .and(draw_result)
-                        .and(input_result)
-                })
-                .and_then(std::convert::identity)
-        } else {
-            if was_alt_screen {
-                let _ = self.leave_alt_screen_for_handoff();
-            }
-            restore_keep_raw(TerminalHandoff::Restore)
-        };
-        if let Err(err) = restore_result {
-            tracing::warn!("failed to restore terminal modes before external program: {err}");
-        }
-        if let Err(err) = terminal_stderr::pause() {
-            tracing::warn!("failed to restore terminal stderr before external program: {err}");
-        }
-        if let Err(err) = crate::terminal_program_status::clear_terminal_program_status() {
-            tracing::debug!(error = %err, "failed to clear terminal program status before external program");
-        }
-
+        // ALAB(retained-editor): one original policy handoff also supports an owned job. ALAB(retained-ui): preserve original image-clear ownership through the shared handoff.
+        let mut owner = self.alab_begin_external_handoff(handoff)
+            .unwrap_or_else(|error| panic!("original terminal handoff unavailable: {error}"));
         let output = f().await;
-
-        if was_alt_screen && matches!(handoff, TerminalHandoff::KeepScreen) {
-            // The editor may already have left the alternate screen. Return to the main screen
-            // before reapplying its keyboard mode and entering the alternate screen again.
-            let _ = self.leave_alt_screen_for_handoff();
+        if let Err(error) = owner.finish_with(self, || Ok(())) {
+            tracing::warn!(%error, "original terminal handback remains held");
         }
 
-        if let Err(err) = terminal_stderr::resume() {
-            tracing::warn!("failed to suppress terminal stderr after external program: {err}");
-        }
-        if let Err(err) = set_modes() {
-            tracing::warn!("failed to re-enable terminal modes after external program: {err}");
-        }
-        self.terminal.invalidate_cursor_state();
-        // After the external program `f` finishes, reset terminal state and flush any buffered keypresses.
-        flush_terminal_input_buffer();
-
-        if was_alt_screen {
-            let _ = self.enter_alt_screen();
-        }
-
-        crate::terminal_program_status::invalidate_terminal_program_status();
-        self.resume_events();
-        self.schedule_screen_size_recheck(Duration::ZERO);
         output
     }
 
@@ -1152,8 +1091,7 @@ impl Tui {
         if !self.alt_screen_enabled {
             return Ok(());
         }
-        self.terminal
-            .clear_frame_images(&mut self.retained_images)?;
+        crate::retained_tui_images::clear(self)?; // ALAB(retained-ui): actual native clear retains resource custody until successful flush.
         // Entry can change buffers before later input-mode configuration fails.
         self.terminal.invalidate_cursor_state();
         if self.owned_screen {
@@ -1204,8 +1142,7 @@ impl Tui {
         if !self.alt_screen_enabled || !self.is_alt_screen_active() {
             return Ok(());
         }
-        self.terminal
-            .clear_frame_images(&mut self.retained_images)?;
+        crate::retained_tui_images::clear(self)?; // ALAB(retained-ui): actual native clear retains resource custody until successful flush.
         let result = ALTERNATE_SCREEN.leave(self.terminal.backend_mut());
         if ALTERNATE_SCREEN.is_active() {
             return result;
@@ -1423,6 +1360,7 @@ impl Tui {
 
         ensure_virtual_terminal_processing()?;
 
+        #[cfg(unix)] let alab_images = self.alab_image_owner.begin()?; // ALAB(retained-ui): actual Tui owns every image before original publication.
         stdout().sync_update(|_| {
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
@@ -1496,6 +1434,8 @@ impl Tui {
                 self.shortcut_hud_area = self.shortcut_hud.as_ref().map(|hud| hud.paint(frame));
             })
         })??;
+        #[cfg(unix)] alab_images.finish()?; // ALAB(retained-ui): retire old file slots only after the SAME original synchronized write completed.
+        #[cfg(unix)] self.alab_retained_draws.completed(); // ALAB(retained-frontier): only the original completed synchronized terminal write advances.
         Ok(())
     }
 
@@ -1579,6 +1519,7 @@ impl Tui {
 
         ensure_virtual_terminal_processing()?;
 
+        #[cfg(unix)] let alab_images = self.alab_image_owner.begin()?; // ALAB(retained-ui): actual Tui owns every image before original publication.
         stdout().sync_update(|_| {
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
@@ -1639,6 +1580,8 @@ impl Tui {
                 self.shortcut_hud_area = hud.as_ref().map(|hud| hud.paint(frame));
             })
         })??;
+        #[cfg(unix)] alab_images.finish()?; // ALAB(retained-ui): retire old file slots only after the SAME original synchronized write completed.
+        #[cfg(unix)] self.alab_retained_draws.completed(); // ALAB(retained-frontier): only the original completed synchronized terminal write advances.
         Ok(())
     }
 
@@ -1719,3 +1662,13 @@ fn ensure_virtual_terminal_processing() -> Result<()> {
 #[path = "../../alab-tui/glue/upgrade_startup.rs"] mod alab_upgrade_startup; // ALAB(upgrade): capture and restore native terminal startup facts.
 
 #[cfg(unix)] pub use alab_upgrade_startup::restore_after_failed_upgrade; // ALAB(upgrade): early CLI failure uses the actual terminal protocol cleanup.
+
+#[cfg(unix)]
+pub(crate) use frame_requester::alab_retained_frames; // ALAB(retained-ui): owned frame resource codec keeps the original scheduler fields private.
+
+#[path = "../../alab-tui/glue/retained_tui_external_handoff.rs"]
+mod alab_external_handoff; // ALAB(retained-editor): shared original pre/post terminal policy and actual ownership.
+pub(crate) use alab_external_handoff::ExternalHandoff; // ALAB(retained-editor): actual App job retains the original handoff token.
+
+#[cfg(unix)]
+pub(crate) use terminal_stderr::alab_original_editor::Captured as OriginalEditorStdio; // ALAB(retained-editor): operation-bound original stdio owner.

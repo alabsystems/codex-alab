@@ -1,0 +1,210 @@
+{
+  "schema": 1,
+  "base": "e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1",
+  "target": "49d657aad0e878fb7ab156b91126828c21a0005f",
+  "frontier": "e20ccdfa80361deb81266d3ed6baea9c2cdd5ee1",
+  "commits": [
+    {
+      "sha": "f06700bc5d282cd2c7ab8b4198ec724785231a20",
+      "subject": "Add aggregate metrics for status line provider usage (#62041)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/status_line_settings.rs",
+        "codex-rs/tui/src/app/status_line_settings_tests.rs",
+        "codex-rs/tui/src/app/statusline_picker.rs",
+        "codex-rs/tui/src/app/statusline_picker_tests.rs",
+        "codex-rs/tui/src/app/test_support.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/startup_defaults_tests.rs",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/startup_orchestration.rs",
+        "codex-rs/tui/src/statusline_metrics.rs",
+        "codex-rs/tui/src/statusline_metrics_tests.rs"
+      ],
+      "classes": [
+        "telemetry"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Count fixed-label selection events using native current telemetry policy while preserving analytics=false/metrics_exporter=none defaults and explicit custom OTLP behavior.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 3a0c41f3ad33c7ee398bccff2ea212bba0b011e4022bc138a0c20ecac2bb7d44; 20729 bytes / 496 lines. Author whole-read all5 production/test/snapshot changes; root independently whole-read1\u20134. Source review only, not compile or execution evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-aftere20.md; exact proposal base 286fa693597a0403c5af58ef9e2a83c6bbf171dd, historical fixed code e85ee16eec9f07b17b431c6514fca017aa06d72a, separately bound current code 9c005ceecd69ed2443e49e8feccc92c590b4cada, final upstream cohort 49d657aad0e878fb7ab156b91126828c21a0005f. Frozen source packet1566eb771c40023bf8bc86197d4df31f091b109f69e3e4ebee22d8adc2b50653 binds171GitIDs/37declarations/40declared cases/34module edges/4packages. Candidate selectors are not_run/UNRUN/final_binding null in this intake.",
+        "Integration requirement: Preserve packaged ALab analytics=false and metrics_exporter=none exactly. Explicitly configured OTLP collectors remain deliberately supported even when analytics=false; built-in Statsig alone requires current consent. No blanket telemetry-off claim for explicit collector configuration.",
+        "Integration requirement: Capture eligibility exactly: Statsig uses default environment; bounded_originator_tag_value(originator)==originator; all3custom OTEL_RESOURCE_ATTRIBUTES/OTEL_EXPORTER_OTLP_METRICS_HEADERS/OTEL_EXPORTER_OTLP_HEADERS absent or empty. The equality accepts listed known values AND literal sentinel other, so it is not an absolute allowlist-only assertion.",
+        "Integration requirement: Record uses entire stored/current exporter enum equality plus native current analytics check. MetricsClient may follow shared active inner installed by native global provider replacement; preserve that live exporter semantics, not an immutable original-collector/credential/process lease.",
+        "Integration requirement: Metric names/labels at new call sites are fixed static labels. Do not export raw provider URI/name/resource content. Collector field is live runtime state; preserve original owner or supported refusal rather than reconstruct from labels/IDs.",
+        "Coverage limit: Collector tests inspect scope-metric datapoint labels/counts, not complete Resource attributes/headers/transport. In-memory exporters and injected env getters do not exercise real Statsig/OTLP network.",
+        "Coverage limit: Runtime ManualReader explicitly uses Delta; snapshots are not cumulative counts. Failed saves/unchanged selection retain behavior; no efficiency/zero-overhead measurement."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "efc5d35455f1b278b3e3d45311122784d6cf5992",
+      "subject": "Record statusline mode on the first prompt of each thread visit (#62045)",
+      "paths": [
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/user_turn_submission.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader.rs",
+        "codex-rs/tui/src/statusline_metrics.rs"
+      ],
+      "classes": [
+        "telemetry"
+      ],
+      "features": [
+        "native-ui",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Count the first qualifying primary-thread user-prompt attempt per successful different-primary visit, without treating telemetry as submission admission or execution evidence.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 b64b7c76093316d77f2c0eb5c38a166c99e96ff207d1648c6499f262f2d6e7a7; 9688 bytes / 228 lines. Author whole-read all5 production/test/snapshot changes; root independently whole-read1\u20134. Source review only, not compile or execution evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-aftere20.md; exact proposal base 286fa693597a0403c5af58ef9e2a83c6bbf171dd, historical fixed code e85ee16eec9f07b17b431c6514fca017aa06d72a, separately bound current code 9c005ceecd69ed2443e49e8feccc92c590b4cada, final upstream cohort 49d657aad0e878fb7ab156b91126828c21a0005f. Frozen source packet1566eb771c40023bf8bc86197d4df31f091b109f69e3e4ebee22d8adc2b50653 binds171GitIDs/37declarations/40declared cases/34module edges/4packages. Candidate selectors are not_run/UNRUN/final_binding null in this intake.",
+        "Integration requirement: Preserve actual user trigger plus StartOrSteer/StartIfIdle and matching primary/active/widget thread checks; async-question replies remain excluded. Thread IDs are native UI association data, not model/Goal/account permission.",
+        "Integration requirement: Recording occurs BEFORE actual submission admission/result. Do not call this an accepted/executed-prompt receipt; rejected qualifying attempts may count. first_prompt_recorded advances even if telemetry suppressed.",
+        "Integration requirement: Reset only after successful different-primary attach at native begin_visit frontier. Preserve live flag/collector ownership through supported retention, not reinitialized defaults that count again or copied IDs that recreate actor authority.",
+        "Coverage limit: Actual embedded/mock test covers feature_off and builtin across fresh/resumed loop; custom branch and rejected qualifying prompt are source paths, not directly tested there.",
+        "Coverage limit: Counter/visit boundaries are telemetry, not error/Empty/source/admission authority. No post-terminal, billing or native Goal proof."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "d75ea7b0fa9b1ca0c3397635da576c5e1f3ae0d0",
+      "subject": "Record status line provider starts and failures (#62046)",
+      "paths": [
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/statusline_picker_tests.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader/resource.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader_tests.rs"
+      ],
+      "classes": [
+        "telemetry"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy",
+        "security-notices"
+      ],
+      "decision": "adopt",
+      "reason": "Count only current accepted reader Start/failure events with bounded labels while preserving stale-result rejection and existing statusline opt-in.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 c60fce4eead10d29e6ff4899b0f1ada59b20c3045f48cb362be245e7d666e249; 14083 bytes / 329 lines. Author whole-read all5 production/test/snapshot changes; root independently whole-read1\u20134. Source review only, not compile or execution evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-aftere20.md; exact proposal base 286fa693597a0403c5af58ef9e2a83c6bbf171dd, historical fixed code e85ee16eec9f07b17b431c6514fca017aa06d72a, separately bound current code 9c005ceecd69ed2443e49e8feccc92c590b4cada, final upstream cohort 49d657aad0e878fb7ab156b91126828c21a0005f. Frozen source packet1566eb771c40023bf8bc86197d4df31f091b109f69e3e4ebee22d8adc2b50653 binds171GitIDs/37declarations/40declared cases/34module edges/4packages. Candidate selectors are not_run/UNRUN/final_binding null in this intake.",
+        "Integration requirement: provider_started is emitted on accepted current ReadStep::Start BEFORE footer.start lookup/read. It does not prove MCP connection or server/process start.",
+        "Integration requirement: provider_failed uses only kind=timeout/error after existing token/thread/cwd/provider/backend checks; stale Finished injections must not count. Lookup timeout/read timeout classify timeout; unavailable/snapshot/other Read classify error.",
+        "Integration requirement: Preserve statusline opt-in/default false, original current telemetry checks, independent usage/current-budget and all held-route constraints.",
+        "Coverage limit: Reader/picker controls use paused time/fake channel and in-memory metrics, not real server failures/transport. Polling one start is distinct from per-poll events.",
+        "Coverage limit: No raw resource/RPC text enters metric labels; existing safe typed diagnostics remain. Current native exporter is not an incarnation proof."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "db9778b73cf0291da3c025709cc55c4a6eb97c30",
+      "subject": "Distinguish image and tool audio attachment uploads (#62047)",
+      "paths": [
+        "codex-rs/attachment-store/src/lib.rs",
+        "codex-rs/attachment-store/src/lib_tests.rs",
+        "codex-rs/core/src/image_preparation.rs",
+        "codex-rs/core/src/session/file_audio.rs",
+        "codex-rs/core/tests/suite/audio_duration_store.rs",
+        "codex-rs/core/tests/suite/code_mode.rs",
+        "codex-rs/core/tests/suite/extension_sandbox.rs",
+        "codex-rs/core/tests/suite/image_rollout.rs",
+        "codex-rs/core/tests/suite/scenarios.rs",
+        "codex-rs/core/tests/suite/scenarios_audio_file_tests.rs",
+        "codex-rs/ext/image-generation/src/tool.rs"
+      ],
+      "classes": [
+        "refactor",
+        "protocol"
+      ],
+      "features": [
+        "native-session",
+        "account-isolation",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Replace image/audio tag classification with typed content while preserving actual thread/ephemeral/payload and policy data; inline MIME verification is not implied.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 c781c8b6480f57f16bb597c2b3e4d9f27f32106db459e6de047daf19c07b0b0b; 21003 bytes / 509 lines. Author whole-read all5 production/test/snapshot changes; root independently whole-read1\u20134. Source review only, not compile or execution evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-aftere20.md; exact proposal base 286fa693597a0403c5af58ef9e2a83c6bbf171dd, historical fixed code e85ee16eec9f07b17b431c6514fca017aa06d72a, separately bound current code 9c005ceecd69ed2443e49e8feccc92c590b4cada, final upstream cohort 49d657aad0e878fb7ab156b91126828c21a0005f. Frozen source packet1566eb771c40023bf8bc86197d4df31f091b109f69e3e4ebee22d8adc2b50653 binds171GitIDs/37declarations/40declared cases/34module edges/4packages. Candidate selectors are not_run/UNRUN/final_binding null in this intake.",
+        "Integration requirement: Preserve thread_id and ephemeral, image file_name/tags/data including image_gen policy, and exact tool-audio declared MIME/data. Variant classification is not policy permission or a new attachment/file lease.",
+        "Integration requirement: Inline backend returns exact bytes WITHOUT interpreting MIME. Persistent backends MUST verify declared MIME against uploaded bytes by trait contract; that verification is not implemented/proven by this inline test.",
+        "Integration requirement: Preserve original image/model preview distinction, actual native audio/image origin, feature-disabled no-upload branch, response/history/resume metadata and current native budget/usage. No SourceV1/all-root or FileBackedToolAudio default activation.",
+        "Integration requirement: No owned named UploadRequest/UploadContent/AttachmentStore consumer found at fixed e85 or later9c; do not restore removed obsolete request fields as compatibility fallback.",
+        "Coverage limit: Debug redacts payload bytes only; thread ID, file_name, tags and declared MIME remain visible. No all-metadata/secret-redaction guarantee.",
+        "Coverage limit: Literal RIFF unit vector is byte preservation, not complete valid-audio/MIME validation. Native integration uses local mocked model plus recording backend; fake file IDs/expiry are not durable storage/credential proof.",
+        "Coverage limit: Audio testcase has4actual annotated variants, not extra loop cases. Core controls retain direct network skips/native helper requirements."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "49d657aad0e878fb7ab156b91126828c21a0005f",
+      "subject": "Add a keyboard diagram to TUI shortcut help (#62048)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/input.rs",
+        "codex-rs/tui/src/app/owned_transcript_tests.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__owned_transcript__tests__shortcut_keyboard_owned_transcript.snap",
+        "codex-rs/tui/src/app/tests/key_chords.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/composer_layout.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/snapshot_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__sparkle__tests__shortcut_help_hides_visible_sparkles_without_restarting_their_deadline.snap",
+        "codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__sparkle__tests__shortcut_help_preserves_an_unused_sparkle_but_literal_question_marks_do_not.snap",
+        "codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__status_surface__tests__activity_shortcut_help_follows_runtime_binding.snap",
+        "codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__status_surface__tests__shortcut_help_above_wide.snap",
+        "codex-rs/tui/src/bottom_pane/chat_composer/sparkle.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/sparkle_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/status_surface_tests.rs",
+        "codex-rs/tui/src/bottom_pane/footer.rs",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/bottom_pane/shortcut_overlay.rs",
+        "codex-rs/tui/src/bottom_pane/shortcut_overlay/keyboard.rs",
+        "codex-rs/tui/src/bottom_pane/shortcut_overlay_tests.rs",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__agents_navigation_help.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__footer_mode_configured_key_chords.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__footer_mode_shortcut_overlay.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__footer_mode_shortcut_overlay_queue_submissions.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__footer__tests__footer_shortcuts_collaboration_modes_enabled.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__footer__tests__footer_shortcuts_running.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__footer__tests__footer_shortcuts_shift_and_esc.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__shortcut_overlay__tests__shortcut_keyboard_base.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__shortcut_overlay__tests__shortcut_keyboard_off_diagram_keys.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__shortcut_overlay__tests__shortcut_keyboard_roomy.snap",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__shortcut_overlay__tests__shortcut_overlay_customized_wsl.snap",
+        "codex-rs/tui/src/chatwidget/interaction.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "execution-continuity",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Add an explicitly toggled US QWERTY guide from actual runtime bindings while retaining real sidebar/transcript/input/editor ownership and display fallback.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 bdf3d6f4604b448bfa1538dd353f5d65e60a26e4302b0e67140323c9d5443937; 81752 bytes / 1679 lines. Author whole-read all5 production/test/snapshot changes; root independently whole-read1\u20134. Source review only, not compile or execution evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-aftere20.md; exact proposal base 286fa693597a0403c5af58ef9e2a83c6bbf171dd, historical fixed code e85ee16eec9f07b17b431c6514fca017aa06d72a, separately bound current code 9c005ceecd69ed2443e49e8feccc92c590b4cada, final upstream cohort 49d657aad0e878fb7ab156b91126828c21a0005f. Frozen source packet1566eb771c40023bf8bc86197d4df31f091b109f69e3e4ebee22d8adc2b50653 binds171GitIDs/37declarations/40declared cases/34module edges/4packages. Candidate selectors are not_run/UNRUN/final_binding null in this intake.",
+        "Integration requirement: Preserve real routed-key activation, focused sidebar, owned transcript search/interaction, modal and draft priority. Guide hints never execute actions or grant terminal/input/Goal permission.",
+        "Integration requirement: Start in List; explicit available Tab or F1\u2013F12 toggles Keyboard. Conflict check includes overlapping runtime bindings and chord prefixes (empty queue exception); remapped/modified/non-US/off-diagram keys remain in list.",
+        "Integration requirement: FooterMode becomes tuple ShortcutOverlay(ShortcutView); shortcut guide keys derive from actual RuntimeKeymap. Bounded fixed/current owned census has no direct enum/constructor caller requiring migration, but supported retention must preserve view/runtime-key/physical original ownership or refuse unsupported state, not silently mint closure/input ownership.",
+        "Integration requirement: Preserve original sparkle/deadline/status semantics and small-size list fallback. Static US QWERTY diagram and color/palette samples are display conventions, not actual keyboard layout or hardware probe.",
+        "Integration requirement: Later current9c editor Command/TempPath, original parser EditorFence, terminal modes/TTY handoff and partial-refusal restrictions must survive future composition. New view must not resume/steal original event source or substitute for those resources; held receiver routes remain held.",
+        "Coverage limit: Native test buffers/synthetic palettes/snapshots, not real 80x24 device/OS matrix, renderer performance or end-to-end retained editor transfer.",
+        "Coverage limit: Diagram layout builds HashSet/Vec/String/render data and may expand composer height budget for a fitting diagram while native viewport still constrains display. No latency/power/zero-allocation claim.",
+        "Coverage limit: All25later current paths are object-bound; only relevant native hooks and prepared-command/handoff/input interfaces were read, not a wholesale semantic qualification of concurrent editor implementation."
+      ],
+      "revisit": ""
+    }
+  ]
+}

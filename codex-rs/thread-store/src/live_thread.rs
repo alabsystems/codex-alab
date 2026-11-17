@@ -30,6 +30,10 @@ use crate::ThreadStoreResumePreparation;
 use crate::UpdateThreadMetadataParams;
 use crate::thread_metadata_sync::ThreadMetadataSync;
 
+// ALAB(retained-history): delegate using the actual live thread's stored identity/backend.
+#[path = "../../alab-core/glue/retained_deferred_live_thread.rs"]
+mod alab_retained_deferred;
+
 /// Handle for an active thread's persistence lifecycle.
 ///
 /// `LiveThread` keeps lifecycle decisions with the caller while delegating storage details to
@@ -40,6 +44,7 @@ pub struct LiveThread {
     thread_id: ThreadId,
     history_mode: ThreadHistoryMode,
     thread_store: Arc<dyn ThreadStore>,
+    retained_writer: Option<crate::RetainedWriterIdentity>, // ALAB(retained-history): marker only; no writer/file-lock keepalive.
     metadata_sync: Arc<Mutex<ThreadMetadataSync>>,
     persistence_telemetry: RolloutPersistenceTelemetry,
 }
@@ -148,11 +153,12 @@ impl LiveThread {
         };
         let metadata_sync =
             ThreadMetadataSync::for_create(&params, inherited_preview.as_deref()).await;
-        thread_store.create_thread(params).await?;
+        let retained_writer = thread_store.create_thread_with_retained_writer(params).await?; // ALAB(retained-history): same original acquisition.
         Ok(Self {
             thread_id,
             history_mode,
             thread_store,
+            retained_writer, // ALAB(retained-history): captured before actual acquisition returns.
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -208,14 +214,9 @@ impl LiveThread {
         } else {
             None
         };
-        let history = match resume_preparation {
-            Some(preparation) => {
-                thread_store
-                    .resume_thread_with_preparation(params.clone(), preparation)
-                    .await?
-            }
-            None => thread_store.resume_thread(params.clone()).await?,
-        };
+        let (history, retained_writer) = thread_store
+            .resume_thread_with_retained_writer(params.clone(), resume_preparation)
+            .await?; // ALAB(retained-history): same original preparation/history policy plus actual identity.
         params.history = Some(Arc::clone(&history));
         let metadata_sync = ThreadMetadataSync::for_resume(&params, metadata.as_ref());
         Ok((
@@ -223,6 +224,7 @@ impl LiveThread {
                 thread_id,
                 history_mode,
                 thread_store,
+                retained_writer, // ALAB(retained-history): original acquired writer incarnation.
                 metadata_sync: Arc::new(Mutex::new(metadata_sync)),
                 persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
             },

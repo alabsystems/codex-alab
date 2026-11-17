@@ -1,0 +1,376 @@
+{
+  "schema": 1,
+  "base": "0184dfa6a48f0110dd9c6835522492908e5abcf3",
+  "target": "e5839cbc591df02408d5009e287887c7d57a9167",
+  "frontier": "0184dfa6a48f0110dd9c6835522492908e5abcf3",
+  "commits": [
+    {
+      "sha": "98e1584a082234ae716a3cc69d4c6f2d3631cf2d",
+      "subject": "Simplify history and notes tool registration (#61764)",
+      "paths": [
+        "codex-rs/ext/history-notes/src/tools.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "history-pagination",
+        "model-discovery",
+        "skill-discovery"
+      ],
+      "decision": "adopt",
+      "reason": "Generate one ordered history/notes executor vector from the registration macro, preserving per-step catalog messages, backend gating and namespace/tool order.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 98e1584a082234ae716a3cc69d4c6f2d3631cf2d; SHA256 59854aaeda89d853aefe8d16d7ca67a5c7b119be3eee56c24dc20f1e3710266c (3539 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: No owned direct caller of the removed per-namespace helpers or new builder was found. Retain actual account/source gating and packaged opt-in history/notes behavior.",
+        "Integration requirement: Preserve the prior178 step-catalog builder requirement: Some(step) message override and explicit empty catalog coverage are still required; the existing extension fixture mostly observes the installed no-step builder, so do not claim those branches executed."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "75fc67e8f4284a669eebd90ab6bc9ef7697e876e",
+      "subject": "Remove numeric positions from project responses (#61771)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/Project.ts",
+        "codex-rs/app-server-protocol/src/protocol/v2/project.rs",
+        "codex-rs/app-server/src/request_processors/projects.rs",
+        "codex-rs/thread-store/src/local/projects.rs",
+        "codex-rs/thread-store/src/projects.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "protocol",
+        "refactor"
+      ],
+      "features": [
+        "history-pagination",
+        "execution-continuity",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Remove numeric position from Project response/store projections and generated clients; retain database ordering and beforeProjectId move semantics, including append for omitted/null.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 75fc67e8f4284a669eebd90ab6bc9ef7697e876e; SHA256 fac06477146bacb2ad47ead9e1bbf4772577f6c4b4609fb7150f70608b3c8643 (754083 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: No owned Project/StoredProject literal or numeric response-position consumer was found in the bounded main census; no compatibility alias or ALab adaptation is justified by that census.",
+        "Integration requirement: Read all text/schema/SDK changes; verify both compressed precomputed exports by bounded decompression and Project-property inspection separately. This is generated source conformance, not regeneration or app execution.",
+        "Integration requirement: Preserve actual project membership, metadata timestamps, pagination/order and atomic import/notification controls; absence of a response position is not deletion or permission authority."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "776bd46f03a30df0caf3c37cd2fbbc70d4b7d7b4",
+      "subject": "Centralize permission profile compatibility helpers in protocol (#61784)",
+      "paths": [
+        "codex-rs/protocol/src/permissions.rs",
+        "codex-rs/protocol/src/permissions_tests.rs",
+        "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/sandboxing/src/windows.rs"
+      ],
+      "classes": [
+        "refactor",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Centralize the existing legacy compatibility policy and writable-root projection in protocol, retaining Windows fallback cwd/output/tmp/network and protected metadata carveouts.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 776bd46f03a30df0caf3c37cd2fbbc70d4b7d7b4; SHA256 59dd5588756486e5a8cdf21d149a3b4f3faac68cd237b8602e48a1674ffffa1f (11007 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: The sandboxing public re-export remains; no owned direct helper call or signature adaptation was found. Keep actual native executor/admission policy authoritative.",
+        "Integration requirement: Protocol projection tests can validate the pure helper on this host; Windows restricted-token/elevated runtime behavior requires the supported Windows lane and remains UNRUN. No permission boundary is bypassed."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "95946faafcd8f068e28610e8ae6a4c03060c1448",
+      "subject": "Strengthen workspace-write configuration tests (#61785)",
+      "paths": [
+        "codex-rs/core/src/config/config_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Strengthen explicit permission-profile and memories-root assertions while retaining Windows legacy fallback coverage and non-Windows working-directory writes.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 95946faafcd8f068e28610e8ae6a4c03060c1448; SHA256 453e1fa9555f7d53d083fa78e57983b6d984ccbba6c6bd735bb447a0743345f3 (2170 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: Test-only source change; preserve actual provider/config defaults. The host platform selects different branches, so one platform cannot qualify both Windows and non-Windows behavior."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "cd1805370610e71eae7819b4ed28b90679a53f0e",
+      "subject": "Add lifecycle-managed Guardian housekeeping (#61795)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/ext/guardian-v3/Cargo.toml",
+        "codex-rs/ext/guardian-v3/src/host.rs",
+        "codex-rs/ext/guardian-v3/src/housekeeper.rs",
+        "codex-rs/ext/guardian-v3/src/lib.rs",
+        "codex-rs/ext/guardian-v3/src/private_thread.rs",
+        "codex-rs/ext/guardian-v3/src/sampling.rs",
+        "codex-rs/ext/guardian-v3/tests/housekeeping.rs"
+      ],
+      "classes": [
+        "feature",
+        "background",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "history-pagination",
+        "account-isolation",
+        "provider-recovery",
+        "execution-continuity"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Retain default-off lifecycle-managed Guardian housekeeping: one coalesced root worker, flush before ordered evidence capture, cancellable per-batch work and joined accepted appends; do not activate it in ALab.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary cd1805370610e71eae7819b4ed28b90679a53f0e; SHA256 77a01daf0292bbfddd5aeb40b2c2946cfec0524b36fd79560c5132bbffbf1b5b (39104 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: GuardianV3 remains UnderDevelopment/default false and is absent from both ALab default files. No held SourceV1/all-root route is enabled.",
+        "Integration requirement: The initial private Core review thread is superseded inside this cohort by08 dedicated sampler; do not preserve obsolete private-thread code or claim intermediate and final runtime equivalence without qualification.",
+        "Integration requirement: Actual board append acceptance and completion precede cursor acknowledgement; errors/cancelled partial batches do not imply rollback or safe replay. Restart/replay and concurrent board writers remain explicitly unsupported.",
+        "Integration requirement: Keep evidence as untrusted data, redact response contents in diagnostics, and retain exact root/history/account/native goal custody. One mpsc capacity-one wake and worker per eligible root is source architecture, not a measured cost reduction."
+      ],
+      "revisit": "Before any ALab GuardianV3 activation, qualify the final05\u201308 cohort with actual account/route/network/cancellation/write-custody and nonforeground Goal/budget behavior; preserve default false and all native/SourceV1 holds."
+    },
+    {
+      "sha": "9544f09e7b880f373532b4fb5ca98313d2450d4f",
+      "subject": "Wire Guardian V3 housekeeping into the app server (#61797)",
+      "paths": [
+        "codex-rs/agent-message-board-host/src/lib.rs",
+        "codex-rs/app-server/src/extensions.rs",
+        "codex-rs/app-server/tests/suite/v2/guardian_sync_session_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_delete.rs",
+        "codex-rs/core/src/guardian/review_session_setup.rs",
+        "codex-rs/ext/guardian-v3/src/private_thread.rs"
+      ],
+      "classes": [
+        "feature",
+        "background",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "account-isolation",
+        "history-pagination",
+        "execution-continuity"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Wire housekeeping only from the server GuardianV3 flag; thread overrides cannot activate or disable server ownership, and actor instructions do not become housekeeper instructions.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 9544f09e7b880f373532b4fb5ca98313d2450d4f; SHA256 165985e7c6bc4fa3b896ad9bf2ef6f2d71decc7d35f4b2c6f52c150250033bd6 (11598 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: Keep the server feature default false and ALab packaged defaults unchanged; thread config is not server authorization.",
+        "Integration requirement: Use actual new/resumed actor-versus-housekeeper controls and disabled-server board absence. Final08 removes the temporary without_parent_instructions/private-thread path entirely; preserve the final isolated tool-free request semantics rather than obsolete compatibility code.",
+        "Integration requirement: The new local board host disables remote notifications and stays within the existing agent tree; no remote/all-root/SourceV1 receiver authority is inferred."
+      ],
+      "revisit": "Before any ALab GuardianV3 activation, qualify the final05\u201308 cohort with actual account/route/network/cancellation/write-custody and nonforeground Goal/budget behavior; preserve default false and all native/SourceV1 holds."
+    },
+    {
+      "sha": "5630d58680af22b71dc0d435049d2a16ec9dace4",
+      "subject": "Add a dedicated Guardian v3 housekeeper inference client (#61798)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/ext/guardian-v3/Cargo.toml",
+        "codex-rs/ext/guardian-v3/src/housekeeper.rs",
+        "codex-rs/ext/guardian-v3/src/housekeeper_sampler.rs",
+        "codex-rs/ext/guardian-v3/src/housekeeper_transport.rs",
+        "codex-rs/ext/guardian-v3/src/lib.rs"
+      ],
+      "classes": [
+        "feature",
+        "background",
+        "model",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "provider-recovery",
+        "account-isolation",
+        "history-pagination",
+        "model-discovery"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Retain the dormant tool-free dedicated housekeeper sampler/transport behind GuardianV3 opt-in: independent conversation/window, bounded transport retries, exact account/route resolution and unfinished-response cancellation.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 5630d58680af22b71dc0d435049d2a16ec9dace4; SHA256 bbb23fdb155844c3af553e603537191c009ba55bfd4419d984fc8e576fe9fc3c (33313 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: This row introduces modules but08 performs wiring; qualify the cohesive final path. The existing Responses transport is not the ordinary Core ModelClient request/Goal policy pipeline.",
+        "Integration requirement: Preserve per-batch immutable turn, per-attempt auth resolution, runtime account-bound HTTP factory, network-policy/socket key checks, owner revision checks, retry advice and typed fatal policy/build/auth behavior. A parent label is not actor/native Goal authority.",
+        "Integration requirement: No actor instructions/tools, foreground usage receipt, native Goal admission or request-origin proof may be inferred from the new direct sampler. Before activation require actual account replacement/runtime credential, proxy/TLS/network-policy, cancellation and current-budget/usage behavior; request-country remains default-omitted, not imported trusted metadata.",
+        "Integration requirement: One retained conversation/socket plus bounded whole-batch eviction changes cost; no latency, memory, power or traffic benchmark was run."
+      ],
+      "revisit": "Before any ALab GuardianV3 activation, qualify the final05\u201308 cohort with actual account/route/network/cancellation/write-custody and nonforeground Goal/budget behavior; preserve default false and all native/SourceV1 holds."
+    },
+    {
+      "sha": "0370e34fe89585a3eb898e2dc21460b48abd1f83",
+      "subject": "Route Guardian housekeeping through its dedicated sampler (#61799)",
+      "paths": [
+        "codex-rs/core/src/guardian/review_session_setup.rs",
+        "codex-rs/ext/guardian-v3/src/host.rs",
+        "codex-rs/ext/guardian-v3/src/housekeeper.rs",
+        "codex-rs/ext/guardian-v3/src/lib.rs",
+        "codex-rs/ext/guardian-v3/src/private_thread.rs",
+        "codex-rs/ext/guardian-v3/src/sampling.rs",
+        "codex-rs/ext/guardian-v3/src/selection.rs",
+        "codex-rs/ext/guardian-v3/tests/housekeeping.rs",
+        "codex-rs/ext/guardian-v3/tests/snapshots/housekeeping__guardian_housekeeping_originals.snap"
+      ],
+      "classes": [
+        "feature",
+        "background",
+        "refactor",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "provider-recovery",
+        "account-isolation",
+        "history-pagination",
+        "execution-continuity"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Route Guardian evidence through the dedicated sampler, remove obsolete private review-thread support, commit retained history only after successful board writes/cursor acknowledgement, and stop after error or dropped partial routing.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 0370e34fe89585a3eb898e2dc21460b48abd1f83; SHA256 60e43698bd69354327654739d5cc7258b04c0bdb54b792d3761b139f5b4285b5 (50425 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: Accepted appends remain joined through account change and root shutdown; do not drop write custody to make cancellation immediate. Account changes cancel future work but do not undo committed writes.",
+        "Integration requirement: Retain whole completed-batch eviction, exact original-order routing and response-content redaction. Source tests cover HTTP fallback, bounded retries/advice, command-token rotation, managed401 renewal and accepted append shutdown; actual runtime is not_run.",
+        "Integration requirement: Before enabling ALab require runtime-bound account replacement and credential/network isolation plus no unintended foreground Goal/actor effects. Partial-error/restart/replay/concurrent-writer semantics remain unsupported; default-off is not execution qualification."
+      ],
+      "revisit": "Before any ALab GuardianV3 activation, qualify the final05\u201308 cohort with actual account/route/network/cancellation/write-custody and nonforeground Goal/budget behavior; preserve default false and all native/SourceV1 holds."
+    },
+    {
+      "sha": "4fc37acc87fd9eacbc7fd6bf099a4acbdd2252cc",
+      "subject": "Clarify managed human command checkpoint stability (#61800)",
+      "paths": [
+        "codex-rs/app-server/README.md"
+      ],
+      "classes": [
+        "other",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "native-ui",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Clarify documented fresh human-command checkpoints for interactive CLI while app-server capability integration remains experimental; automatic/session/persistent approval cannot satisfy a prompt-user checkpoint.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 4fc37acc87fd9eacbc7fd6bf099a4acbdd2252cc; SHA256 aeab80ae6233968bb9a464eb0b81f17bd77282694beabe7c462aa3f448f77426 (2937 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: Documentation only: no default, entitlement or enforcement implementation change. Preserve actual human decision and capable-connection rejection, ALab approval/policy fences and all human holds."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "662a634e88fcc809d77da393d75572c3d814cb27",
+      "subject": "Preserve active turn approvals when an earlier turn finishes late (#61801)",
+      "paths": [
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor_tests.rs",
+        "codex-rs/app-server/src/thread_state.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "native-session",
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Bind terminal approval cancellation and thread watch status to the latest started turn so late A completion does not cancel or mark B finished; preserve terminal event delivery for A.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 662a634e88fcc809d77da393d75572c3d814cb27; SHA256 5ea02df6259a79b3bbd93bb6dc0e9b466720aa11b1f52320d398358b9a3b4e1a (14382 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: Retain exact live pending-approval identity and command outcome controls. This is app-server event bookkeeping, not a substitute for ALab native policy observations, EOF invalidation or final decision authority.",
+        "Integration requirement: The pending interrupt queue still stores request IDs without turn IDs and every terminal event drains it. Enqueue validates the target but outgoing request trace metadata does not veto response. A late A may source-reach acknowledging B interrupt before B terminal; this inherited remaining scope requires a deterministic interrupt-target control and is not repaired or runtime-reproduced by this row."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "2309bae1ae7a6dcab6dd0ade0fd37a7491b1de01",
+      "subject": "Isolate app-server turn metadata by turn ID (#61817)",
+      "paths": [
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/app-server/src/request_processors/thread_lifecycle.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor_tests.rs",
+        "codex-rs/app-server/src/thread_state.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "native-session",
+        "history-pagination",
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Index summaries/errors/final messages and command timestamps by actual turn, take only completing turn state, initialize inline-review metadata and clear bookkeeping on listener replacement/removal.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 2309bae1ae7a6dcab6dd0ade0fd37a7491b1de01; SHA256 f3b950b2f4f1624e8b3bd639e6361824aec748cbbc6445379a2f89d55de370b5 (23383 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: No owned direct ThreadState/TurnSummary field consumer or literal was found. Preserve original native thread/turn identity, accepted-input/result receipt ownership and ALab real goal chronology; display/API metadata is not mutation authority.",
+        "Integration requirement: Retain actual overlapping approval command start/completion count, per-turn error/start timestamp and default missing-summary controls. Per-turn map cleanup is source bounded by terminal/listener lifecycle, not a proved global memory bound under lost terminals."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "e5839cbc591df02408d5009e287887c7d57a9167",
+      "subject": "Preserve aggregate turn diffs across steering (#61820)",
+      "paths": [
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/turn_diff_tracker.rs",
+        "codex-rs/core/src/turn_diff_tracker_tests.rs",
+        "codex-rs/core/tests/suite/apply_patch_cli.rs",
+        "codex-rs/core/tests/suite/pending_input_persistence.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "execution-continuity",
+        "history-pagination",
+        "exec-handoff",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Retain aggregate TurnDiffTracker in the actual turn store through steering, keep each environment first display root, and emit the final aggregate before TurnComplete.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary e5839cbc591df02408d5009e287887c7d57a9167; SHA256 3f998c8c5b3467c613a1e5fceea99c512ba4113b684b1815abc5011fe8e34eb9 (20680 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-after0184.md; fixed main comparison 58b0a50f7d77de907876be64b94cb44a3d7bac35; final upstream cohort e5839cbc591df02408d5009e287887c7d57a9167. Source-only decisions; all candidate tests not_run/UNRUN, no execution binding, upstream import, production adaptation, compiler/pin/profile/cache/default/hold change or qualification.",
+        "Integration requirement: No owned removed with_environment_display_roots caller exists. Owned terminal-steering fixtures call outer run_sampling_request, whose signature remains; preserve their actual error/steer/interrupt oracles when integrating inherited81/92.",
+        "Integration requirement: Keep execution roots and trust/native admission identity separate from display roots; a cwd change cannot rebind an earlier diff. Retain incremental patch updates and exactly one final aggregate, and discard terminal-abort tracker without inventing a successful final diff.",
+        "Integration requirement: Turn-store cache is volatile display state; this does not make history/input/goal/metadata handoff portable or settle native result receipts. Preserve existing final flush, accepted-input checkpoint, child completion, retained context and actual native Goal completion controls."
+      ],
+      "revisit": ""
+    }
+  ]
+}

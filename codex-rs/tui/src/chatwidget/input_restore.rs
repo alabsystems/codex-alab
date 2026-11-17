@@ -172,6 +172,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn submit_initial_user_message_if_pending(&mut self) {
+        #[cfg(unix)] if self.alab_holds_retained_startup() { return; } // ALAB(retained-frontier): the same accepted CLI message stays owned until actual UI/runtime activation.
         if self.suppress_initial_user_message_submit || self.input_queue.rate_limit_recovery_pending
         {
             return;

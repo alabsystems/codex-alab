@@ -4,9 +4,9 @@
 //! The session record, `$CODEX_HOME/alab/sessions/<pid>.json`, schema v1 (CONTRACT §4):
 //! what aterm reads while the process's identity is live, and the crash witness after.
 //! Directory 0700, file 0600, written as `<pid>.json.<nonce>.tmp` then renamed.
-//! Custody covers process death and re-exec while the OS stays running. The parent
-//! directory is not flushed, so an OS crash or power loss may leave an older record
-//! or none; a "durable" handoff here does not promise physical persistence.
+//! Custody covers process death and re-exec everywhere. The temporary file is
+//! flushed before rename on every platform; Unix also flushes the containing
+//! directory chain for power-loss durability.
 
 use codex_alab_core::session::ProcessIdentity;
 use serde::Deserialize;
@@ -1077,6 +1077,15 @@ where
                 && goal.id.len() <= 512
                 && !goal.turn.trim().is_empty()
                 && goal.turn.len() <= 512
+                && goal
+                    .chronology_fence_generation
+                    .as_ref()
+                    .is_none_or(|generation| {
+                        codex_alab_core::goal_chronology_fence::FenceGeneration::from_hex(
+                            generation,
+                        )
+                        .is_some()
+                    })
         }))
 }
 
@@ -1100,6 +1109,8 @@ pub struct WallGoal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<i64>,
     pub turn: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chronology_fence_generation: Option<String>,
 }
 
 /// The record's `pace.leftPoint` ([`codex_alab_core::session::LeftPoint`]): the point's words as
@@ -1280,12 +1291,18 @@ impl From<codex_alab_core::session::Pace> for Pace {
                 objective: goal.objective,
                 budget: goal.token_budget,
                 turn: goal.turn,
+                chronology_fence_generation: goal
+                    .chronology_fence_generation
+                    .map(codex_alab_core::goal_chronology_fence::FenceGeneration::to_hex),
             }),
             model_blocked_goal: pace.model_blocked_goal.map(|goal| WallGoal {
                 id: goal.goal_id,
                 objective: goal.objective,
                 budget: goal.token_budget,
                 turn: goal.turn,
+                chronology_fence_generation: goal
+                    .chronology_fence_generation
+                    .map(codex_alab_core::goal_chronology_fence::FenceGeneration::to_hex),
             }),
         }
     }
@@ -1369,6 +1386,12 @@ impl From<Pace> for codex_alab_core::session::Pace {
                     goal_id: goal.id,
                     objective: goal.objective,
                     token_budget: goal.budget,
+                    chronology_fence_generation: goal
+                        .chronology_fence_generation
+                        .as_deref()
+                        .and_then(
+                            codex_alab_core::goal_chronology_fence::FenceGeneration::from_hex,
+                        ),
                     turn: goal.turn,
                     person_stops: 0,
                 }),
@@ -1377,6 +1400,12 @@ impl From<Pace> for codex_alab_core::session::Pace {
                     goal_id: goal.id,
                     objective: goal.objective,
                     token_budget: goal.budget,
+                    chronology_fence_generation: goal
+                        .chronology_fence_generation
+                        .as_deref()
+                        .and_then(
+                            codex_alab_core::goal_chronology_fence::FenceGeneration::from_hex,
+                        ),
                     turn: goal.turn,
                     person_stops: 0,
                 }
@@ -1868,10 +1897,8 @@ pub fn ensure_dir(dir: &Path) -> io::Result<()> {
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
 }
 
-/// Write `record` atomically: a 0600 temporary file beside it, synced, then renamed.
-/// The parent directory is not flushed. This supplies process-death custody while
-/// the OS stays running, without guaranteeing the latest snapshot after an OS crash
-/// or power loss.
+/// Write `record` durably and atomically: a 0600 temporary file beside it,
+/// synced, renamed, then followed by the platform's directory durability boundary.
 pub fn write_atomic(dir: &Path, record: &Record) -> io::Result<()> {
     static NONCE: AtomicU64 = AtomicU64::new(0);
     let bytes = serde_json::to_vec(record).map_err(io::Error::other)?;
@@ -1890,7 +1917,16 @@ pub fn write_atomic(dir: &Path, record: &Record) -> io::Result<()> {
             .open(&temporary)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
-        fs::rename(&temporary, &target)
+        fs::rename(&temporary, &target)?;
+        // The production path is CODEX_HOME/alab/sessions. Unix syncs this
+        // directory and its two parents; Windows retains the already-synced
+        // file because it exposes no documented standard-user directory flush.
+        let codex_home = dir
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| io::Error::other("session record directory is outside Codex home"))?;
+        codex_alab_core::goal_chronology_fence::sync_parent_chain(codex_home, &target)?;
+        Ok(())
     })();
     if written.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -2106,7 +2142,7 @@ pub enum Sweep {
     /// This process's own predecessor: removed, and handed on (its crash witness).
     Take,
     /// Handed on, but retained until its successor commits a replacement for
-    /// process-death recovery (the module's persistence scope).
+    /// durable recovery (the module's persistence scope).
     Hold,
     /// A relaunch another process may still be owed: left for that process's start.
     Leave,

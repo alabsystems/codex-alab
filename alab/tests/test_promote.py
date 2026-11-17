@@ -543,7 +543,7 @@ class PromotionTests(unittest.TestCase):
     def test_successful_publication_selects_after_the_final_rename(self):
         tooling = self.repo / "alab"
         tooling.mkdir()
-        for name in ("package.sh", "lib.sh", "command_guard.py", "promote.py", "publish_directory.py"):
+        for name in ("package.sh", "lib.sh", "command_guard.py", "promote.py", "cli_status.py", "publish_directory.py"):
             shutil.copyfile(ROOT / "alab" / name, tooling / name)
         stage = self.home / ".staged"
         self.new.rename(stage)

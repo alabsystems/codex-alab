@@ -1,0 +1,419 @@
+{
+  "base": "e5839cbc591df02408d5009e287887c7d57a9167",
+  "commits": [
+    {
+      "classes": [
+        "refactor"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 0d07dae8c9f7b0cd390aa4340fc1376b9d7c2e33; SHA256 5c6429e9735532006a11b143fbbb9a2edc05a8e8e31c6f83a8ecc7077b04258e (8334 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: Retain native history/rollout and child-parent attribution. Avoided vector collection is a source change, not a measured allocation or latency result."
+      ],
+      "features": [
+        "history-pagination",
+        "execution-continuity"
+      ],
+      "paths": [
+        "codex-rs/thread-store/src/live_thread.rs",
+        "codex-rs/thread-store/src/local/mod.rs"
+      ],
+      "reason": "Count only persisted inherited records without collecting them, and reuse telemetry-filtered items for append metadata while preserving persisted child boundaries and ordinals.",
+      "revisit": "",
+      "sha": "0d07dae8c9f7b0cd390aa4340fc1376b9d7c2e33",
+      "subject": "Avoid unnecessary rollout item copies during child thread creation (#61833)"
+    },
+    {
+      "classes": [
+        "refactor",
+        "fix"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 586203ad13f2e3153f5436f07942e50a8581f125; SHA256 7e16a4f1b8b45388765628800eda45e28c5145d0f846be3144d2640814f942a0 (12783 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: Loaded ephemeral threads still refuse includeTurns. A metadata-only response is neither a history snapshot nor mutation authority. Preserve actual ALab session/title ownership."
+      ],
+      "features": [
+        "history-pagination",
+        "native-ui"
+      ],
+      "paths": [
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_read.rs"
+      ],
+      "reason": "Reuse one persisted metadata read for loaded metadata-only thread/read, overlay actual live settings, and load history only when requested; preserve trimmed titles and legacy preview precedence.",
+      "revisit": "",
+      "sha": "586203ad13f2e3153f5436f07942e50a8581f125",
+      "subject": "Avoid redundant store reads for loaded thread metadata (#61837)"
+    },
+    {
+      "classes": [
+        "refactor",
+        "fix"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary bc4a2544b8c02669446c111d6178f50524b7f52d; SHA256 345fb178b72a564c6e2a167ca5ea5c80e7d46b357f4be63e00450bd3ee6d0c0e (43265 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: An unused missing ancestor may be skipped, but an ancestor required by lookahead or summary still fails. Retain cycle detection, selected-rollout identity, cursor ownership and immutable ancestor reference rules."
+      ],
+      "features": [
+        "history-pagination",
+        "execution-continuity",
+        "qualification-fixtures"
+      ],
+      "paths": [
+        "codex-rs/thread-store/src/local/rollout_lineage.rs",
+        "codex-rs/thread-store/src/local/rollout_lineage/ancestor_reads.rs",
+        "codex-rs/thread-store/src/local/rollout_lineage/walk.rs",
+        "codex-rs/thread-store/src/local/thread_history.rs",
+        "codex-rs/thread-store/src/local/thread_history/page_segments.rs",
+        "codex-rs/thread-store/src/local/thread_history/read.rs",
+        "codex-rs/thread-store/src/local/thread_history/read_tests.rs",
+        "codex-rs/thread-store/src/local/thread_history/segment_paging.rs",
+        "codex-rs/thread-store/src/local/thread_history/turn_lookup.rs"
+      ],
+      "reason": "Walk descending fork history only as far as the cursor, requested rows and next-page lookahead require, while retaining newer overrides and eager ancestry for ascending reads, update replay, anchors and inherited summaries.",
+      "revisit": "",
+      "sha": "bc4a2544b8c02669446c111d6178f50524b7f52d",
+      "subject": "Resolve fork ancestry lazily for descending history pages (#61840)"
+    },
+    {
+      "classes": [
+        "fix"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 090be4df0724cdef5758e6a0934ba557af8b6bbe; SHA256 a46fd4f64f9e86c04228d299d23dd039d384ab0248a963920abce6eb13ed1288 (17288 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: This repairs that late item completion only. PendingInterruptQueue remains an untagged ConnectionRequestId vector and terminal-event drains remain unconditional; the prior late-A/new-B interrupt acknowledgement candidate is not closed.",
+        "Integration requirement: No client response grants new execution permission. Preserve actual declined completion, replacement-subscriber and native cancellation/terminal custody checks."
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity",
+        "native-ui"
+      ],
+      "paths": [
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/app-server/src/request_processors/thread_lifecycle.rs",
+        "codex-rs/app-server/src/request_processors/thread_listener_shutdown_tests.rs",
+        "codex-rs/app-server/src/thread_state.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_interrupt.rs"
+      ],
+      "reason": "Complete a command item opened by a late approval as Declined when a turn transition cancels that approval, through the current thread listener/subscribers with its original turn ID and start timestamp.",
+      "revisit": "",
+      "sha": "090be4df0724cdef5758e6a0934ba557af8b6bbe",
+      "subject": "Close late command approval items when turns are interrupted (#61841)"
+    },
+    {
+      "classes": [
+        "refactor",
+        "security"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary e0241d4fae4c87b406aacaf11d9ceb8548879873; SHA256 9efa8fe26f98160d4ea776a500c32e708db18528bcb796019a146209c2190c70 (28352 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: The service normalizes metadata once into an Arc-backed immutable catalog; fresh V8 contexts retain per-cell mutation isolation. Preserve task/cancellation limits and policy-authorized dispatch; no new tool authority is implied.",
+        "Integration requirement: Read final05+06 together rather than preserve obsolete intermediate ToolCatalog element types. No measured CPU/memory benefit is claimed."
+      ],
+      "features": [
+        "model-discovery",
+        "execution-continuity",
+        "product-policy"
+      ],
+      "paths": [
+        "codex-rs/code-mode-runtime/src/cell_actor/conversions.rs",
+        "codex-rs/code-mode-runtime/src/cell_actor/mod.rs",
+        "codex-rs/code-mode-runtime/src/cell_actor/tests.rs",
+        "codex-rs/code-mode-runtime/src/runtime/callbacks_tests.rs",
+        "codex-rs/code-mode-runtime/src/runtime/globals.rs",
+        "codex-rs/code-mode-runtime/src/runtime/mod.rs",
+        "codex-rs/code-mode-runtime/src/runtime/module_loader_tests.rs",
+        "codex-rs/code-mode-runtime/src/service.rs",
+        "codex-rs/code-mode-runtime/src/service_tests.rs",
+        "codex-rs/code-mode-runtime/src/session_runtime/mod.rs",
+        "codex-rs/code-mode-runtime/src/session_runtime/tests.rs",
+        "codex-rs/code-mode-runtime/src/session_runtime/types.rs"
+      ],
+      "reason": "Construct code-mode tools and ALL_TOOLS lazily on first access, retain writable cell-local catalogs and fixed callback slot order, and create data properties without inherited setter calls.",
+      "revisit": "",
+      "sha": "e0241d4fae4c87b406aacaf11d9ceb8548879873",
+      "subject": "Defer code-mode tool catalog construction until first access (#61845)"
+    },
+    {
+      "classes": [
+        "feature",
+        "protocol",
+        "refactor"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary fef47a6769414444b1ce37aa8188b55bf2624f27; SHA256 dc956a22cdb46a67577e1065af246fe949c771953465ad78f5b2bae85f0484d9 (48567 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: Older hosts retain self-contained full requests. A client cache guard spans admission and publishes replacement only after accepted execution; cancellation leaves no acknowledged replacement, and concurrent admissions may send full catalogs.",
+        "Integration requirement: Runtime rejects zero, unknown and same-revision conflicting snapshots. Late full requests retain their own tools without overwriting a newer cache. Client CatalogAdmission and ToolDefinition sharing use full ToolDefinition equality, including schemas and descriptions. The in-process runtime normalizes to EnabledToolMetadata (global name, tool name, description and kind); its revision conflict and metadata-sharing checks compare those normalized fields, without schemas.",
+        "Integration requirement: Catalog revision, pointer equality and process-local sharing are neither account credentials nor permission grants. Preserve real remote host/session close, cancellation and ALab native execution ownership."
+      ],
+      "features": [
+        "model-discovery",
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "paths": [
+        "codex-rs/code-mode-host/src/grpc/conversions_tests.rs",
+        "codex-rs/code-mode-host/src/grpc/mod.rs",
+        "codex-rs/code-mode-host/src/grpc/service_tests.rs",
+        "codex-rs/code-mode-host/src/grpc/session.rs",
+        "codex-rs/code-mode-host/src/host_tests.rs",
+        "codex-rs/code-mode-host/src/lib.rs",
+        "codex-rs/code-mode-host/tests/grpc_timing.rs",
+        "codex-rs/code-mode-protocol/src/grpc/codex.code_mode.v1.proto",
+        "codex-rs/code-mode-protocol/src/host/host_tests.rs",
+        "codex-rs/code-mode-protocol/src/host/mod.rs",
+        "codex-rs/code-mode-protocol/src/host/payload.rs",
+        "codex-rs/code-mode-protocol/src/lib.rs",
+        "codex-rs/code-mode-protocol/src/shared_catalog.rs",
+        "codex-rs/code-mode-runtime/src/runtime/callbacks_tests.rs",
+        "codex-rs/code-mode-runtime/src/runtime/globals.rs",
+        "codex-rs/code-mode-runtime/src/service.rs",
+        "codex-rs/code-mode-runtime/src/service_tests.rs",
+        "codex-rs/code-mode-runtime/src/session_runtime/types.rs",
+        "codex-rs/code-mode/src/grpc_session/callbacks_tests.rs",
+        "codex-rs/code-mode/src/grpc_session/conversion.rs",
+        "codex-rs/code-mode/src/grpc_session/conversion_tests.rs",
+        "codex-rs/code-mode/src/grpc_session/mod.rs",
+        "codex-rs/code-mode/src/grpc_session/operations.rs",
+        "codex-rs/code-mode/src/grpc_session/state_tests.rs",
+        "codex-rs/code-mode/src/lib.rs",
+        "codex-rs/code-mode/src/remote_session.rs",
+        "codex-rs/code-mode/src/remote_session/connection.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver/commands.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver/types.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver_tests.rs",
+        "codex-rs/code-mode/src/tool_catalog.rs",
+        "codex-rs/code-mode/src/tool_catalog_tests.rs"
+      ],
+      "reason": "Negotiate session-local catalog revisions over stdio and gRPC, reuse only an acknowledged exact catalog, retain immutable per-cell snapshots, and share equal definitions through weak process-local indexes.",
+      "revisit": "",
+      "sha": "fef47a6769414444b1ce37aa8188b55bf2624f27",
+      "subject": "Reuse code-mode tool catalogs across executions (#61846)"
+    },
+    {
+      "classes": [
+        "feature",
+        "security"
+      ],
+      "decision": "keep-opt-in",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary effad7568c7945c524923e71f1919d64e7b614aa; SHA256 d45372886fdb906a4bc230318ef6f0f1f5ef8ae73a927865c27e9a574d0415ed (48862 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: No ALab default or managed profile is changed. Remote RPC capture requires an executor-local proxy, unsupported/native launches refuse, and absent capability is not silently accepted.",
+        "Integration requirement: Local prepared context is stripped outside Linux managed sandboxes; remote launch follows the executor OS and capability. Attachment policy can require capture but cannot remove inherited denials/review selectors.",
+        "Integration requirement: Actual Linux /dev/net/tun, namespaces, proxy route, allowed/denied target and unavailable-capability controls remain required. This Mac source review cannot qualify the cfg-Linux path."
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity",
+        "exec-handoff"
+      ],
+      "paths": [
+        "codex-rs/cli/src/debug_sandbox.rs",
+        "codex-rs/config/src/config_requirements.rs",
+        "codex-rs/config/src/permissions_toml.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/network_proxy_spec.rs",
+        "codex-rs/core/src/config/permissions.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/core/src/unified_exec/process_manager_tests.rs",
+        "codex-rs/exec-server-protocol/src/protocol.rs",
+        "codex-rs/exec-server/README.md",
+        "codex-rs/exec-server/src/client.rs",
+        "codex-rs/exec-server/src/local_process.rs",
+        "codex-rs/exec-server/src/process_sandbox.rs",
+        "codex-rs/exec-server/src/process_sandbox_tests.rs",
+        "codex-rs/exec-server/tests/exec_process.rs",
+        "codex-rs/features/src/feature_configs.rs",
+        "codex-rs/linux-sandbox/README.md",
+        "codex-rs/linux-sandbox/src/linux_run_main_tests.rs",
+        "codex-rs/network-proxy/src/config.rs",
+        "codex-rs/network-proxy/src/environment_policy.rs",
+        "codex-rs/network-proxy/src/proxy.rs",
+        "codex-rs/network-proxy/src/remote_config.rs",
+        "codex-rs/network-proxy/src/state.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/tui/src/debug_config.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__debug_config__tests__debug_config_requirement_sources.snap"
+      ],
+      "reason": "Retain configuration-requested transparent TCP capture behind explicit managed network policy, default false, Linux managed sandbox and enabled SOCKS5; require executor capability and preserve forced network enforcement.",
+      "revisit": "Before any ALab activation, qualify the actual supported executor/network/account/cancellation boundary with existing native policy and holds unchanged; keep default off and do not substitute source tests for live admission.",
+      "sha": "effad7568c7945c524923e71f1919d64e7b614aa",
+      "subject": "Allow network policy to enable transparent TCP capture (#61851)"
+    },
+    {
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 35145aba212e923f987ccefaf9086ceba31e3b7c; SHA256 a316f8797f7e7cdb5f9581498676bd908768da55caa32641d402d549df51ff4e (10248 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: Reconnect still requires list refresh for missed changes. A broadcast is not a durable delivery receipt, thread subscription grant, cross-thread revision clock or write authorization."
+      ],
+      "features": [
+        "history-pagination",
+        "native-ui"
+      ],
+      "paths": [
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/src/request_processors/thread_lifecycle.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/src/request_processors/thread_read_state.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_read_state.rs"
+      ],
+      "reason": "Broadcast durable read-state changes to initialized experimental clients even when unsubscribed, preserving notification opt-out filtering and equality-token revision semantics.",
+      "revisit": "",
+      "sha": "35145aba212e923f987ccefaf9086ceba31e3b7c",
+      "subject": "Broadcast read-state changes to experimental clients (#61852)"
+    },
+    {
+      "classes": [
+        "model",
+        "protocol"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 3257e1b3eb04a43a8721ad0e59470327807eb844; SHA256 24cfa5acb339d650d70f3e2718606e4f7498bd89f9e53e0331714edc70a59cf3 (15051 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: True selects ToolExposure::Direct availability, not unconditional direct visibility: effective tool_mode and exec-wrapper policy still choose actual direct/nested exposure. False retains DirectModelOnly; None preserves the existing non_code_mode_only setting.",
+        "Integration requirement: No ALab defaults configure this field or tool_mode. Bounded owned-source searches find no ModelInfo literal requiring the added None field; revalidate real caller/metadata updates when integrating later main.",
+        "Integration requirement: Use actual absent/null/false/true serialization and all tool-mode/runtime fallback matrix controls; do not infer model metadata can bypass feature, sandbox or native invocation admission."
+      ],
+      "features": [
+        "model-discovery",
+        "product-policy",
+        "execution-continuity"
+      ],
+      "paths": [
+        "codex-rs/app-server/tests/common/models_cache.rs",
+        "codex-rs/codex-api/tests/models_integration.rs",
+        "codex-rs/core/src/tools/spec_plan.rs",
+        "codex-rs/core/src/tools/spec_plan_tests.rs",
+        "codex-rs/core/tests/suite/auto_review.rs",
+        "codex-rs/core/tests/suite/model_switching.rs",
+        "codex-rs/core/tests/suite/models_cache_ttl.rs",
+        "codex-rs/core/tests/suite/remote_models.rs",
+        "codex-rs/core/tests/suite/rmcp_client.rs",
+        "codex-rs/core/tests/suite/scenarios_indirect_namespace_prefixes.rs",
+        "codex-rs/core/tests/suite/spawn_agent_description.rs",
+        "codex-rs/core/tests/suite/view_image.rs",
+        "codex-rs/models-manager/src/model_info.rs",
+        "codex-rs/prompts/src/model_instructions_tests.rs",
+        "codex-rs/protocol/src/openai_models.rs"
+      ],
+      "reason": "Honor optional model multi_agent_tools_in_code_mode metadata while preserving runtime fallback when absent and the existing Direct/CodeMode/CodeModeOnly policy resolution.",
+      "revisit": "",
+      "sha": "3257e1b3eb04a43a8721ad0e59470327807eb844",
+      "subject": "Allow model metadata to control multi-agent tools in code mode (#61854)"
+    },
+    {
+      "classes": [
+        "feature",
+        "security",
+        "telemetry"
+      ],
+      "decision": "keep-opt-in",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 457a191479f15ce517d70e9a7bc4caf9ddd6d404; SHA256 e1c984f00e5e311d6e9456983a174a2e6fd71f53f0ecb2805e3293726733b924 (21891 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: Do not set CODEX_TOOL_CALL_ATTRIBUTION_PROXY in ALab defaults or this review. Direct targets and other proxies receive no attribution; endpoint protocol/address equality, not origin port, selects the hop.",
+        "Integration requirement: The designated proxy must consume and strip this internal correlation header. Correlation is not identity, permission, usage accounting, receipt ownership or proof; actual network policy/TLS/account binding remains authoritative."
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "paths": [
+        "codex-rs/network-proxy/README.md",
+        "codex-rs/network-proxy/src/http_proxy.rs",
+        "codex-rs/network-proxy/src/upstream.rs",
+        "codex-rs/network-proxy/src/upstream_tests.rs"
+      ],
+      "reason": "Keep tool-call attribution disabled unless the executor explicitly designates a matching upstream proxy; strip guest-supplied IDs and send the controller ID only to that selected HTTP hop or outer HTTPS CONNECT.",
+      "revisit": "Before any ALab activation, qualify the actual supported executor/network/account/cancellation boundary with existing native policy and holds unchanged; keep default off and do not substitute source tests for live admission.",
+      "sha": "457a191479f15ce517d70e9a7bc4caf9ddd6d404",
+      "subject": "Add opt-in tool-call attribution for upstream proxies (#61860)"
+    },
+    {
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 237d8b104ed06ae46c5ed9a54693672dea21856c; SHA256 0d8fe36cc8bd691c684cdbf8f4bc973d2b97a71d60dd6da009ec3181b6411d38 (28017 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: Filesystem package reads move to spawn_blocking. The existing no-receipt migration remains explicit; names/catalog versions alone do not establish identity.",
+        "Integration requirement: Share/search responses without a matching local package leave local_version unset. Retain enabled-policy/interstitial and actual account-owned package validation; a version display is not install or execution authority."
+      ],
+      "features": [
+        "skill-discovery",
+        "account-isolation"
+      ],
+      "paths": [
+        "codex-rs/app-server/src/request_processors.rs",
+        "codex-rs/app-server/src/request_processors/plugins.rs",
+        "codex-rs/app-server/src/request_processors/plugins/search.rs",
+        "codex-rs/app-server/tests/suite/v2/plugin_list.rs",
+        "codex-rs/app-server/tests/suite/v2/plugin_share.rs",
+        "codex-rs/core-plugins/src/manager.rs",
+        "codex-rs/core-plugins/src/manager_tests.rs",
+        "codex-rs/core-plugins/src/remote/remote_installed_plugin_sync.rs"
+      ],
+      "reason": "Report remote plugin local_version only from the materialized active package with matching remote identity receipt and manifest, and preserve the original receipt when conflicting same-version replacement download fails.",
+      "revisit": "",
+      "sha": "237d8b104ed06ae46c5ed9a54693672dea21856c",
+      "subject": "Report remote plugin local versions from matching cached packages (#61865)"
+    },
+    {
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical cached patch independently read and reserialized using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary b8cbdbfeff72869e5d715480572aad24f739aa65; SHA256 90f9c61935dfd1bf965b47677dfe7955f4568d0c3226587d106b0a46107e305c (19978 bytes).",
+        "alab/reviews/upstream-intake-2026-11-17-aftere583.md; fixed comparison main a34e913c9b5b3036dc203d30af6e98abe912a6b3, final cohort b8cbdbfeff72869e5d715480572aad24f739aa65. Source-only decisions, all candidate tests not_run/UNRUN; no upstream import, Rust, native admission, pin/profile/default/hold change or qualification.",
+        "Integration requirement: Repeated rows may legitimately differ during pagination refill and keep their individual metadata. Project/section/parent filters remain enforced in the direct SQLite query; the removed final project retain is not an authorization deletion.",
+        "Integration requirement: DB-only indexed-name read failures still report errors; ordinary rollout/search enrichment remains best effort. Preserve actual pagination/cursor and session history identity."
+      ],
+      "features": [
+        "history-pagination",
+        "native-ui"
+      ],
+      "paths": [
+        "codex-rs/rollout/src/lib.rs",
+        "codex-rs/rollout/src/recorder.rs",
+        "codex-rs/thread-store/src/local/helpers.rs",
+        "codex-rs/thread-store/src/local/list_threads.rs",
+        "codex-rs/thread-store/src/local/list_threads_tests.rs",
+        "codex-rs/thread-store/src/local/search_threads.rs"
+      ],
+      "reason": "Project direct SQLite listing rows in collected order without losing each occurrence title, section position or entry time, and retain legacy indexed-name precedence and best-effort rollout/search enrichment.",
+      "revisit": "",
+      "sha": "b8cbdbfeff72869e5d715480572aad24f739aa65",
+      "subject": "Preserve SQLite row metadata in thread listings (#61866)"
+    }
+  ],
+  "frontier": "e5839cbc591df02408d5009e287887c7d57a9167",
+  "schema": 1,
+  "target": "b8cbdbfeff72869e5d715480572aad24f739aa65"
+}

@@ -50,6 +50,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) enum ThreadToolTransport {
+    #[cfg(unix)] BackendOwned, // ALAB(owned-local): backend owns the actual task MCP namespace and operation workers.
     Dynamic,
     Mcp(Arc<DynamicToolMcpServer>),
 }
@@ -77,6 +78,7 @@ impl ThreadToolTransport {
 
     pub(crate) fn configure(&self, params: &mut ThreadStartParams) {
         match self {
+            #[cfg(unix)] Self::BackendOwned => { params.dynamic_tools = None; } // ALAB(owned-local): leave the backend-owned namespace unmodified.
             Self::Dynamic => {
                 params.dynamic_tools = Some(dynamic_tools::non_delegation_tool_specs());
             }

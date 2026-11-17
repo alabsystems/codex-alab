@@ -13,12 +13,12 @@ from datetime import datetime, timezone
 import json
 import hashlib
 import http.server
-import threading
 import ssl
 from pathlib import Path
 import select
 import os
 import re
+import runpy
 import socket
 import subprocess
 import sys
@@ -28,6 +28,9 @@ import capacity_exec as probe
 import native_host_record
 import package_standing
 import provider_fixture
+
+CLI = runpy.run_path(str(Path(__file__).resolve().parents[1] / "cli_status.py"))
+FILE_HASH = runpy.run_path(str(Path(__file__).resolve().parents[1] / "file_hash.py"))
 
 
 # (causal-outcome hang detector, guardian), in seconds. These bound only the
@@ -2190,15 +2193,12 @@ def serve(model, secure=True, issuer_only=False):
             self.end_headers()
             self.wfile.write(data)
     if not secure:
-        server = provider_fixture.LoopbackHTTPServer(("127.0.0.1", 0), Handler)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
-        worker.start()
-        return server, worker
-    server = Listener(("127.0.0.1", 0), Handler)
-    server.socket = fixture_tls(model.root).wrap_socket(server.socket, server_side=True)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    return server, worker
+        return probe.start_listener(Handler)
+
+    def prepare(server):
+        server.socket = fixture_tls(model.root).wrap_socket(server.socket, server_side=True)
+
+    return probe.start_listener(Handler, bind=Listener, prepare=prepare)
 
 
 def fixture_tls(root):
@@ -2237,21 +2237,13 @@ IMAGE_DIGESTS = {}
 
 
 def image_digest(executable):
-    """The image's stat and sha256, read again only when its identity or contents change.
+    """The opened file's stable stat/digest, with private metadata-based caching.
 
     ctime is in the key because, unlike mtime, nothing can set it back after a write. A
-    digest is kept only when the file did not change while it was read.
+    changed read is refused and a digest is cached only after successful close. This
+    is a descriptor snapshot, not proof of pathname continuity or an executed image.
     """
-    def identity(stat):
-        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-    with executable.open("rb") as image:
-        stat = os.fstat(image.fileno())
-        digest = IMAGE_DIGESTS.get(identity(stat))
-        if digest is None:
-            digest = hashlib.file_digest(image, "sha256").hexdigest()
-            if identity(os.fstat(image.fileno())) == identity(stat):
-                IMAGE_DIGESTS[identity(stat)] = digest
-    return stat, digest
+    return FILE_HASH["file_sha256_snapshot"](executable, cache=IMAGE_DIGESTS, error_type=RuntimeError)
 
 
 def process_evidence(record):
@@ -2721,7 +2713,87 @@ def host_exit_diagnostics(root, process, budget_seconds):
     return diagnostics
 
 
-def main():
+def _host_cleanup_failures(primary, failures):
+    if not failures:
+        return
+    notes = [f"host cleanup {phase}: {probe._case_label(error)}" for phase, error in failures]
+    if primary is not None:
+        probe._attach_case_notes(primary, notes)
+        return
+    selected = failures[0][1]
+    for _phase, error in failures:
+        if not isinstance(error, Exception) and not (
+                isinstance(error, SystemExit) and probe._successful_exit(error)):
+            selected = error
+            break
+    if isinstance(selected, SystemExit) and probe._successful_exit(selected):
+        failure = RuntimeError("host cleanup incomplete: requested a successful exit")
+        probe._attach_case_notes(failure, notes)
+        raise failure from selected
+    probe._attach_case_notes(selected, notes)
+    raise selected
+
+
+def _finish_host(root, process, primary, started, guardian_seconds):
+    failures = []
+
+    def attempt(phase, action):
+        try:
+            action()
+            return True
+        except BaseException as error:
+            failures.append((phase, error))
+            return False
+
+    attempt("stop", lambda: (root / "stop").touch())
+    stalled = False
+    if process is None:
+        _host_cleanup_failures(primary, failures)
+        return None, stalled  # No constructor-returned child to observe or export.
+    poll_reserved = False
+    if process.returncode is None:
+        try:
+            process.wait(timeout=HOST_EXIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            stalled = True
+        except BaseException as error:
+            failures.append(("wait", error))
+        if stalled:
+            # Diagnostics already owns one poll. Reserve that observation even
+            # if its budget/collection fails before publishing the result.
+            poll_reserved = True
+            attempt("diagnostics", lambda: host_exit_diagnostics(root, process,
+                started + guardian_seconds - time.monotonic() - 20))
+            if process.returncode is None:
+                def terminate():
+                    try:
+                        process.terminate()
+                    except ProcessLookupError:
+                        pass
+                if attempt("terminate", terminate) and process.returncode is None:
+                    attempt("wait10", lambda: process.wait(timeout=10))
+        if process.returncode is None and not poll_reserved:
+            poll_reserved = True
+            attempt("poll", process.poll)
+    code = process.returncode
+    skipped = code is None and process.stdout is not None
+    if code is None:
+        failures.append(("retirement", RuntimeError("host retirement unconfirmed")))
+        if skipped:
+            failures.append(("stdout", RuntimeError("buffered stdout close skipped: host retirement unconfirmed")))
+    elif process.stdout is not None:
+        attempt("stdout.close", process.stdout.close)
+    record = {"pid": process.pid, "returncode": code, "stalled": stalled}
+    if code is None:
+        record.update(retirementConfirmed=False, stdoutCloseSkipped=skipped)
+    if failures:
+        record["cleanupErrors"] = [f"host cleanup {phase}: {probe._case_label(error)}" for phase, error in failures]
+    attempt("host-wait", lambda: probe.write_json(root / "host-wait.json", record))
+    _host_cleanup_failures(primary, failures)
+    return code, stalled
+
+
+def _arguments():
     # Under --under-guardian, the guardian stops this process about guardian_seconds from here.
     started = time.monotonic()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -2733,6 +2805,16 @@ def main():
                         help="Run an existing fault case with distinct quota accounts")
     parser.add_argument("--under-guardian", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.case in LOST_LOGIN_CASES and args.quota:
+        parser.error("a lost-login case builds its own two accounts; --quota does not apply")
+    return args, started
+
+
+def main():
+    return _run(*_arguments())
+
+
+def _run(args, started):
     drive_seconds, guardian_seconds = CASE_BUDGETS[args.case]
     host = args.host.resolve(strict=True)
     # The record says which host image this is and what its own self-run reported. Which
@@ -2754,13 +2836,18 @@ def main():
             command.append("--quota")
         completed = subprocess.run(command)
         result_path = root / "result.json"
+        passed = False
         if result_path.exists() and guard_result.exists():
             result = json.loads(result_path.read_text())
-            result["guardian"] = json.loads(guard_result.read_text())
-            result["passed"] = bool(result.get("passed") and completed.returncode == 0
-                and result["guardian"].get("returncode") == 0 and not result["guardian"].get("timed_out"))
+            guardian = json.loads(guard_result.read_text())
+            result["guardian"] = guardian
+            result["passed"] = bool(result.get("passed") is True
+                and type(completed.returncode) is int and completed.returncode == 0
+                and isinstance(guardian, dict) and type(guardian.get("returncode")) is int
+                and guardian["returncode"] == 0 and guardian.get("timed_out") is False)
             result_path.write_text(json.dumps(result, indent=2) + "\n")
-        return completed.returncode
+            passed = result["passed"]
+        return completed.returncode if completed.returncode != 0 else (0 if passed else 1)
     root.mkdir(parents=True, exist_ok=False)
     env = probe.fresh_environment(root)
     env["ATERM_HARNESS_STATE"] = str(root / "host-state")
@@ -2778,8 +2865,6 @@ def main():
     lost_login = LOST_LOGIN_CASES.get(args.case)
     lost_moved = args.case in LOST_LOGIN_MOVED
     lost_stays = lost_login is not None and not lost_moved
-    if lost_login is not None and args.quota:
-        parser.error("a lost-login case builds its own two accounts; --quota does not apply")
     # Two logins of distinct accounts: a usage-limit handoff's, and a lost login's.
     two_accounts = weekly_quota or lost_login is not None
     model = Model(root, weekly_quota=weekly_quota,
@@ -2787,16 +2872,15 @@ def main():
                   wall="five-hour-soon" if soon_wall else "five-hour-far" if far_wall else None,
                   lost_login=lost_login[0] if lost_login else None,
                   wall_names_reset=wall_names_reset)
-    server, server_thread = serve(model)
-    # The logins' issuer of a lost-login case, where it is not the fixture's TLS server.
-    issuer_server = issuer_thread = None
-    if lost_login is not None and lost_login[2] == PLAIN_ISSUER:
-        issuer_server, issuer_thread = serve(model, secure=False, issuer_only=True)
     report = {"passed": False, "scope": "isolated native host and real Codex PTY",
               "source": build["source"], "version": manifest["version"], "case": args.case,
               "quotaAccounts": weekly_quota,
-              "observationBudgetSeconds": {"drive": drive_seconds, "guardian": guardian_seconds},
-              "nativeHost": native_host_record.summary(host_record),
+              "observationBudgetSeconds": {"drive": drive_seconds, "guardian": guardian_seconds}}
+    model_listener = issuer_listener = None
+    issuer_server = None
+    primary = None
+    try:
+        report.update({"nativeHost": native_host_record.summary(host_record),
               # What the package's own record is worth: a trial package, or a record no
               # certified packager wrote, qualifies nothing. `passed` is this run's own
               # verdict and does not depend on it.
@@ -2807,8 +2891,15 @@ def main():
               # and what the package's record is worth.
               "fixtureSha256": {Path(module.__file__).name: hashlib.sha256(
                   Path(module.__file__).read_bytes()).hexdigest()
-                  for module in (provider_fixture, native_host_record, package_standing)}}
-    try:
+                  for module in (provider_fixture, native_host_record, package_standing)}})
+        # Own each returned pair before extracting its server. A later acquisition
+        # failure must still retire every listener already transferred to us.
+        model_listener = serve(model)
+        server = model_listener[0]
+        # The lost-login issuer may be distinct from the fixture's TLS server.
+        if lost_login is not None and lost_login[2] == PLAIN_ISSUER:
+            issuer_listener = serve(model, secure=False, issuer_only=True)
+            issuer_server = issuer_listener[0]
         probe.configure(root, server.server_port)
         provider_config = root / "codex-home" / "config.toml"
         text = provider_config.read_text().replace("requires_openai_auth = false", "requires_openai_auth = true")
@@ -2878,6 +2969,7 @@ def main():
             completion_wait_from = None
             last_source_records = None
             source_record_transitions = 0
+            drive_primary = None
             try:
                 while time.monotonic() < deadline:
                     require_no_fixture_fault(model)
@@ -3759,8 +3851,14 @@ def main():
                         seen = list(model.http_events)
                     hang += "; " + login_evidence(seen, root / "renewal-control-trace.jsonl")
                 probe.require(renewed, hang)
+            except BaseException as error:
+                drive_primary = error
+                raise
             finally:
-                (root / "stop").touch()
+                try:
+                    (root / "stop").touch()
+                except BaseException as error:
+                    _host_cleanup_failures(drive_primary, (("drive-stop", error),))
 
         faults = {"lost-signal-ack": ("drop-signal-ack", "signal-ack-dropped"),
                   "panic-before-signal": ("panic-before-signal", "panic-before-signal-fired"),
@@ -3786,28 +3884,23 @@ def main():
 
         command = [str(host), "--renewal-config", str(config_path)]
         probe.write_json(root / "host-command.json", command)
-        with (root / "host-stdout.jsonl").open("xb") as stdout, (root / "host-stderr.txt").open("xb") as stderr:
-            process = subprocess.Popen(command, cwd=root / "work", env=env, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=stderr)
+        with probe.OutputLogs(root, "host") as (stdout, stderr):
+            process = host_primary = None
             try:
+                process = subprocess.Popen(command, cwd=root / "work", env=env, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=stderr)
                 drive(process, stdout)
+            except BaseException as error:
+                host_primary = error
+                raise
             finally:
-                (root / "stop").touch()
-                stalled = False
                 try:
-                    code = process.wait(timeout=HOST_EXIT_SECONDS)
-                except subprocess.TimeoutExpired:
-                    stalled = True
-                    try:
-                        # Leave the terminate wait and the result their time inside the guardian.
-                        host_exit_diagnostics(root, process,
-                            started + guardian_seconds - time.monotonic() - 20)
-                    finally:
-                        process.terminate()
-                    code = process.wait(timeout=10)
-                process.stdout.close()
-                probe.write_json(root / "host-wait.json",
-                    {"pid": process.pid, "returncode": code, "stalled": stalled})
+                    code, stalled = _finish_host(root, process, host_primary, started, guardian_seconds)
+                except BaseException as error:
+                    if host_primary is not None and error is not host_primary:
+                        probe._attach_case_notes(host_primary, ["host cleanup: " + probe._case_label(error)])
+                        raise host_primary
+                    raise
         # A host that exits by itself while it is sampled still outlived its wait.
         probe.require(not stalled, "native host did not exit cleanly: it outlived its "
             f"{HOST_EXIT_SECONDS} s wait after stop (host-exit-diagnostics.json)")
@@ -3893,27 +3986,50 @@ def main():
         report["passed"] = args.case != "post-signal-expiry-diagnostic"
         if args.case == "post-signal-expiry-diagnostic":
             report["error"] = "Known unresolved goal gap: expired post-Signal receipt remains Committing after hold lifts"
-    except Exception as error:
-        report["error"] = f"{type(error).__name__}: {error}"
+    except BaseException as error:
+        primary = error
+        report["passed"] = False
+        report.update(probe.case_error_fields(error))
     finally:
-        (root / "stop").touch()
-        for listener, worker in ((server, server_thread), (issuer_server, issuer_thread)):
-            if listener is not None:
-                listener.shutdown()
-                worker.join()
-                listener.server_close()
-        report["requestAttribution"] = {"foreground": len(model.requests),
-            "threadTitle": len(model.auxiliary_requests), "unknown": len(model.unknown_requests),
-            "unroutedPosts": len(model.unrouted_posts)}
-        probe.write_json(root / "requests.json", model.requests)
-        probe.write_json(root / "auxiliary-requests.json", model.auxiliary_requests)
-        probe.write_json(root / "unknown-requests.json", model.unknown_requests)
-        probe.write_json(root / "unrouted-posts.json", model.unrouted_posts)
-        probe.write_json(root / "http-events.json", model.http_events)
-        probe.write_json(root / "result.json", report)
+        listeners = tuple((name, *listener) for name, listener in (
+            ("model", model_listener), ("issuer", issuer_listener)) if listener is not None)
+        exports = [("request-attribution", lambda: report.update(requestAttribution={
+            "foreground": len(model.requests), "threadTitle": len(model.auxiliary_requests),
+            "unknown": len(model.unknown_requests), "unroutedPosts": len(model.unrouted_posts)}))]
+        exports.extend((name, lambda name=name, attribute=attribute:
+                        probe.write_json(root / name, getattr(model, attribute))) for name, attribute in (
+            ("requests.json", "requests"), ("auxiliary-requests.json", "auxiliary_requests"),
+            ("unknown-requests.json", "unknown_requests"), ("unrouted-posts.json", "unrouted_posts"),
+            ("http-events.json", "http_events")))
+        try:
+            probe.cleanup_resources(listeners, exports, report, primary, stop=lambda: (root / "stop").touch())
+        except BaseException as error:
+            primary = error
+            report["passed"] = False
+            report.update(probe.case_error_fields(error))
+        if primary is not None and not isinstance(primary, Exception):
+            report["interrupted"] = True
+        try:
+            probe.write_json(root / "result.json", report)
+        finally:
+            if primary is not None and not isinstance(primary, Exception):
+                raise primary
     print(json.dumps(report, indent=2))
     return 0 if report["passed"] else 1
 
 
+def cli():
+    # Keep parsing and the original budget start outside observation policy.
+    args, started = _arguments()
+    try:
+        return _run(args, started)
+    except SystemExit as error:
+        if not CLI["successful_exit"](error):
+            raise
+        return CLI["report_failure"]("renewal: ", error, incomplete=True)
+    except Exception as error:
+        return CLI["report_failure"]("renewal: ", error)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

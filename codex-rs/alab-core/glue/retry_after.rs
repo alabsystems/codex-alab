@@ -5,6 +5,44 @@
 
 use super::Duration;
 use super::Instant;
+use super::RETRY_AFTER;
+use super::SystemTime;
+use http::HeaderMap;
+
+/// Select repeated advice from one receipt; each field remains a whole value.
+/// Inactive consumers retain upstream's exact first-field behavior.
+pub(super) fn from_headers(headers: &HeaderMap) -> Option<super::RetryAfter> {
+    if !codex_alab_core::active() {
+        return super::RetryAfter::from_header(headers.get(RETRY_AFTER)?.to_str().ok()?);
+    }
+    // Match from_header's wall-before-monotonic ordering. Every candidate shares
+    // this receipt, and only the selected deadline captures the wake observer.
+    let now = SystemTime::now();
+    let received_at = Instant::now();
+    let deadline = headers
+        .get_all(RETRY_AFTER)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .filter_map(|value| header_delay(value, now))
+        .filter_map(|delay| received_at.checked_add(delay))
+        .filter(timer_safe)
+        .max()?;
+    Some(super::RetryAfter(capture(deadline)))
+}
+
+fn header_delay(value: &str, now: SystemTime) -> Option<Duration> {
+    let value = value.trim();
+    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        Some(Duration::from_secs(value.parse().ok()?))
+    } else {
+        Some(
+            httpdate::parse_http_date(value)
+                .ok()?
+                .duration_since(now)
+                .unwrap_or_default(),
+        )
+    }
+}
 
 pub(super) type Deadline = codex_alab_core::wake::Deadline;
 

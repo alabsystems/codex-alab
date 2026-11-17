@@ -2011,13 +2011,16 @@ dependencies = [
  "codex-alab-core",
  "codex-api",
  "codex-http-client",
+ "codex-protocol",
  "futures",
  "http 1.4.0",
+ "httpdate",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
@@ -2030,6 +2033,7 @@ dependencies = [
  "futures",
  "libc",
  "pretty_assertions",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2158,6 +2162,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-alab-native-source-probe"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "codex-alab-aterm",
+ "codex-alab-core",
+ "codex-alab-tui",
+ "codex-app-server",
+ "codex-app-server-client",
+ "codex-app-server-protocol",
+ "codex-arg0",
+ "codex-config",
+ "codex-core",
+ "codex-exec-server",
+ "codex-feedback",
+ "codex-login",
+ "codex-protocol",
+ "codex-utils-cli",
+ "codex-websocket-auth",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.9.11+spec-1.1.0",
+]
+
+[[package]]
 name = "codex-alab-quota-recovery"
 version = "0.0.0"
 dependencies = [
@@ -2218,6 +2249,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-alab-task-worktree"
+version = "0.0.0"
+dependencies = [
+ "codex-app-server-protocol",
+ "codex-core",
+ "codex-protocol",
+ "codex-worktree",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "codex-alab-tui"
 version = "0.0.0"
 dependencies = [
@@ -2245,6 +2288,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "toml 0.9.11+spec-1.1.0",
@@ -2351,8 +2395,10 @@ dependencies = [
  "chrono",
  "clap",
  "codex-agent-message-board-host",
+ "codex-alab-aterm",
  "codex-alab-autopilot",
  "codex-alab-core",
+ "codex-alab-task-worktree",
  "codex-analytics",
  "codex-app-server-daemon",
  "codex-app-server-protocol",
@@ -2467,6 +2513,7 @@ dependencies = [
 name = "codex-app-server-client"
 version = "0.0.0"
 dependencies = [
+ "codex-alab-aterm",
  "codex-alab-core",
  "codex-app-server",
  "codex-app-server-protocol",
@@ -5510,6 +5557,7 @@ dependencies = [
  "clap",
  "codex-alab-aterm",
  "codex-alab-core",
+ "codex-alab-task-worktree",
  "codex-alab-tui",
  "codex-ansi-escape",
  "codex-app-server-client",

@@ -211,10 +211,14 @@ pub fn status_height() -> u16 {
 }
 
 /// Apply the experience choice immediately. Persistence belongs to the caller.
-pub fn set_enabled(enabled: bool) {
-    if SCOPED.with(Cell::get).is_none() {
-        codex_alab_core::set_enhanced(enabled);
-    }
+/// Returns the effective choice; a failed durable source revocation keeps the
+/// previous mode rather than acknowledging an unsafe boundary.
+pub fn set_enabled(enabled: bool) -> bool {
+    let enabled = if SCOPED.with(Cell::get).is_none() {
+        codex_alab_core::set_enhanced(enabled)
+    } else {
+        enabled
+    };
     if let Some(state) = state() {
         state
             .choice
@@ -222,6 +226,7 @@ pub fn set_enabled(enabled: bool) {
         clear_switch_hits();
         clear_account_hits();
     }
+    enabled
 }
 
 /// Toggle the experience without changing the saved Cruise/Land/Off preference.
@@ -237,12 +242,23 @@ pub fn toggle() -> bool {
             Ordering::Acquire,
         ) {
             Ok(_) => {
-                if SCOPED.with(Cell::get).is_none() {
-                    codex_alab_core::set_enhanced(next == ON);
+                let requested = next == ON;
+                let effective = if SCOPED.with(Cell::get).is_none() {
+                    codex_alab_core::set_enhanced(requested)
+                } else {
+                    requested
+                };
+                if effective != requested {
+                    let _ = state.choice.compare_exchange(
+                        next,
+                        if effective { ON } else { OFF },
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
                 }
                 clear_switch_hits();
                 clear_account_hits();
-                return next == ON;
+                return effective;
             }
             Err(current) => previous = current,
         }

@@ -61,6 +61,7 @@ impl TerminalStderrGuard {
 
         #[cfg(target_os = "macos")]
         {
+            let _parent_stdio_writer = alab_original_editor::check_original_writer()?; // ALAB(retained-editor): preserve actual held editor parent descriptors.
             let mut state = lock_state()?;
             if !state.owner_active {
                 suppress_locked(&mut state)?;
@@ -73,6 +74,7 @@ impl TerminalStderrGuard {
 
     #[cfg(target_os = "macos")]
     fn install_suppression() -> io::Result<Self> {
+        let _parent_stdio_writer = alab_original_editor::check_original_writer()?; // ALAB(retained-editor): no replacement while original editor owns parent descriptors.
         let mut state = lock_state()?;
         if state.owner_active {
             return Err(io::Error::new(
@@ -97,6 +99,7 @@ impl Drop for TerminalStderrGuard {
 
 /// Restores stderr while terminal ownership is temporarily released.
 pub(super) fn pause() -> io::Result<()> {
+    #[cfg(unix)] let _parent_stdio_writer = alab_original_editor::check_original_writer()?; // ALAB(retained-editor): only real editor handback releases these descriptions.
     #[cfg(target_os = "macos")]
     {
         let mut state = lock_state()?;
@@ -110,6 +113,7 @@ pub(super) fn pause() -> io::Result<()> {
 
 /// Suppresses stderr again when terminal ownership returns to the TUI.
 pub(super) fn resume() -> io::Result<()> {
+    #[cfg(unix)] let _parent_stdio_writer = alab_original_editor::check_original_writer()?; // ALAB(retained-editor): only real editor handback releases these descriptions.
     #[cfg(target_os = "macos")]
     {
         let mut state = lock_state()?;
@@ -123,6 +127,7 @@ pub(super) fn resume() -> io::Result<()> {
 
 /// Restores stderr permanently when the TUI session ends.
 pub(super) fn finish() -> io::Result<()> {
+    #[cfg(unix)] let _parent_stdio_writer = alab_original_editor::check_original_writer()?; // ALAB(retained-editor): only real editor handback releases these descriptions.
     #[cfg(target_os = "macos")]
     {
         let mut state = lock_state()?;
@@ -298,3 +303,12 @@ mod tests {
         Ok(())
     }
 }
+
+// ALAB(retained-ui): capture the actual standard descriptions and SAME saved stderr owner once.
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_terminal_stdio_census.rs"]
+pub(in crate::tui) mod alab_retained_stdio;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_original_editor_stdio.rs"]
+pub(crate) mod alab_original_editor; // ALAB(retained-editor): SAME operation-bound parent stdio, shared native census.

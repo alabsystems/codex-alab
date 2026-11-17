@@ -194,7 +194,7 @@ class GithubTests(unittest.TestCase):
     def test_setup_uses_explicit_local_transport_and_preserves_push_refusal(self):
         directory = self.repo / "alab"
         directory.mkdir()
-        for name in ("setup.sh", "lib.sh", "command_guard.py", "github.py"):
+        for name in ("setup.sh", "lib.sh", "command_guard.py", "github.py", "cli_status.py"):
             (directory / name).write_bytes((ROOT / "alab" / name).read_bytes())
         # Only the fixture's endpoint data changes; setup and the real transport
         # execute intact, with no global Git URL rewrite or network client.
@@ -264,6 +264,51 @@ class GithubTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ALAB_AGH":str(executable)}):
             with self.assertRaisesRegex(GITHUB.Refused, "lacks exact anonymous batch fetch"):
                 GITHUB.fetch(self.repo, "fixture/codex", self.specs)
+
+    def test_network_url_syntax_cannot_be_shadowed_by_a_local_directory(self):
+        for remote in ("https://github.com/fixture/codex.git",
+                       "ssh://git@github.com/fixture/codex.git",
+                       "ssh://git@gh-fixture/fixture/codex.git",
+                       "git@github.com:fixture/codex.git", "git@gh-fixture:fixture/codex.git"):
+            with self.subTest(remote=remote):
+                shadow = self.repo / Path(remote)
+                shadow.mkdir(parents=True)
+                self.assertEqual(GITHUB.location(self.repo, remote), ("fixture/codex", True))
+                git(self.repo, "config", "remote.shadow.url", remote)
+                self.assertEqual(GITHUB.location(self.repo, "shadow"), ("fixture/codex", True))
+                self.assertTrue(shadow.is_dir())
+
+    def test_invalid_network_urls_refuse_even_when_their_local_shadows_exist(self):
+        for remote in ("https://github.com.evil/fixture/codex.git",
+                       "https://user:fixture@github.com/fixture/codex.git",
+                       "https://github.com:0/fixture/codex.git",
+                       "https://github.com/fixture/codex.git?query",
+                       "ssh://other@github.com/fixture/codex.git",
+                       "ssh://git@gh-other/fixture/codex.git",
+                       "git@elsewhere.invalid:fixture/codex.git",
+                       "other@github.com:fixture/codex.git", "http://github.com/fixture/codex.git"):
+            with self.subTest(remote=remote):
+                shadow = self.repo / Path(remote)
+                shadow.mkdir(parents=True)
+                with self.assertRaises(GITHUB.Refused):
+                    GITHUB.location(self.repo, remote)
+                self.assertTrue(shadow.is_dir())
+
+    def test_explicit_local_paths_keep_network_punctuation_local(self):
+        shadow = self.repo / Path("https://github.com/fixture/codex.git")
+        shadow.mkdir(parents=True)
+        for remote in ("./https://github.com/fixture/codex.git", str(shadow), shadow.as_uri()):
+            with self.subTest(remote=remote):
+                self.assertEqual(GITHUB.location(self.repo, remote), (str(shadow.resolve()), False))
+        sibling = self.home / "git@github.com:fixture" / "codex.git"
+        sibling.mkdir(parents=True)
+        self.assertEqual(GITHUB.location(self.repo, "../git@github.com:fixture/codex.git"),
+                         (str(sibling.resolve()), False))
+
+    def test_existing_bare_owner_repository_path_remains_local(self):
+        local = self.repo / "fixture/codex"
+        local.mkdir(parents=True)
+        self.assertEqual(GITHUB.location(self.repo, "fixture/codex"), (str(local.resolve()), False))
 
     def test_existing_public_tag_is_immutable_even_with_a_new_snapshot(self):
         bare = self.home / "public snapshot.git"

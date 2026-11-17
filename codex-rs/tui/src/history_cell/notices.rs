@@ -97,7 +97,7 @@ pub(crate) fn new_warning_event(message: String) -> WarningHistoryCell {
     let style = crate::style::status_style(crate::style::StatusTone::Attention);
     WarningHistoryCell {
         server_version_notice: false,
-        visible_in_transcript: false,
+        visible_in_transcript: codex_alab_tui::quota::reset_notice_visible(&message), // ALAB(weekly-reset): print reset decisions in the conversation, including declined redemptions.
         key: message.clone(),
         diagnostic: message.clone(),
         details: PrefixedWrappedHistoryCell::new(
@@ -144,26 +144,26 @@ pub(crate) fn new_server_version_warning(
 
 #[derive(Debug)]
 pub(crate) struct SafetyAccessBlockCell {
-    title: &'static str,
+    title: std::borrow::Cow<'static, str>, // ALAB(retained-ui): own exact historical notice text after exec without leaking static strings.
     pub(crate) explanation: Option<String>,
-    body: &'static str,
-    actions: &'static [(&'static str, &'static str)],
+    body: std::borrow::Cow<'static, str>, // ALAB(retained-ui): original constructors retain borrowed strings; restore owns historical text.
+    actions: Vec<(std::borrow::Cow<'static, str>, std::borrow::Cow<'static, str>)>, // ALAB(retained-ui): keep exact historical action labels and destinations.
 }
 
 const SAFETY_ACCESS_BLOCK_LEARN_MORE_URL: &str = "https://help.openai.com/en/articles/20001326";
 
 pub(crate) fn new_safety_access_block_event() -> SafetyAccessBlockCell {
     SafetyAccessBlockCell {
-        title: "This content can't be shown",
+        title: "This content can't be shown".into(), // ALAB(retained-ui): ordinary notice keeps its borrowed static title.
         explanation: Some("We take extra caution with requests involving biological research and applications that could pose safety risks.".into()),
-        body: "Eligible researchers can apply for Trusted Access.",
-        actions: &[
+        body: "Eligible researchers can apply for Trusted Access.".into(), // ALAB(retained-ui): preserve original borrowed body.
+        actions: alab_retained_notice_storage::static_actions(&[ // ALAB(retained-ui): retain original action strings as borrowed native fields.
             (
                 "Trusted Access",
                 "https://chatgpt.com/r/b749fb02595e04c3007a54375f3f4374",
             ),
             ("Learn more", SAFETY_ACCESS_BLOCK_LEARN_MORE_URL),
-        ],
+        ]), // ALAB(retained-ui): owned action container has no leaked references.
     }
 }
 
@@ -196,11 +196,11 @@ pub(crate) fn new_cyber_policy_error_event(
         ),
     };
     SafetyAccessBlockCell {
-        title: "This content can’t be shown",
+        title: "This content can’t be shown".into(), // ALAB(retained-ui): preserve original borrowed title.
         explanation: (notice == Notice::Apply)
             .then(|| "We take extra care with some cybersecurity requests.".into()),
-        body,
-        actions,
+        body: body.into(), // ALAB(retained-ui): ordinary policy projection is unchanged.
+        actions: alab_retained_notice_storage::static_actions(actions), // ALAB(retained-ui): preserve original labels and targets.
     }
 }
 
@@ -208,7 +208,7 @@ impl SafetyAccessBlockCell {
     fn message(&self) -> String {
         match &self.explanation {
             Some(explanation) => format!("{explanation} {}", self.body),
-            None => self.body.to_owned(),
+            None => self.body.to_string(), // ALAB(retained-ui): borrowed and historical owned text share the original message.
         }
     }
 }
@@ -220,7 +220,7 @@ impl HistoryCell for SafetyAccessBlockCell {
 
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
         let mut lines = vec![HyperlinkLine::new(
-            vec!["ⓘ ".fg(accent_color()), self.title.bold()].into(),
+            vec!["ⓘ ".fg(accent_color()), self.title.to_string().bold()].into(), // ALAB(retained-ui): render exact historical title with original style.
         )];
         let body = Line::from(vec!["  ".into(), self.message().dim()]);
         let wrap_width = width.saturating_sub(2).max(1) as usize;
@@ -232,11 +232,11 @@ impl HistoryCell for SafetyAccessBlockCell {
         push_owned_lines(&wrapped, &mut wrapped_body);
         lines.extend(plain_hyperlink_lines(wrapped_body));
 
-        for &(label, url) in self.actions {
+        for (label, url) in &self.actions { // ALAB(retained-ui): iterate the same original action values with historical owned storage.
             let source = crate::terminal_hyperlinks::annotate_web_urls_in_line(
                 vec![
                     format!("  {label}: ").dim(),
-                    url.fg(accent_color()).underlined(),
+                    url.to_string().fg(accent_color()).underlined(), // ALAB(retained-ui): retain original action style for borrowed or historical values.
                 ]
                 .into(),
             );
@@ -255,7 +255,7 @@ impl HistoryCell for SafetyAccessBlockCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = vec![Line::from(self.title), Line::from(self.message())];
+        let mut lines = vec![Line::from(self.title.to_string()), Line::from(self.message())]; // ALAB(retained-ui): retain original raw title for owned history.
         lines.extend(
             self.actions
                 .iter()
@@ -492,3 +492,10 @@ impl HistoryCell for ThreadRecapHistoryCell {
         lines
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_notice_cells.rs"]
+pub(in crate::history_cell) mod alab_retained_notice; // ALAB(retained-ui): exact native notice fields without update/policy effects.
+
+#[path = "../../../alab-tui/glue/retained_history_notice_storage.rs"]
+mod alab_retained_notice_storage; // ALAB(retained-ui): ordinary native notices borrow static action fields on every platform.

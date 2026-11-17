@@ -145,6 +145,7 @@ async fn delegated_core_events_keep_private_output_hidden_and_deliver_final_spee
     let other_id = other.session.thread_id;
     app.replace_chat_widget_with_app_server_thread(
         &mut tui,
+        None, // ALAB(source-selection): retain actual session context for a retained construction.
         other,
         super::super::session_lifecycle::ThreadAttachPresentation::Fresh,
         /*initial_user_message*/ None,

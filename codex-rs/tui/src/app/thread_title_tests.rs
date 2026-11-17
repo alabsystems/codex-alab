@@ -305,6 +305,7 @@ async fn check_thread_title_generation(scenario: TitleScenario) -> color_eyre::R
     let thread_id = started.session.thread_id;
     app.replace_chat_widget_with_app_server_thread(
         &mut tui,
+        None, // ALAB(source-selection): retain actual session context for a retained construction.
         started,
         ThreadAttachPresentation::SessionLineage,
         /*initial_user_message*/ None,

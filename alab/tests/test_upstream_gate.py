@@ -260,7 +260,7 @@ class ReviewAdmissionTests(unittest.TestCase):
         (self.repo / 'codex-rs').mkdir(exist_ok=True)
         for name in ('check.sh', 'lib.sh', 'retention.py', 'upstream_gate.py', 'upstream_intake.py',
                      'feature_gate.py', 'feature_evidence.py', 'focused_results.py', 'python_test_results.py',
-                     'pristine_state.py', 'qualification.py', 'source_content.py'):
+                     'pristine_state.py', 'qualification.py', 'cli_status.py', 'file_hash.py', 'source_content.py'):
             shutil.copyfile(ROOT / 'alab' / name, self.repo / 'alab' / name)
         marker = self.repo / 'build-command-entered'
         env = {key: value for key, value in os.environ.items()

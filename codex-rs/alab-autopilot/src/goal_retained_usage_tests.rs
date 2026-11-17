@@ -96,7 +96,7 @@ async fn fail_first_usage(h: &Harness, tokens: i64) {
 
 async fn seed(h: &Harness, goals: &GoalService) -> codex_state::ThreadGoal {
     let db = h.test.codex.state_db().unwrap();
-    goals
+    let outcome = goals
         .set_thread_goal(
             &db,
             GoalSetRequest {
@@ -110,6 +110,28 @@ async fn seed(h: &Harness, goals: &GoalService) -> codex_state::ThreadGoal {
         )
         .await
         .unwrap();
+    let setup_goal = db
+        .thread_goals()
+        .get_thread_goal(h.rt.id)
+        .await
+        .expect("read setup goal")
+        .expect("setup goal exists");
+    db.thread_goals()
+        .replace_thread_goal_snapshot(&setup_goal)
+        .await
+        .expect("persist setup-only continuation deferral");
+    outcome.apply_runtime_effects(goals).await;
+    db.thread_goals()
+        .clear_thread_goal_continuation_deferral(h.rt.id)
+        .await
+        .expect("clear setup-only continuation deferral");
+    assert!(
+        !goals
+            .alab_goal_runtime(h.rt.id)
+            .expect("setup goal runtime")
+            .alab_goal_persistence_held(),
+        "the setup-only continuation deferral must settle mutation custody"
+    );
     h.test
         .codex
         .thread_extension_data()
@@ -123,6 +145,98 @@ async fn seed(h: &Harness, goals: &GoalService) -> codex_state::ThreadGoal {
         .await
         .unwrap()
         .unwrap()
+}
+
+#[test]
+fn terminal_finalizer_accounts_exact_post_dispatch_callback_for_every_stopped_status() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(120), async {
+            for status in [
+                codex_state::ThreadGoalStatus::Blocked,
+                codex_state::ThreadGoalStatus::Paused,
+                codex_state::ThreadGoalStatus::Complete,
+            ] {
+                let goals = Arc::new(GoalService::new());
+                let h = Harness::new_with_accounted_goals(Arc::clone(&goals)).await;
+                let evaluation = h.rt.hold_eval_when_free().await;
+                let original = seed(&h, &goals).await;
+                let db = h.test.codex.state_db().expect("native goal database");
+                let runtime = h
+                    .test
+                    .codex
+                    .thread_extension_data()
+                    .get::<codex_goal_extension::GoalRuntimeHandle>()
+                    .expect("native goal runtime");
+                let turn_id = format!("terminal-callback-{status:?}");
+                let write = runtime
+                    .alab_debug_begin_dispatched_goal_mutation_with_usage(
+                        &turn_id,
+                        &original.goal_id,
+                        &codex_protocol::protocol::TokenUsage {
+                            input_tokens: 23,
+                            total_tokens: 23,
+                            ..Default::default()
+                        },
+                    )
+                    .expect("construct a post-dispatch callback boundary");
+                let updated = db
+                    .thread_goals()
+                    .update_thread_goal(
+                        h.rt.id,
+                        codex_state::GoalUpdate {
+                            objective: None,
+                            status: Some(status),
+                            token_budget: None,
+                            expected_goal_id: Some(original.goal_id.clone()),
+                        },
+                    )
+                    .await
+                    .expect("commit the terminal row")
+                    .expect("the original goal accepts its terminal status");
+                assert_eq!(updated.status, status);
+                db.thread_goals()
+                    .alab_durable_goal_barrier()
+                    .await
+                    .expect("make the terminal row durable");
+                drop(
+                    write
+                        .commit_mutation()
+                        .expect("publish the pending-data mutation transition"),
+                );
+                assert!(
+                    runtime.alab_goal_persistence_held(),
+                    "pending terminal callback data remains admission-held"
+                );
+
+                runtime
+                    .alab_debug_account_ending_turn_progress(
+                        &turn_id,
+                        &format!("{turn_id}:turn-end"),
+                    )
+                    .await
+                    .expect("the terminal status accepts its exact retained callback");
+                let settled = db
+                    .thread_goals()
+                    .get_thread_goal(h.rt.id)
+                    .await
+                    .expect("read the settled goal")
+                    .expect("the original goal remains");
+                assert_eq!(settled.goal_id, original.goal_id);
+                assert_eq!(settled.status, status);
+                assert_eq!(settled.tokens_used, original.tokens_used + 23);
+                assert!(
+                    !runtime.alab_goal_persistence_held(),
+                    "the exact additive owner reconciles terminal callback custody"
+                );
+                runtime.alab_debug_finish_goal_turn(&turn_id);
+                Autopilot::cancel_timer(&h.rt).await;
+                drop(evaluation);
+                h.shutdown_and_export().await.expect("native shutdown");
+            }
+        })
+        .await
+        .expect("terminal callback finalizer hang detector");
+    });
 }
 
 #[test]
@@ -211,7 +325,7 @@ fn terminal_paths_flush_retained_tokens_before_stopping_a_later_manual_turn() {
                     }
                 );
                 // Another explicit native mutation must not charge the old turn again.
-                goals
+                let outcome = goals
                     .set_thread_goal(
                         &db,
                         GoalSetRequest {
@@ -229,6 +343,7 @@ fn terminal_paths_flush_retained_tokens_before_stopping_a_later_manual_turn() {
                     )
                     .await
                     .unwrap();
+                outcome.apply_runtime_effects(&goals).await;
                 assert_eq!(
                     db.thread_goals()
                         .get_thread_goal(h.rt.id)
@@ -282,7 +397,7 @@ fn same_original_stopped_goal_recovers_but_replacement_keeps_retained_usage_held
                         )
                         .await
                         .unwrap();
-                    goals
+                    let outcome = goals
                         .set_thread_goal(
                             &db,
                             GoalSetRequest {
@@ -302,6 +417,7 @@ fn same_original_stopped_goal_recovers_but_replacement_keeps_retained_usage_held
                         )
                         .await
                         .unwrap();
+                    outcome.apply_runtime_effects(&goals).await;
                     let recovered = db
                         .thread_goals()
                         .get_thread_goal(h.rt.id)
@@ -447,7 +563,7 @@ fn a_new_manual_turn_cannot_drop_shared_usage_from_a_zero_token_failed_turn() {
                         "the original positive clock must be acknowledged before Plan model input"
                     );
                     ended(&h).await;
-                    goals
+                    let outcome = goals
                         .set_thread_goal(
                             &db,
                             GoalSetRequest {
@@ -461,6 +577,7 @@ fn a_new_manual_turn_cannot_drop_shared_usage_from_a_zero_token_failed_turn() {
                         )
                         .await
                         .unwrap();
+                    outcome.apply_runtime_effects(&goals).await;
                     let recovered = db
                         .thread_goals()
                         .get_thread_goal(h.rt.id)
@@ -638,11 +755,12 @@ fn rejected_current_and_idle_usage_survive_native_unchanged_outcomes() {
                         |event| matches!(event, EventMsg::TurnAborted(_)), Duration::from_secs(60)).await;
                     while h.test.codex.has_active_turn().await { tokio::task::yield_now().await; }
                     assert!(runtime.alab_goal_persistence_held());
-                    goals.set_thread_goal(&db, GoalSetRequest {
+                    let outcome = goals.set_thread_goal(&db, GoalSetRequest {
                         thread_id: h.rt.id, objective: GoalObjectiveUpdate::Keep,
                         status: Some(codex_protocol::protocol::ThreadGoalStatus::Complete),
                         token_budget: GoalTokenBudgetUpdate::Keep, max_goal_token_budget: None,
                     }, async { Ok(()) }).await.unwrap();
+                    outcome.apply_runtime_effects(&goals).await;
                     let recovered = db.thread_goals().get_thread_goal(h.rt.id).await.unwrap().unwrap();
                     assert_eq!(recovered.goal_id, original.goal_id);
                     assert_eq!(recovered.status, codex_state::ThreadGoalStatus::Complete);

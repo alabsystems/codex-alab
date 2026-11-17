@@ -236,7 +236,7 @@ class ReleaseLineTests(unittest.TestCase):
     def layer(self):
         """ALab's tooling and VERSION, committed on the clone's current branch."""
         (self.alab / "alab").mkdir(exist_ok=True)
-        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py"):
+        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py", "cli_status.py"):
             shutil.copy2(ROOT / "alab" / name, self.alab / "alab" / name)
         (self.alab / "VERSION").write_text("0.164.0\n")
         self.git(self.alab, "add", "alab", "VERSION")

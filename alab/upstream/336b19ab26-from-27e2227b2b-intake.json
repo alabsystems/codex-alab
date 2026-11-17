@@ -1,0 +1,553 @@
+{
+  "schema": 1,
+  "base": "27e2227b2b49a541eb799af8f8efb7032b1ef202",
+  "target": "336b19ab26e0d4e36b16d8a21d668632cd800207",
+  "frontier": "27e2227b2b49a541eb799af8f8efb7032b1ef202",
+  "commits": [
+    {
+      "sha": "005f910210e8aa8c92b230e4d0a314d252033914",
+      "subject": "Require OAuth CONNECT metadata for Portals TCP tunnels (#61428)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/tcp-tunnel/Cargo.toml",
+        "codex-rs/tcp-tunnel/src/control.rs",
+        "codex-rs/tcp-tunnel/src/lib.rs",
+        "codex-rs/tcp-tunnel/src/lib_tests.rs",
+        "codex-rs/tcp-tunnel/src/ssh.rs"
+      ],
+      "classes": [
+        "security",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "For known shipped Portals gateway origins require x-portals-auth-mode: oauth in CONNECT metadata before reading any bearer credentials. Treat valid header tokens as opaque, sensitive bearer credentials instead of locally parsing unverified JWT type/version; the gateway still authenticates them. No gateway activation, credential selection or native permission is added.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 005f910210e8aa8c92b230e4d0a314d252033914; SHA256 03109b004ac750e3d6a8dfba5dff935d67e117dd4948c006d5304696283ceb0f (16210 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: Retain exact known-gateway/SSH credential restrictions, sensitive headers, metadata/token bounds, renewal acknowledgement and rejection before token reads.",
+        "Integration requirement: Do not treat OAuth mode metadata or an opaque token string as proof of authentication, native source authority or tunnel admission. Preserve controlled reconnect without replaying old TCP streams.",
+        "ALab interaction: No owned TunnelCredential/read_bearer constructor or private helper callsite was found. Adopt upstream dependency removal, then resolve ALab dependencies without hand-editing upstream lock entries.",
+        "Coverage/compatibility limit: The new parser control covers missing OAuth metadata and accepted opaque credentials. It does not exercise a live Portals account; no unrequested credentials or network tunnel are needed for this source review.",
+        "Source-declared candidates (not_run): codex-tcp-tunnel --lib portals_listener_requires_oauth_metadata; codex-tcp-tunnel --lib control_input_acknowledges_bearer_renewal_with_or_without_metadata; codex-tcp-tunnel --lib invalid_control_input_stops_credentials_without_exposing_secrets."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "6d919e65e20dcb1b916be8acd113b394d4dd6cc9",
+      "subject": "Refresh cloud plugin and skill catalogs during step preparation (#61429)",
+      "paths": [
+        "codex-rs/core/src/session/turn_start_mcp_tests.rs",
+        "codex-rs/core/src/tasks/lifecycle.rs",
+        "codex-rs/core/src/tasks/regular.rs",
+        "codex-rs/core/src/tools/handlers/request_plugin_install.rs",
+        "codex-rs/core/tests/suite/request_plugin_install.rs",
+        "codex-rs/core/tests/suite/request_plugin_install_skills.rs",
+        "codex-rs/core/tests/suite/skills_extension/cloud_lifecycle_tests.rs",
+        "codex-rs/ext/extension-api/src/contributors.rs",
+        "codex-rs/ext/mcp/src/cloud_plugin.rs",
+        "codex-rs/ext/mcp/src/cloud_plugin_tests.rs",
+        "codex-rs/ext/skills/src/cloud_cache_tests.rs",
+        "codex-rs/ext/skills/src/cloud_skill.rs",
+        "codex-rs/ext/skills/tests/skills_extension.rs",
+        "codex-rs/ext/skills/tests/skills_extension/catalog_delta_tests.rs",
+        "codex-rs/ext/skills/tests/skills_extension/merge_catalog_tests.rs",
+        "codex-rs/ext/skills/tests/skills_extension/preparation_tests.rs",
+        "codex-rs/ext/skills/tests/skills_extension/presentation_dedup_tests.rs",
+        "codex-rs/network-proxy/src/runtime.rs",
+        "codex-rs/network-proxy/src/socks5.rs"
+      ],
+      "classes": [
+        "refactor",
+        "background",
+        "fix"
+      ],
+      "features": [
+        "skill-discovery",
+        "account-isolation",
+        "product-policy",
+        "native-session",
+        "exec-handoff",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Move optional cloud plugin/skill freshness from turn-start callbacks to existing cancellable step preparation, after MCP reconciliation, and dirty discovery after every completed plugin install including skills-only installs. Remove requires_mcp_runtime instead of retaining a parallel startup path. Adapt the one ALab-owned quota-host assertion of that removed method while retaining its real early lifecycle/provenance behavior.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 6d919e65e20dcb1b916be8acd113b394d4dd6cc9; SHA256 1269f9e73385673cf2aefba5fef4a5c304a50641ccd45f436147125efbbbc5c3 (49505 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: Remove the obsolete requires_mcp_runtime assertion at alab-core/glue/quota_runtime_host_tests.rs79. That method was explicitly ignored for the already-asserted BeforeTaskRegistration phase; retain that phase and the existing real exec/non-exec, restored/child callback/provenance oracles. No new fixture mirroring the removed trait/default is required.",
+        "Integration requirement: Keep apps/plugins/tool_suggest disabled in packaged defaults, existing cloud-provider/config gates, account/resource freshness, same-auth fallback and retry backoff. Do not activate a provider to obtain test coverage.",
+        "Integration requirement: Preserve ALab assignment/native start admission, goal quota host timing, accepted input custody, prewarm exclusion and cancellation release. Later d264 adds an explicit data-only refresh API; it does not authorize bypassing these start guards.",
+        "ALab interaction: Only owned requires_mcp_runtime reference found: quota_runtime_host_tests.rs79. Host implements only BeforeTaskRegistration, for which the removed method was ignored. Existing phase and actual callback/provenance assertions retain the substantive contract; an independent source review confirmed this adaptation. The fixture compiles inside codex-app-server via extensions::quota_runtime_host.",
+        "ALab interaction: No owned cloud provider, PluginListQuery or SkillListQuery literal requiring constructor adaptation was found. The existing ALab defaults remain unchanged.",
+        "Coverage/compatibility limit: remote_skills_only_install_refreshes_warmed_cloud_catalog and related loopback/plugin controls use skip_if_no_network; require actual non-skipped execution before runtime credit.",
+        "Coverage/compatibility limit: At the final range target, the step-cancellation declaration is renamed step_discovery_reconciles_mcp_skips_prewarm_and_releases_lock_on_cancellation by d264; that final declaration is listed below.",
+        "Source-declared candidates (not_run): codex-core --lib step_discovery_reconciles_mcp_skips_prewarm_and_releases_lock_on_cancellation; codex-core --test all remote_skills_only_install_refreshes_warmed_cloud_catalog; codex-mcp-extension --lib disabling_plugins_clears_cloud_catalog_and_skips_discovery; codex-skills-extension --lib step_cloud_refresh_reuses_accepted_results_and_retries_failures; codex-app-server --lib restored_member_provenance_is_retained_only_in_an_exec_host; codex-app-server --lib embedded_exec_and_non_exec_registries_do_not_share_admission."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "de83e7674a69b9ae18544dd1fbf53f31bfe8c640",
+      "subject": "Instrument MCP OAuth credential store locks (#61430)",
+      "paths": [
+        "codex-rs/otel/src/metrics/buffered.rs",
+        "codex-rs/otel/src/metrics/buffered_tests.rs",
+        "codex-rs/otel/src/metrics/mod.rs",
+        "codex-rs/rmcp-client/src/oauth.rs",
+        "codex-rs/rmcp-client/src/oauth/resolved_store.rs",
+        "codex-rs/rmcp-client/src/oauth/store_lock.rs",
+        "codex-rs/rmcp-client/src/oauth/tests/credential_store_tests.rs",
+        "codex-rs/rmcp-client/src/oauth/tests/store_lock_tests.rs"
+      ],
+      "classes": [
+        "telemetry",
+        "refactor"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Instrument blocking aggregate MCP OAuth store locks with bounded acquisition/hold observations and captured originating-client/operation tags. Standalone durations share existing startup buffering and opt-out limits. Lock policy/deadlines, conditional writes and pinned backend/no-fallback semantics remain unchanged; the file field drops before hold telemetry is recorded.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary de83e7674a69b9ae18544dd1fbf53f31bfe8c640; SHA256 4720e650c5fb78c70aa2c89900e016d6fff8dba8944a9d4f5cbe199a66e901aa (41780 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: Keep the ALab analytics/OTel/feedback opt-out defaults and bounded buffering. No credential, path, server URL or arbitrary client string is added to the fixed lock tags.",
+        "Integration requirement: Preserve original source/client attribution on worker threads, shared read/exclusive write policy, zero-timeout probe exclusion and file-lock release before keyring reads.",
+        "Integration requirement: Do not mistake lock metrics or timing for credential-source, storage-commit or native retirement evidence.",
+        "ALab interaction: No owned OAuthStoreLock constructor or removed private signature use was found. Existing ALab auth source/file-lock/native lifetime custody remains separate.",
+        "ALab interaction: The hold timer is a later struct field, so file release precedes its Drop telemetry; originator sync_scope only changes attribution and retains the chosen backend.",
+        "Coverage/compatibility limit: The subprocess metric control isolates global installation; its declarations are source evidence, not execution or a new telemetry permission.",
+        "Source-declared candidates (not_run): codex-rmcp-client --lib aggregate_store_readers_share_access_while_writers_remain_exclusive; codex-rmcp-client --lib secrets_reads_release_the_file_lock_before_keyring_access; codex-rmcp-client --lib cancelled_rejection_retains_guard_and_preserves_replacement; codex-otel --lib standalone_durations_share_startup_limits_and_opt_out; codex-otel --lib opt_out_discards_pending_and_live_observations_until_reenabled."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "9ac8c3f8d71ec12d57d89485d62f731769f6bf6f",
+      "subject": "Close abandoned tool dispatch traces as aborted (#61434)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/turn_interrupt.rs",
+        "codex-rs/core/src/tools/registry.rs",
+        "codex-rs/core/src/tools/tool_dispatch_trace.rs",
+        "codex-rs/rollout-trace/src/reducer/code_cell_tests.rs",
+        "codex-rs/rollout-trace/src/thread_tests.rs",
+        "codex-rs/rollout-trace/src/tool_dispatch.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff",
+        "goal-storage-recovery",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Make tool dispatch trace ownership single-use: explicit completion/failure consumes the handle, and abandonment closes only its still-active trace as Aborted with no result payload. This repairs pending approval/interruption replay windows without claiming that a tool transaction, SQLite write or native effect rolled back.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 9ac8c3f8d71ec12d57d89485d62f731769f6bf6f; SHA256 2e8172a56df5a9098f1d2e0a459691f12dc1e0e94f56868ef36d9560bc37e407 (15783 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: Preserve ALab retained goal completion, native source lifetime, actual write acknowledgements and result-receipt custody. A trace Aborted event must not settle, replay, confirm or discard those owners.",
+        "Integration requirement: Keep disabled tracing a no-op and preserve source/thread/turn/tool identity, one terminal trace event, result payload presence/absence and original timestamps.",
+        "Integration requirement: Do not infer execution or persistence rollback from a dropped dispatch handle or best-effort trace enqueue.",
+        "ALab interaction: No owned direct ToolDispatchTraceContext/ToolDispatchTrace clone, constructor or record_completed/failed caller was found. Integrate the upstream registry moves without moving or deleting the ALab completion/transfer hooks.",
+        "Coverage/compatibility limit: Interrupted approval is a real app-server fixture; actual target/helper prerequisites and native execution remain necessary. Pure trace replay alone does not prove native transaction custody.",
+        "Source-declared candidates (not_run): codex-rollout-trace --lib dropping_tool_dispatch_closes_the_execution_window; codex-app-server --test all turn_interrupt_resolves_pending_command_approval_request; codex-rollout-trace --lib runtime_code_cell_ids_can_repeat_across_threads_and_after_resume; codex-alab-autopilot --lib a_forced_sampling_teardown_preserves_the_committed_model_block_and_its_recovery."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "8afe928a76fd9013a0127edae5ed2de7508036e2",
+      "subject": "Avoid starting dormant REPL servers for cleanup hooks (#61437)",
+      "paths": [
+        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/codex-mcp/src/connection_manager_tests.rs",
+        "codex-rs/codex-mcp/src/lib.rs",
+        "codex-rs/codex-mcp/src/runtime.rs",
+        "codex-rs/core/src/hook_mcp_executor.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/tests/suite/hooks_mcp.rs",
+        "codex-rs/core/tests/suite/mcp_auth_refresh.rs",
+        "codex-rs/hooks/src/engine/mcp_runner.rs",
+        "codex-rs/hooks/src/engine/mcp_runner_tests.rs",
+        "codex-rs/hooks/src/engine/mod_tests.rs",
+        "codex-rs/hooks/src/mcp.rs"
+      ],
+      "classes": [
+        "fix",
+        "background"
+      ],
+      "features": [
+        "execution-continuity",
+        "account-isolation",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Allow only a bundled node/cua REPL turn_ended cleanup to return empty success when its configured, private, local stdio, legacy-protocol connection remains unrequested and uncancelled. It avoids starting a process that does not exist. Ordinary calls, plugin/shared/remote/new-protocol connections and already-requested startup retain actual startup/attribution behavior.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 8afe928a76fd9013a0127edae5ed2de7508036e2; SHA256 deeb7fd9e72e6005e5252c0f0e760c7d3ccf347a00d212a5d51a1f714c9356e4 (24378 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: Preserve builtin hook provenance/server/tool checks and configured local/legacy/private eligibility; never use this skip mode as general tool approval or execution authority.",
+        "Integration requirement: Keep ALab Apps/plugins defaults and saved hook trust/policy, environment/source binding, live authentication and shared-connection custody unchanged.",
+        "Integration requirement: Do not bypass cleanup for an existing/started process; ordinary hooks must still start cached model-hidden tools and retain their timeout.",
+        "Integration requirement: The empty successful result describes skipped host housekeeping only; it is not an actual model-tool execution result, transaction rollback or native custody receipt.",
+        "ALab interaction: No owned HookMcpCall literal or latest_call_tool caller was found needing the new field/enum. Existing Core hook and session callsites are updated upstream.",
+        "ALab interaction: The skip result is empty and unattributed; actual calls still capture binding after startup. No code-mode server/default feature is enabled by this change.",
+        "Coverage/compatibility limit: The real hooks fixture has connection/catalog test_case variants and skip_if_no_network. Require both actual non-skipped variants; source names are not runtime discovery.",
+        "Source-declared candidates (not_run): codex-mcp --lib cleanup_skips_only_an_unrequested_private_local_stdio_connection; codex-core --test all mcp_tool_hook_starts_cached_model_hidden_tools; codex-core --test all mcp_tool_hook_timeout_includes_cached_server_startup; codex-hooks --lib bundled_cleanup_trust_requires_matching_plugin_server_and_event; codex-core --test all hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "9825e4b2fe69d997dbf533e228445d50095e6ba8",
+      "subject": "Use the provider default RPC in the TUI (#61438)",
+      "paths": [
+        "codex-rs/tui/src/app/provider.rs",
+        "codex-rs/tui/src/app/provider/rpc.rs",
+        "codex-rs/tui/src/app/provider/write.rs",
+        "codex-rs/tui/src/app/provider_tests.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__provider__tests__saved_default_provider.snap"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "model-discovery",
+        "account-isolation",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Use the dedicated modelProvider/default/set RPC for an explicit default selection, carrying the provider ID and showing its trimmed display name (ID fallback). Unsupported servers get upgrade guidance rather than a generic configuration-write fallback. Only confirmed effective writes or ambiguous transport/deserialization outcomes invalidate the model catalog; overridden/rejected writes preserve it.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 9825e4b2fe69d997dbf533e228445d50095e6ba8; SHA256 d5c3e2c3960d6c7ee68c8a6c490cdd825e459329f0ad119a3e92f9881389dc27 (13286 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: Preserve managed/user-layer validation from the earlier dedicated RPC, explicit CLI overrides, current chat/provider ownership and existing source/factory pairing. This sets future chat defaults, not a running thread or native execution grant.",
+        "Integration requirement: Keep packaged Sol6.1/ultra and inert Kimi provider definitions unchanged unless an explicit valid provider choice overrides them.",
+        "Integration requirement: Do not equate ambiguous save with confirmed success or route old servers through a lower-level unvalidated write.",
+        "ALab interaction: No owned Write::Default literal, provider save callback or removed RPC helper caller was found. Earlier thread-scoped model catalog and exec provider restoration requirements remain in force.",
+        "Coverage/compatibility limit: The changed tests cover named providers and unknown-variant compatibility plus ambiguous outcomes. Blank-name fallback is source-checked here; no separate executed empty-name oracle is claimed.",
+        "Source-declared candidates (not_run): codex-tui --lib space_saves_once_retries_and_preserves_the_current_chat; codex-tui --lib only_ambiguous_write_failures_invalidate_the_model_catalog; codex-tui --lib unsupported_list_method_explains_server_compatibility."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "e9919f4b4ef9aa4b15af92589c7f44581d1ad26a",
+      "subject": "Add process-local launch directories for shared MCP servers (#61444)",
+      "paths": [
+        "codex-rs/app-server/src/config_manager.rs",
+        "codex-rs/app-server/src/lib.rs",
+        "codex-rs/app-server/src/main.rs",
+        "codex-rs/app-server/src/plugin_mcp_launch.rs",
+        "codex-rs/app-server/src/request_processors/config_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/mcp_tool.rs",
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/codex-mcp/src/binding.rs",
+        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/codex-mcp/src/sandbox_metadata.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/managed_features.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/config/runtime_refresh.rs",
+        "codex-rs/features/src/lib.rs",
+        "codex-rs/thread-manager-sample/src/main.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Accept process-local launch cwd input and host-owned direct MCP sandbox metadata. Two feature gates, local stdio restrictions, configured executable equality/cwd preservation, and launcher same-host capability probe remain explicit. Default-off prevents new launch behavior by default.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary e9919f4b4ef9aa4b15af92589c7f44581d1ad26a; SHA256 6b6bf49894a77ea7cfdf43ed500e954f37428a492f39d77f31abf639d923f09f (37059 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: Preserve ALab local-loader provenance wrapper at ConfigManager startup. No launch overrides persisted into shared configuration.",
+        "Integration requirement: Run supplied config/direct-MCP controls; qualify direct stdio shared launch path separately before asserting that path.",
+        "Integration requirement: Before supporting enabled app-server launch maps across ALab account/exec handoff, prove the reachable host-flag path and rebind the admitted destination process map after ExecConfiguration reconstruction. Do not serialize source map authority. Current default-off behavior is not a demonstrated regression.",
+        "Integration requirement: process-local launch API: No supplied parser/launch test covers malformed/relative CLI entries, configured explicit cwd retained, sharing=false, remote/agent-plugin exclusion, and absence of shared-config writes. Add focused cases if this host-supplied feature is enabled or advertised; keep false otherwise.",
+        "ALab interaction: App-server ConfigManager has owned destination/local-input occurrence fences; rename apply_arg0_paths\u2192apply_process_settings must retain them.",
+        "ALab interaction: CLI startup/exec custody hooks are outside changed AppServer option hunks. New AppServerRuntimeOptions default covers existing owned ..Default literal.",
+        "Coverage/compatibility limit: Public hidden host options are local process inputs, not native execution authority. Remote direct MCP call metadata test is not proof of local launcher custody.",
+        "Coverage/compatibility limit: Config::load_config_with_layer_stack initializes mcp_launch_cwds empty; owned ExecConfiguration::restore currently rebinds destination executable/network inputs, not this new process-local map. Conditional supported-path compatibility limit until host consumer and feature enablement are established.",
+        "Source-declared candidates (not_run): codex-core --lib config::tests::mcp_launch_cwds_follow_the_runtime_feature; codex-app-server --test all suite::v2::mcp_tool::mcp_server_tool_call_uses_each_threads_sandbox_cwd."
+      ],
+      "revisit": "Before enabling or advertising process-local shared MCP launch maps across ALab account/exec handoff, establish the actual host consumer and bind the admitted destination process-local map; execute the missing launch/parser controls, retaining false and the held receiver route until qualified."
+    },
+    {
+      "sha": "32cec881b72360957d30ff48f94e038945603818",
+      "subject": "Add thread ID inclusion filters to `thread/list` (#61446)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/ClientRequest.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadListParams.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ThreadListParams.ts",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server-test-client/src/lib.rs",
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/external_agent_config.rs",
+        "codex-rs/app-server/tests/suite/v2/projects.rs",
+        "codex-rs/app-server/tests/suite/v2/remote_thread_store.rs",
+        "codex-rs/app-server/tests/suite/v2/sqlite_recovery.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_fork.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_list.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_metadata_update.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_read.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_start.rs",
+        "codex-rs/cli/tests/queue.rs",
+        "codex-rs/core/src/realtime_context.rs",
+        "codex-rs/exec/src/lib.rs",
+        "codex-rs/rollout/src/recorder.rs",
+        "codex-rs/rollout/src/state_db.rs",
+        "codex-rs/rollout/src/state_db_tests.rs",
+        "codex-rs/state/src/runtime/memories.rs",
+        "codex-rs/state/src/runtime/threads.rs",
+        "codex-rs/thread-store/src/in_memory.rs",
+        "codex-rs/thread-store/src/local/archive_thread.rs",
+        "codex-rs/thread-store/src/local/list_threads.rs",
+        "codex-rs/thread-store/src/local/rollout_migration_tests.rs",
+        "codex-rs/thread-store/src/local/search_threads.rs",
+        "codex-rs/thread-store/src/local/search_threads_tests.rs",
+        "codex-rs/thread-store/src/local/tests/delegated_preview_tests.rs",
+        "codex-rs/thread-store/src/local/thread_history_materialization_tests.rs",
+        "codex-rs/thread-store/src/local/update_thread_metadata.rs",
+        "codex-rs/thread-store/src/types.rs",
+        "codex-rs/tui/src/analytics/chats.rs",
+        "codex-rs/tui/src/app/agent_picker.rs",
+        "codex-rs/tui/src/app/agents_overview_discovery.rs",
+        "codex-rs/tui/src/app_server_session/side_chat_history.rs",
+        "codex-rs/tui/src/dynamic_tools.rs",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/named_session_lookup.rs",
+        "codex-rs/tui/src/resume_picker.rs",
+        "codex-rs/tui/src/task_mentions.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "protocol",
+        "feature"
+      ],
+      "features": [
+        "history-pagination",
+        "exec-handoff",
+        "account-isolation",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Accept before-pagination indexed inclusion filter, null/omitted unrestricted and empty-none semantics, strict100-entry input bound, exclusions precedence and scoped ordering. Adapt owned explicit ListThreadsParams literal to preserve unrestricted semantics.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 32cec881b72360957d30ff48f94e038945603818; SHA256 55551314931341b6603b6aee0e5363579fd769fb5493907468f83a721ff0a731 (788632 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: alab-core/glue/exec_recovery_tree_tests.rs665: add included_thread_ids: None.",
+        "Integration requirement: Preserve generated bindings/schema/precomputed artifacts from canonical commit. Saved-ID clients must check server support; indexed absence is not global deletion.",
+        "ALab interaction: Existing ALab running-resume projection/goal resume locks untouched in same thread_processor file.",
+        "ALab interaction: Inclusion route deliberately forces indexed metadata; unknown/unindexed rollouts do not match and are not repaired by the query.",
+        "Coverage/compatibility limit: Index-only inclusions can exclude legitimate unindexed files by contract. Query-plan test is not latency qualification.",
+        "Source-declared candidates (not_run): codex-app-server --test all suite::v2::thread_list::thread_list_inclusions_reconcile_old_moved_and_archived_ids; codex-app-server --test all suite::v2::thread_list::thread_list_validates_id_filter_bounds_and_preserves_section_order; codex-app-server --test all suite::v2::thread_list::thread_list_relation_filters_read_spawn_graph_from_state_db; codex-app-server --test all suite::v2::thread_list::thread_list_respects_search_term_filter; codex-app-server --test all suite::v2::thread_list::current_account_history_refills_list_and_search; codex-state --lib runtime::threads::tests::included_thread_ids_use_primary_key_lookups_across_scopes."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "d26406987e5c2e1f7bae77e3ba2a1bca3fed4767",
+      "subject": "Add explicit cloud catalog refresh before turn admission (#61449)",
+      "paths": [
+        "codex-rs/core-plugins/src/marketplace_staging_tests.rs",
+        "codex-rs/core-plugins/src/provider.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/session/cloud_plugins.rs",
+        "codex-rs/core/src/session/config_refresh.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/src/session/turn_start_mcp_tests.rs",
+        "codex-rs/core/tests/suite/scenarios_frozen_cloud_skills.rs",
+        "codex-rs/core/tests/suite/skills_extension.rs",
+        "codex-rs/core/tests/suite/skills_extension/cloud_lifecycle_tests.rs",
+        "codex-rs/ext/extension-api/src/contributors.rs",
+        "codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs",
+        "codex-rs/ext/extension-api/src/lib.rs",
+        "codex-rs/ext/mcp/src/cloud_plugin.rs",
+        "codex-rs/ext/mcp/src/cloud_plugin_tests.rs",
+        "codex-rs/ext/mcp/src/plugin_contributor_state.rs",
+        "codex-rs/ext/mcp/src/plugin_providers.rs",
+        "codex-rs/ext/skills/src/catalog_state.rs",
+        "codex-rs/ext/skills/src/cloud_cache_tests.rs",
+        "codex-rs/ext/skills/src/cloud_skill.rs",
+        "codex-rs/ext/skills/src/extension.rs",
+        "codex-rs/ext/skills/src/preparation.rs",
+        "codex-rs/ext/skills/src/provider.rs",
+        "codex-rs/ext/skills/src/render_tests.rs",
+        "codex-rs/ext/skills/src/state.rs",
+        "codex-rs/ext/skills/tests/executor_file_system_authority.rs",
+        "codex-rs/ext/skills/tests/skills_extension.rs",
+        "codex-rs/ext/skills/tests/skills_extension/discovery_v2_tests.rs",
+        "codex-rs/file-search/src/lib_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "background"
+      ],
+      "features": [
+        "skill-discovery",
+        "account-isolation",
+        "product-policy",
+        "native-session",
+        "exec-handoff",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Accept explicit turn-independent catalog refresh, concurrent independent contributors and per-thread publication/snapshot lock. Cache/retry semantics retain generation checks and cancellation-pending invalidation. No turn/service authority is granted. No concrete native guard-order regression found.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary d26406987e5c2e1f7bae77e3ba2a1bca3fed4767; SHA256 b2fa629d24c47006c1e4bf1df3cc64c476f4e291b2b271e5b28c0fed7c1883fa (91367 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: Keep ALab apps=false/plugins=false defaults and current provider activation. No new production call is introduced by this commit.",
+        "Integration requirement: Core callers must use refresh API; direct concurrent contributor hooks lose removed extension-private serialization.",
+        "Integration requirement: Run actual cancellation/concurrency/generation/disabled-source controls, require body execution for network-skipping tests.",
+        "Integration requirement: Retain existing no-MCP quota-before-task-registration oracle when earlier6d919 obsolete requires_mcp_runtime assertion is adapted.",
+        "Integration requirement: ALab integrated native/resource boundary: No added upstream test by itself proves ALab source-retirement and bounded native turn admission through a held cloud callback. Reuse actual source/task/goal/permission controls on integrated source; add a scoped gated contributor case only if those controls do not reach the changed await. Do not enable held receiver routes.",
+        "ALab interaction: Normal turn_input start retains extension TurnStartAdmission through submission, settings/renewal admission, task/source/exec launch custody and host AgentTurnAdmission before RegularTask.run. New catalog awaits occur later in cancellation-wrapped prepare_tools after regular lifecycle.",
+        "ALab interaction: Permission/environment/accessed-root snapshots and current MCP auth/resource generation checks are unchanged; explicit refresh is catalog data and never admission evidence.",
+        "ALab interaction: Frozen a437 ALab policy contract remains final one-shot native API issuance; no retroactive Core queue policy cancellation is claimed.",
+        "ALab interaction: Held SourceV1/all-root receiver route remains held. Optional turn_id=None applies only explicit cloud discovery; executor callbacks remain Some.",
+        "Coverage/compatibility limit: Catalog callbacks are extensible async work; completion/cancellation must release global preparation lock and preserve already published dirty state.",
+        "Coverage/compatibility limit: Supplied unit fake-contributor test proves overlap/lock boundary, not remote service availability; actual Core fixture supplies turn/request evidence.",
+        "Coverage/compatibility limit: Two unrelated test-only flake fixes narrow matcher streaming test boundary and wait for inherited file locks.",
+        "Source-declared candidates (not_run): codex-core --lib session::tests::turn_start_mcp_tests::step_discovery_reconciles_mcp_skips_prewarm_and_releases_lock_on_cancellation; codex-core --lib session::tests::turn_start_mcp_tests::explicit_cloud_refresh_runs_concurrently_and_awaits_all_results; codex-core --test all suite::skills_extension::cloud_lifecycle_tests::explicit_cloud_refresh_publishes_before_admission_and_reuses_catalogs; codex-mcp-extension --lib cloud_plugin::tests::cloud_source_policy_skips_startup_discovery; codex-mcp-extension --lib cloud_plugin::tests::disabling_plugins_clears_cloud_catalog_and_skips_discovery; codex-mcp-extension --lib cloud_plugin::tests::explicit_cloud_refresh_replaces_cached_catalog; codex-mcp-extension --lib cloud_plugin::tests::cloud_refresh_reuses_catalogs_and_retries; codex-skills-extension --lib state::cloud_cache_tests::step_cloud_refresh_reuses_accepted_results_and_retries_failures; codex-skills-extension --lib state::cloud_cache_tests::late_discovery_cannot_publish_into_a_new_generation; codex-skills-extension --lib state::cloud_cache_tests::late_read_cannot_return_or_populate_a_replaced_cache; codex-skills-extension --lib state::cloud_cache_tests::cloud_refresh_replaces_catalogs_and_read_cache_for_every_accepted_result; codex-file-search --lib tests::session_streams_updates_before_walk_complete; codex-core-plugins --lib marketplace_staging::tests::cleanup_preserves_live_process_and_reclaims_its_abandoned_checkout; codex-skills-extension --test skills_extension cloud_discovery_is_gated_and_reports_failures; codex-skills-extension --test skills_extension discovery_v2_tests::v2_empty_failed_and_partial_results_never_load_legacy_roots; codex-core --test all suite::scenarios::frozen_cloud_skills::frozen_cloud_skills_with_named_executor_request_history."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "c2c1ebba0a7985ebee065c5492233a843b84c4c6",
+      "subject": "Add optional tool output rendering for context window hints (#61452)",
+      "paths": [
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/context/token_budget_context.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/token_budget.rs",
+        "codex-rs/core/src/session/world_state.rs",
+        "codex-rs/core/tests/common/test_codex.rs",
+        "codex-rs/core/tests/suite/mcp_tool_cache.rs",
+        "codex-rs/core/tests/suite/scenarios.rs",
+        "codex-rs/core/tests/suite/scenarios_partial_answers.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__partial_answers__preserved_answer_fork.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__prediction_fork_preserves_context_above_compaction_threshold.snap",
+        "codex-rs/features/src/feature_configs.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "exec-handoff",
+        "product-policy",
+        "model-discovery",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Accept optional agent.thread_hint function output for native context-window fields and textual hints while default legacy rendering stays false. Exhaustive ALab child-runtime capture must retain the new effective bool through real exec configuration restore.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary c2c1ebba0a7985ebee065c5492233a843b84c4c6; SHA256 467f14111a54096fb2ad08b03279db6a975dbff015d23dd62bacda36c6ff89ad (31015 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: alab-core/glue/exec_child_configuration.rs139: bind context_window_as_tool_output in exhaustive TokenBudgetConfig match; set TokenBudgetConfigToml.context_window_as_tool_output=Some(*value).",
+        "Integration requirement: alab-core/glue/exec_configuration.rs454: set new field true in existing real child-runtime roundtrip; existing full token_budget equality oracle then proves preservation.",
+        "Integration requirement: Preserve inherited-prefix/child-hint snapshots and standalone world-state item ordering.",
+        "Integration requirement: effective configuration + ALab recovery: Exercise true through actual TOML load and false/default compatibility; existing supplied load_config test only expects false, while snapshots set struct field directly. Extend owned roundtrip true as noted. A focused agent-path/world-state-diff positive can supplement broad fork snapshots if final path changes.",
+        "ALab interaction: ALab memory context preserves raw ResponseItems/metadata; no hardcoded marker parsing for this new field found in owned paths.",
+        "ALab interaction: Apps/plugins defaults and source/exec custody remain unchanged.",
+        "Coverage/compatibility limit: True changes request item type/placement and flattens textual hints into agent.thread_hint; preserve child-only window identity and ordinary history/compaction metadata.",
+        "Coverage/compatibility limit: Broad integration snapshots require real request body execution and do not alone prove config-file true parsing.",
+        "Source-declared candidates (not_run): codex-core --lib config::tests::load_config_resolves_token_budget_config; codex-core --test all suite::scenarios::prediction_fork_preserves_context_above_compaction_threshold; codex-core --test all suite::scenarios::partial_answers::partial_answers_survive_forked_child_requests; codex-core --lib config::exec_configuration::tests::child_runtime_settings_round_trip_without_replaying_parent_overrides."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "ecf54824c6e72757d8ce9dfc85e2bbea57ff75fd",
+      "subject": "Refactor session mail recording and compaction metadata capture (#61461)",
+      "paths": [
+        "codex-rs/core/src/session/mail_publication_tests.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/tests.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff",
+        "history-pagination",
+        "execution-continuity",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Accept direct optional-delivery handle consumption and local compaction resume capture under same State lock. Actual result-write receipt still confirms only after successful rollout persistence on a live thread; no new receipt or accepted input is synthesized.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary ecf54824c6e72757d8ce9dfc85e2bbea57ff75fd; SHA256 6ab5ad69421149d3bcd4f1b8bbb458982d19635b10059ff6c557b35215be1d96 (10772 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: Retain first-batch result_write confirmation, communication boundary order, pending confirmed send waits and live-thread qualifier.",
+        "Integration requirement: Use moved native mail selector; keep actual accepted-input/recovery, active compaction context and byte-budget controls in integrated regression selection.",
+        "ALab interaction: ALab startup_mailbox/input_snapshot controller publication sharing and NextTurn phase hooks unchanged.",
+        "ALab interaction: Compaction local capture occurs after history/world-state replacement under same state guard; no new await or unlocked read.",
+        "ALab interaction: Existing ALab weekly compaction hooks and active selected-step retention remain unchanged.",
+        "Coverage/compatibility limit: Moved plain-message roundtrip does not prove owned worker-result ACK by itself; retain relevant first-batch receipt controls plus native confirmation ordering test.",
+        "Source-declared candidates (not_run): codex-core --lib session::tests::mail_publication_tests::record_inter_agent_communication_sets_turn_id_in_rollout_and_resume; codex-core --lib session::tests::inter_agent_communication_waits_for_confirmed_delivery_persistence; codex-core --lib session::tests::record_inter_agent_communication_preserves_item_id_in_rollout_and_resume; codex-core --lib session::tests::compaction_persists_resume_metadata_and_companion_records; codex-core --lib session::tests::remote_compaction_v2_retains_only_the_selected_step; codex-core --lib session::tests::interrupting_compaction_fallback_retains_last_known_step_context; codex-core --lib session::input_queue::exec_input_state::tests::root_and_controller_mail_share_one_publication_after_round_trip; codex-core --lib session::input_queue::exec_input_state::tests::admitted_recovery_retains_accounting_controller_mail_and_original_startup_baseline; codex-core --lib session::input_queue::exec_input_state::tests::recovered_start_leaves_deferred_mail_for_the_original_delivery_phase; codex-core --lib context_manager::history::alab_exec_context::tests::memory_context_retains_item_allocations_across_actual_install."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "336b19ab26e0d4e36b16d8a21d668632cd800207",
+      "subject": "Move JSON byte counting into `codex-utils-string` (#61465)",
+      "paths": [
+        "codex-rs/core/src/client_tool_metadata.rs",
+        "codex-rs/core/src/context_manager/history.rs",
+        "codex-rs/core/src/tools/executed_tool_calls.rs",
+        "codex-rs/core/src/utils/json.rs",
+        "codex-rs/core/src/utils/mod.rs",
+        "codex-rs/utils/string/src/json.rs",
+        "codex-rs/utils/string/src/lib.rs"
+      ],
+      "classes": [
+        "refactor",
+        "fix"
+      ],
+      "features": [
+        "provider-recovery",
+        "exec-handoff",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Accept exact streaming saturating JSON byte counter moved from core private module into public codex-utils-string; three Core caller imports switch without changing budgets, error behavior or retained output.",
+      "evidence": [
+        "Canonical cached upstream patch inspected with git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 336b19ab26e0d4e36b16d8a21d668632cd800207; SHA256 d683f759fcd670ad4b064c3f2f7f979527795d86e2c9f5149521f640f8389965 (5416 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-after27e.md; source review only, all named selectors not_run; no merge, integration, native operation, runtime evidence or qualification.",
+        "Integration requirement: Retain actual HTTP/WebSocket/retained metadata budget tests reaching shared helper.",
+        "Integration requirement: Preserve ALab exec history snapshot hook and upstream source deletion as canonical import, not owned hand deletion.",
+        "ALab interaction: No remaining ALab-owned crate::utils::json caller found. Owned exec context allocation/metadata retention is adjacent only; no changed hook.",
+        "Coverage/compatibility limit: Neighboring utils bounded_json UTF8 test is not a direct helper oracle; select Core helper consumers. Export visibility change is source-only until actual component checks.",
+        "Source-declared candidates (not_run): codex-core --lib client::tool_metadata::tests::http_message_budget_preserves_resources_until_the_message_still_exceeds_limit; codex-core --lib client::tool_metadata::tests::websocket_budget_uses_the_actual_delta_and_does_not_mutate_logical_history; codex-core --lib client::tool_metadata::tests::inventory_only_message_budget_counts_the_complete_encoded_envelope; codex-core --lib tools::executed_tool_calls::direct_tests::direct_recording_preserves_encoded_arguments_in_history; codex-core --lib tools::executed_tool_calls::request_metadata::tests::direct_retained_metadata_budget_sheds_results_then_calls_across_refresh; codex-utils-string --lib json::tests::bounded_json_counts_utf8_output_bytes."
+      ],
+      "revisit": ""
+    }
+  ]
+}

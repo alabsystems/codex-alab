@@ -171,6 +171,7 @@ impl ClientTracker {
                     connection_id,
                     origin: ConnectionOrigin::RemoteControl,
                     auth: self.auth.clone(),
+                    resource: None, // ALAB(owned-local): this transport supplies no native accepted resource.
                     writer: writer_tx,
                     disconnect_sender: Some(disconnect_token.clone()),
                 })
@@ -427,6 +428,7 @@ fn transport_event_name(event: &TransportEvent) -> &'static str {
         TransportEvent::ConnectionClosed { .. } => "connection_closed",
         TransportEvent::IncomingMessage { .. } => "incoming_message",
         TransportEvent::DaemonShutdown => "daemon_shutdown",
+        TransportEvent::AlabIngressDrained { .. } => "alab_ingress_drained", // ALAB(retained-ui): event diagnostics only; no synthesized drain.
     }
 }
 

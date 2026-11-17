@@ -110,7 +110,7 @@ impl Command {
             #[cfg(unix)]
             saw_nul: program.as_encoded_bytes().contains(&0),
             process_mode: ProcessMode::Inherit,
-            descriptor_policy: DescriptorPolicy::Inherit,
+            descriptor_policy: DescriptorPolicy::Explicit, // ALAB(live-update): exclude ambient descriptors received before CLOEXEC marking.
             fallback: SpawnFallback::Compatible,
             stdin: ChildStdin::Piped,
             drop_policy: ChildDropPolicy::KillAndReap,

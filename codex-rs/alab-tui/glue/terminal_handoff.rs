@@ -6,6 +6,11 @@
 use super::EventBroker;
 
 pub(super) fn preserve(events: Option<&EventBroker>) -> std::io::Result<bool> {
+    // SAME actual editor owns modes/input/stdio; even the original panic path
+    // must not finish/replace its saved stderr descriptor or flush its TTY.
+    if codex_alab_tui::terminal_modes::editor_owns_terminal() {
+        return Ok(true);
+    }
     if !codex_alab_tui::terminal_modes::preserve_on_exit() {
         return Ok(false);
     }

@@ -23,7 +23,7 @@ pub(crate) fn fetch(
     mut response_tx: oneshot::Sender<Result<Vec<ExperimentalFeature>, String>>,
 ) {
     let request_id = request_id.into();
-    tokio::spawn(async move {
+    crate::app_server_session::alab_session_work::spawn_original_helper(async move { // ALAB(retained-ui): SAME accepted Session parent owns its original discovery child; popup policy stays original.
         let discovery = async {
             let mut features = Vec::new();
             let mut cursor = None;

@@ -1,5 +1,9 @@
 //! Hit testing and editable mouse selections share the textarea's rendered wrap and scroll state.
 
+#[cfg(unix)]
+#[path = "../../../../alab-tui/glue/editor_upgrade_mouse.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): carry native editor data without serializing live resource owners.
+
 use super::*;
 use crate::text_selection::SelectionUnit;
 use crossterm::event::MouseButton;

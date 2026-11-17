@@ -616,14 +616,23 @@ struct Client {
 
 impl Client {
     async fn connect(server: &Server, fixture: &Fixture, name: &str) -> Result<Self> {
-        let mut client = Self {
-            stream: connect_websocket(server.addr).await?,
-            stashed: VecDeque::new(),
-            log: fresh_file(
+        Self::connect_logged(
+            server.addr,
+            fresh_file(
                 &fixture
                     .root
                     .join(format!("client-{name}-{}.jsonl", fixture.next())),
             )?,
+            name,
+        )
+        .await
+    }
+
+    async fn connect_logged(addr: SocketAddr, log: File, name: &str) -> Result<Self> {
+        let mut client = Self {
+            stream: connect_websocket(addr).await?,
+            stashed: VecDeque::new(),
+            log,
         };
         send_initialize_request(&mut client.stream, 1, name).await?;
         client.response(1).await?;
@@ -831,13 +840,11 @@ async fn original_capacity(client: &mut Client, thread: &str, turn: &str) -> Res
     assert_eq!(error.turn_id, turn);
     assert!(error.will_retry);
     assert_eq!(error.error.message, CAPACITY_RETRY_NOTICE);
-    // Core's existing notify_stream_error wraps the original capacity wait as a
-    // disconnected stream. The new reconnect replay has its own explicit kind.
+    // The capacity retry emitter preserves its specific error kind; it does
+    // not use the ordinary reconnecting-stream wrapper.
     assert_eq!(
         error.error.codex_error_info,
-        Some(CodexErrorInfo::ResponseStreamDisconnected {
-            http_status_code: None,
-        })
+        Some(CodexErrorInfo::ServerOverloaded)
     );
     Ok(())
 }
@@ -1225,3 +1232,7 @@ async fn cold_process_resume_does_not_invent_a_live_capacity_wait() -> Result<()
     })
     .await
 }
+
+#[cfg(unix)]
+#[path = "runtime_worker_reconnect_tests.rs"]
+mod runtime_worker;

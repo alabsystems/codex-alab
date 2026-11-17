@@ -312,3 +312,7 @@ fn parse_directive_file(directive: &str) -> Option<Cow<'_, str>> {
 #[cfg(test)]
 #[path = "inline_visualization_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_inline_visualization_context.rs"]
+pub(crate) mod alab_retained_context; // ALAB(retained-ui): bind restored cache DATA only to genuine original Config-policy contexts.

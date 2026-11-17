@@ -72,7 +72,7 @@ uncovered_label="deleted outside alab/removed-paths (each can conflict at a sync
 if [[ -n "${base_revision}" ]]; then
   base="$(git rev-parse --verify --end-of-options "${base_revision}^{commit}")" \
     || alab_die "cannot resolve explicit base ${base_revision}"
-  git merge-base --is-ancestor "${base}" "${source}" \
+  alab_ancestor_check git merge-base --is-ancestor "${base}" "${source}" \
     || alab_die "explicit base ${base_revision} is not an ancestor of ${rev}"
   base_label="explicit base"
   base_files=baseline

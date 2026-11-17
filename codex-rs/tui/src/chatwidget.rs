@@ -288,6 +288,9 @@ mod image_submission;
 mod input_flow;
 mod input_receipts;
 mod input_restore;
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_ui_frontier_widget.rs"]
+mod alab_retained_startup; // ALAB(retained-frontier): UI-owned initial/queued submission inhibitor.
 mod input_submission;
 mod interrupts;
 mod questions;
@@ -526,6 +529,11 @@ pub(crate) enum ExternalEditorState {
 /// (which view gets Ctrl+C), while `ChatWidget` owns process-level decisions such as interrupting
 /// active work, arming the double-press quit shortcut, and requesting shutdown-first exit.
 pub(crate) struct ChatWidget {
+    #[cfg(unix)]
+    pub(crate) alab_history: crate::app::AlabSideProvenance, // ALAB(retained-ui): same original focused cell provenance survives parking.
+    #[cfg(unix)]
+    alab_history_source: alab_side_history_cell::SourceContext, // ALAB(retained-ui): actual original item guard, no caller authority.
+    #[cfg(unix)] alab_retained_startup: Option<crate::owned_local_frontend::OwnedLocalTarget>, // ALAB(retained-frontier): retain original startup input until actual activation, never grant permission.
     pub(crate) empty_state_animation:
         std::cell::RefCell<crate::empty_state_animation::EmptyStateAnimation>,
     pub(crate) daybreak_enabled: bool,
@@ -1287,6 +1295,9 @@ impl ChatWidget {
             self.app_event_tx.send(AppEvent::InsertHistoryCell(active));
             self.request_pending_usage_output_insertion();
         }
+        #[cfg(unix)]
+        self.alab_emit_sourced_history(cell); // ALAB(retained-ui): same original FIFO cell carries actual item identity.
+        #[cfg(not(unix))]
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
     }
 
@@ -2201,3 +2212,33 @@ pub(crate) mod tests;
 #[path = "../../alab-tui/glue/allowance.rs"] mod alab_allowance; // ALAB(interface): retain accepted native quota and reset-credit observations.
 
 #[path = "../../alab-tui/glue/goal_runtime_status.rs"] pub(crate) mod alab_goal_runtime; // ALAB(storage-status): live admission informs status only.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_side_history_cell.rs"]
+mod alab_side_history_cell; // ALAB(retained-ui): carry original item provenance through actual history FIFO.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_widget_transfer.rs"]
+pub(crate) mod alab_retained_transfer; // ALAB(retained-ui): preserve actual initial/queued input without dispatch.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_widget_views.rs"]
+mod alab_retained_views; // ALAB(retained-ui): original widget keeps its real BottomPane owner.
+
+#[cfg(unix)]
+pub(crate) use realtime_split_flap::alab_retained_split_flap::Data as AlabRetainedSplitFlapData; // ALAB(retained-ui): expose owned codec DATA without widening native widget types.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_widget_copy_graph.rs"]
+mod alab_copy_graph; // ALAB(retained-ui): actual widget binds its original event sender and weak copy-pause root.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_widget_streaming.rs"]
+pub(crate) mod alab_retained_streaming; // ALAB(retained-ui): compose actual native stream fields in the complete scene.
+
+#[cfg(unix)]
+pub(crate) use transcript::alab_retained as alab_retained_transcript; // ALAB(retained-ui): expose owned transcript DATA without widening native state.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_backend_thread_input.rs"]
+mod alab_retained_backend_input; // ALAB(retained-ui): borrow every parked input leaf into the same enclosing scene.

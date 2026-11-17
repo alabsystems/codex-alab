@@ -19,7 +19,20 @@ pub(super) fn resolve(
         return Ok(());
     }
     let enhanced = selected_mode(layers);
-    codex_alab_core::configure_enhanced(enhanced);
+    if !codex_alab_core::mode_choice_is_live()
+        && codex_alab_core::active() != enhanced
+        && codex_alab_core::session::shared().launch().is_some()
+        && !codex_alab_core::prepare_mode_durability(home)
+    {
+        return Err(std::io::Error::other(
+            "the session record durability boundary is unavailable",
+        ));
+    }
+    if !codex_alab_core::configure_enhanced(enhanced) {
+        return Err(std::io::Error::other(
+            "the session record durability boundary was not committed",
+        ));
+    }
     if embedded {
         replace_defaults(layers, home)?;
     }

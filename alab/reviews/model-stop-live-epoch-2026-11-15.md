@@ -53,6 +53,8 @@ This local mutation-fencing investigation is distinct from the deferred durable
 request-chronology capability described in `model-stop-origin-2026-11-15.md`.
 No compiler/profile exception or package installation is part of either audit.
 
+## Initial live-epoch implementation and validation
+
 The native RED now confirms both live paths: 35 tests pass and two fail in
 2.83s. After the actual API round-trip, live lookup still returns the old goal
 binding; an already-prepared resume changes the row to Active. Accounting-only
@@ -163,3 +165,268 @@ regression should establish whether accepted receipt chaining can preserve the
 original source without granting authority across API mutations, policy holds
 or rejected completions. This is a separate availability investigation, not an
 unverified relaxation of the landed live fence.
+
+## Supersession by exact mutation chronology
+
+The live-epoch implementation above established the necessary process-local
+fence and selected dispatch-overlap as its next availability investigation.
+The subsequent recovery work below subsumes that design into exact mutation
+transitions, durable crash chronology, and lifecycle-wide publication ordering.
+It preserves the earlier owner, epoch, history-validation, mode-revocation,
+and fail-closed custody invariants while extending them across process and
+upgrade boundaries.
+
+## Expanded exact-mutation and crash-chronology design
+
+The first native check failed exactly at the missing boundary: after the real
+Paused-to-Blocked round trip, `current_model_goal` returned the original
+`WallGoal`. The final snapshot and person-stop count were identical, proving
+that snapshot comparison alone cannot distinguish acknowledged native intent.
+A second regression suspends recovery after its preparatory read and performs
+the same round trip before final admission.
+
+The chosen fence is an opaque, process-local `MutationEpoch`: weak identity of
+the exact persistence `State` plus a checked `u128` sequence. Successful native
+mutations return their exact `{ before, after }` transition. Accounting-only
+writes do not change it; failed, overlapping, or exhausted mutation settlement
+returns no witness and holds admission. Epochs are never serialized.
+
+Live model custody now pairs the durable `WallGoal` with an epoch. A fresh
+Active-to-Blocked tool mutation binds `after`. A duplicate Blocked-to-Blocked
+mutation retains the entire original `WallGoal` only when the prior binding is
+at `before`, then advances only its epoch to `after`. Tool completion, live DB
+standing, compact admission, and the final resume callback all validate the
+epoch against the currently registered native runtime while holding its goal
+mutation permit. Retirement compares the complete binding, so an old reader
+cannot erase a newer duplicate with the same durable fields.
+
+Restart import remains conservative. It can bind only across a pristine new
+runtime, or across an explicit contiguous bridge of exact duplicate
+transitions that began pristine before the durable source arrived. History,
+the Blocked row, person-stop authority, runtime owner, and epoch must all remain
+unchanged through publication. A host/API mutation closes that bridge; the
+current epoch is never stamped onto old durable proof after the fact.
+
+The owner audit found a prerequisite registry race: duplicate thread startup
+could replace a live `GoalRuntimeHandle` before `ThreadManager` rejected the
+duplicate, giving the two handles different semaphores and persistence states.
+Registration now refuses replacement of a live different owner. Unregistration
+drains the matching owner's raw mutation permit before removal, and every
+normal permit rechecks current registration after acquisition. This makes the
+epoch's owner identity correspond to the runtime that actually sequences SQL.
+
+Exact call identities in the short-lived committed-mutation queue now remain
+bounded tombstones after consumption or collision. A reused
+`(thread, turn, call)` therefore supplies no second authority rather than
+replacing an earlier fact.
+
+## Crash chronology and settlement
+
+The process-local epoch is intentionally not restart authority. Host set and
+clear acquire a separate append-only v3 chronology journal before their
+authoritative post-prepare row read and retain its stable lock through the
+pre-SQL instruction, database mutation and settlement. The random 256-bit
+generation is carried by recovery proof observed at that exact journal serial.
+A definite rollback truncates exactly its own arm to the validated predecessor;
+an unknown outcome leaves the arm standing. A successful mutation clears only
+the unresolved state after the rollout instruction/outcome and SQLite row have
+both crossed their durability barriers, while retaining that generation as the
+latest durable serial. Malformed, truncated, stale or oversized journals fail
+closed.
+
+Every scoped host mutation owns a stable per-thread lock file for its complete
+classification-to-settlement interval. The lock file is never unlinked:
+replacing its inode while a process held the old one would let another process
+bypass the exclusion. Contention fails closed, and a task-local rollback or
+settlement retains its exact lease after a file-synchronization error. This
+closes both the cross-process append-versus-truncate race and inverted SQL
+settlement order left by a process-only goal permit.
+
+A first-ever definite rollback has true absence as its predecessor. After
+validating the exact partially or fully appended arm, it removes only the
+journal marker while retaining the separate stable lock and syncs the parent
+directory. Leaving a zero-length marker would be indistinguishable from
+arbitrary truncation and must remain invalid; a crash during removal can expose
+only the old fail-closed arm or the safe absent predecessor.
+
+Model-stop and provider-wall admission require the exact latest generation
+their source observed, including the initial `None` before any host mutation.
+Settlement does not erase that serial, so a second process cannot round-trip a
+goal to identical durable fields and revive old proof. The final wall-resume
+callback repeats that check under the native permit, closing the preparatory
+read-to-dispatch race. A durable user Active instruction also revokes an older
+model source in history even when its SQL update definitely rolls back and
+therefore emits no outcome; it remains distinct from the wall-stop counter.
+
+SQLite runs WAL with `synchronous=NORMAL`, so transaction success alone is not
+the power-loss boundary used here. Every acknowledged goal mutation and usage
+charge now completes a full, non-busy checkpoint before its exact in-memory
+snapshot, runtime effects, metrics, event or fence are settled. A failed
+checkpoint makes the outcome permanently ambiguous and leaves admission
+closed. The session record similarly syncs its temporary file and, on Unix,
+each renamed directory entry through `$CODEX_HOME`.
+
+Persistence status distinguishes a sticky failure from a healthy owner whose
+frozen additive snapshot has advanced ahead of SQLite settlement. Failure,
+retirement and permanent holds still dominate, but any otherwise healthy live
+owner remains `Writing`; only an ownerless unreconciled snapshot is `Held`.
+This ordering matters because an observer may disappear after dispatch: the
+owned write can still settle successfully, and its paced admission recovery
+must remain alive to resume the goal. Snapshot and direct admission queries use
+one classifier so their externally reported phases cannot diverge again.
+
+Set and clear return deferred exact-effect outcomes. A direct caller may apply
+one only after the first database durability barrier; the app server retains it
+through rollout persistence, a second database barrier and chronology-fence
+settlement. Any later failure drops the unapplied outcome, which deliberately
+holds admission instead of publishing an effect from incomplete chronology.
+Authentication deferral, restore/accept, cancellation and retirement use the
+same database boundary before changing live admission, and fork inheritance
+crosses it before the target runtime or RPC can acknowledge the copied row.
+Standalone authentication capture and native-turn cleanup remain deliberately
+barrier-free because losing either can only remove recovery proof or preserve
+an obsolete hold; neither grants continuation authority.
+
+Later accounting still invalidates every destructive runtime effect. One
+narrow exception acknowledges a same-goal no-op when callbacks advanced only
+the unreconciled accounting-data generation after the SQL commit: owner,
+mutation sequence, failure generation and accounting-write generation must
+still match, with no failure, ambiguity, retirement, open clock or active
+writer. The acknowledgement neither resets a baseline nor publishes metrics,
+steering or continuation; the late usage remains for ordinary additive
+accounting. A different goal association quarantines the original boundary.
+
+An ownerless mutation intent attaches its exact pre-SQL write to the first live
+successor. While that intent is pending, later set/clear calls now reject under
+the registry-to-gap lock before runtime preparation, accounting or instruction
+recording; otherwise even a rejected overlap could invalidate the older exact
+witness. Cancellation before SQL releases its persistence hold but keeps the
+successor epoch non-pristine, recording that intent chronology without
+inventing a failed storage command. Runtime retirement similarly closes new
+authority first while retaining already-admitted persistence until its final
+drain and effect application finish.
+
+## Source and lifecycle ordering
+
+Mode changes, carried-source changes and durable source publication share one
+process-wide source fence. An Enhanced/Vanilla boundary first retires all model
+sources and synchronously writes that retirement; a failed write leaves the old
+mode effective. ALab identity starts and owns the session writer in Vanilla as
+well as Enhanced mode, so an initial Vanilla boundary cannot acknowledge an
+in-memory retirement while leaving an older Enhanced record importable. The
+session writer always takes the source fence before its own state mutex.
+Same-thread record rebuilds use a bounded reentrant depth, so a publication can
+synchronously flush the writer without either self-deadlock or the cross-thread
+source/state inversion found during hostile review.
+
+Thread archive, revert, resume replacement and terminal listener shutdown now
+hold the lifecycle exclusion through runtime shutdown, registry removal,
+rollout ownership and reload. An unloaded thread obtains its recorder before
+SQL and keeps it through terminal outcome persistence. App-server replies and
+notifications use bounded per-thread FIFO ownership, so cancellation cannot
+orphan committed effects or reorder the externally observed chronology. Once
+a service result may represent a commit or durable instruction, errors occupy
+that same FIFO position and the outer request handler emits no duplicate.
+
+A committed process upgrade now composes with runtime retirement instead of
+racing it. Retirement atomically closes the upgrade barrier in every phase: if
+it wins while a checkpoint is open or prepared, later preparation and commit
+are refused; if commit wins, the registry key remains reserved for that exact
+transfer. After Core producers and source readers quiesce, final capture drains
+late retained turn and idle usage, freezes a fixed clock cutoff, and only then
+reads the transferable row and clock. Deferred cleanup is write-free, releases
+no registry key while its failure-prone work runs, and reports a prepared
+result. One registry coordinator then prevalidates the whole forest, merges all
+Ready carries and removes all exact keys under the registry-to-gap lock order,
+and publishes every transfer plus the source result without an await. A task
+lost before that point overrides provisional success and gives every successor
+a Permanent carry; a partial internal commit does the same before either lock
+is released. The outer source task owns the goal guard, terminal guard and watch
+sender together, so cancellation restores terminal modes before observers can
+see failure and no independently detached inner task can publish a goal forest
+whose terminal result was lost.
+
+Upgrade checkpoint and final capture preserve the active clock baseline even
+when no whole second is chargeable. An empty accounting result at either
+boundary therefore uses `KeepActive`; clearing there would erase the clock
+before the destination can adopt it. Only deferred retirement clears the frozen
+source clock after the transferable snapshot has been captured.
+
+Terminal session teardown closes native submission admission before extension
+retirement: it closes the receiver, drops deferred submissions and drains
+channel-resident submissions. Otherwise an automatic input queued behind
+`Shutdown` can hold the goal-state permit while awaiting its reply, while goal
+retirement waits for that same permit and the session loop cannot drop the
+queued reply owner. Normal shutdown, local-runtime shutdown, successful
+suspension and channel-close teardown all use this ordering; suspension invokes
+it only after the suspension has become terminal.
+
+Windows retains an explicit qualification: every journal and session file is
+flushed through the native file API, but Windows documents no standard-user
+parent-directory flush. The implementation therefore remains operational
+there without claiming the Unix directory-entry power-loss guarantee.
+
+## Verification
+
+The results below were captured on the exact pre-merge recovery source
+described in this expanded section. They are implementation evidence for that
+source, not a claim that the later merge composition has already passed the
+same checks.
+
+Focused Trust runs completed during implementation:
+
+- `targo --unverified test -p codex-alab-core --lib upgrade_barrier::tests`:
+  16 passed, including provisional-release abandonment, inventory rollback and
+  cleanup-owner loss after publication.
+- `targo --unverified test -p codex-alab-core --lib
+  final_reconciliation_accepts_only_healthy_ownerless_callback_data`: passed.
+- `targo --unverified test -p codex-alab-core --lib
+  delayed_runtime_effect_requires_its_exact_clean_post_commit_epoch`: passed,
+  including classification of the pending-data-only non-destructive case.
+- `targo --unverified test -p codex-goal-extension --test
+  goal_extension_backend`: 28 passed under deterministic ALab activation,
+  including late same-goal callbacks, retirement drain and resumed idle usage.
+- `targo --unverified test -p codex-alab-autopilot --lib
+  model_blocked_goal_tests::source:: -- --nocapture`: 15 passed.
+- `targo --unverified test -p codex-alab-autopilot --lib
+  goal_retained_usage_tests -- --nocapture`: 4 passed.
+- `targo --unverified test -p codex-alab-autopilot --lib
+  model_blocked_goal_tests::registry:: -- --nocapture`: 21 passed.
+- `targo --unverified test -p codex-alab-autopilot --lib
+  goal_upgrade_read_tests -- --nocapture`: 10 passed, including exact final
+  clock capture and automatic-input-behind-shutdown completion.
+- `targo --unverified test -p codex-core --lib
+  terminal_dispatch_drops_channel_and_assignment_queued_reply_owners`: passed.
+- `targo --unverified test -p codex-app-server --lib thread_fork_goal`: passed.
+- `targo --unverified test -p codex-alab-tui --lib session`: 111 passed.
+
+The registry/source hostile reviews and the final cancellation/publication
+audit reported no remaining concrete defect.
+
+The canonical `alab/check.sh` run under the source-pinned Trust 15698 completed
+its full all-target Tippy phase with no ALab finding; 44 upstream diagnostics
+were set aside. Its required certified CLI build then stopped at Trust's known
+in-process procedural-macro admission boundary, before an authenticated proof
+inventory existed. The same compiler refusal is already reproduced on the
+pristine upstream base. No unverified application build substitutes for that
+failed certification.
+
+A supported adoption of the newest signed Trust, build 27009 at compiler commit
+`5062eed55c0bc9df8a79eba1368d88ffde76c741`, was also qualified in an isolated
+worktree. Its full Tippy phase found nothing in ALab's code, with 156 newer
+upstream diagnostics set aside, and it advanced beyond the old procedural-macro
+boundary. The certified build then correctly refused `anyhow`'s
+`run-custom-build` control unit because the project's literal
+`-Ztrust-verify=on` assertion requires verification of build-script execution.
+Trust records this as open issue `BUILD-SCRIPT-ASSERTION-REFUSAL-1`; current
+Trust main retains the same admission rule, and signed index 151 offers no build
+newer than 27009. The later missing-transport report is secondary to that
+pre-compiler planning refusal.
+
+Removing the assertion would admit build-script execution as a disclosed
+conditional TCB entry, but that is a proof-policy change, not a compatibility
+fix. Preserve the existing requirement. The adoption controller therefore left
+`trust.lock` uncommitted, and no package or installed Codex binary was replaced.
+Application certification remains deferred to a Trust capability that can
+satisfy the existing policy; the source/runtime verification above makes no
+certification claim.

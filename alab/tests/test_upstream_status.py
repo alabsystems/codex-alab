@@ -1,11 +1,15 @@
 # Copyright 2026 Andrew Yates
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
+import io
+import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 import test_upstream_intake as intake_tests
 
@@ -160,6 +164,66 @@ class StatusTests(unittest.TestCase):
         self.assertIsNone(result['packaged_sha'])
         self.assertTrue(result['adoption']['errors'])
 
+    def test_failed_assessment_cli_keeps_independent_source_observations(self):
+        (self.repo / 'alab').mkdir()
+        (self.repo / 'alab/features.toml').write_text('schema = 1\nfeatures = []\n')
+        self.git('add', 'alab/features.toml')
+        self.commit('assessment inventory')
+        malformed = self.repo / 'malformed.json'
+        malformed.write_text('{')
+        cases = (['--candidate', 'missing-candidate'], ['--candidate', self.target],
+                 ['--intake', str(self.repo / 'missing.json')],
+                 ['--intake', str(malformed)], ['--base', 'missing-base'])
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                done = subprocess.run([
+                    sys.executable, '-I', '-B', str(Path(STATUS.__file__)), '--repo', str(self.repo),
+                    '--main', self.base, '--upstream', self.target, '--base', self.base, *arguments,
+                ], capture_output=True, text=True, timeout=15)
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertTrue(done.stdout.lstrip().startswith('{'), done.stderr)
+                result = json.loads(done.stdout)
+                self.assertEqual(result['main_sha'], self.base)
+                self.assertEqual(result['upstream_sha'], self.target)
+                self.assertEqual(result['integrated_frontier_sha'], self.base)
+                self.assertEqual(result['pending_count'], 1)
+                self.assertNotIn('assessment', result)
+                self.assertTrue(any(error.startswith('assessment: ') for error in result['errors']))
+                self.assertIn('upstream status:', done.stderr)
+
+    def test_assessment_faults_preserve_source_but_cancellation_still_propagates(self):
+        (self.repo / 'alab').mkdir()
+        (self.repo / 'alab/features.toml').write_text('schema = 1\nfeatures = []\n')
+        self.git('add', 'alab/features.toml')
+        self.commit('assessment inventory')
+        arguments = ['upstream_status.py', '--repo', str(self.repo), '--main', self.base,
+                     '--upstream', self.target, '--base', self.base]
+        fault = subprocess.TimeoutExpired(['git', 'assessment'], 1)
+        output = io.StringIO()
+        with mock.patch.object(sys, 'argv', arguments), mock.patch.object(sys, 'stdout', output), \
+                mock.patch.object(sys, 'stderr', io.StringIO()), \
+                mock.patch.object(STATUS, 'observe', side_effect=fault):
+            self.assertEqual(STATUS.main(), 1)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['pending_count'], 1)
+        self.assertNotIn('assessment', result)
+        self.assertTrue(result['errors'])
+        for cancellation in (KeyboardInterrupt('cancel assessment'), SystemExit(47)):
+            with self.subTest(cancellation=type(cancellation).__name__):
+                with mock.patch.object(sys, 'argv', arguments), \
+                        mock.patch.object(STATUS, 'observe', side_effect=cancellation), \
+                        self.assertRaises(type(cancellation)) as caught:
+                    STATUS.main()
+                self.assertIs(caught.exception, cancellation)
+
+    def test_intake_without_base_remains_an_invalid_cli_invocation(self):
+        done = subprocess.run([
+            sys.executable, '-I', '-B', str(Path(STATUS.__file__)), '--repo', str(self.repo),
+            '--intake', str(self.repo / 'missing.json')], capture_output=True, text=True, timeout=15)
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(done.stdout, '')
+        self.assertIn('--intake requires an explicit --base', done.stderr)
+
 
 class LagStatusTests(unittest.TestCase):
     setUp = intake_tests.IntakeTests.setUp
@@ -190,6 +254,176 @@ class LagStatusTests(unittest.TestCase):
         result = STATUS.report(self.repo, 'missing', self.target)
         self.assertIsNone(result['pending_count'])
         self.assertTrue(result['errors'])
+
+    def unrelated_root(self):
+        tree = self.git('rev-parse', self.target + '^{tree}')
+        return self.git('commit-tree', tree, '-m', 'unrelated root')
+
+    def future_child(self):
+        environment = {key: value for key, value in os.environ.items()
+                       if not key.startswith('GIT_')}
+        environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
+                           GIT_COMMITTER_DATE='@253402300800 +0000')
+        tree = self.git('rev-parse', self.target + '^{tree}')
+        child = subprocess.check_output([
+            'git', '-C', str(self.repo), 'commit-tree', tree, '-p', self.base,
+            '-m', 'valid Git date outside Python datetime range',
+        ], env=environment, text=True).strip()
+        self.assertEqual(self.git('show', '-s', '--format=%ct', child), '253402300800')
+        return child
+
+    def cli_observation(self, main, upstream):
+        done = subprocess.run([
+            sys.executable, '-I', '-B', str(Path(STATUS.__file__)), '--repo', str(self.repo),
+            '--main', main, '--upstream', upstream,
+        ], capture_output=True, text=True, timeout=15)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertTrue(done.stdout.lstrip().startswith('{'), done.stderr)
+        return json.loads(done.stdout)
+
+    def assert_source_fields(self, result, main, upstream, frontier=None, pending=None):
+        self.assertEqual(result['main_sha'], main)
+        self.assertEqual(result['upstream_sha'], upstream)
+        self.assertEqual(result['integrated_frontier_sha'], frontier)
+        self.assertEqual(result['pending_count'], pending)
+        self.assertIsNone(result['oldest_pending_committed_at'])
+        self.assertIsNone(result['oldest_pending_age_seconds'])
+        self.assertIsNone(result['last_successful_fetch_at'])
+        self.assertIsNone(result['qualified_sha'])
+        self.assertIsNone(result['packaged_sha'])
+        self.assertIsNone(result['selected_sha'])
+        self.assertIsNone(result['running_sha'])
+        self.assertTrue(result['errors'])
+
+    def test_disconnected_histories_keep_known_source_identities(self):
+        unrelated = self.unrelated_root()
+        result = STATUS.report(self.repo, self.base, unrelated)
+        self.assert_source_fields(result, self.base, unrelated)
+        self.assertTrue(any('integration frontier' in error for error in result['errors']))
+
+    def test_disconnected_histories_cli_emits_partial_json(self):
+        unrelated = self.unrelated_root()
+        self.assert_source_fields(self.cli_observation(self.base, unrelated), self.base, unrelated)
+
+    def test_out_of_range_commit_date_keeps_known_frontier_and_pending_count(self):
+        future = self.future_child()
+        result = STATUS.report(self.repo, self.base, future)
+        self.assert_source_fields(result, self.base, future, self.base, 1)
+        self.assertTrue(any('pending timestamps' in error for error in result['errors']))
+
+    def test_out_of_range_commit_date_cli_emits_partial_json(self):
+        future = self.future_child()
+        self.assert_source_fields(self.cli_observation(self.base, future),
+                                  self.base, future, self.base, 1)
+
+    def test_ancestry_command_faults_preserve_completed_observations(self):
+        real_git = STATUS.git
+        cases = (
+            ('merge-base', subprocess.CalledProcessError(128, ['git', 'merge-base']), None, None),
+            ('rev-list', subprocess.TimeoutExpired(['git', 'rev-list'], 1), self.base, None),
+            ('log', OSError('controlled timestamp command failure'), self.base, 1),
+        )
+        for operation, fault, frontier, pending in cases:
+            with self.subTest(operation=operation):
+                def query(repo, *arguments):
+                    if arguments[0] == operation:
+                        raise fault
+                    return real_git(repo, *arguments)
+
+                with mock.patch.object(STATUS, 'git', side_effect=query):
+                    result = STATUS.report(self.repo, self.base, self.target)
+                self.assert_source_fields(result, self.base, self.target, frontier, pending)
+                if operation == 'merge-base':
+                    self.assertTrue(any('128' in error for error in result['errors']))
+
+    def test_reference_fault_still_observes_the_other_reference(self):
+        real_git = STATUS.git
+        cases = (
+            (self.base, OSError('controlled first reference failure'), None, self.target),
+            (self.target, subprocess.TimeoutExpired(['git', 'rev-parse'], 1), self.base, None),
+        )
+        for failed_ref, fault, main, upstream in cases:
+            with self.subTest(reference=failed_ref):
+                def query(repo, *arguments):
+                    if arguments[0] == 'rev-parse' and arguments[-1] == failed_ref + '^{commit}':
+                        raise fault
+                    return real_git(repo, *arguments)
+
+                with mock.patch.object(STATUS, 'git', side_effect=query):
+                    result = STATUS.report(self.repo, self.base, self.target)
+                self.assert_source_fields(result, main, upstream)
+
+    def test_source_observation_cancellation_preserves_exception_identity(self):
+        real_git = STATUS.git
+        for operation in ('merge-base', 'rev-list', 'log'):
+            for control in (KeyboardInterrupt('stop source observation'), SystemExit(47)):
+                with self.subTest(operation=operation, cancellation=type(control).__name__):
+                    def query(repo, *arguments):
+                        if arguments[0] == operation:
+                            raise control
+                        return real_git(repo, *arguments)
+
+                    with mock.patch.object(STATUS, 'git', side_effect=query), \
+                            self.assertRaises(type(control)) as caught:
+                        STATUS.report(self.repo, self.base, self.target)
+                    self.assertIs(caught.exception, control)
+
+    def test_multiple_real_frontiers_remain_explicitly_ambiguous(self):
+        tree = self.git('rev-parse', self.target + '^{tree}')
+        right = self.git('commit-tree', tree, '-p', self.base, '-m', 'right branch')
+        first = self.git('commit-tree', tree, '-p', self.target, '-p', right, '-m', 'first merge')
+        second = self.git('commit-tree', tree, '-p', right, '-p', self.target, '-m', 'second merge')
+        self.assertEqual(set(self.git('merge-base', '--all', first, second).splitlines()),
+                         {self.target, right})
+        result = STATUS.report(self.repo, first, second)
+        self.assert_source_fields(result, first, second)
+        self.assertIn('Integration frontier is ambiguous', result['errors'])
+
+    def test_malformed_qualification_after_keeps_independent_source_status(self):
+        # A local record-shape control, not evidence that a native gate ran.
+        directory = self.repo / 'observation'
+        directory.mkdir()
+        log = directory / 'gate.log'
+        log.write_bytes(b'inert retained observation fixture\n')
+        snapshot = {'source': self.base, 'tree': self.git('rev-parse', self.base + '^{tree}'),
+                    'base': self.base, 'upstream': self.base, 'clean': True}
+        original = {'schema': 5, 'kind': 'native-check-execution-observation',
+                    'status': 0, 'before': snapshot, 'after': dict(snapshot),
+                    'qualified_source': self.base, 'log': 'gate.log',
+                    'log_sha256': hashlib.sha256(log.read_bytes()).hexdigest()}
+        path = directory / 'record.json'
+        path.write_text(json.dumps(original))
+        accepted = STATUS.report(self.repo, self.base, self.target, qualification_record=path)
+        self.assertEqual(accepted['qualified_sha'], self.base)
+        self.assertEqual(accepted['errors'], [])
+        cases = (
+            ('integer clean', {**snapshot, 'clean': 1}),
+            ('float clean', {**snapshot, 'clean': 1.0}),
+            ('false clean', {**snapshot, 'clean': False}),
+            ('missing clean', {key: value for key, value in snapshot.items() if key != 'clean'}),
+            ('null snapshot', None),
+            ('list snapshot', []),
+            ('missing snapshot', None),
+        )
+        for label, after in cases:
+            with self.subTest(shape=label):
+                record = dict(original)
+                if label == 'missing snapshot':
+                    del record['after']
+                else:
+                    record['after'] = after
+                path.write_text(json.dumps(record))
+                result = STATUS.report(self.repo, self.base, self.target, qualification_record=path)
+                self.assertIsNone(result['qualified_sha'])
+                self.assertTrue(any(error.startswith('qualification: ') for error in result['errors']))
+                self.assertEqual(result['main_sha'], self.base)
+                self.assertEqual(result['upstream_sha'], self.target)
+                self.assertEqual(result['integrated_frontier_sha'], self.base)
+                self.assertEqual(result['pending_count'], 1)
+                self.assertIsNone(result['packaged_sha'])
+                self.assertIsNone(result['selected_sha'])
+                self.assertIsNone(result['running_sha'])
+                self.assertIsNone(result['last_successful_fetch_at'])
 
 
 if __name__ == '__main__':

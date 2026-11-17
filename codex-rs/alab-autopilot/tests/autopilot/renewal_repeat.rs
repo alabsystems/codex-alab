@@ -60,7 +60,7 @@ fn consecutive_standalone_login_walls_recover_without_enabled_goals() {
             )
             .await;
             if disabled {
-                set_goal_runtime_enabled(&h, false).await;
+                set_goal_runtime_enabled(&h, false);
             }
             let mut previous = None;
             for (index, (prompt, credential)) in [

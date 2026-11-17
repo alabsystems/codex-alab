@@ -61,11 +61,16 @@ async fn test_processor(
         &config.codex_home,
         outgoing.clone(),
     );
+    // ALAB(goal-recovery): test the shared listener lifecycle exclusion.
+    let pending_thread_unloads = Default::default();
     let thread_goal_processor = ThreadGoalRequestProcessor::new(
         test.thread_manager.clone(),
         outgoing.clone(),
         config.clone(),
-        thread_state_manager.clone(),
+        super::super::GoalProcessorThreadState::new(
+            thread_state_manager.clone(),
+            Arc::clone(&pending_thread_unloads),
+        ),
         /*state_db*/ None,
         Arc::new(GoalService::new()),
         config_manager.clone(),
@@ -78,7 +83,7 @@ async fn test_processor(
         config,
         config_manager,
         test.thread_store.clone(),
-        Default::default(),
+        pending_thread_unloads,
         thread_state_manager,
         thread_watch_manager,
         Arc::new(Semaphore::new(/*permits*/ 1)),
@@ -153,7 +158,7 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
                 ThreadResumeTarget::Client(ConnectionRequestId {
                     connection_id,
                     request_id: RequestId::Integer(1),
-                }),
+                }.into()), // ALAB(owned-local): original real request, no accepted startup resource.
                 ThreadResumeParams {
                     thread_id: thread_id.to_string(),
                     exclude_turns: true,
@@ -364,7 +369,7 @@ async fn resume_preserves_recovery_turn_before_status_publication() -> Result<()
         ThreadResumeTarget::Client(ConnectionRequestId {
             connection_id,
             request_id: RequestId::Integer(1),
-        }),
+        }.into()), // ALAB(owned-local): original plain real-client target.
         ThreadResumeParams {
             thread_id: thread_id.to_string(),
             config: Some([("model_reasoning_effort".into(), serde_json::json!("medium"))].into()),

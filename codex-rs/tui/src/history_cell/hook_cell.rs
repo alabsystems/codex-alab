@@ -781,3 +781,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_hook_cells.rs"]
+pub(in crate::history_cell) mod alab_retained_hook; // ALAB(retained-ui): preserve native hook display phases and monotonic timers without invoking hooks.

@@ -1,3 +1,5 @@
+#[path = "../../alab-core/glue/retained_goal_manager.rs"]
+mod alab_retained_goal_gate; // ALAB(retained-frontier): one actual host gate binds every root before first start.
 mod managed;
 mod model_catalog;
 mod shared_instructions;
@@ -587,6 +589,7 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
 pub(crate) struct ThreadManagerState {
     // Eviction updates this registry and residency together, locking the registry first.
     pub(crate) threads: Arc<RwLock<HashMap<ThreadId, Arc<CodexThread>>>>,
+    alab_retained_goal_gate: codex_alab_core::retained_goal_gate::Registration, // ALAB(retained-frontier): first start seals local admission policy.
     pub(crate) alab_upgrade: Arc<codex_alab_core::upgrade_barrier::State>, // ALAB(upgrade): starts and queued input from every root revoke a prepared process handoff.
     shared_thread_instructions: shared_instructions::SharedThreadInstructionsProviders,
     thread_created_tx: broadcast::Sender<ThreadId>,
@@ -691,6 +694,7 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                alab_retained_goal_gate: Default::default(), // ALAB(retained-frontier): ordinary managers remain legacy unless bound before any root.
                 alab_upgrade: Arc::default(), // ALAB(upgrade): each manager owns its process-handoff admission.
                 shared_thread_instructions: Default::default(),
                 thread_created_tx,
@@ -905,6 +909,7 @@ impl ThreadManager {
             state: Arc::new(ThreadManagerState {
                 runtime_auth,
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                alab_retained_goal_gate: Default::default(), // ALAB(retained-frontier): ordinary managers remain legacy unless bound before any root.
                 alab_upgrade: Arc::default(), // ALAB(upgrade): each manager owns its process-handoff admission.
                 shared_thread_instructions: Default::default(),
                 thread_created_tx,
@@ -2551,6 +2556,7 @@ impl ThreadManagerState {
                 "thread store resume preparation requires a persisted resumed thread".to_string(),
             ));
         }
+        alab_retained_goal_gate::before_start(&self.alab_retained_goal_gate, &mut thread_extension_init).map_err(CodexErr::InvalidRequest)?; // ALAB(retained-frontier): carry the actual same host gate before any goal/Core publication.
         let inherited_environments = captured_environments.or(inherited_environments);
         let session_source = session_source.unwrap_or_else(|| self.session_source.clone());
         if thread_extension_init.get::<InheritedSessionId>().is_some()

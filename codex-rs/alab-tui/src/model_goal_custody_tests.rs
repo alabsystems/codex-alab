@@ -13,6 +13,7 @@ fn goal() -> WallGoal {
         goal_id: "original-goal".into(),
         objective: "finish the original task".into(),
         token_budget: Some(1_000),
+        chronology_fence_generation: None,
         turn: "model-blocked-turn".into(),
         person_stops: 0,
     }

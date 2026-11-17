@@ -8,33 +8,13 @@ use codex_alab_core::session::Pace;
 use codex_alab_core::session::WallGoal;
 
 async fn host_pause(h: &Harness, goals: &GoalService) {
-    let outcome = goals
-        .set_thread_goal(
-            &h.test.codex.state_db().expect("native goal database"),
-            GoalSetRequest {
-                thread_id: h.rt.id,
-                objective: GoalObjectiveUpdate::Keep,
-                status: Some(codex_protocol::protocol::ThreadGoalStatus::Paused),
-                token_budget: GoalTokenBudgetUpdate::Keep,
-                max_goal_token_budget: None,
-            },
-            async { Ok(()) },
-        )
-        .await
-        .expect("persist the host/API pause");
-    // Match ThreadGoalProcessor::set: host/API outcomes enter the rollout
-    // before runtime effects. Model emitter notifications do not enter history.
-    h.test
-        .codex
-        .append_rollout_items(&[outcome.thread_goal_updated_item()])
-        .await
-        .expect("record the native host/API outcome");
-    outcome.apply_runtime_effects(goals).await;
-    h.test
-        .codex
-        .flush_rollout()
-        .await
-        .expect("flush the host/API pause");
+    super::source::host_set(
+        h,
+        goals,
+        GoalObjectiveUpdate::Keep,
+        codex_protocol::protocol::ThreadGoalStatus::Paused,
+    )
+    .await;
     assert_eq!(goal(h).await.status, ThreadGoalStatus::Paused);
 }
 
@@ -146,6 +126,38 @@ async fn scan_finished(h: &Harness) {
 }
 
 #[test]
+fn a_durable_host_mutation_fence_retires_older_restart_proof() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, _goals, saved, _original) = resumed_image(EarlierState::Blocked).await;
+            codex_alab_core::goal_chronology_fence::arm(
+                h.test.codex_home_path(),
+                &h.rt.id.to_string(),
+            )
+            .expect("arm unresolved host chronology");
+            h.shared.carry_model_goal(h.rt.key(), Some(saved));
+
+            assert!(
+                h.autopilot
+                    .current_model_goal(&h.rt)
+                    .await
+                    .expect("fenced import is a settled refusal")
+                    .is_none()
+            );
+            assert!(h.shared.carried_model_goal(h.rt.key()).is_none());
+            codex_alab_core::goal_chronology_fence::clear(
+                h.test.codex_home_path(),
+                &h.rt.id.to_string(),
+            )
+            .expect("clear test fence");
+            finish(&h).await;
+        })
+        .await
+        .expect("durable host-mutation fence hang detector");
+    });
+}
+
+#[test]
 fn an_early_duplicate_model_block_keeps_late_native_restart_proof_available() {
     native_test(|| async {
         tokio::time::timeout(HANG, async {
@@ -164,7 +176,11 @@ fn an_early_duplicate_model_block_keeps_late_native_restart_proof_available() {
                 "a duplicate block must not retire a source it has not seen"
             );
             assert_eq!(
-                h.autopilot.current_model_goal(&h.rt).await.expect("validate full native history"),
+                h.autopilot
+                    .current_model_goal(&h.rt)
+                    .await
+                    .expect("validate full native history")
+                    .map(|bound| bound.goal),
                 Some(saved)
             );
             assert_eq!(goal(&h).await, before, "proof adoption alone reactivates nothing");

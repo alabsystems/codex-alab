@@ -513,3 +513,221 @@ fn destination_restore_refuses_every_prior_input_owner() {
         );
     }
 }
+
+#[test]
+fn editor_fence_preserves_joined_parser_and_flushes_only_original_kernel_suffix() {
+    let _serial = PTY_TESTS.lock().unwrap();
+    let (mut master, slave) = pty();
+    let input = Arc::new(slave);
+    let broker = Broker::new(move || input.try_clone());
+    broker.buffer_input(b"a\x1b[200~before", true).unwrap();
+    // A real running producer takes the saved parser. Preparation must join it
+    // and recover the same ready event plus incomplete bracketed paste.
+    let app = broker.subscribe(true).unwrap();
+    let mut editor = broker.prepare_editor().unwrap();
+    let saved = editor.snapshot().to_vec();
+    assert!(broker.subscribe(true).is_err());
+    assert!(broker.buffer_input(b"not a replay boundary", true).is_err());
+    assert!(broker.discard_buffered_input().is_err());
+    assert!(broker.prepare().is_err());
+    assert!(broker.prepare_editor().is_err());
+    let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
+    assert!(matches!(
+        app.poll_where(&mut Context::from_waker(&waker), |_| true),
+        Poll::Pending
+    ));
+    master.write_all(b"editor kernel typeahead").unwrap();
+    let actual = editor.terminal_identity().unwrap();
+    editor
+        .finish_with(|terminal| {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = terminal.metadata()?;
+            assert_eq!((metadata.dev(), metadata.ino(), metadata.rdev()), actual);
+            // Exactly the original policy's TCIFLUSH on the held original TTY;
+            // do not discard the pre-editor parser or its saved partial paste.
+            if unsafe { libc::tcflush(terminal.as_raw_fd(), libc::TCIFLUSH) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(editor.snapshot(), saved.as_slice());
+    broker.buffer_input(b" after\x1b[201~z", true).unwrap();
+    assert!(
+        matches!(subscription_event(&app, |_| true), InternalEvent::Event(Event::Key(key))
+        if key.code == crossterm::event::KeyCode::Char('a'))
+    );
+    assert_eq!(
+        subscription_event(&app, |_| true),
+        InternalEvent::Event(Event::Paste("before after".into()))
+    );
+    assert!(
+        matches!(subscription_event(&app, |_| true), InternalEvent::Event(Event::Key(key))
+        if key.code == crossterm::event::KeyCode::Char('z'))
+    );
+    assert!(
+        editor
+            .finish_with(|_| panic!("finished handback was repeated"))
+            .is_err()
+    );
+}
+
+#[test]
+fn editor_restore_installs_actual_description_and_fence_before_any_reader() {
+    let _serial = PTY_TESTS.lock().unwrap();
+    let (mut master, slave) = pty();
+    let source = Broker::new({
+        let input = slave.try_clone().unwrap();
+        move || input.try_clone()
+    });
+    source.buffer_input(b"\x1b[200~retained", true).unwrap();
+    let original = source.prepare_editor().unwrap();
+    let broker = Broker::new(|| panic!("editor restoration opened a replacement input"));
+    let original_fd = slave.as_raw_fd();
+    let refused = broker
+        .restore_editor_with(original.snapshot(), slave, |_| {
+            Err(std::io::Error::other("actual resource mismatch"))
+        })
+        .err()
+        .expect("actual resource validator must refuse");
+    assert_eq!(refused.input.as_raw_fd(), original_fd);
+    let mut restored = broker
+        .restore_editor_with(original.snapshot(), refused.input, |_| Ok(()))
+        .unwrap();
+    assert_eq!(
+        restored.terminal_identity().unwrap(),
+        original.terminal_identity().unwrap()
+    );
+    assert_eq!(restored.snapshot(), original.snapshot());
+    assert!(broker.subscribe(true).is_err());
+    assert!(broker.discard_buffered_input().is_err());
+    assert!(
+        broker
+            .restore_editor_with(restored.snapshot(), master.try_clone().unwrap(), |_| Ok(()))
+            .is_err()
+    );
+    restored.finish_with(|_| Ok(())).unwrap();
+    let app = broker.subscribe(true).unwrap();
+    master.write_all(b" suffix\x1b[201~").unwrap();
+    assert_eq!(
+        subscription_event(&app, |_| true),
+        InternalEvent::Event(Event::Paste("retained suffix".into()))
+    );
+}
+
+#[test]
+fn editor_restore_refusals_return_same_file_offset_and_actual_error() -> std::io::Result<()> {
+    use std::io::Seek;
+    use std::io::SeekFrom;
+    use std::os::unix::fs::MetadataExt;
+
+    #[derive(Debug)]
+    struct ActualFailure(u64);
+    impl std::fmt::Display for ActualFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(formatter, "actual original validator failure {}", self.0)
+        }
+    }
+    impl std::error::Error for ActualFailure {}
+
+    let broker = Broker::new(|| panic!("refusal opened a replacement input"));
+    let mut input = tempfile::tempfile()?;
+    let bytes = b"prefix\nnext marker\n";
+    input.write_all(bytes)?;
+    input.seek(SeekFrom::Start(7))?;
+    let mut witness = input.try_clone()?;
+    let descriptor = input.as_raw_fd();
+    let metadata = input.metadata()?;
+    let identity = (metadata.dev(), metadata.ino(), metadata.rdev());
+    let check = |actual: &mut File, witness: &mut File| -> std::io::Result<()> {
+        assert_eq!(actual.as_raw_fd(), descriptor);
+        let metadata = actual.metadata()?;
+        assert_eq!((metadata.dev(), metadata.ino(), metadata.rdev()), identity);
+        assert_eq!(actual.stream_position()?, 7);
+        assert_eq!(witness.stream_position()?, 7);
+        let mut next = [0_u8; 4];
+        actual.read_exact(&mut next)?;
+        assert_eq!(&next, b"next");
+        assert_eq!(witness.stream_position()?, 11);
+        witness.seek(SeekFrom::Start(7))?;
+        assert_eq!(actual.stream_position()?, 7);
+        Ok(())
+    };
+
+    let mut parse = broker
+        .restore_editor_with(b"!", input, |_| panic!("invalid parser reached validation"))
+        .err()
+        .expect("malformed parser must refuse");
+    assert_eq!(parse.error.kind(), std::io::ErrorKind::InvalidData);
+    check(&mut parse.input, &mut witness)?;
+
+    let snapshot = Parser::default().checkpoint()?;
+    let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, ActualFailure(137));
+    let original_payload = error
+        .get_ref()
+        .and_then(|payload| payload.downcast_ref::<ActualFailure>())
+        .expect("original typed payload") as *const ActualFailure;
+    let mut rejected = broker
+        .restore_editor_with(&snapshot, parse.input, |_| Err(error))
+        .err()
+        .expect("actual validator must refuse");
+    assert_eq!(rejected.error.kind(), std::io::ErrorKind::PermissionDenied);
+    let returned_payload = rejected
+        .error
+        .get_ref()
+        .and_then(|payload| payload.downcast_ref::<ActualFailure>())
+        .expect("refusal must retain the original typed error")
+        as *const ActualFailure;
+    assert!(std::ptr::eq(returned_payload, original_payload));
+    check(&mut rejected.input, &mut witness)?;
+
+    // A real prior parser mutation makes this original Broker non-pristine.
+    // Even this pre-validator refusal must return its exact supplied owner.
+    broker.buffer_input(b"new original event", true)?;
+    let mut late = broker
+        .restore_editor_with(&snapshot, rejected.input, |_| {
+            panic!("non-pristine broker reached validation")
+        })
+        .err()
+        .expect("actual used broker must refuse restoration");
+    assert_eq!(late.error.kind(), std::io::ErrorKind::InvalidData);
+    check(&mut late.input, &mut witness)?;
+    Ok(())
+}
+
+#[test]
+fn editor_fence_error_unwind_and_drop_never_restart_the_actual_reader() {
+    let _serial = PTY_TESTS.lock().unwrap();
+    for unwind in [false, true] {
+        let (_master, slave) = pty();
+        let broker = Broker::new(move || slave.try_clone());
+        let mut editor = broker.prepare_editor().unwrap();
+        let saved = editor.snapshot().to_vec();
+        if unwind {
+            let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                editor.finish_with(|_| panic!("actual original handback interrupted"))
+            }));
+            assert!(failure.is_err());
+        } else {
+            assert!(
+                editor
+                    .finish_with(|_| Err(std::io::Error::other("actual handback failed")))
+                    .is_err()
+            );
+        }
+        assert_eq!(editor.snapshot(), saved.as_slice());
+        assert!(
+            editor
+                .finish_with(|_| panic!("uncertain handback was repeated"))
+                .is_err()
+        );
+        assert!(broker.subscribe(true).is_err());
+        drop(editor);
+        assert!(broker.subscribe(true).is_err());
+        assert!(broker.buffer_input(b"dropped token", true).is_err());
+    }
+    let (_master, slave) = pty();
+    let broker = Broker::new(move || slave.try_clone());
+    drop(broker.prepare_editor().unwrap());
+    assert!(broker.subscribe(true).is_err());
+}

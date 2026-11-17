@@ -146,6 +146,7 @@ impl TranscriptImage {
         let top = top.min(self.pixels.height());
         let height = bottom.min(self.pixels.height()) - top;
         if height == 0 {
+            crate::retained_tui_images::not_visible()?; // ALAB(retained-ui): record the original native empty crop, never infer from missing file.
             return Ok(None);
         }
         let cropped =
@@ -174,11 +175,17 @@ impl TranscriptImage {
             })
         })();
         let Ok(payload) = payload else {
+            crate::retained_tui_images::unavailable()?; // ALAB(retained-ui): preserve actual completed encoding/cache unavailability.
             return Ok(None);
         };
+        let file = crate::retained_tui_images::retain_before_write(file)?; // ALAB(retained-ui): retain SAME unlink owner before any terminal command can mention it.
         queue!(writer, SavePosition)?;
         placement.draw(writer, area, &payload)?;
         queue!(writer, RestorePosition)?;
         Ok(file)
     }
 }
+
+// ALAB(retained-ui): retain the original decoded raster, never reload its path.
+#[path = "../../alab-tui/glue/retained_text_image.rs"]
+pub(crate) mod alab_retained_image;

@@ -158,7 +158,12 @@ where
                 )
             });
             runtime.set_enabled(enabled);
-            runtime.alab_bind_startup_hold(input.thread_store.get::<codex_alab_core::upgrade_startup_hold::Fence>()); // ALAB(upgrade): bind the actual native startup hold before publishing the runtime.
+            runtime.alab_bind_retained_goal_gate(input.thread_store.get::<codex_alab_core::retained_goal_gate::Gate>()); // ALAB(retained-frontier): bind before registering the actual goal runtime.
+            runtime.alab_bind_startup_hold(
+                input
+                    .thread_store
+                    .get::<codex_alab_core::upgrade_startup_hold::Fence>(),
+            ); // ALAB(upgrade): bind the actual native startup hold before publishing the runtime.
             self.goal_service.register_runtime(&runtime);
         })
     }
@@ -191,7 +196,9 @@ where
                     .await
                 {
                     tracing::warn!("failed to stop goal after interrupted empty turns: {err}");
-                    if codex_alab_core::active() { return; } // ALAB(storage): keep the interrupted turn and its unflushed usage after failed persistence.
+                    if codex_alab_core::is_alab_binary() {
+                        return;
+                    } // ALAB(storage): keep the interrupted turn and its unflushed usage after failed persistence in either experience.
                 }
                 accounting.finish_turn(&turn_id);
             }
@@ -208,7 +215,7 @@ where
         Box::pin(async move {
             if let Some(runtime) = goal_runtime_handle(input.thread_store) {
                 runtime.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): teardown retires a pending automatic admission
-                self.goal_service.unregister_runtime(&runtime);
+                self.goal_service.unregister_runtime(&runtime).await; // ALAB(storage-status): native retirement waits for already-admitted mutations.
             }
         })
     }
@@ -253,7 +260,12 @@ where
                 return;
             };
             runtime.alab_auth_turn_started(); // ALAB(renewal): native admission now owns the original work.
-            if matches!(input.collaboration_mode.mode, codex_protocol::config_types::ModeKind::Plan) { runtime.alab_prepare_plan_accounting().await; } // ALAB(storage): preserve pre-Plan usage before native Plan mode stops its accounting clock.
+            if matches!(
+                input.collaboration_mode.mode,
+                codex_protocol::config_types::ModeKind::Plan
+            ) {
+                runtime.alab_prepare_plan_accounting().await;
+            } // ALAB(storage): preserve pre-Plan usage before native Plan mode stops its accounting clock.
 
             let accounting = runtime.accounting_state();
             let Ok(_turn_start_permit) = accounting.turn_start_permit().await else {
@@ -288,17 +300,30 @@ where
             else {
                 return;
             };
-            if !accounting.alab_goal_association_allowed(goal.as_ref().map(|goal| goal.goal_id.as_str())) { return; } // ALAB(storage): raw replacement cannot reset a failed original goal's unacknowledged shared usage.
-            if codex_alab_core::active() { input.turn_store.insert(codex_alab_core::renewal::GoalAtTurnStart { goal_id: goal.as_ref().filter(|goal| matches!(goal.status, codex_state::ThreadGoalStatus::Active | codex_state::ThreadGoalStatus::BudgetLimited)).map(|goal| goal.goal_id.clone()) }); } // ALAB(renewal): retain original association even if this turn later completes its goal.
-            if let Some(goal) = goal
-                && matches!(
+            if !accounting
+                .alab_goal_association_allowed(goal.as_ref().map(|goal| goal.goal_id.as_str()))
+            {
+                return;
+            } // ALAB(storage): raw replacement cannot reset a failed original goal's unacknowledged shared usage.
+            let active_goal = goal.as_ref().filter(|goal| {
+                matches!(
                     goal.status,
                     codex_state::ThreadGoalStatus::Active
                         | codex_state::ThreadGoalStatus::BudgetLimited
                 )
-            {
-                accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
-            }
+            });
+            let associated_goal = active_goal.and_then(|goal| {
+                accounting
+                    .mark_turn_goal_active(input.turn_id, goal.goal_id.clone())
+                    .then(|| goal.goal_id.clone())
+            }); // ALAB(storage): association rechecks the clean generation under the same State lock that changes native baselines.
+            if codex_alab_core::active() {
+                input
+                    .turn_store
+                    .insert(codex_alab_core::renewal::GoalAtTurnStart {
+                        goal_id: associated_goal,
+                    });
+            } // ALAB(renewal): retain only the exact native association even if this turn later completes its goal.
         })
     }
 
@@ -354,13 +379,9 @@ where
                 return;
             }
             if let Err(err) = runtime
-                .account_active_goal_progress(
-                    turn_id,
-                    &format!("{turn_id}:turn-stop"),
-                    codex_state::GoalAccountingMode::ActiveOnly,
-                    BudgetLimitedGoalDisposition::ClearActive,
-                )
+                .alab_account_ending_turn_progress(turn_id, &format!("{turn_id}:turn-stop"))
                 .await
+            // ALAB(storage): late same-goal tokens settle against the durable terminal status selected under the native goal permit.
             {
                 input.thread_store.remove::<TurnStartOptions>();
                 tracing::warn!(
@@ -403,13 +424,9 @@ where
                 runtime.accounting_state().reset_empty_responses();
             }
             if let Err(err) = runtime
-                .account_active_goal_progress(
-                    turn_id,
-                    &format!("{turn_id}:turn-abort"),
-                    codex_state::GoalAccountingMode::ActiveOnly,
-                    BudgetLimitedGoalDisposition::ClearActive,
-                )
+                .alab_account_ending_turn_progress(turn_id, &format!("{turn_id}:turn-abort"))
                 .await
+            // ALAB(storage): aborts must settle the same terminal late-token boundary as normal turn stops.
             {
                 tracing::warn!(
                     "failed to account active goal progress after turn abort for {turn_id}: {err}"
@@ -441,7 +458,8 @@ where
                 CodexErrorInfo::CyberPolicy
                     | CodexErrorInfo::BioPolicy
                     | CodexErrorInfo::MisalignmentPolicyViolation
-            ) && codex_alab_core::active() {
+            ) && codex_alab_core::active()
+            {
                 // ALAB(policy-recovery): a refused turn never blocks the goal's ordinary continuation.
                 if let Err(err) = runtime
                     .account_active_goal_progress(
@@ -462,8 +480,14 @@ where
             }
 
             let reason = match input.error {
-                ref error if codex_alab_core::active() && GoalRuntimeHandle::alab_is_auth_wall(error) => GoalRuntimeHandle::alab_auth_stop_reason(input.turn_store), // ALAB(renewal): typed auth failure plus original turn association.
-                CodexErrorInfo::UsageLimitExceeded if codex_alab_core::active() => GoalRuntimeHandle::alab_quota_stop_reason(input.turn_store), // ALAB(accounts): only an owned subscription request retains quota recovery custody.
+                ref error
+                    if codex_alab_core::active() && GoalRuntimeHandle::alab_is_auth_wall(error) =>
+                {
+                    GoalRuntimeHandle::alab_auth_stop_reason(input.turn_store)
+                } // ALAB(renewal): typed auth failure plus original turn association.
+                CodexErrorInfo::UsageLimitExceeded if codex_alab_core::active() => {
+                    GoalRuntimeHandle::alab_quota_stop_reason(input.turn_store)
+                } // ALAB(accounts): only an owned subscription request retains quota recovery custody.
                 CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
                 // The turn has ended because the error was non-retryable or its
                 // retries were exhausted. Block the goal to prevent automatic
@@ -504,10 +528,27 @@ where
             }
 
             if let Some(root_accounting_state) = runtime.root_accounting_state() {
-                root_accounting_state.record_descendant_token_usage(&token_usage.last_token_usage);
+                let Ok(_callback) = root_accounting_state.callback_permit().await else {
+                    return;
+                }; // ALAB(storage): retirement's final drain excludes callbacks on this exact accounting owner.
+                if root_accounting_state
+                    .alab_persistence
+                    .accepts_accounting_callbacks()
+                {
+                    root_accounting_state
+                        .record_descendant_token_usage(&token_usage.last_token_usage);
+                } // ALAB(storage): a callback queued behind retirement cannot mutate the carried-away owner.
             }
-            let _ = runtime
-                .accounting_state()
+            let accounting = runtime.accounting_state();
+            let Ok(_callback) = accounting.callback_permit().await else {
+                return;
+            }; // ALAB(storage): carry capture cannot be overtaken by a late turn-token callback.
+            if runtime.alab_runtime_status_retired()
+                || !accounting.alab_persistence.accepts_accounting_callbacks()
+            {
+                return;
+            } // ALAB(storage): waiters released after retirement are discarded before touching native accounting.
+            let _ = accounting
                 .record_token_usage(turn_store.level_id(), &token_usage.total_token_usage);
         })
     }
@@ -530,9 +571,11 @@ where
                 input.tool_name,
                 input.outcome,
             );
+            // ALAB(goal-recovery): ALab publishes successor turn options through its durable mutation path.
             if input.tool_name.is_default_namespace()
                 && input.tool_name.name == CREATE_GOAL_TOOL_NAME
                 && matches!(input.outcome, ToolCallOutcome::Completed { success: true })
+                && !codex_alab_core::is_alab_binary()
             {
                 input.thread_store.remove::<TurnStartOptions>();
                 if let Ok(_goal_state_permit) = runtime.goal_state_permit().await

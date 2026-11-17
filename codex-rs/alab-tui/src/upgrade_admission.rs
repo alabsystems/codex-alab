@@ -72,7 +72,10 @@ async fn admit_with(
             .prefix("codex-upgrade-")
             .tempdir()?;
         let socket = directory.path().join("s");
-        let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+        let listener = {
+            let _fd_custody = codex_alab_core::native_fd_custody::receiving()?;
+            std::os::unix::net::UnixListener::bind(&socket)?
+        };
         listener.set_nonblocking(true)?;
         let mut command = command(&socket);
         command
@@ -84,7 +87,11 @@ async fn admit_with(
             settled: false,
         };
         let stream = loop {
-            match listener.accept() {
+            let accepted = {
+                let _fd_custody = codex_alab_core::native_fd_custody::receiving()?;
+                listener.accept()
+            };
+            match accepted {
                 Ok((stream, _)) => break stream,
                 Err(error)
                     if matches!(
@@ -194,6 +201,24 @@ impl Received {
     /// image while retaining its original native lease throughout the probe.
     /// This blocking operation belongs on the updater's blocking worker.
     pub fn probe(&self, deadline: Instant) -> std::io::Result<crate::upgrade_target::Response> {
+        self.probe_with(deadline, crate::upgrade_target::Response::validate)
+    }
+    /// New retained E1 checks its own explicit implementation extension after
+    /// this exact physical-image observation, not the old forest schema.
+    pub(crate) fn probe_retained_image(
+        &self,
+        deadline: Instant,
+    ) -> std::io::Result<crate::upgrade_target::Response> {
+        self.probe_with(
+            deadline,
+            crate::upgrade_target::Response::validate_retained_image_identity,
+        )
+    }
+    fn probe_with(
+        &self,
+        deadline: Instant,
+        validate: impl FnOnce(&crate::upgrade_target::Response, &Receipt, u32) -> std::io::Result<()>,
+    ) -> std::io::Result<crate::upgrade_target::Response> {
         self.validate(&self.receipt.executable, self.receipt.build)?;
         if Instant::now() >= deadline {
             return Err(std::io::Error::new(
@@ -217,7 +242,7 @@ impl Received {
             .ok_or_else(|| invalid("the upgrade target has no response pipe"))?;
         let response: crate::upgrade_target::Response =
             serde_json::from_slice(&read_frame(&mut stdout, deadline)?)?;
-        response.validate(&self.receipt, child.process.id())?;
+        validate(&response, &self.receipt, child.process.id())?;
         loop {
             if let Some(status) = child.process.try_wait()? {
                 child.settled = true;
@@ -326,7 +351,11 @@ pub fn receive(
         ));
     }
     let mut stream = stream.into_std()?;
-    let received = receive_frame(stream.try_clone()?, expected, requested_build, deadline)?;
+    let receiver = {
+        let _fd_custody = codex_alab_core::native_fd_custody::receiving()?;
+        stream.try_clone()?
+    };
+    let received = receive_frame(receiver, expected, requested_build, deadline)?;
     stream.write_all(b"K")?;
     Ok(received)
 }
@@ -359,20 +388,23 @@ pub(crate) fn receive_rights<const N: usize>(
     use rustix::net::RecvFlags;
     use rustix::net::ReturnFlags;
     use std::io::IoSliceMut;
-    // XNU can install up to 512 descriptors before reporting truncation. Reserve
-    // all of them so rejected excess rights remain owned and close on refusal.
-    let mut storage = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(512))];
-    let mut ancillary = RecvAncillaryBuffer::new(&mut storage);
-    let mut marker = vec![0; expected_marker.len()];
     #[cfg(target_os = "linux")]
     let flags = RecvFlags::DONTWAIT | RecvFlags::CMSG_CLOEXEC;
     #[cfg(not(target_os = "linux"))]
     let flags = RecvFlags::DONTWAIT;
-    let result = loop {
+    loop {
         if let Some(deadline) = deadline {
             readable(stream, deadline)?;
         }
-        match rustix::net::recvmsg(
+        // Wait outside exclusion. From this nonblocking receive through every
+        // ownership/flag check, raw exec cannot inherit partially adopted rights.
+        let _fd_custody = codex_alab_core::native_fd_custody::receiving()?;
+        // XNU can install up to 512 descriptors before reporting truncation.
+        // Ancillary and descriptor owners drop before the guard on every error.
+        let mut storage = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(512))];
+        let mut ancillary = RecvAncillaryBuffer::new(&mut storage);
+        let mut marker = vec![0; expected_marker.len()];
+        let result = match rustix::net::recvmsg(
             stream,
             &mut [IoSliceMut::new(&mut marker)],
             &mut ancillary,
@@ -381,31 +413,32 @@ pub(crate) fn receive_rights<const N: usize>(
             Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) if deadline.is_some() => {
                 continue;
             }
-            result => break result?,
+            result => result?,
+        };
+        let mut descriptors = Vec::new();
+        let mut unknown = false;
+        for message in ancillary.drain() {
+            match message {
+                RecvAncillaryMessage::ScmRights(rights) => descriptors.extend(rights),
+                _ => unknown = true,
+            }
         }
-    };
-    let mut descriptors = Vec::new();
-    let mut unknown = false;
-    for message in ancillary.drain() {
-        match message {
-            RecvAncillaryMessage::ScmRights(rights) => descriptors.extend(rights),
-            _ => unknown = true,
+        // Secure every installed right before accepting or rejecting its frame.
+        for descriptor in &descriptors {
+            rustix::io::fcntl_setfd(descriptor, rustix::io::FdFlags::CLOEXEC)?;
         }
+        if result.bytes != expected_marker.len()
+            || marker != expected_marker
+            || unknown
+            || result.flags.contains(ReturnFlags::CTRUNC)
+            || descriptors.len() != N
+        {
+            return Err(invalid("invalid executable custody descriptors"));
+        }
+        return descriptors
+            .try_into()
+            .map_err(|_| invalid("invalid executable custody descriptor count"));
     }
-    if result.bytes != expected_marker.len()
-        || marker != expected_marker
-        || unknown
-        || result.flags.contains(ReturnFlags::CTRUNC)
-        || descriptors.len() != N
-    {
-        return Err(invalid("invalid executable custody descriptors"));
-    }
-    for descriptor in &descriptors {
-        rustix::io::fcntl_setfd(descriptor, rustix::io::FdFlags::CLOEXEC)?;
-    }
-    descriptors
-        .try_into()
-        .map_err(|_| invalid("invalid executable custody descriptor count"))
 }
 
 pub(crate) fn read_frame(
@@ -763,6 +796,9 @@ mod tests {
             protocol: crate::upgrade_target::PROTOCOL,
             exec_custody: crate::upgrade_exec_custody::PROTOCOL,
             exec_custody_adopted: false,
+            full_runtime: crate::upgrade_state::VERSION,
+            runtime_readers: vec![crate::upgrade_state::VERSION],
+            extensions: std::collections::BTreeMap::new(),
             pid: 42,
             executable: fixture.receipt.executable.clone(),
             device: fixture.receipt.device,
@@ -770,17 +806,46 @@ mod tests {
             product_version: fixture.receipt.version.clone(),
         };
         response().validate(&fixture.receipt, 42).unwrap();
+        let mut future = response();
+        future.full_runtime += 1;
+        future.runtime_readers.push(future.full_runtime);
+        future.extensions.insert(
+            "future_capability".into(),
+            serde_json::json!({"supported": true}),
+        );
+        future.validate(&fixture.receipt, 42).unwrap();
+        for readers in [
+            Vec::new(),
+            vec![0, crate::upgrade_state::VERSION],
+            vec![crate::upgrade_state::VERSION; 2],
+            vec![crate::upgrade_state::VERSION + 1],
+        ] {
+            let mut incompatible = response();
+            incompatible.runtime_readers = readers;
+            assert!(incompatible.validate(&fixture.receipt, 42).is_err());
+        }
+
         assert!(response().validate(&fixture.receipt, 0).is_err());
-        for field in 0..7 {
+        let mut no_readers = serde_json::to_value(response()).unwrap();
+        no_readers
+            .as_object_mut()
+            .unwrap()
+            .remove("runtime_readers");
+        assert!(serde_json::from_value::<crate::upgrade_target::Response>(no_readers).is_err());
+        let mut legacy = serde_json::to_value(response()).unwrap();
+        legacy.as_object_mut().unwrap().remove("full_runtime");
+        assert!(serde_json::from_value::<crate::upgrade_target::Response>(legacy).is_err());
+        for field in 0..8 {
             let mut wrong = response();
             match field {
-                0 => wrong.protocol = 1,
+                0 => wrong.protocol = 2,
                 1 => wrong.pid = 43,
                 2 => wrong.executable = fixture.receipt.root.join("another-image"),
                 3 => wrong.device += 1,
                 4 => wrong.inode += 1,
                 5 => wrong.product_version = "different".into(),
-                _ => wrong.exec_custody = 0,
+                6 => wrong.exec_custody = 0,
+                _ => wrong.full_runtime = 0,
             }
             assert!(wrong.validate(&fixture.receipt, 42).is_err());
         }
@@ -906,5 +971,41 @@ mod tests {
         .err()
         .expect("unrelated peer rejected");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn actual_admission_receipt_waits_for_exec_and_marks_every_received_right() {
+        let fixture = Fixture::new();
+        let (mut sender, receiver) = UnixStream::pair().unwrap();
+        fixture.send(&mut sender, false, true);
+        let held = codex_alab_core::native_fd_custody::executing().unwrap();
+        let (attempted, attempt) = std::sync::mpsc::channel();
+        let (completed, completion) = std::sync::mpsc::channel();
+        let receipt = std::thread::spawn(move || {
+            attempted.send(()).unwrap();
+            completed
+                .send(receive_rights::<2>(&receiver, b"X", None))
+                .unwrap();
+        });
+        attempt
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(matches!(
+            completion.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(held);
+        let rights = completion
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        for descriptor in &rights {
+            assert!(
+                rustix::io::fcntl_getfd(descriptor)
+                    .unwrap()
+                    .contains(rustix::io::FdFlags::CLOEXEC)
+            );
+        }
+        receipt.join().unwrap();
     }
 }

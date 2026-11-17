@@ -6063,3 +6063,6 @@ mod tests {
         );
     }
 }
+
+#[path = "../../../alab-core/glue/retained_history_builder.rs"]
+mod alab_retained_history; // ALAB(retained-frontier): actual memory/deferred history keeps canonical mode and original reducer.

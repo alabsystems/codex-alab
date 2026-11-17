@@ -154,6 +154,8 @@ pub use policy::persisted_rollout_item;
 pub use policy::persisted_rollout_items;
 pub use policy::should_persist_response_item;
 pub use policy::should_persist_response_item_for_memories;
+pub use recorder::DeferredRolloutHistory; // ALAB(retained-history): typed actual writer snapshot.
+pub use recorder::RetainedLocalRollout; // ALAB(retained-side): actual bounded writer-local canonical cutoff.
 pub use recorder::RolloutRecorder;
 pub use recorder::RolloutRecorderParams;
 pub use recorder::append_rollout_item_to_path;

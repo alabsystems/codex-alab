@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import stat
 import subprocess
 import sys
@@ -20,6 +21,11 @@ try:
     import tomllib
 except ModuleNotFoundError:
     tomllib = None
+
+
+CLI = runpy.run_path(str(Path(__file__).with_name("cli_status.py")))
+successful_exit = CLI["successful_exit"]
+report_failure = CLI["report_failure"]
 
 
 TOML_STRING = re.compile(
@@ -195,7 +201,8 @@ def git_environment():
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith("GIT_")}
     environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
-                       GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1",
+                       GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull,
+                       GIT_NO_LAZY_FETCH="1",
                        GIT_OPTIONAL_LOCKS="0")
     return environment
 
@@ -293,11 +300,14 @@ def main():
     try:
         _, reason = promote(arguments.repo, arguments.root, arguments.prefix, arguments.package,
                             arguments.commit, arguments.aterm)
+        print(f"alab: local update: {reason}", file=sys.stderr)
+        return 0
+    except SystemExit as error:
+        if not successful_exit(error):
+            raise
+        return report_failure("alab: local update: ", error, incomplete=True)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-        print(f"alab: local update: {error}", file=sys.stderr)
-        return 1
-    print(f"alab: local update: {reason}", file=sys.stderr)
-    return 0
+        return report_failure("alab: local update: ", error)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ use codex_http_client::RequestBody;
 use codex_http_client::Response;
 use codex_http_client::StreamResponse;
 use codex_http_client::TransportError;
+use codex_protocol::error::CodexErrorDetails;
 use futures::StreamExt;
 use serde_json::Value;
 use serde_json::json;
@@ -307,14 +308,15 @@ async fn run_case(code: &str, envelope: Envelope, tail: Tail, expect_audio: bool
         assert_eq!(*per_recording, code != "audio_too_large");
         assert_eq!(Instant::now(), started, "no virtual idle wait");
         let mapped = codex_api::map_api_error(error);
-        let expected = codex_api::map_api_error(ApiError::InvalidAudioInput {
-            message: PRIVATE.into(),
-            per_recording: code != "audio_too_large",
-        });
-        assert_eq!(
-            mapped.to_codex_protocol_error(),
-            expected.to_codex_protocol_error()
-        );
+        let CodexErrorDetails::InvalidAudioInput {
+            message,
+            per_recording,
+        } = mapped.details()
+        else {
+            panic!("expected mapped typed audio rejection");
+        };
+        assert_eq!(message, PRIVATE);
+        assert_eq!(*per_recording, code != "audio_too_large");
         assert_eq!(mapped.to_string(), PRIVATE);
         assert!(
             mapped.retry_delay(1).is_none(),

@@ -491,3 +491,7 @@ mod tests {
         assert!(has_ctrl_or_alt(KeyModifiers::CONTROL | KeyModifiers::ALT));
     }
 }
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_bottom_keys.rs"]
+pub(crate) mod alab_retained_keys; // ALAB(retained-ui): preserve exact native pane state with enclosing resource bindings.

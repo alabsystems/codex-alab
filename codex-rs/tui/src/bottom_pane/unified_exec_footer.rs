@@ -115,3 +115,7 @@ mod tests {
         assert_snapshot!("render_many_sessions", format!("{buf:?}"));
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_bottom_exec_footer.rs"]
+pub(crate) mod alab_retained_exec; // ALAB(retained-ui): preserve exact native pane state with enclosing resource bindings.

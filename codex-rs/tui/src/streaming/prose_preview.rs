@@ -288,3 +288,7 @@ impl LinkPreview {
         }
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_stream_preview.rs"]
+pub(crate) mod alab_retained_preview; // ALAB(retained-ui): preserve incomplete link and directive scanner.

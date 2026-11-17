@@ -380,6 +380,8 @@ impl App {
                 Some(started.thread.id.as_str())
             }
             ServerNotification::McpServerStatusUpdated(status) => status.thread_id.as_deref(),
+            #[cfg(unix)] // ALAB(retained-ui): preserve actual matching tail before original side registration, then route normally.
+            ServerNotification::AlabRetainedFrontier(tail) if super::alab_retained_passive::matches_deferred_tail(self, tail) => Some(tail.thread_id.as_str()),
             _ => None,
         };
         id.and_then(|id| ThreadId::from_string(id).ok())

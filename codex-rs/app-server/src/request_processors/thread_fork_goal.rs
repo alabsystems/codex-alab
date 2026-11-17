@@ -24,5 +24,10 @@ pub(super) async fn inherit_thread_goal_snapshot(
         .thread_goals()
         .replace_thread_goal_snapshot(&goal)
         .await?;
+    state_db.thread_goals().alab_durable_goal_barrier().await?; // ALAB(goal-recovery): the fork cannot restore or acknowledge an inherited goal before its copied row is power-loss durable.
     Ok(true)
 }
+
+#[cfg(test)]
+#[path = "../../../alab-core/glue/thread_fork_goal_tests.rs"]
+mod alab_tests; // ALAB(goal-recovery): exercise fork-copy durability through the real helper without expanding this upstream-owned file.

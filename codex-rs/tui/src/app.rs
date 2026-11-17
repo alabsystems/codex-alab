@@ -192,12 +192,18 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::mpsc::unbounded_channel;
+#[cfg(any(not(unix), test))] // ALAB(retained-ui): Unix production uses the same-pair weak census factory; native tests retain their original helper.
+#[cfg(not(unix))] use tokio::sync::mpsc::unbounded_channel; // ALAB(retained-ui): Unix App pairs use the owned native census factory; other targets keep their constructor.
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 use uuid::Uuid;
 mod account_status;
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_ui_frontier_app.rs"]
+pub(crate) mod alab_retained_ui; // ALAB(retained-frontier): original replay FIFO and actual App/Tui owner.
+#[path = "../../alab-tui/glue/owned_local_construction_app.rs"] mod alab_construction_app; // ALAB(source-selection): preserve the original converted result and sole replay at App installation.
+#[path = "../../alab-tui/glue/owned_local_attachment.rs"] mod alab_attachment; // ALAB(source-selection): retain the actual attachment policy, metadata and replay through its original consumer.
 mod agent_message_consolidation;
 mod agent_navigation;
 mod agent_picker;
@@ -238,6 +244,9 @@ mod experimental_features;
 mod feedback_upload;
 mod file_change_approvals;
 mod history_pagination;
+#[path = "../../alab-tui/glue/owned_local_side_history_provenance.rs"]
+pub(crate) mod alab_side_history_data; // ALAB(retained-ui): plain UI provenance is portable, never Native authority.
+pub(crate) use alab_side_history_data::{SharedProvenance as AlabSideProvenance, CellSource as AlabSideCellSource, new_provenance as alab_new_side_provenance}; // ALAB(retained-ui): original producer identities travel with actual cells.
 mod history_ui;
 mod input;
 mod link_hover;
@@ -279,6 +288,9 @@ mod session_lifecycle;
 mod session_picker;
 mod side;
 mod side_companion;
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_ui_frontier_passive.rs"]
+pub(crate) mod alab_retained_passive; // ALAB(retained-ui): original passive side store/view/input owners observe their actual frontier.
 mod side_focus;
 mod side_pane;
 mod sidebar;
@@ -552,6 +564,11 @@ struct InitialHistoryReplayBuffer {
 }
 
 pub(crate) struct App {
+    #[cfg(unix)] alab_external_editor: alab_external_editor::Book, // ALAB(retained-editor): actual original job owns Child/document/parser/modes before waits.
+    #[cfg(unix)]
+    _alab_configured: Option<Arc<crate::startup_draft::alab_configured::Pending>>, // ALAB(retained-ui): keep actual NoPrimary completion and undispatched original submissions.
+    #[cfg(unix)]
+    _alab_startup_editor: Option<crate::startup_draft::alab_retained_transfer::recovery::NativeRecovery>, // ALAB(retained-ui): real conflicting startup editor stays owned after original input-reader retirement.
     provider_writes: HashMap<crate::backend_id::BackendId, crate::model_catalog::ProviderWrite>,
     feature_write_lock: Arc<tokio::sync::Mutex<()>>,
     config_notification_test_generation: u64,
@@ -676,6 +693,8 @@ pub(crate) struct App {
     sidebars: HashMap<Option<ThreadId>, sidebar::SidebarPane>,
     /// A parked parent view survives child cleanup until its own replay finishes.
     side_companions: HashMap<ThreadId, SideCompanion>,
+    #[cfg(unix)]
+    alab_side_history_projection: history_pagination::alab_retained_side_history::ProjectionCapture, // ALAB(retained-ui): capture actual original historical projector output.
     zoomed_thread: Option<ThreadId>,
     /// Exact sidebar allocation at the terminal width where the width preset was applied.
     exact_sidebar_width: Option<(u16, u16)>,
@@ -865,6 +884,7 @@ impl App {
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
+        #[cfg(unix)] let retained_draw_before = tui.alab_draw_checkpoint(); // ALAB(retained-frontier): actual same-Tui successful draw, including overlays.
         self.transcript_view
             .sync_patch_approval(self.chat_widget.current_patch_approval());
         // A chooser action must never decide a modal that has not been painted yet.
@@ -1395,6 +1415,7 @@ impl App {
                 });
             }
         }
+        #[cfg(unix)] alab_retained_ui::after_actual_draw(self, tui, app_server, &retained_draw_before).await?; // ALAB(retained-frontier): replay End, real draw and original input owner precede UI ACK.
         // Both transcript owners must consume completions before automatic work advances.
         if idle_draw {
             tui.clipboard.advance(tui.frame_requester());
@@ -1474,7 +1495,7 @@ impl App {
                 }
             })?;
             Ok(rendered_area)
-        })
+        }).inspect(|_| alab_session::runtime_editor_drew(self)) // ALAB(upgrade): native editor layout precedes activation and input replay.
     }
 
     fn with_chat_widget_frame<T>(
@@ -1520,3 +1541,59 @@ mod alab_interface_mode; // ALAB(interface): reload effective preferences after 
 
 #[cfg(test)]
 #[path = "../../alab-tui/glue/goal_runtime_status_app_fixture.rs"] pub(crate) mod alab_goal_runtime_fixture; // ALAB(storage-status): native App/backend fixture for isolated status regressions.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_app_views.rs"]
+mod alab_retained_views; // ALAB(retained-ui): actual App registry and original view install share one UI boundary.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_constructor_app.rs"]
+mod alab_constructor; // ALAB(retained-ui): capture actual NoPrimary initial-message holder without recreating CLI input.
+
+#[cfg(unix)]
+pub(crate) use app_server_requests::alab_retained_replies::callbacks::observer::Update as RetainedCallbackUpdate; // ALAB(retained-ui): private actual Source result event, never wire-constructed.
+
+#[cfg(unix)]
+pub(crate) use app_server_requests::alab_retained_replies::original_input as retained_original_input; // ALAB(retained-ui): opaque actual queue/reply owner facade.
+
+#[cfg(unix)]
+pub(crate) use app_server_requests::alab_retained_replies::Replies as RetainedReplyOwner; // ALAB(retained-ui): SAME configured pre-App owner moves into actual App.
+
+#[cfg(unix)]
+pub(crate) use app_server_requests::alab_retained_replies::callbacks::{CallbackUi as RetainedCallbackOwner, Limits as RetainedCallbackLimits, Transfer as RetainedCallbackTransfer}; // ALAB(retained-ui): actual configured startup owner facade without synthetic App.
+
+#[cfg(unix)]
+pub(crate) use app_server_requests::alab_retained_replies::callbacks::StartupCallbacks as RetainedStartupCallbacks; // ALAB(retained-ui): actual pre-App configured callback custody, not a default App.
+
+#[cfg(unix)]
+#[path="../../alab-tui/glue/owned_local_side_delivery.rs"]
+mod alab_side_delivery; // ALAB(retained-side): actual original store notification custody.
+#[cfg(unix)]
+#[path="../../alab-tui/glue/owned_local_side_command.rs"]
+mod alab_side_command; // ALAB(retained-side): same original passive command cell/output owner.
+
+#[cfg(unix)]
+pub(crate) use app_server_requests::alab_retained_replies::callbacks::prepare_delayed_clock as prepare_retained_delayed_clock; // ALAB(retained-ui): original constructor primes mandatory actual-pane clock DATA before callback replay.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_startup_recovery_app.rs"]
+mod alab_startup_recovery; // ALAB(retained-ui): conflicting original native editor is part of the actual App graph.
+
+#[cfg(unix)]
+pub(crate) use agent_status_feed::alab_retained_status::Data as AlabRetainedAgentStatusData; // ALAB(retained-ui): expose owned codec DATA while native App types remain private.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_app_copy_graph.rs"]
+mod alab_copy_graph; // ALAB(retained-ui): actual App receiver census binds retired local copy-sender generations.
+
+#[cfg(unix)]
+#[path="../../alab-tui/glue/retained_clipboard_app.rs"]
+pub(crate) mod alab_retained_clipboard; // ALAB(retained-ui): actual original C1 clipboard Draw/callback operation owner.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_app_transcript.rs"]
+pub(in crate::app) mod alab_retained_transcript_state; // ALAB(retained-ui): compose actual App transcript fields through the shared scene graphs.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_original_editor_app.rs"]
+pub(crate) mod alab_external_editor; // ALAB(retained-editor): local original actor; no Native authority from DATA.

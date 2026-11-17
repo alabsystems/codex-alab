@@ -92,8 +92,10 @@ impl Session {
             .map(ResponseItemEnvelope::new)
             .map(|item| self.annotate_client_response_item(item))
             .collect::<Vec<_>>();
+        let items = crate::codex_thread::alab_retained_side::annotate(self, items); // ALAB(retained-side): retain actual original injection occurrence across active-turn enqueue.
         let mut active = self.active_turn.lock().await;
         if let Some(active_turn) = active.as_mut().filter(|turn| turn.finishing.is_none()) {
+            crate::codex_thread::alab_retained_side::routed(self, &items, true); // ALAB(retained-side): actual active queue route, not a caller status flag.
             self.input_queue
                 .extend_pending_input_and_notify_for_turn_state(
                     active_turn.turn_state.as_ref(),
@@ -110,6 +112,7 @@ impl Session {
         if let Some(finishing) = finishing {
             finishing.cancelled().await;
         }
+        crate::codex_thread::alab_retained_side::routed(self, &items, false); // ALAB(retained-side): actual direct canonical-record route after finishing ownership.
         self.record_annotated_conversation_items(turn_context, turn_context.model_info(), items)
             .await;
     }

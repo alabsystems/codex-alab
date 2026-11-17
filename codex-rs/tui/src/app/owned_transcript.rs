@@ -312,6 +312,8 @@ impl App {
         }
         prepared.floating_shortcuts = hud.is_some();
         let mut painted = PaintedConversation::default();
+        #[cfg(unix)]
+        let mut retained_passive_paint = None; // ALAB(retained-ui): tentative ONLY until the whole original terminal draw succeeds.
         tui.draw_with_shortcut_hud(screen_size.height, hud, |frame| {
             if let Some(backdrop) = backdrop {
                 let viewport = frame.area();
@@ -340,6 +342,8 @@ impl App {
                             self.local_settings.tui.collapse_turn_details,
                             &frames,
                         );
+                        #[cfg(unix)]
+                        { retained_passive_paint = super::alab_retained_passive::painted(companion, panes); } // ALAB(retained-ui): actual original passive paint/resource, never focus or a Ready flag.
                     }
                 }
                 Some(sidebar::SidebarLayout::Chooser { sidebar, focus, .. }) => {
@@ -474,6 +478,8 @@ impl App {
             }
             self.paint_centered_dialog(frame);
         })?;
+        #[cfg(unix)]
+        super::alab_retained_passive::presented(self, tui, retained_passive_paint); // ALAB(retained-ui): promote ONLY after successful original synchronized terminal presentation.
         self.finish_conversation(tui, painted)
     }
 

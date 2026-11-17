@@ -48,13 +48,69 @@
 # This selects the gate's cache; it does not change the compiler, proof requirements or
 # explicit target ownership checks. Do not delete an existing cache to make it admissible.
 #
-# Exit status: 0 holds; 2 step 2 failed (alab/sync.sh then builds pristine upstream to tell
-# an ALab fault from a toolchain fault); 1 any other step failed.
+# Exit status: 0 holds; 2 the candidate's certified binary failed at runtime while
+# certified pristine upstream passed (an ALab fault); 6 pristine also certified but its
+# exact binary failed at runtime (a Trust lane fault); 75 or a signal is a resource/
+# interruption stop; 1 any certification, setup or other unresolved step failed.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=alab/lib.sh
 . "${repo_root}/alab/lib.sh"
+
+# Controller records use exact bounded bytes on fresh anonymous regular inodes.
+check_control_pair() {
+  "${ALAB_PYTHON:-/usr/bin/python3}" -I -B -c '
+import fcntl, os, stat, sys
+reader, writer = map(int, sys.argv[1:])
+rstate, wstate = os.fstat(reader), os.fstat(writer)
+same = (rstate.st_dev, rstate.st_ino) == (wstate.st_dev, wstate.st_ino)
+regular = stat.S_ISREG(rstate.st_mode) and stat.S_ISREG(wstate.st_mode)
+fresh = rstate.st_nlink == 0 and wstate.st_nlink == 0 and rstate.st_size == wstate.st_size == 0
+offsets = os.lseek(reader, 0, os.SEEK_CUR) == os.lseek(writer, 0, os.SEEK_CUR) == 0
+rmode = fcntl.fcntl(reader, fcntl.F_GETFL) & os.O_ACCMODE
+wmode = fcntl.fcntl(writer, fcntl.F_GETFL) & os.O_ACCMODE
+raise SystemExit(not (same and regular and fresh and offsets
+    and rmode in (os.O_RDONLY, os.O_RDWR) and wmode in (os.O_WRONLY, os.O_RDWR)))
+' "$1" "$2"
+}
+
+check_control_hex() {
+  "${ALAB_PYTHON:-/usr/bin/python3}" -I -B -c '
+import os, sys
+descriptor = int(sys.argv[1])
+chunks = []
+remaining = 65
+while remaining:
+    chunk = os.read(descriptor, remaining)
+    if not chunk:
+        break
+    chunks.append(chunk)
+    remaining -= len(chunk)
+data = b"".join(chunks)
+if len(data) > 64:
+    raise SystemExit(1)
+print(data.hex())
+' "$1"
+}
+
+check_completion_fd() {
+  local receipt_fd="$1"
+  shift
+  "${ALAB_PYTHON:-/usr/bin/python3}" -I -B -c '
+import json, os, sys
+descriptor = int(sys.argv[1])
+status = int(sys.argv[2])
+argv = sys.argv[3:]
+with os.fdopen(os.dup(descriptor), "rb") as receipt:
+    actual = receipt.read(65537)
+    oversized = len(actual) > 65536 or receipt.read(1) != b""
+expected = json.dumps({"schema": 1, "kind": "guardian-command-completion",
+    "completed": True, "argv": argv, "normalized_exit_status": status,
+    "cleanup_scope": "owned command process group"}, ensure_ascii=True).encode() + b"\n"
+raise SystemExit(oversized or actual != expected)
+' "${receipt_fd}" "$@"
+}
 
 # The sourceable body remains useful for fixture tests. The executable entry
 # always obtains native authority before this body can start a compiler.
@@ -157,6 +213,105 @@ cd "${repo_root}/codex-rs"
 # Disk resource stops (75) and signals decide nothing about either source tree.
 stopped() { [[ "$1" -ne 75 && "$1" -le 128 ]] || exit "$1"; }
 passed() { stopped "$1"; exit "$2"; }
+# Private source verdicts cross the containment boundary only through the
+# controller's anonymous descriptor. Compiler/build/runtime children inherit
+# neither end; macOS exposes no cross-process descriptor reopening primitive.
+# (Linux's documented uncontained mode is not a security boundary.) A launch or
+# setup failure that happens to return 80 or 81 writes no record.
+check_source_verdict() {
+  local verdict="$1" status="$2" record_fd="${ALAB_CHECK_VERDICT_FD:-}"
+  case "${verdict}:${status}" in alab-fault:80 | lane-fault:81) ;; *) exit 1 ;; esac
+  if [[ -n "${record_fd}" ]]; then
+    [[ "${record_fd}" == 9 ]] || exit 1
+    printf '%s %s\n' "${verdict}" "${status}" >&9 || exit 1
+  else
+    [[ "${status}" -eq 80 ]] && exit 2
+    exit 6
+  fi
+  exit "${status}"
+}
+# certified_cli <tree> <target> <report> <source> <candidate|pristine>: certify
+# codex-cli and run the exact binary that certification produced. Both callers
+# remain under check_selected's one native selection and verified containment.
+# Certification failure statuses are phase-ambiguous in Trust/Targo and never
+# attribute a source tree. Only an authenticated exact-binary runtime failure
+# after certification success may start the pristine comparison.
+certified_cli() {
+  local tree="$1" target="$2" report="$3" source="$4" mode="$5" rc=0
+  local record read_fd write_fd
+  local pristine_args=()
+  certified_cli_phase=setup
+  [[ -d "${tree}/codex-rs" && "${target}" == /* && "${report}" == /* ]] || return 1
+  case "${mode}" in
+    candidate) pristine_args=(); read_fd=10; write_fd=11 ;;
+    pristine) pristine_args=(--pristine-upstream); read_fd=12; write_fd=13 ;;
+    *) return 1 ;;
+  esac
+  (cd "${tree}/codex-rs" && export CARGO_TARGET_DIR="${target}" && \
+    alab_build_command "${repo_root}/alab/certified-build.sh" "${report}" "${source}" \
+      ${pristine_args[@]+"${pristine_args[@]}"} --locked -p codex-cli --bin codex) || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    [[ "${rc}" -ne 75 && "${rc}" -le 128 ]] || certified_cli_phase=stopped
+    return "${rc}"
+  fi
+
+  if [[ "${ALAB_CHECK_VERDICT_FD:-}" == 9 ]]; then
+    [[ -e "/dev/fd/${read_fd}" && -e "/dev/fd/${write_fd}" \
+      && "/dev/fd/${read_fd}" -ef "/dev/fd/${write_fd}" ]] || return 1
+    check_control_pair "${read_fd}" "${write_fd}" || return 1
+  else
+    [[ ! -e "/dev/fd/${read_fd}" && ! -e "/dev/fd/${write_fd}" ]] || return 1
+    record="$(mktemp "${target}/alab-runtime-result.XXXXXX")" || return 1
+    if [[ "${mode}" == candidate ]]; then
+      exec 10<"${record}" || { rm -f "${record}"; return 1; }
+      exec 11>"${record}" || { exec 10>&-; rm -f "${record}"; return 1; }
+    else
+      exec 12<"${record}" || { rm -f "${record}"; return 1; }
+      exec 13>"${record}" || { exec 12>&-; rm -f "${record}"; return 1; }
+    fi
+    [[ "/dev/fd/${read_fd}" -ef "/dev/fd/${write_fd}" ]] \
+      || { [[ "${mode}" == candidate ]] && { exec 11>&-; exec 10>&-; } \
+        || { exec 13>&-; exec 12>&-; }; rm -f "${record}"; return 1; }
+    rm -f "${record}" \
+      || { [[ "${mode}" == candidate ]] && { exec 11>&-; exec 10>&-; } \
+        || { exec 13>&-; exec 12>&-; }; return 1; }
+    check_control_pair "${read_fd}" "${write_fd}" \
+      || { [[ "${mode}" == candidate ]] && { exec 11>&-; exec 10>&-; } \
+        || { exec 13>&-; exec 12>&-; }; return 1; }
+  fi
+
+  unset ALAB_CHECK_RESULT_FD
+  if [[ "${mode}" == candidate ]]; then
+    ALAB_CHECK_RESULT_FD=11
+    (cd "${tree}/codex-rs" && export CARGO_TARGET_DIR="${target}" && \
+      alab_build_command --result-fd 11 "${target}/debug/codex" --version 10>&-) || rc=$?
+    unset ALAB_CHECK_RESULT_FD
+    exec 11>&-
+    if [[ "${rc}" -eq 75 || "${rc}" -gt 128 ]]; then
+      exec 10>&-
+      certified_cli_phase=stopped
+      return "${rc}"
+    fi
+    check_completion_fd 10 "${rc}" "${target}/debug/codex" --version || { exec 10>&-; return 1; }
+    exec 10>&-
+  else
+    ALAB_CHECK_RESULT_FD=13
+    (cd "${tree}/codex-rs" && export CARGO_TARGET_DIR="${target}" && \
+      alab_build_command --result-fd 13 "${target}/debug/codex" --version 12>&-) || rc=$?
+    unset ALAB_CHECK_RESULT_FD
+    exec 13>&-
+    if [[ "${rc}" -eq 75 || "${rc}" -gt 128 ]]; then
+      exec 12>&-
+      certified_cli_phase=stopped
+      return "${rc}"
+    fi
+    check_completion_fd 12 "${rc}" "${target}/debug/codex" --version || { exec 12>&-; return 1; }
+    exec 12>&-
+  fi
+  certified_cli_phase=runtime
+  [[ "${rc}" -eq 0 ]] && certified_cli_phase=passed
+  return "${rc}"
+}
 # Resolve Cargo's own config/env precedence before the first compiler starts.
 # Every phase must present the same explicit target to the native owner gate:
 # making an implicit target explicit only for unit helpers fails after earlier
@@ -357,12 +512,51 @@ ${upstream_base:0:9} in ${pristine}" >&2
   echo "alab/check.sh: tippy finds nothing in ALab's code ($(verdict .set_aside) diagnostics in upstream's set aside)" >&2
 fi
 
-proof_root="$(mktemp -d "${own_target}/alab-certified.XXXXXX")" || exit 1
-alab_build_command "${repo_root}/alab/certified-build.sh" "${proof_root}/report" \
-  "$(git rev-parse HEAD)" --locked -p codex-cli --bin codex || passed $? 2
-alab_build_command "${own_target}/debug/codex" --version || passed $? 2
+candidate_source="$(git rev-parse HEAD)" || alab_die "cannot resolve the candidate source before certification"
+pristine_target="$(alab_real "${pristine}/codex-rs/target")" \
+  || alab_die "cannot resolve the prepared pristine target before certification"
+# Allocate both fresh destinations before either proof attempt. Failure here is
+# setup, not evidence about ALab or Trust.
+proof_root="$(mktemp -d "${own_target}/alab-certified.XXXXXX")" \
+  || alab_die "cannot allocate the candidate proof destination; no certification started"
+pristine_proof_root="$(mktemp -d "${pristine_target}/alab-certified.XXXXXX")" \
+  || { rmdir "${proof_root}" 2>/dev/null || true; \
+    alab_die "cannot allocate the pristine proof destination; no certification started"; }
+candidate_rc=0
+certified_cli "${repo_root}" "${own_target}" "${proof_root}/report" \
+  "${candidate_source}" candidate || candidate_rc=$?
+if [[ "${candidate_rc}" -ne 0 ]]; then
+  if [[ "${certified_cli_phase}" == stopped ]]; then
+    rmdir "${pristine_proof_root}" 2>/dev/null || true
+    exit "${candidate_rc}"
+  fi
+  if [[ "${certified_cli_phase}" == setup ]]; then
+    rmdir "${pristine_proof_root}" 2>/dev/null || true
+    rmdir "${proof_root}" 2>/dev/null || true
+    alab_die "candidate certification/runtime sequence did not complete with authenticated success (exit ${candidate_rc})"
+  fi
+  alab_say "candidate ${certified_cli_phase} failed; certifying pristine upstream ${upstream_base:0:9} with the same selected compiler and proof policy"
+  pristine_rc=0
+  certified_cli "${pristine}" "${pristine_target}" "${pristine_proof_root}/report" \
+    "${upstream_base}" pristine || pristine_rc=$?
+  if [[ "${pristine_rc}" -ne 0 ]]; then
+    [[ "${certified_cli_phase}" != stopped ]] || exit "${pristine_rc}"
+    if [[ "${certified_cli_phase}" == setup ]]; then
+      rmdir "${pristine_proof_root}" 2>/dev/null || true
+      alab_die "pristine certification/runtime sequence did not complete with authenticated success (exit ${pristine_rc})"
+    fi
+    alab_say "certified pristine upstream ${upstream_base:0:9} ${certified_cli_phase} failed: a Trust lane fault"
+    # Private to check_selected: only its outside-containment verdict record
+    # becomes the public check.sh/sync lane status 6.
+    check_source_verdict lane-fault 81
+  fi
+  alab_say "certified pristine upstream ${upstream_base:0:9} builds and its exact binary runs: ALab's layer broke it"
+  # Private to check_selected; see the exit 81 comment above.
+  check_source_verdict alab-fault 80
+fi
+rmdir "${pristine_proof_root}" 2>/dev/null || true
 alab_build_command "${ALAB_PYTHON}" -I -B -S "${repo_root}/alab/check_runtime.py" \
-  --codex "${own_target}/debug/codex" --source "$(git rev-parse HEAD)" \
+  --codex "${own_target}/debug/codex" --source "${candidate_source}" \
   --scratch "${scratch}/reset-runtime" --output "${proof_root}/runtime" || passed $? 1
 if [[ ${#alab_packages[@]} -gt 0 ]]; then
   all_alab_tests "${repo_root}" "${own_target}" "${scratch}/alab-test-helpers" "${alab_packages[@]}" || passed $? 1
@@ -433,8 +627,22 @@ done < <(jq -r '.passed[] | "\(.package)/\(.target): \(.test)"' "${unit_root}/un
 }
 
 check_selected() {
+  local selected_status=0 inner_hex="" common control outer_control=0
+  local verdict_record candidate_record pristine_record
+  [[ $# -eq 0 ]] || return 1
+  common="$(git -C "${repo_root}" rev-parse --path-format=absolute --git-common-dir)" || return $?
+  common="$(alab_real "${common}")" || return $?
+  case "${ALAB_CHECK_OUTCOME_FD:-}" in
+    19)
+      [[ -e /dev/fd/18 && -e /dev/fd/19 && /dev/fd/18 -ef /dev/fd/19 ]] || return 1
+      check_control_pair 18 19 || return 1
+      outer_control=1
+      ;;
+    "") [[ ! -e /dev/fd/18 && ! -e /dev/fd/19 ]] || return 1 ;;
+    *) return 1 ;;
+  esac
   alab_project_selected || return $?
-  local upstream_base pristine build_target pristine_target common feature_reads=()
+  local upstream_base pristine build_target pristine_target feature_reads=()
   cd "${repo_root}"
   upstream_base="$(git merge-base HEAD upstream/main)" || return $?
   pristine="$(alab_pristine "${repo_root}" "${upstream_base}")" || return $?
@@ -452,9 +660,75 @@ check_selected() {
   if [[ -d "${ALAB_FEATURE_BUNDLE}" ]]; then
     feature_reads=(--read "${ALAB_FEATURE_BUNDLE}")
   fi
+  # Three anonymous controller inodes live outside every source-writable root:
+  # the private lane verdict, candidate runtime completion, and pristine
+  # runtime completion. Their fixed descriptors must not replace a caller's.
+  for control in 8 9 10 11 12 13; do
+    [[ ! -e "/dev/fd/${control}" ]] || return 1
+  done
+  verdict_record="$(mktemp "${common}/alab-check-control.XXXXXX")" || return $?
+  exec 8<"${verdict_record}" \
+    || { rm -f "${verdict_record}"; return 1; }
+  exec 9>"${verdict_record}" \
+    || { exec 8>&-; rm -f "${verdict_record}"; return 1; }
+  [[ /dev/fd/8 -ef /dev/fd/9 ]] \
+    || { exec 9>&-; exec 8>&-; rm -f "${verdict_record}"; return 1; }
+  rm -f "${verdict_record}" \
+    || { exec 9>&-; exec 8>&-; return 1; }
+  check_control_pair 8 9 || { exec 9>&-; exec 8>&-; return 1; }
+  candidate_record="$(mktemp "${common}/alab-check-control.XXXXXX")" \
+    || { exec 9>&-; exec 8>&-; return 1; }
+  exec 10<"${candidate_record}" \
+    || { rm -f "${candidate_record}"; exec 9>&-; exec 8>&-; return 1; }
+  exec 11>"${candidate_record}" \
+    || { exec 10>&-; rm -f "${candidate_record}"; exec 9>&-; exec 8>&-; return 1; }
+  [[ /dev/fd/10 -ef /dev/fd/11 ]] \
+    || { exec 11>&-; exec 10>&-; rm -f "${candidate_record}"; exec 9>&-; exec 8>&-; return 1; }
+  rm -f "${candidate_record}" \
+    || { exec 11>&-; exec 10>&-; exec 9>&-; exec 8>&-; return 1; }
+  check_control_pair 10 11 \
+    || { exec 11>&-; exec 10>&-; exec 9>&-; exec 8>&-; return 1; }
+  pristine_record="$(mktemp "${common}/alab-check-control.XXXXXX")" \
+    || { exec 11>&-; exec 10>&-; exec 9>&-; exec 8>&-; return 1; }
+  exec 12<"${pristine_record}" \
+    || { rm -f "${pristine_record}"; exec 11>&-; exec 10>&-; exec 9>&-; exec 8>&-; return 1; }
+  exec 13>"${pristine_record}" \
+    || { exec 12>&-; rm -f "${pristine_record}"; exec 11>&-; exec 10>&-; exec 9>&-; exec 8>&-; return 1; }
+  [[ /dev/fd/12 -ef /dev/fd/13 ]] \
+    || { exec 13>&-; exec 12>&-; rm -f "${pristine_record}"; exec 11>&-; exec 10>&-; exec 9>&-; exec 8>&-; return 1; }
+  rm -f "${pristine_record}" \
+    || { exec 13>&-; exec 12>&-; exec 11>&-; exec 10>&-; exec 9>&-; exec 8>&-; return 1; }
+  check_control_pair 12 13 \
+    || { exec 13>&-; exec 12>&-; exec 11>&-; exec 10>&-; exec 9>&-; exec 8>&-; return 1; }
   alab_verified_contained --pristine "${pristine}" --read "${ATPKG_PROJECT_FRONT}" \
     --read "${ATPKG_PROJECT_EXECUTION}" ${feature_reads[@]+"${feature_reads[@]}"} "${build_target}" "${pristine_target}" -- \
-    /bin/bash -c '. "$1"; shift; check_main "$@"' alab-check "${repo_root}/alab/check.sh" || return $?
+    /bin/bash -c '. "$1"; shift; unset ALAB_CHECK_OUTCOME_FD ALAB_CHECK_VERDICT_FD ALAB_CHECK_RESULT_FD; \
+      ALAB_CHECK_VERDICT_FD=9; check_main "$@"' \
+    alab-check "${repo_root}/alab/check.sh" 18>&- 19>&- || selected_status=$?
+  exec 13>&-; exec 12>&-; exec 11>&-; exec 10>&-; exec 9>&-
+  inner_hex="$(check_control_hex 8)" || inner_hex=invalid
+  exec 8>&-
+  [[ "${selected_status}" -ne 0 || -z "${inner_hex}" ]] || return 1
+  if [[ "${selected_status}" -ne 0 ]]; then
+    # Only the selected, contained gate can author these verdicts. Selector,
+    # target, containment and other setup failures leave the fresh file empty,
+    # so their coincidental numeric status cannot become a source verdict.
+    if [[ "${outer_control}" -eq 1 && "${selected_status}" -eq 80 \
+      && "${inner_hex}" == 616c61622d6661756c742038300a ]]; then
+        printf 'alab-fault 82\n' >&19 || return 1
+        return 82
+    fi
+    if [[ "${outer_control}" -eq 1 && "${selected_status}" -eq 81 \
+      && "${inner_hex}" == 6c616e652d6661756c742038310a ]]; then
+        printf 'lane-fault 83\n' >&19 || return 1
+        return 83
+    fi
+    return "${selected_status}"
+  fi
+  if [[ "${outer_control}" -eq 1 ]]; then
+    exec 19>&-
+    exec 18>&-
+  fi
   if [[ "$(uname -s)" == Darwin && -f "${repo_root}/codex-rs/alab-release/Cargo.toml" ]]; then
     local kernel_scratch kernel_status=0
     mkdir -p /tmp/.ubd || return $?
@@ -474,10 +748,39 @@ check_entry() {
     check_main "$@"
     return
   fi
+  local common control status=0 verdict_hex=""
   ALAB_PYTHON="$(alab_python_311)" || return $?
   export ALAB_PYTHON
+  common="$(git -C "${repo_root}" rev-parse --path-format=absolute --git-common-dir)" || return $?
+  [[ ! -e /dev/fd/18 && ! -e /dev/fd/19 ]] || return 1
+  control="$(mktemp "${common}/alab-check-control.XXXXXX")" || return $?
+  exec 18<"${control}" || { rm -f "${control}"; return 1; }
+  exec 19>"${control}" || { exec 18>&-; rm -f "${control}"; return 1; }
+  [[ /dev/fd/18 -ef /dev/fd/19 ]] \
+    || { exec 19>&-; exec 18>&-; rm -f "${control}"; return 1; }
+  rm -f "${control}" || { exec 19>&-; exec 18>&-; return 1; }
+  check_control_pair 18 19 || { exec 19>&-; exec 18>&-; return 1; }
   alab_project_run "${repo_root}" "" /bin/bash -c \
-    '. "$1"; shift; check_selected "$@"' alab-check "${repo_root}/alab/check.sh"
+    '. "$1"; shift; unset ALAB_CHECK_OUTCOME_FD; ALAB_CHECK_OUTCOME_FD=19; check_selected "$@"' \
+    alab-check "${repo_root}/alab/check.sh" \
+    || status=$?
+  exec 19>&-
+  verdict_hex="$(check_control_hex 18)" || verdict_hex=invalid
+  exec 18>&-
+  # A stop after the selected controller wrote its outcome is still no verdict.
+  [[ "${status}" -eq 75 || "${status}" -gt 128 ]] && return "${status}"
+  case "${verdict_hex}" in
+    616c61622d6661756c742038320a) [[ "${status}" -eq 82 ]] || return 1; return 2 ;;
+    6c616e652d6661756c742038330a) [[ "${status}" -eq 83 ]] || return 1; return 6 ;;
+    "") ;;
+    *) return 1 ;;
+  esac
+  [[ "${status}" -eq 0 ]] && return 0
+  # Ordinary selector/containment/precompiler statuses are unresolved, even if
+  # one happens to equal a public source-verdict status.
+  [[ "${status}" -eq 2 || "${status}" -eq 6 \
+    || ( "${status}" -ge 80 && "${status}" -le 83 ) ]] && return 1
+  return "${status}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

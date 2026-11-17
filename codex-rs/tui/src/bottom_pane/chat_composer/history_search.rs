@@ -1235,3 +1235,7 @@ mod tests {
         assert_eq!(composer.footer_mode(), FooterMode::HistorySearch);
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../../alab-tui/glue/retained_composer_search.rs"]
+mod alab_retained_search; // ALAB(retained-ui): preserve actual active query and cancellation draft.

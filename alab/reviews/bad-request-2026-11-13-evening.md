@@ -92,3 +92,7 @@ admission supports the application's actual macro dependency graph. The
 [prerequisite audit](targo-macro-admission-2026-11-14.md) identifies the refusing
 component and the limits of this historical observation. An unverified
 application build or compiler override cannot substitute for that prerequisite.
+
+The immediate HTTPS switch decided here was replaced on 2026-11-16, when a later
+rejection was shown to have arrived on HTTPS:
+[the replay and the way back](bad-request-https-replay-2026-11-16.md).

@@ -5,12 +5,14 @@
 use super::*;
 use codex_alab_core::manager_catalog as catalog;
 
-pub(super) fn construct<F: std::future::Future<Output = AuthManager>>(
+type ManagerFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+pub(super) fn construct<'a, F: std::future::Future<Output = AuthManager> + Send + 'a>(
     future: F,
-) -> impl std::future::Future<Output = AuthManager> {
+) -> impl std::future::Future<Output = AuthManager> + Send + 'a {
     // Box before creating our async state: upstream's constructor future must not
     // be copied inline through each factory/task-local admission wrapper.
-    let future = Box::pin(future);
+    let future: ManagerFuture<'a, AuthManager> = Box::pin(future);
     async move {
         if catalog::current_factory().is_some() {
             let manager = future.await;
@@ -29,11 +31,17 @@ pub(super) fn construct<F: std::future::Future<Output = AuthManager>>(
     }
 }
 pub(super) fn shared<
-    F: std::future::Future<Output = Result<Arc<AuthManager>, AuthManagerInitializationError>>,
+    'a,
+    F: std::future::Future<Output = Result<Arc<AuthManager>, AuthManagerInitializationError>>
+        + Send
+        + 'a,
 >(
     future: F,
-) -> impl std::future::Future<Output = Result<Arc<AuthManager>, AuthManagerInitializationError>> {
-    let future = Box::pin(future);
+) -> impl std::future::Future<Output = Result<Arc<AuthManager>, AuthManagerInitializationError>>
++ Send
++ 'a {
+    let future: ManagerFuture<'a, Result<Arc<AuthManager>, AuthManagerInitializationError>> =
+        Box::pin(future);
     async move {
         let factory = catalog::global()
             .factory(codex_alab_core::assignment::current_activity().as_ref())
@@ -218,7 +226,11 @@ impl AuthManager {
                 .catalog()
                 .is_some_and(|record| record.cache_available())
     }
-    pub(super) async fn alab_catalog_ensure(&self) -> std::io::Result<()> {
+    pub(super) fn alab_catalog_ensure(&self) -> ManagerFuture<'_, std::io::Result<()>> {
+        Box::pin(self.alab_catalog_ensure_inner())
+    }
+
+    async fn alab_catalog_ensure_inner(&self) -> std::io::Result<()> {
         let record = self
             .alab_assignment_domain()
             .catalog()
@@ -510,7 +522,9 @@ mod tests {
         ));
         let (_, refreshed_factory) = manager.auth_with_http_client_factory().await.unwrap();
         assert!(
-            captured.alab_bind_http_client_factory(refreshed_factory).is_err(),
+            captured
+                .alab_bind_http_client_factory(refreshed_factory)
+                .is_err(),
             "a fresh cache read revived the retained credential"
         );
         manager.reload_with_cached_auth().await.unwrap();

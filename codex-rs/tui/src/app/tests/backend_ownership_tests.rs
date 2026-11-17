@@ -323,6 +323,7 @@ async fn prepared_resume_cannot_activate_through_another_backend() -> Result<()>
         config: app.config.clone(),
         local_settings: app.local_settings.clone(),
         thread: AppServerStartedThread {
+            #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
             session: test_thread_session(ThreadId::new(), app.config.cwd.to_path_buf()),
             turns: Vec::new(),
             blocks_direct_input: false,

@@ -1029,13 +1029,21 @@ impl App {
         else {
             return Ok(false);
         };
+        #[cfg(unix)]
+        let retained_reply = self.pending_app_server_requests.alab_retained_replies
+            .retain(thread_id, op, &resolution)?; // ALAB(retained-ui): retain same original reply/result before first submission await.
+        #[cfg(unix)]
+        let retained_attempt = retained_reply.as_ref().map(|owner| owner.begin()).transpose()?; // ALAB(retained-ui): cancelled/failed observation remains unconfirmed, never resent.
         let Some(reply) = resolution.request.reply else {
             return Err(color_eyre::eyre::eyre!(
                 "Missing original app-server connection for pending request"
             ));
         };
 
-        if let Err(err) = reply.resolve(resolution.result).await {
+        let reply_result = reply.resolve(resolution.result).await; // ALAB(retained-ui): keep original write outcome separate from Source acceptance.
+        #[cfg(unix)]
+        if let Some(attempt) = retained_attempt { attempt.observed(&reply_result); } // ALAB(retained-ui): socket write success is still unconfirmed by Source.
+        if let Err(err) = reply_result { // ALAB(retained-ui): preserve original error display after retained observation.
             self.chat_widget.add_error_message(format!(
                 "Failed to resolve app-server request for thread {thread_id}: {err}"
             ));
@@ -1225,6 +1233,8 @@ impl App {
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
         let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
+        #[cfg(unix)]
+        let retained_passive_tail = match &notification { ServerNotification::AlabRetainedFrontier(tail) => Some(tail.clone()), _ => None }; // ALAB(retained-ui): keep the actual frame until original inactive apply/store completes.
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
@@ -1293,6 +1303,10 @@ impl App {
                 turn_stopped,
             )
         };
+        #[cfg(unix)] // ALAB(retained-ui): mark passive tail application only after the actual companion/store path and guard release.
+        if notification.is_none() && let Some(tail) = retained_passive_tail {
+            super::alab_retained_passive::consumed(self, thread_id, &tail)?;
+        }
         if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
         } else if is_thread_closed {
@@ -1653,7 +1667,7 @@ impl App {
                 }
             }
         }
-        crate::app_server_session::alab_upgrade_receiver::attached(thread_id, self.chat_widget.thread_id()).await?; // ALAB(exec-recovery): commit continuation only after real UI attachment and replay.
+        super::alab_session::attach_runtime_editor(self, thread_id).await?; // ALAB(exec-recovery): install native editor data before layout and continuation activation.
         self.chat_widget
             .set_initial_user_message_submit_suppressed(/*suppressed*/ false);
         self.chat_widget.submit_initial_user_message_if_pending();
@@ -2074,6 +2088,8 @@ impl App {
         );
         match event {
             ThreadBufferedEvent::Notification(notification) => {
+                #[cfg(unix)] // ALAB(retained-frontier): Ready is consumed only at the actual original thread FIFO.
+                if let ServerNotification::AlabRetainedFrontier(tail) = notification.as_ref() { super::alab_retained_ui::thread_tail(self, tail); }
                 self.cache_collab_receiver_threads_for_notification(notification.as_ref());
                 let tip_ready = self.turn_tips.observe(&notification, Instant::now());
                 self.chat_widget
@@ -2090,6 +2106,11 @@ impl App {
                 {
                     let may_open_protected_view =
                         self.startup_request_may_open_protected_view(request.as_ref());
+                    #[cfg(unix)] // ALAB(retained-ui): preserve exact callback owner through original request conversion.
+                    let _input_scope = match self.pending_app_server_requests.alab_retained_replies.input_scope(&request) {
+                        Ok(scope) => scope,
+                        Err(error) => { tracing::warn!(%error, "original input view stays held"); return; }
+                    };
                     self.chat_widget
                         .handle_server_request(*request, /*replay_kind*/ None);
                     if may_open_protected_view
@@ -2115,12 +2136,19 @@ impl App {
     pub(super) fn handle_thread_event_replay(&mut self, event: ThreadBufferedEvent) {
         self.turn_tips.dismiss();
         match event {
-            ThreadBufferedEvent::Notification(notification) => self
-                .chat_widget
-                .handle_server_notification(*notification, Some(ReplayKind::ThreadSnapshot)),
+            ThreadBufferedEvent::Notification(notification) => {
+                #[cfg(unix)] // ALAB(retained-frontier): replay applies the same typed tail in original event order.
+                if let ServerNotification::AlabRetainedFrontier(tail) = notification.as_ref() { super::alab_retained_ui::thread_tail(self, tail); }
+                self.chat_widget.handle_server_notification(*notification, Some(ReplayKind::ThreadSnapshot));
+            }
             ThreadBufferedEvent::Request(request) => {
                 let may_open_protected_view =
                     self.startup_request_may_open_protected_view(request.as_ref());
+                #[cfg(unix)] // ALAB(retained-ui): SAME actual replayed callback, never a turn-ID lookup.
+                let _input_scope = match self.pending_app_server_requests.alab_retained_replies.input_scope(&request) {
+                    Ok(scope) => scope,
+                    Err(error) => { tracing::warn!(%error, "replayed input view stays held"); return; }
+                };
                 self.chat_widget
                     .handle_server_request(*request, Some(ReplayKind::ThreadSnapshot));
                 if may_open_protected_view

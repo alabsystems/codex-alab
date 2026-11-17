@@ -28,6 +28,32 @@ pub(crate) enum ViewPresentation {
 
 /// Trait implemented by every view that can be shown in the bottom pane.
 pub(crate) trait BottomPaneView: Renderable {
+    #[cfg(unix)] // ALAB(retained-ui): normalize only exact replay-owned delayed rows before original input.
+    fn alab_normalize_delayed_approvals(&mut self,_requests:&[crate::bottom_pane::alab_retained_approval::RequestData],_ids:&[codex_app_server_protocol::RequestId],_client:&codex_app_server_client::AppServerRequestHandle)->std::io::Result<()> { Ok(()) }
+    #[cfg(unix)] // ALAB(retained-ui): opaque actual queue items, never reconstructed from view JSON.
+    fn alab_original_input_items(&self) -> std::io::Result<Vec<std::sync::Arc<crate::app::retained_original_input::Item>>> { Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "actual native callback resources have no consumer")) }
+    #[cfg(unix)] // ALAB(retained-ui): whole native request kind/prefix chooses its actual replayed view.
+    fn alab_matches_bound_requests(&self, _requests: &crate::bottom_pane::alab_retained_views::bound::Requests) -> bool { false }
+    #[cfg(unix)] // ALAB(retained-ui): synchronous install borrows same real queued reply owners.
+    fn alab_install_bound_view(&mut self, _data: crate::bottom_pane::alab_retained_views::ViewData, _owners: &crate::bottom_pane::alab_retained_views::bound::Owners<'_>, _keymap: &crate::keymap::RuntimeKeymap, _max_bytes: usize, _max_generations: usize) -> std::io::Result<()> { Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "actual native callback kind is unsupported")) }
+
+    // ALAB(retained-ui): exact original request graph selects its real variant, never a saved stack offset.
+    #[cfg(unix)]
+    fn alab_matches_retained_requests(&self, _requests: &[ToolRequestUserInputParams]) -> bool { false }
+    // ALAB(retained-ui): unknown live variants retain their original owner; no empty/default snapshot.
+    #[cfg(unix)]
+    fn alab_capture_retained_view(&self, _max_bytes: usize) -> std::io::Result<crate::bottom_pane::alab_retained_views::ViewData> {
+        Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "original pending view has no transfer codec"))
+    }
+    // ALAB(retained-ui): only the original variant can consume actual borrowed callback owners.
+    #[cfg(unix)]
+    fn alab_install_retained_view(
+        &mut self, _data: crate::bottom_pane::alab_retained_views::ViewData,
+        _owners: &[crate::app::app_server_requests::alab_retained_owners::UserInputOwner<'_>],
+        _keymap: &crate::keymap::RuntimeKeymap, _max_bytes: usize, _max_generations: usize,
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "actual replayed view has no matching transfer consumer"))
+    }
     /// Centered views preserve the preceding view as their backdrop.
     fn presentation(&self) -> ViewPresentation {
         ViewPresentation::Inline

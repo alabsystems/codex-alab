@@ -9,6 +9,18 @@ use std::future::Future;
 use std::time::Duration;
 use tokio::time::Instant;
 
+pub(crate) fn watch_paths(
+    directories: &[std::path::PathBuf],
+) -> Vec<codex_file_watcher::WatchPath> {
+    directories
+        .iter()
+        .map(|path| codex_file_watcher::WatchPath {
+            path: path.clone(),
+            recursive: false,
+        })
+        .collect()
+}
+
 pub(crate) const RECONCILE_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -48,6 +60,55 @@ impl Monitor {
 mod tests {
     use super::*;
     use std::future::pending;
+
+    #[tokio::test]
+    async fn downstream_selection_rename_wakes_the_real_launch_watcher() {
+        use std::os::unix::fs::symlink;
+        // macOS excludes .ubd trees from FSEvents. This fixture tests events.
+        // The gate allocates a private non-.ubd scratch root; its sandbox does
+        // not grant writes to the rest of /tmp.
+        let watch_root = std::env::var_os("ALAB_TEST_SCRATCH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        let temporary = tempfile::Builder::new()
+            .prefix("codex-launch-watch-")
+            .tempdir_in(watch_root)
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        for directory in ["launch", "route", "store"] {
+            std::fs::create_dir(root.join(directory)).unwrap();
+        }
+        for image in ["old", "new"] {
+            std::fs::write(root.join("store").join(image), b"image").unwrap();
+        }
+        symlink("../store/old", root.join("route/current")).unwrap();
+        symlink("../route/current", root.join("launch/codex")).unwrap();
+        let watcher = std::sync::Arc::new(codex_file_watcher::FileWatcher::new().unwrap());
+        let (subscriber, mut events) = watcher.add_subscriber();
+        let directories = codex_alab_tui::upgrade::watch_directories(&root.join("launch/codex"));
+        let _registration = subscriber.register_paths(watch_paths(&directories));
+        assert!(_registration.registration_succeeded());
+        symlink("../store/new", root.join("route/next")).unwrap();
+        std::fs::rename(root.join("route/next"), root.join("route/current")).unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let event = events.recv().await.expect("native watcher remains open");
+                if event
+                    .paths
+                    .iter()
+                    .any(|path| path.starts_with(root.join("route")))
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("downstream rename notification, without the minute fallback");
+        assert_eq!(
+            codex_alab_tui::upgrade::named_build(&root.join("launch/codex")),
+            Some(root.join("store/new")),
+        );
+    }
 
     /// No notification is required, including after a lost event or failed watcher.
     /// A hint does not postpone the independent deadline; a closed watcher is disabled by

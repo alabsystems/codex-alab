@@ -12,9 +12,11 @@ recovery"), which runs every one of them with only its loopback model reachable.
 import http.server
 import json
 import math
+import os
 from pathlib import Path
 import re
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -30,12 +32,115 @@ ANSWER = "Headless capacity recovery succeeded."
 RETRY_SECONDS = 2
 HEADER_EMISSION_LIMIT_SECONDS = 0.050
 COMMAND_TIMEOUT_SECONDS = 120
+COMMAND_CLEANUP_SECONDS = 5
+LISTENER_STARTUP_CLEANUP_SECONDS = 5
 GUARD_PATH = Path(__file__).resolve().parents[1] / "command_guard.py"
+METADATA_LIMIT = 1024 * 1024
 
 
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def _case_label(error):
+    try:
+        kind = type(error).__name__
+    except BaseException:
+        kind = "Exception"
+    if type(kind) is not str:
+        kind = "Exception"
+    try:
+        return f"{kind}: {error}"
+    except BaseException:
+        return f"{kind}: <message unavailable>"
+
+
+def _case_notes(error, attribute):
+    try:
+        notes = getattr(error, attribute, ())
+        return [note for note in notes if type(note) is str] if type(notes) in (list, tuple) else []
+    except BaseException:
+        return []
+
+
+def _attach_case_notes(error, notes):
+    if not notes:
+        return
+    try:
+        for note in notes:
+            error.add_note(note)
+        return
+    except BaseException:
+        pass
+    try:
+        # Older Python and unavailable native-note hooks use the existing CLI
+        # transport. Optional diagnostics never own the pending exception.
+        error._alab_case_cleanup_errors = [*_case_notes(error, "_alab_case_cleanup_errors"), *notes]
+    except BaseException:
+        pass
+
+
+def case_error_fields(error):
+    fields = {"error": _case_label(error)}
+    if notes := _case_notes(error, "__notes__"):
+        fields["errorNotes"] = notes
+    if failures := _case_notes(error, "_alab_case_cleanup_errors"):
+        fields["cleanupErrors"] = failures
+    return fields
+
+
+def cleanup_case(server, thread, write_requests, result, primary):
+    return cleanup_resources((("", server, thread),), (("write", write_requests),), result, primary)
+
+
+def cleanup_resources(listeners, exports, result, primary, *, stop=None):
+    """Finish all safe fixture cleanup and preserve the primary exception.
+
+    A listener join after failed shutdown can wait forever, so skip only that
+    action. Other listeners and each evidence export still get their attempt.
+    """
+    failures = []
+    pending = primary
+
+    def attempt(phase, action):
+        nonlocal pending
+        try:
+            action()
+        except BaseException as error:
+            if not isinstance(error, Exception) and (pending is None or isinstance(pending, Exception)):
+                pending = error
+            failures.append(f"case cleanup {phase}: {_case_label(error)}")
+            return False
+        return True
+
+    if stop is not None:
+        attempt("stop", stop)
+    for name, server, thread in listeners:
+        prefix = name + "." if name else ""
+        if attempt(prefix + "shutdown", server.shutdown):
+            attempt(prefix + "join", thread.join)
+        else:
+            failures.append(f"case cleanup {prefix}join: skipped because shutdown failed")
+        attempt(prefix + "close", server.server_close)
+    for phase, action in exports:
+        attempt(phase, action)
+    if pending is not None:
+        notes = []
+        if pending is not primary and primary is not None:
+            notes.append(f"case body: {_case_label(primary)}")
+            for note in [*_case_notes(primary, "__notes__"),
+                         *_case_notes(primary, "_alab_case_cleanup_errors")]:
+                notes.append(f"case body note: {note}")
+        elif primary is None and "error" in result:
+            reason = result["error"] if type(result["error"]) is str else "<message unavailable>"
+            notes.append(f"case verifier: {reason}")
+        notes.extend(failures)
+        _attach_case_notes(pending, notes)
+        raise pending
+    if failures:
+        result.update(passed=False, cleanupErrors=failures)
+        result.setdefault("error", "case cleanup failed")
 
 
 def retry_after_delay(overload, retry):
@@ -60,18 +165,83 @@ def retry_after_delay(overload, retry):
 
 
 def write_json(path, value):
-    with path.open("x") as handle:
+    handle = primary = None
+    try:
+        handle = path.open("x")
         json.dump(value, handle, indent=2)
         handle.write("\n")
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        if handle is not None:
+            try:
+                handle.close()
+            except BaseException as error:
+                if primary is None:
+                    if issubclass(type(error), SystemExit) and _successful_exit(error):
+                        raise RuntimeError("JSON output close incomplete: requested a successful exit") from error
+                    raise
+                _attach_case_notes(primary, ["JSON output close failed: " + _case_label(error)])
+
+
+def _successful_exit(error):
+    # Keep this standalone classification aligned with alab/cli_status.py.
+    if type(error) is not SystemExit:
+        raise RuntimeError("unsupported SystemExit type") from None
+    code = error.code
+    if code is None:
+        return True
+    if not issubclass(type(code), int):
+        return False
+    code = int.__index__(code)
+    if os.name == "posix" and -sys.maxsize - 1 <= code <= sys.maxsize:
+        return code & 0xff == 0
+    return code == 0
+
+
+def package_record(path):
+    """Read bounded regular metadata from the descriptor that refused symlinks."""
+    descriptor = primary = None
+    try:
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as error:
+            raise RuntimeError(f"missing regular {path.name}") from error
+        before = os.fstat(descriptor)
+        require(stat.S_ISREG(before.st_mode), f"missing regular {path.name}")
+        require(before.st_size <= METADATA_LIMIT, f"oversized {path.name}")
+        chunks, length = [], 0
+        while length <= METADATA_LIMIT:
+            chunk = os.read(descriptor, METADATA_LIMIT + 1 - length)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            length += len(chunk)
+        require(length <= METADATA_LIMIT, f"oversized {path.name}")
+        after = os.fstat(descriptor)
+        require((before.st_dev, before.st_ino, before.st_mode, before.st_size,
+                 before.st_mtime_ns, before.st_ctime_ns) ==
+                (after.st_dev, after.st_ino, after.st_mode, after.st_size,
+                 after.st_mtime_ns, after.st_ctime_ns), f"metadata changed while reading: {path.name}")
+        return json.loads(b"".join(chunks).decode())
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except BaseException as error:
+                if primary is None:
+                    if issubclass(type(error), SystemExit) and _successful_exit(error):
+                        raise RuntimeError("metadata descriptor close incomplete: requested a successful exit") from error
+                    raise
+                _attach_case_notes(primary, ["metadata descriptor close failed: " + _case_label(error)])
 
 
 def package_records(package):
-    records = []
-    for name in ("alab-build.json", "codex-package.json"):
-        path = package / name
-        require(path.is_file() and not path.is_symlink(), f"missing regular {name}")
-        require(path.stat().st_size <= 1024 * 1024, f"oversized {name}")
-        records.append(json.loads(path.read_text()))
+    records = [package_record(package / name) for name in ("alab-build.json", "codex-package.json")]
     build, manifest = records
     require(build["version"] == manifest["version"], "package versions disagree")
     require(build["target"] == manifest["target"], "package targets disagree")
@@ -91,19 +261,90 @@ def fresh_environment(root):
             "TMPDIR": str(root / "tmp"), "TERM": "dumb", "NO_COLOR": "1", "LANG": "en_US.UTF-8"}
 
 
-def run(executable, args, root, env, label, *, interact=None):
+class OutputFiles:
+    """Own named exclusive output files through acquisition and every close."""
+
+    def __init__(self, named_paths):
+        self.named_paths = tuple((name, path) for name, path in named_paths)
+        self.streams = [None] * len(self.named_paths)
+
+    def __enter__(self):
+        try:
+            for index, (_name, path) in enumerate(self.named_paths):
+                self.streams[index] = path.open("xb")
+            return tuple(self.streams)
+        except BaseException as error:
+            self._close(error)
+            raise
+
+    def __exit__(self, _kind, error, _traceback):
+        self._close(error)
+        # Let the with statement retain the active object and its traceback,
+        # including StopIteration or unavailable exception attribute hooks.
+        return False
+
+    def _close(self, primary):
+        failures = []
+        for index in reversed(range(len(self.streams))):
+            name, _path = self.named_paths[index]
+            stream = self.streams[index]
+            if stream is not None:
+                try:
+                    stream.close()
+                except BaseException as error:
+                    failures.append((name, error))
+        if not failures:
+            return
+        notes = [f"output close {name}: {_case_label(error)}" for name, error in failures]
+        if primary is not None:
+            _attach_case_notes(primary, notes)
+            return
+        selected = failures[0][1]
+        for _name, error in failures:
+            if not issubclass(type(error), Exception) and not (
+                    issubclass(type(error), SystemExit) and _successful_exit(error)):
+                selected = error
+                break
+        if issubclass(type(selected), SystemExit) and _successful_exit(selected):
+            failure = RuntimeError("output close incomplete: requested a successful exit")
+            _attach_case_notes(failure, notes)
+            raise failure from selected
+        _attach_case_notes(selected, notes)
+        raise selected
+
+
+class OutputLogs(OutputFiles):
+    """The runner's original stdout/stderr paths and handle tuple."""
+
+    def __init__(self, root, label):
+        self.root, self.label = root, label
+        super().__init__((("stdout", root / (label + "-stdout.jsonl")),
+                          ("stderr", root / (label + "-stderr.txt"))))
+
+    @property
+    def stdout(self):
+        return self.streams[0]
+
+    @property
+    def stderr(self):
+        return self.streams[1]
+
+
+def run(executable, args, root, env, label, *, interact=None, stdin_pipe=True, timeout_seconds=None):
+    command_timeout = COMMAND_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+    cleanup_timeout = COMMAND_CLEANUP_SECONDS
     command = [str(executable), *args]
     require(GUARD_PATH.is_file(), "missing alab/command_guard.py; keep the probe in its source tree")
     result_path = root / (label + "-guardian-result.json")
     require(not result_path.exists() and not result_path.is_symlink(), "guardian result already exists")
     guardian = [sys.executable, "-I", str(GUARD_PATH), "--", sys.executable, "-I", str(GUARD_PATH),
                 "--result-file", str(result_path), "--inherited-group-timeout",
-                str(COMMAND_TIMEOUT_SECONDS), "--", *command]
+                str(command_timeout), "--", *command]
     write_json(root / (label + "-command.json"), command)
     write_json(root / (label + "-guardian-command.json"), guardian)
-    with (root / (label + "-stdout.jsonl")).open("xb") as stdout, \
-            (root / (label + "-stderr.txt")).open("xb") as stderr:
+    with OutputLogs(root, label) as (stdout, stderr):
         child, pending, cleaning = None, None, False
+        primary = None
         handlers = {}
 
         def cancel(signum, _frame):
@@ -115,64 +356,135 @@ def run(executable, args, root, env, label, *, interact=None):
 
         try:
             for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-                handlers[signum] = signal.signal(signum, cancel)
+                handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, cancel)
             # Keep our direct guardian PID leased until wait, even under SIG_IGN.
-            handlers[signal.SIGCHLD] = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+            handlers[signal.SIGCHLD] = signal.getsignal(signal.SIGCHLD)
+            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
             if pending is not None:
                 raise SystemExit(128 + pending)
             # The HTTP server has threads. All preexec/group handling belongs in
             # the dedicated single-threaded guardian, never in this process.
             child = subprocess.Popen(guardian, cwd=root / "work", env=env,
-                                     stdin=subprocess.PIPE if interact else subprocess.DEVNULL,
+                                     stdin=subprocess.PIPE if interact and stdin_pipe else subprocess.DEVNULL,
                                      stdout=subprocess.PIPE if interact else stdout, stderr=stderr)
             if pending is not None:
                 raise SystemExit(128 + pending)
             if interact:
                 interact(child, stdout)
-                child.stdin.close()
-                child.stdin = None
+                if child.stdin is not None:
+                    child.stdin.close()
+                    child.stdin = None
                 trailing, _ = child.communicate()
                 stdout.write(trailing)
                 code = child.returncode
             else:
                 code = child.wait()
+        except BaseException as error:
+            primary = error
+            raise
         finally:
             cleaning = True
+            cleanup_errors = []
+
+            def attempt(phase, action):
+                try:
+                    action()
+                    return True
+                except BaseException as error:
+                    cleanup_errors.append((phase, error))
+                    return False
+
             try:
-                if child is not None and child.returncode is None:
-                    # Popen checks child ownership before relaying TERM: wait may
-                    # have reaped it just before an interrupt prevented status storage.
-                    # The guardian stops its group before exiting; never kill it.
-                    try:
-                        child.terminate()
-                    except ProcessLookupError:
-                        pass
-                    child.wait()
-                    # An interaction that raised left the reaped child's pipes open.
-                    for pipe in (child.stdin, child.stdout):
-                        if pipe is not None:
+                if child is not None:
+                    if child.returncode is None:
+                        # Popen checks child ownership before relaying TERM: wait may
+                        # have reaped it just before an interrupt prevented status storage.
+                        # The guardian stops its group before exiting; never kill it.
+                        def stop():
                             try:
-                                pipe.close()
-                            except OSError:
-                                # Input the stopped child never read cannot be flushed.
-                                # The pipe is closed all the same, and the error that
-                                # ended the interaction is the one to report.
+                                child.terminate()
+                            except ProcessLookupError:
                                 pass
+
+                        if attempt("terminate", stop):
+                            attempt("wait", lambda: child.wait(timeout=cleanup_timeout))
+                        # A failed wait/stop may already have published retirement.
+                        if child.returncode is None:
+                            attempt("poll", child.poll)
+                    if child.returncode is None:
+                        cleanup_errors.append(("retirement", RuntimeError("guardian retirement unconfirmed")))
+                        # Either buffered close can wait for a callback-owned lock;
+                        # stdin may also flush into a live, nonreading guardian.
+                        for name, pipe in (("stdin", child.stdin), ("stdout", child.stdout)):
+                            if pipe is not None:
+                                cleanup_errors.append(("pipe." + name, RuntimeError(
+                                    "buffered close skipped: guardian retirement unconfirmed")))
+                    else:
+                        for name, pipe in (("stdin", child.stdin), ("stdout", child.stdout)):
+                            if pipe is not None:
+                                attempt("pipe." + name + ".close", pipe.close)
+                if cleanup_errors:
+                    notes = [f"child cleanup {phase}: {_case_label(error)}" for phase, error in cleanup_errors]
+                    if primary is not None:
+                        _attach_case_notes(primary, notes)
+                    else:
+                        selected = cleanup_errors[0][1]
+                        for _phase, error in cleanup_errors:
+                            if not issubclass(type(error), Exception) and not (
+                                    issubclass(type(error), SystemExit) and _successful_exit(error)):
+                                selected = error
+                                break
+                        if issubclass(type(selected), SystemExit) and _successful_exit(selected):
+                            primary = RuntimeError("child cleanup incomplete: requested a successful exit")
+                            _attach_case_notes(primary, notes)
+                            raise primary from selected
+                        primary = selected
+                        _attach_case_notes(primary, notes)
+                        raise primary
+            except BaseException as error:
+                if primary is None:
+                    primary = error
+                elif error is not primary:
+                    _attach_case_notes(primary, ["child cleanup: " + _case_label(error)])
+                raise primary
             finally:
+                restoration_errors = []
                 for signum, handler in handlers.items():
-                    signal.signal(signum, handler)
+                    try:
+                        signal.signal(signum, handler)
+                    except BaseException as error:
+                        restoration_errors.append((signum, error))
+                if restoration_errors:
+                    notes = [f"signal restoration {signum}: {_case_label(error)}"
+                             for signum, error in restoration_errors]
+                    if primary is not None:
+                        _attach_case_notes(primary, notes)
+                    else:
+                        selected = restoration_errors[0][1]
+                        for _signum, error in restoration_errors:
+                            if not issubclass(type(error), Exception) and not (
+                                    issubclass(type(error), SystemExit) and _successful_exit(error)):
+                                selected = error
+                                break
+                        if issubclass(type(selected), SystemExit) and _successful_exit(selected):
+                            failure = RuntimeError("signal restoration incomplete: requested a successful exit")
+                            _attach_case_notes(failure, notes)
+                            raise failure from selected
+                        _attach_case_notes(selected, notes)
+                        raise selected
     if pending is not None:
         raise SystemExit(128 + pending)
     result = json.loads(result_path.read_text())
     require(isinstance(result, dict) and type(result.get("schema")) is int and result["schema"] == 1
             and result.get("argv") == command
             and type(result.get("timeout_seconds")) in (int, float)
-            and result["timeout_seconds"] == COMMAND_TIMEOUT_SECONDS
+            and result["timeout_seconds"] == command_timeout
             and type(result.get("timed_out")) is bool, "invalid guardian command evidence")
     raw = result.get("returncode")
     if result["timed_out"]:
         require(raw is None and code == 124, "guardian timeout evidence disagrees with exit")
-        raise subprocess.TimeoutExpired(command, COMMAND_TIMEOUT_SECONDS)
+        raise subprocess.TimeoutExpired(command, command_timeout)
     require(type(raw) is int and -signal.NSIG < raw < 256,
             "missing or invalid raw command status")
     require(code == (raw if raw >= 0 else 128 - raw), "guardian exit disagrees with raw command status")
@@ -231,6 +543,129 @@ class Mock:
         return 200, response(f"response-{number}", item), "text/event-stream", None, record
 
 
+def start_listener(handler, *, bind=None, prepare=None):
+    """Own a returned binding through preparation and daemon worker handoff.
+
+    bind(address, handler) transfers its returned server before prepare(server)
+    runs. Preparation leaves any replacement socket owned by that server.
+    """
+    release = entered = None
+    server = None
+    worker = shutdown_worker = shutdown_entered = None
+    committed = released = closed = False
+    deadline = startup_error = None
+    retired, shutdown_errors = [], []
+
+    def release_owned():
+        nonlocal released
+        if release is not None:
+            release.set()
+            released = True
+
+    def close_owned():
+        nonlocal closed
+        closed = True
+        if server is not None:
+            server.server_close()
+
+    def remaining():
+        nonlocal deadline
+        if deadline is None:
+            return 0
+        try:
+            return max(0, deadline - time.monotonic())
+        except BaseException as failure:
+            deadline = None
+            _attach_case_notes(startup_error, ["listener cleanup clock unavailable: " + _case_label(failure)])
+            return 0
+
+    def shutdown():
+        nonlocal shutdown_worker, shutdown_entered
+        if not committed:
+            return
+        shutdown_entered = threading.Event()
+
+        def request():
+            try:
+                shutdown_entered.set()
+                server.shutdown()
+            except BaseException as failure:
+                shutdown_errors.append(failure)
+
+        # Store ownership before start(), which can raise after native start.
+        shutdown_worker = threading.Thread(target=request, daemon=True)
+        shutdown_worker.start()
+
+    def retire(thread, started, name):
+        if thread is None:
+            return
+        require(started is not None and started.wait(remaining()),
+                f"listener {name} worker retirement unconfirmed: startup was not observed")
+        thread.join(timeout=remaining())
+        require(not thread.is_alive(), f"listener {name} worker retirement unconfirmed: cleanup deadline expired")
+        retired.append(thread)
+
+    def shutdown_result():
+        if shutdown_errors:
+            raise shutdown_errors[0]
+
+    # Prepare every independent safe action before acquiring a bound listener.
+    actions = (("listener.release", release_owned), ("listener.shutdown", shutdown),
+        ("listener.shutdown-retirement", lambda: retire(shutdown_worker, shutdown_entered, "shutdown")),
+        ("listener.shutdown-result", shutdown_result),
+        ("listener.serving-retirement", lambda: retire(worker, entered, "serving")),
+        ("listener.close", close_owned))
+    try:
+        binding = provider_fixture.LoopbackHTTPServer if bind is None else bind
+        server = binding(("127.0.0.1", 0), handler)
+        if prepare is not None:
+            prepare(server)
+        release, entered = threading.Event(), threading.Event()
+
+        def serve():
+            entered.set()
+            release.wait()
+            if committed:
+                server.serve_forever()
+
+        worker = threading.Thread(target=serve, daemon=True)
+        worker.start()
+        committed = True
+        release.set()
+        return server, worker
+    except BaseException as error:
+        if server is None:
+            raise  # A failed constructor transferred no bound listener.
+        startup_error = error
+        try:
+            try:
+                deadline = time.monotonic() + LISTENER_STARTUP_CLEANUP_SECONDS
+            except BaseException as failure:
+                # No usable clock means nonblocking retirement observations,
+                # not permission to skip shutdown dispatch or other cleanup.
+                _attach_case_notes(error, ["listener cleanup clock unavailable: " + _case_label(failure)])
+            try:
+                cleanup_resources((), actions, {"passed": False}, error)
+            except BaseException as cleanup_error:
+                if cleanup_error is not error:
+                    _attach_case_notes(error, ["listener startup cleanup: " + _case_label(cleanup_error),
+                        *_case_notes(cleanup_error, "__notes__"),
+                        *_case_notes(cleanup_error, "_alab_case_cleanup_errors")])
+        finally:
+            # Emergency release/close still apply if cleanup setup itself fails.
+            for name, action, done in (("release", release_owned, released), ("close", close_owned, closed)):
+                if not done:
+                    try:
+                        action()
+                    except BaseException as cleanup_error:
+                        _attach_case_notes(error, ["listener startup cleanup " + name + ": " + _case_label(cleanup_error)])
+            for name, thread in (("serving", worker), ("shutdown", shutdown_worker)):
+                if thread is not None and not any(thread is observed for observed in retired):
+                    _attach_case_notes(error, [f"listener {name} worker retirement unconfirmed"])
+            # Cleanup or optional diagnostics cannot replace the startup outcome.
+            raise error
+
+
 def serve(mock):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -265,18 +700,7 @@ def serve(mock):
                 record.update(headerStartedAt=header_started, headerAt=header_at)
             self.wfile.write(data)
 
-    server = provider_fixture.LoopbackHTTPServer(("127.0.0.1", 0), Handler)
-    try:
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-    except BaseException as error:
-        # Startup has not transferred the listener to the caller. shutdown()
-        # could wait forever if serve_forever never started.
-        try:
-            server.server_close()
-        finally:
-            raise error
-    return server, thread
+    return start_listener(Handler)
 
 
 def configure(root, port, *, stream_max_retries=0):

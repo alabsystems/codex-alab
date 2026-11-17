@@ -262,3 +262,7 @@ impl HistoryCell for CompositeHistoryCell {
 #[cfg(test)]
 #[path = "base_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_base_cells.rs"]
+pub(in crate::history_cell) mod alab_retained; // ALAB(retained-ui): retain original native base-cell fields and typed children.

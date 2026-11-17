@@ -1,3 +1,10 @@
+#[cfg(unix)]
+#[path = "../../../alab-core/glue/retained_task_resume.rs"]
+pub(crate) mod alab_task_resume; // ALAB(upgrade): direct typed backend target inside the original resume policy.
+#[cfg(unix)]
+#[path = "../../../alab-core/glue/retained_task_send.rs"]
+pub(crate) mod alab_task_send; // ALAB(upgrade): complete actual retained MCP SEND consumer.
+
 #[path = "daemon_continuation.rs"]
 mod daemon_continuation;
 
@@ -5,11 +12,20 @@ mod daemon_continuation;
 mod daemon_snapshot;
 
 mod workspace_switching;
+#[cfg(unix)]
+#[path = "../../../alab-core/glue/retained_task_worktree.rs"]
+pub(crate) mod alab_task_worktree; // ALAB(upgrade): actual local worktree consumer on this processor.
+#[path = "../../../alab-core/glue/retained_task_start.rs"]
+pub(super) mod alab_task_start; // ALAB(upgrade): share full startup policy with a direct backend result target.
 
-#[path = "thread_resume_account.rs"]
-mod thread_resume_account;
+#[path = "../../../alab-core/glue/retained_task_fork_target.rs"]
+pub(super) mod alab_task_fork; // ALAB(upgrade): typed completion inside the complete fork policy.
+use alab_task_fork::ForkTarget;
+
 #[path = "../../../alab-core/glue/running_resume.rs"]
-mod alab_running_resume; // ALAB(resume-projection): live metadata readiness before paginated cursor reads.
+mod alab_running_resume;
+#[path = "thread_resume_account.rs"]
+mod thread_resume_account; // ALAB(resume-projection): live metadata readiness before paginated cursor reads.
 
 use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_owned_thread_settings;
@@ -19,6 +35,10 @@ use super::thread_fork_goal::inherit_thread_goal_snapshot;
 use super::thread_input::can_accept_direct_input;
 use super::thread_input::ensure_direct_input_allowed;
 use super::thread_lifecycle::thread_closing_for_resume;
+#[cfg(unix)]
+#[path = "../../../alab-core/glue/retained_task_read.rs"]
+pub(crate) mod alab_task_read; // ALAB(upgrade): actual backend read/wait operations use the original typed processor.
+
 use super::*;
 use crate::connection_rpc_gate::ConnectionRpcGate;
 use crate::error_code::method_not_found;
@@ -503,6 +523,11 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
 
 #[derive(Clone)]
 pub(crate) struct ThreadRequestProcessor {
+    #[cfg(unix)]
+    alab_retained_frontier: alab_retained_frontier::Slot, // ALAB(retained-frontier): weak exact runtime association.
+    #[cfg(unix)]
+    alab_initial_session: alab_initial_session::InitialSlot, // ALAB(owned-local): weak association to actual runtime-owned startup.
+    alab_task_mcp: alab_task_start::TaskHostSlot, // ALAB(upgrade): only the retained constructor installs an actual host.
     pub(super) auth_manager: Arc<AuthManager>,
     pub(crate) thread_manager: Arc<ThreadManager>,
     pub(super) outgoing: Arc<OutgoingMessageSender>,
@@ -526,12 +551,16 @@ pub(crate) struct ThreadRequestProcessor {
 
 /// Whether resume attaches a client or restores a cold runtime during daemon startup.
 pub(crate) enum ThreadResumeTarget {
-    Client(ConnectionRequestId),
+    #[cfg(unix)]
+    Backend(Box<alab_task_resume::BackendResume>), // ALAB(upgrade): no fabricated client request.
+    Client(alab_initial_resume::ResumeClientTarget), // ALAB(owned-local): actual request plus optional accepted publication custody.
     DaemonRecovery(Option<codex_app_server_transport::daemon_recovery::InterruptedTurn>),
 }
 
 /// Outcome of trying to satisfy a resume request from an already loaded thread.
 enum RunningThreadResumeResult {
+    #[cfg(unix)]
+    BackendHandled, // ALAB(upgrade): actual direct completion, no client ACK.
     /// The request was delegated to the loaded thread.
     Handled(tokio::sync::oneshot::Receiver<()>),
     /// No loaded thread handled the request.
@@ -564,6 +593,11 @@ impl ThreadRequestProcessor {
         sample_responses: Arc<crate::thread_sample::SampleResponseRegistry>,
     ) -> Self {
         Self {
+            #[cfg(unix)]
+            alab_retained_frontier: Default::default(), // ALAB(retained-frontier): ordinary constructors install no continuation owner.
+            #[cfg(unix)]
+            alab_initial_session: Default::default(), // ALAB(owned-local): no implicit operation/claim/default admission.
+            alab_task_mcp: Default::default(), // ALAB(upgrade): ordinary constructors gain no retained host.
             auth_manager,
             thread_manager,
             outgoing,
@@ -595,13 +629,33 @@ impl ThreadRequestProcessor {
         client_mcp_extensions: ClientMcpExtensions,
         request_context: RequestContext,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if request_context.alab_initial_claim.is_some() { // ALAB(owned-local): explicit startup cannot fall through an absent actual operation.
+            #[cfg(unix)] {
+                if request_context.alab_request_id() != &request_id { return Err(invalid_request("initial request context mismatch")); }
+                return self.alab_initial_session.accept(request_context,
+                    alab_initial_session::Arguments::Start(params),
+                    alab_initial_session::ClientMetadata { name: app_server_client_name, version: app_server_client_version, extensions: client_mcp_extensions },
+                ).await.map(|()| None);
+            }
+            #[cfg(not(unix))] { return Err(invalid_request("retained initial sessions are unavailable")); }
+        }
+        if request_context.alab_client_construction.is_some() { // ALAB(owned-local): a later new chat uses its own accepted Source worker and Core binding.
+            #[cfg(unix)] {
+                if request_context.alab_request_id() != &request_id { return Err(invalid_request("client start context mismatch")); }
+                return self.alab_initial_session.accept_client(request_context,
+                    alab_initial_session::Arguments::Start(params),
+                    alab_initial_session::ClientMetadata { name: app_server_client_name, version: app_server_client_version, extensions: client_mcp_extensions },
+                ).await.map(|()| None);
+            }
+            #[cfg(not(unix))] { return Err(invalid_request("retained client construction is unavailable")); }
+        }
         self.thread_start_inner(
-            request_id,
+            alab_task_start::StartTarget::Client(request_id), // ALAB(upgrade): preserve the actual client publication target.
             params,
             app_server_client_name,
             app_server_client_version,
             client_mcp_extensions,
-            request_context,
+            alab_task_start::StartContext::Client(request_context), // ALAB(upgrade): keep the original RPC context.
         )
         .await
         .map(|()| None)
@@ -648,10 +702,31 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        request_context: RequestContext, // ALAB(owned-local): original request identity/resource, never a fabricated client.
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if request_context.alab_initial_claim.is_some() { // ALAB(owned-local): exact initial fork stays in its original admitted worker.
+            #[cfg(unix)] {
+                if request_context.alab_request_id() != &request_id { return Err(invalid_request("initial request context mismatch")); }
+                return self.alab_initial_session.accept(request_context,
+                    alab_initial_session::Arguments::Fork(params),
+                    alab_initial_session::ClientMetadata { name: app_server_client_name, version: app_server_client_version, extensions: client_mcp_extensions },
+                ).await.map(|()| None);
+            }
+            #[cfg(not(unix))] { return Err(invalid_request("retained initial sessions are unavailable")); }
+        }
+        if request_context.alab_client_construction.is_some() { // ALAB(owned-local): exact later call; no response is UI selection proof.
+            #[cfg(unix)] {
+                if request_context.alab_request_id() != &request_id { return Err(invalid_request("client fork context mismatch")); }
+                return self.alab_initial_session.accept_client(request_context,
+                    alab_initial_session::Arguments::Fork(params),
+                    alab_initial_session::ClientMetadata { name: app_server_client_name, version: app_server_client_version, extensions: client_mcp_extensions },
+                ).await.map(|()| None);
+            }
+            #[cfg(not(unix))] { return Err(invalid_request("retained client construction is unavailable")); }
+        }
         // Keep the large fork future out of the shared request dispatcher's stack frame.
         Box::pin(self.thread_fork_inner(
-            request_id,
+            ForkTarget::Client(request_id),
             params,
             app_server_client_name,
             app_server_client_version,
@@ -1159,6 +1234,8 @@ impl ThreadRequestProcessor {
 
         // Terminal cleanup must not remove a replacement published by a cold resume.
         let _goal_resume_guard = self.thread_state_manager.lock_goal_resume(thread_id).await;
+        #[cfg(unix)] alab_side_view_unsubscribe::check(self,thread_id).await?; // ALAB(retained-side): optional exact captured Core before original unsubscribe effects.
+
         let was_subscribed = self
             .thread_state_manager
             .unsubscribe_connection_from_thread(thread_id, connection_id)
@@ -1193,6 +1270,8 @@ impl ThreadRequestProcessor {
         thread_id: ThreadId,
         operation: &str,
     ) -> Result<(), JSONRPCErrorError> {
+        let _goal_resume_guard = self.thread_state_manager.lock_goal_resume(thread_id).await; // ALAB(goal-recovery): removal cannot invalidate live/unloaded rollout ownership between classification and committed chronology.
+        #[cfg(unix)] alab_side_rollback_target::check(self,thread_id).await?; // ALAB(retained-side): original root removal checks SAME captured Core before effects.
         let removed_conversation = self
             .thread_manager
             .remove_thread_for_client(&thread_id)
@@ -1261,92 +1340,20 @@ impl ThreadRequestProcessor {
 
     async fn thread_start_inner(
         &self,
-        request_id: ConnectionRequestId,
+        target: alab_task_start::StartTarget, // ALAB(upgrade): backend completion never invents a client connection.
         params: ThreadStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
-        request_context: RequestContext,
+        request_context: alab_task_start::StartContext, // ALAB(upgrade): actual client or backend operation tracing.
     ) -> Result<(), JSONRPCErrorError> {
-        let ThreadStartParams {
-            model,
-            model_provider,
-            allow_provider_model_fallback,
-            service_tier,
-            cwd,
-            runtime_workspace_roots,
-            approval_policy,
-            approvals_reviewer,
-            sandbox,
-            permissions,
-            config,
-            service_name,
-            base_instructions,
-            developer_instructions,
-            dynamic_tools,
-            selected_capability_roots,
-            mock_experimental_field: _mock_experimental_field,
-            experimental_raw_events,
-            personality,
-            multi_agent_mode: _multi_agent_mode,
-            ephemeral,
-            history_mode,
-            session_start_source,
-            thread_source,
-            project_id,
-            daybreak_enabled,
-            environments,
-        } = params;
-        if matches!(
-            history_mode,
-            Some(codex_app_server_protocol::ThreadHistoryMode::Paginated)
-        ) && !self.thread_store.supports_paginated_history_lists()
-        {
-            return Err(invalid_request(
-                "paginated threads require thread/turns/list and thread/items/list support",
-            ));
-        }
-        if sandbox.is_some() && permissions.is_some() {
-            return Err(invalid_request(
-                "`permissions` cannot be combined with `sandbox`",
-            ));
-        }
-        if let Some(project_id) = project_id.as_ref() {
-            if project_id.is_empty() {
-                return Err(invalid_request("projectId must not be empty"));
-            }
-            let project = self
-                .thread_store
-                .read_project(project_id.clone())
-                .await
-                .map_err(|err| match err {
-                    ThreadStoreError::Unsupported { operation } => {
-                        unsupported_thread_store_operation(operation)
-                    }
-                    err => internal_error(format!("failed to read project: {err}")),
-                })?;
-            if project.is_none() {
-                return Err(invalid_request(format!("project not found: {project_id}")));
-            }
-        }
-        let runtime_workspace_roots = runtime_workspace_roots.map(resolve_runtime_workspace_roots);
-        let environment_requests =
-            resolve_turn_environment_requests(self.thread_manager.as_ref(), environments)?;
-        let mut typesafe_overrides = self.build_thread_config_overrides(
-            model,
-            model_provider,
-            service_tier,
-            cwd,
-            runtime_workspace_roots,
-            approval_policy,
-            approvals_reviewer,
-            sandbox,
-            permissions,
-            base_instructions,
-            developer_instructions,
-            personality,
-        );
-        typesafe_overrides.ephemeral = ephemeral;
+        target.check_before_policy(self.thread_manager.as_ref()).await?; // ALAB(upgrade): withdrawal precedes new backend construction.
+        let task_binding = self.alab_task_mcp.prepare(&params, &app_server_client_name, &app_server_client_version, &client_mcp_extensions, target.task_binding_plan())?; // ALAB(upgrade): capture actual startup inputs and opaque owner before policy.
+        let alab_initial_start::StartParameters {
+            config, typesafe_overrides, dynamic_tools, selected_capability_roots,
+            experimental_raw_events, history_mode, session_start_source, thread_source,
+            project_id, daybreak_enabled, environment_requests, service_name, allow_provider_model_fallback,
+        } = Box::pin(self.alab_prepare_start_parameters(params)).await?; // ALAB(owned-local): identical original preparation, no Core/default reconstruction.
         let listener_task_context = ListenerTaskContext {
             thread_manager: Arc::clone(&self.thread_manager),
             thread_state_manager: self.thread_state_manager.clone(),
@@ -1362,13 +1369,14 @@ impl ThreadRequestProcessor {
         let thread_store = Arc::clone(&self.thread_store);
         let initial_config_warnings = Arc::clone(&self.initial_config_warnings);
         let outgoing = Arc::clone(&listener_task_context.outgoing);
-        let error_request_id = request_id.clone();
+        let error_target = target.clone(); // ALAB(upgrade): errors use the same typed startup target.
         let thread_start_task = async move {
             if let Err(error) = Self::thread_start_task(
                 listener_task_context,
                 thread_store,
                 config_manager,
-                request_id,
+                target, // ALAB(upgrade): preserve the original client or actual backend result owner.
+                task_binding, // ALAB(upgrade): carry the actual per-thread service through shared construction.
                 app_server_client_name,
                 app_server_client_version,
                 client_mcp_extensions,
@@ -1390,7 +1398,7 @@ impl ThreadRequestProcessor {
             )
             .await
             {
-                outgoing.send_error(error_request_id, error).await;
+                error_target.publish_error(outgoing.as_ref(), error).await; // ALAB(upgrade): keep client errors and backend typed failures distinct.
             }
         };
         self.background_tasks
@@ -1450,7 +1458,8 @@ impl ThreadRequestProcessor {
         listener_task_context: ListenerTaskContext,
         thread_store: Arc<dyn ThreadStore>,
         config_manager: ConfigManager,
-        request_id: ConnectionRequestId,
+        target: alab_task_start::StartTarget, // ALAB(upgrade): startup policy is shared; only routing differs.
+        task_binding: alab_task_start::TaskBindingPlan, // ALAB(upgrade): actual host binding has no frontend identity.
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
@@ -1476,11 +1485,7 @@ impl ThreadRequestProcessor {
             .load_with_overrides(config_overrides.clone(), typesafe_overrides.clone())
             .await
             .map_err(|err| config_load_error(&err))?;
-        if config.ephemeral && daybreak_enabled.is_some() {
-            return Err(invalid_request(
-                "daybreakEnabled is not supported for ephemeral threads",
-            ));
-        }
+        alab_initial_start::validate_loaded_start(&config, daybreak_enabled)?; // ALAB(owned-local): original loaded-config constraint shared with prospective validation.
         // Project-local config can launch host processes, so only the effective
         // permissions after managed constraints can imply project trust.
         let effective_permission_profile = config.permissions.effective_permission_profile();
@@ -1566,13 +1571,7 @@ impl ThreadRequestProcessor {
         }
         for notification in config_warnings {
             if !initial_config_warnings.contains(&notification) {
-                listener_task_context
-                    .outgoing
-                    .send_server_notification_to_connections(
-                        &[request_id.connection_id],
-                        ServerNotification::ConfigWarning(notification),
-                    )
-                    .await;
+                target.warning(&listener_task_context, notification).await; // ALAB(upgrade): backend warnings never broadcast through an empty recipient list.
             }
         }
 
@@ -1601,6 +1600,7 @@ impl ThreadRequestProcessor {
         if !selected_capability_roots.is_empty() {
             thread_extension_init.insert(selected_capability_roots);
         }
+        task_binding.configure(&mut config).await?; // ALAB(upgrade): check namespace and existing managed constraints before Core MCP discovery.
         let mut start_options = StartThreadOptions::new(config);
         let reserved_thread_id = if start_options.config.ephemeral {
             None
@@ -1622,10 +1622,7 @@ impl ThreadRequestProcessor {
         start_options.reserved_thread_id = Some(thread_id);
         // Startup can prewarm the Responses socket before start_thread returns.
         // Register the creating client first so that handshake can request attestation.
-        listener_task_context
-            .thread_state_manager
-            .try_add_connection_to_thread(thread_id, request_id.connection_id)
-            .await;
+        target.before_start(&listener_task_context, thread_store.as_ref(), thread_id, reserved_thread_id).await?; // ALAB(upgrade): prewarm uses only the actual client target; backend rechecks owner and parent.
         let create_thread_started_at = std::time::Instant::now();
         let new_thread = listener_task_context
             .thread_manager
@@ -1675,6 +1672,9 @@ impl ThreadRequestProcessor {
                 });
             }
         };
+        target.retain_created(thread_id, &thread)?; // ALAB(upgrade): post-birth failures retain the exact new runtime.
+        task_binding.bind_created(thread_id, &thread).await?; // ALAB(upgrade): install only the actual returned Arc before START advertisement.
+        let created_thread = Arc::clone(&thread); // ALAB(upgrade): never reconstruct backend completion by thread ID.
         let session_telemetry = thread.session_telemetry();
         session_telemetry.record_startup_phase(
             "thread_start_create_thread",
@@ -1708,23 +1708,7 @@ impl ThreadRequestProcessor {
         thread.daybreak_enabled = daybreak_enabled;
 
         // Auto-attach a thread listener when starting a thread.
-        log_listener_attach_result(
-            super::thread_lifecycle::ensure_conversation_listener(
-                listener_task_context.clone(),
-                thread_id,
-                request_id.connection_id,
-                experimental_raw_events,
-            )
-            .instrument(tracing::info_span!(
-                "app_server.thread_start.attach_listener",
-                otel.name = "app_server.thread_start.attach_listener",
-                thread_start.experimental_raw_events = experimental_raw_events,
-            ))
-            .await,
-            thread_id,
-            request_id.connection_id,
-            "thread",
-        );
+        target.attach_listener(&listener_task_context, thread_id, Arc::clone(&created_thread), experimental_raw_events).await?; // ALAB(upgrade): backend installs the real Active listener without a UI acknowledgement.
 
         listener_task_context
             .thread_watch_manager
@@ -1770,23 +1754,9 @@ impl ThreadRequestProcessor {
             multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         };
         let notif = thread_started_notification(thread);
-        listener_task_context
-            .outgoing
-            .send_response_with_thread_originator(request_id, response, thread_originator)
-            .instrument(tracing::info_span!(
-                "app_server.thread_start.send_response",
-                otel.name = "app_server.thread_start.send_response",
-            ))
-            .await;
+        target.publish_response(&listener_task_context, thread_id, response, thread_originator, created_thread).await?; // ALAB(upgrade): client publication or an owned typed backend result.
 
-        listener_task_context
-            .outgoing
-            .send_server_notification(ServerNotification::ThreadStarted(notif))
-            .instrument(tracing::info_span!(
-                "app_server.thread_start.notify_started",
-                otel.name = "app_server.thread_start.notify_started",
-            ))
-            .await;
+        target.publish_started(listener_task_context.outgoing.as_ref(), notif).await; // ALAB(upgrade): backend START completion does not wait on a frontend outbox.
         session_telemetry.record_startup_phase(
             "thread_start_total",
             thread_start_started_at.elapsed(),
@@ -2271,6 +2241,7 @@ impl ThreadRequestProcessor {
             before_turn_id,
         } = params;
         let (thread_id, thread) = self.load_thread(&thread_id).await?;
+        let _goal_resume_guard = self.thread_state_manager.lock_goal_resume(thread_id).await; // ALAB(goal-recovery): history rewrite cannot remove or truncate a live chronology owner during a committed goal mutation.
         ensure_direct_input_allowed(thread.as_ref()).await?;
         let config_snapshot = thread.config_snapshot().await;
         if config_snapshot.ephemeral {
@@ -3970,6 +3941,8 @@ impl ThreadRequestProcessor {
         client_mcp_extensions: ClientMcpExtensions,
         prepared_config: &mut Option<PreparedResumeConfig>,
     ) -> Result<ControlFlow<()>, JSONRPCErrorError> {
+        #[cfg(unix)]
+        if let ThreadResumeTarget::Backend(scope) = target { scope.check(self).await?; } // ALAB(upgrade): real issuing runtime before resume work.
         if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
             && self
                 .pending_thread_unloads
@@ -3990,9 +3963,9 @@ impl ThreadRequestProcessor {
 
         let _thread_list_state_permit = self.acquire_thread_list_state_permit().await?;
         let stored_thread_from_running_probe = match target {
-            ThreadResumeTarget::Client(request_id) => match self
+            ThreadResumeTarget::Client(_) => match self
                 .resume_running_thread(
-                    request_id,
+                    target,
                     params,
                     app_server_client_name.clone(),
                     app_server_client_version.clone(),
@@ -4009,7 +3982,14 @@ impl ThreadRequestProcessor {
                         .map_err(|_| thread_closing_for_resume(&params.thread_id))?;
                     return Ok(ControlFlow::Break(()));
                 }
+                #[cfg(unix)]
+                RunningThreadResumeResult::BackendHandled => return Ok(ControlFlow::Break(())), // ALAB(upgrade): stored typed backend result.
                 RunningThreadResumeResult::NotRunning(stored_thread) => stored_thread,
+            },
+            #[cfg(unix)]
+            ThreadResumeTarget::Backend(_) => match alab_task_resume::probe_loaded(self, target, params, app_server_client_name.clone(), app_server_client_version.clone()).await? { // ALAB(upgrade): same loaded policy, typed backend completion.
+                ControlFlow::Break(()) => return Ok(ControlFlow::Break(())),
+                ControlFlow::Continue(stored) => stored,
             },
             ThreadResumeTarget::DaemonRecovery(saved) => {
                 let thread_id = ThreadId::from_string(&params.thread_id)
@@ -4048,6 +4028,8 @@ impl ThreadRequestProcessor {
         } = params.clone();
         let include_turns = !exclude_turns;
 
+        #[cfg(unix)]
+        if let ThreadResumeTarget::Backend(scope) = target { request_overrides = scope.base_overrides(request_overrides)?; } // ALAB(upgrade): cold policy checks base namespace before actual opaque insertion.
         let prepared_model_context = prepared_config
             .as_mut()
             .and_then(|prepared| prepared.model_context.take());
@@ -4121,7 +4103,7 @@ impl ThreadRequestProcessor {
             && let ThreadResumeTarget::Client(request_id) = target
         {
             self.send_deprecation_notice(
-                request_id.connection_id,
+                request_id.request().connection_id,
                 PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY,
             )
             .await;
@@ -4132,9 +4114,12 @@ impl ThreadRequestProcessor {
             && let Some((source, _)) = thread_history.get_resumed_session_sources()
             && !can_accept_direct_input(thread_history.get_multi_agent_version(), &source)
         {
-            let ThreadResumeTarget::Client(request_id) = target else {
-                return Ok(ControlFlow::Break(()));
-            };
+            match target { // ALAB(upgrade): both real request targets preserve owner-controlled V2 loading; no fabricated client.
+                ThreadResumeTarget::Client(_) => {}
+                #[cfg(unix)]
+                ThreadResumeTarget::Backend(_) => {}
+                ThreadResumeTarget::DaemonRecovery(_) => return Ok(ControlFlow::Break(())),
+            }
             let child_thread_id = resumed_history.conversation_id;
             self.thread_manager
                 .ensure_multi_agent_v2_child_loaded(child_thread_id)
@@ -4160,7 +4145,7 @@ impl ThreadRequestProcessor {
             };
             return match self
                 .resume_running_thread(
-                    request_id,
+                    target,
                     &attach_params,
                     app_server_client_name,
                     app_server_client_version,
@@ -4175,6 +4160,8 @@ impl ThreadRequestProcessor {
                         .map_err(|_| thread_closing_for_resume(child_thread_id))?;
                     Ok(ControlFlow::Break(()))
                 }
+                #[cfg(unix)]
+                RunningThreadResumeResult::BackendHandled => Ok(ControlFlow::Break(())), // ALAB(upgrade): typed direct completion.
                 RunningThreadResumeResult::NotRunning(_) => Err(invalid_request(
                     "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it",
                 )),
@@ -4368,18 +4355,16 @@ impl ThreadRequestProcessor {
                 config.personality = settings.personality;
             }
         }
+        let parent_trace = target.alab_parent_trace(self).await; // ALAB(owned-local): original trace observation precedes conservative Core-entry mark.
+        #[cfg(unix)]
+        target.alab_before_resume_core(self, &mut config).await?; // ALAB(owned-local): same actual target, cold binding and Core-entry custody.
         let response_history = thread_history.clone();
 
         match self
             .thread_manager
             .start_thread(StartThreadOptions {
                 initial_history: thread_history,
-                parent_trace: match target {
-                    ThreadResumeTarget::Client(request_id) => {
-                        self.request_trace_context(request_id).await
-                    }
-                    ThreadResumeTarget::DaemonRecovery(_) => None,
-                },
+                parent_trace,
                 client_mcp_extensions,
                 ..StartThreadOptions::new(config)
             })
@@ -4391,7 +4376,23 @@ impl ThreadRequestProcessor {
                 session_configured,
                 ..
             }) => {
-                let ThreadResumeTarget::Client(request_id) = target else {
+                #[cfg(unix)]
+                target.alab_capture_birth(thread_id, &codex_thread)?; // ALAB(owned-local): exact birth retained before every fallible branch.
+                #[cfg(unix)]
+                if let ThreadResumeTarget::Backend(scope) = target { // ALAB(upgrade): retain original direct-result policy.
+                    drop(_goal_resume_guard); // ALAB(upgrade): backend listener reacquires the same admission guard and rechecks exact Current.
+                    scope.complete(self, alab_task_resume::ResumedTarget {
+                        thread_id, thread: codex_thread.clone(), model: session_configured.model.clone(),
+                        model_provider: session_configured.model_provider_id.clone(),
+                    }, (app_server_client_name, app_server_client_version), true).await?;
+                    return Ok(ControlFlow::Break(()));
+                }
+                #[cfg(unix)]
+                if let Some(publication) = target.alab_resume_publication() { // ALAB(owned-local): reacquire actual serialized ownership after original cold guard.
+                    drop(_goal_resume_guard);
+                    publication.ready(self, thread_id, &codex_thread, true).await?;
+                }
+                let ThreadResumeTarget::Client(client) = target else {
                     // Observe lifecycle events without attaching a client subscription.
                     self.thread_watch_manager
                         .upsert_thread(&thread_id.to_string())
@@ -4409,7 +4410,7 @@ impl ThreadRequestProcessor {
                         .await?;
                     return Ok(ControlFlow::Break(()));
                 };
-                let request_id = request_id.clone();
+                let request_id = client.request().clone(); // ALAB(owned-local): preserve the original real request ID.
                 if let Err(err) = Self::set_app_server_client_info(
                     codex_thread.as_ref(),
                     app_server_client_name,
@@ -4417,7 +4418,7 @@ impl ThreadRequestProcessor {
                 )
                 .await
                 {
-                    self.outgoing.send_error(request_id, err).await;
+                    alab_initial_resume::send_error(client.publication(), &self.outgoing, request_id, err).await; // ALAB(owned-local): retain the actual original failure.
                     return Ok(ControlFlow::Break(()));
                 }
                 let instruction_sources = codex_thread.legacy_instruction_sources().await;
@@ -4425,7 +4426,7 @@ impl ThreadRequestProcessor {
                 let Some(rollout_path) = rollout_path else {
                     let error =
                         internal_error(format!("rollout path missing for thread {thread_id}"));
-                    self.outgoing.send_error(request_id, error).await;
+                    alab_initial_resume::send_error(client.publication(), &self.outgoing, request_id, error).await; // ALAB(owned-local): actual failure, no synthetic success.
                     return Ok(ControlFlow::Break(()));
                 };
                 // Paginated JSONL is canonical, but its SQLite projection can lag after a
@@ -4438,14 +4439,14 @@ impl ThreadRequestProcessor {
                         .await
                         .map_err(thread_store_resume_read_error)
                 {
-                    self.outgoing.send_error(request_id, error).await;
+                    alab_initial_resume::send_error(client.publication(), &self.outgoing, request_id, error).await; // ALAB(owned-local): actual failure, no synthetic success.
                     return Ok(ControlFlow::Break(()));
                 }
                 let materialized_turns = if paginated_resume && include_turns {
                     match self.paginated_thread_full_turns(thread_id).await {
                         Ok(turns) => Some(turns),
                         Err(error) => {
-                            self.outgoing.send_error(request_id, error).await;
+                            alab_initial_resume::send_error(client.publication(), &self.outgoing, request_id, error).await; // ALAB(owned-local): actual failure, no synthetic success.
                             return Ok(ControlFlow::Break(()));
                         }
                     }
@@ -4478,9 +4479,8 @@ impl ThreadRequestProcessor {
                 {
                     Ok(thread) => thread,
                     Err(message) => {
-                        self.outgoing
-                            .send_error(request_id, internal_error(message))
-                            .await;
+                        alab_initial_resume::send_error(client.publication(), &self.outgoing,
+                            request_id, internal_error(message)).await; // ALAB(owned-local): exact original failure.
                         return Ok(ControlFlow::Break(()));
                     }
                 };
@@ -4516,7 +4516,7 @@ impl ThreadRequestProcessor {
                         {
                             Ok(cursors) => cursors,
                             Err(error) => {
-                                self.outgoing.send_error(request_id, error).await;
+                                alab_initial_resume::send_error(client.publication(), &self.outgoing, request_id, error).await; // ALAB(owned-local): actual failure, no synthetic success.
                                 return Ok(ControlFlow::Break(()));
                             }
                         }
@@ -4543,7 +4543,7 @@ impl ThreadRequestProcessor {
                     match initial_turns_page_result {
                         Ok(page) => Some(page),
                         Err(error) => {
-                            self.outgoing.send_error(request_id, error).await;
+                            alab_initial_resume::send_error(client.publication(), &self.outgoing, request_id, error).await; // ALAB(owned-local): actual failure, no synthetic success.
                             return Ok(ControlFlow::Break(()));
                         }
                     }
@@ -4593,9 +4593,8 @@ impl ThreadRequestProcessor {
                 };
 
                 let connection_id = request_id.connection_id;
-                self.outgoing
-                    .send_response_with_thread_originator(request_id, response, thread_originator)
-                    .await;
+                alab_initial_resume::publish(client.publication(), &self.outgoing,
+                    request_id, thread_id, &codex_thread, response, thread_originator).await; // ALAB(owned-local): store the actual original typed result before publication.
                 // `excludeTurns` is explicitly the cheap resume path, so avoid
                 // rebuilding history only to attribute a replayed usage update.
                 if let Some(token_usage_turn_id) = token_usage_turn_id {
@@ -4673,7 +4672,7 @@ impl ThreadRequestProcessor {
     #[tracing::instrument(level = "trace", skip_all)]
     async fn resume_running_thread(
         &self,
-        request_id: &ConnectionRequestId,
+        target: &ThreadResumeTarget, // ALAB(upgrade): real client or retained direct result target.
         params: &ThreadResumeParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
@@ -4695,6 +4694,8 @@ impl ThreadRequestProcessor {
         } else if let Ok(existing_thread_id) = ThreadId::from_string(&params.thread_id)
             && let Ok(existing_thread) = self.thread_manager.get_thread(existing_thread_id).await
         {
+            #[cfg(unix)]
+            target.alab_capture_loaded(existing_thread_id, &existing_thread); // ALAB(owned-local): exact loaded custody before fallible metadata.
             let source_thread = self
                 .read_stored_thread_for_resume(
                     &params.thread_id,
@@ -4713,7 +4714,11 @@ impl ThreadRequestProcessor {
                 .await?;
             let existing_thread_id = source_thread.thread_id;
             match self.thread_manager.get_thread(existing_thread_id).await {
-                Ok(existing_thread) => Some((existing_thread_id, existing_thread, source_thread)),
+                Ok(existing_thread) => { // ALAB(upgrade): capture the actual fallback resolution before later policy awaits.
+                    #[cfg(unix)]
+                    target.alab_capture_loaded(existing_thread_id, &existing_thread); // ALAB(owned-local): exact fallback resolution, never an ID substitute.
+                    Some((existing_thread_id, existing_thread, source_thread))
+                }
                 Err(_) => {
                     return Ok(RunningThreadResumeResult::NotRunning(Some(Box::new(
                         source_thread,
@@ -4774,6 +4779,18 @@ impl ThreadRequestProcessor {
                     && !is_running
                     && !existing_thread.has_active_turn().await
                 {
+                    let _goal_resume_guard = self
+                        .thread_state_manager
+                        .lock_goal_resume(existing_thread_id)
+                        .await; // ALAB(goal-recovery): replacement cannot remove the chronology owner during a host mutation.
+                    let same_thread = self
+                        .thread_manager
+                        .get_thread(existing_thread_id)
+                        .await
+                        .is_ok_and(|current| Arc::ptr_eq(&current, &existing_thread));
+                    if !same_thread {
+                        return Ok(RunningThreadResumeResult::NotRunning(None));
+                    }
                     // A loaded idle thread is only a cache entry. Shut it down
                     // before removing it so cold resume cannot duplicate a
                     // thread that timed out during shutdown.
@@ -4806,6 +4823,21 @@ impl ThreadRequestProcessor {
                 .check_thread_model_provider(existing_thread.config().await.as_ref())
                 .await
                 .map_err(|err| config_load_error(&err))?;
+            #[cfg(unix)]
+            if let ThreadResumeTarget::Backend(scope) = target { // ALAB(upgrade): keep all loaded policy above, without client-only hydration/replay.
+                alab_running_resume::prepare_projection(existing_thread.as_ref(), paginated_resume).await?; // ALAB(upgrade): retain actual loaded projection barrier for direct result too.
+                scope.complete(self, alab_task_resume::ResumedTarget {
+                    thread_id: existing_thread_id, thread: existing_thread.clone(), model: config_snapshot.model.clone(),
+                    model_provider: config_snapshot.model_provider_id.clone(),
+                }, (app_server_client_name, app_server_client_version), false).await?;
+                return Ok(RunningThreadResumeResult::BackendHandled);
+            }
+            #[cfg(unix)]
+            if let Some(publication) = target.alab_resume_publication() { // ALAB(owned-local): original loaded policy has selected this exact Arc.
+                publication.ready(self, existing_thread_id, &existing_thread, false).await?;
+            }
+            let ThreadResumeTarget::Client(client) = target else { return Err(internal_error("loaded resume has no result target")); }; // ALAB(upgrade): daemon never uses loaded client completion.
+            let request_id = client.request(); // ALAB(owned-local): retain original real request identity.
             let redact_resume_payloads =
                 should_redact_thread_resume_payloads(app_server_client_name.as_deref());
             let include_turns = !params.exclude_turns;
@@ -4829,7 +4861,8 @@ impl ThreadRequestProcessor {
                     )
                     .await?;
             }
-            alab_running_resume::prepare_projection(existing_thread.as_ref(), paginated_resume).await?; // ALAB(resume-projection): metadata-only running resumes also need the live projection barrier.
+            alab_running_resume::prepare_projection(existing_thread.as_ref(), paginated_resume)
+                .await?; // ALAB(resume-projection): metadata-only running resumes also need the live projection barrier.
             if paginated_resume && (include_turns || params.initial_turns_page.is_some()) {
                 self.thread_store
                     .persist_thread(existing_thread_id, PersistContext::Standard)
@@ -4957,6 +4990,7 @@ impl ThreadRequestProcessor {
             let command = crate::thread_state::ThreadListenerCommand::SendThreadResumeResponse {
                 request: Box::new(crate::thread_state::PendingThreadResumeRequest {
                     request_id: request_id.clone(),
+                    alab_retained_resume: client.publication(), // ALAB(owned-local): same actual accepted worker through original listener.
                     history_items,
                     cold_resume_token_usage_turn_id,
                     config_snapshot,
@@ -4971,6 +5005,8 @@ impl ThreadRequestProcessor {
                     paginated_initial_turns_page_with_active_slot,
                     resume_cursor_store,
                     redact_resume_payloads,
+                    #[cfg(unix)]
+                    alab_retained_tail: None, // ALAB(retained-frontier): ordinary resumes have no retained activation tail.
                 }),
                 completion_tx,
             };
@@ -5302,7 +5338,7 @@ impl ThreadRequestProcessor {
 
     async fn thread_fork_inner(
         &self,
-        request_id: ConnectionRequestId,
+        target: ForkTarget, // ALAB(upgrade): actual client or retained direct result.
         params: ThreadForkParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
@@ -5363,6 +5399,12 @@ impl ThreadRequestProcessor {
             exclude_turns,
             defer_goal_continuation,
         } = params;
+        #[cfg(unix)]
+        let cli_overrides = match &target { // ALAB(upgrade): preserve base config collision checks before installing an opaque child binding.
+            ForkTarget::Backend(scope) => scope.base_overrides(cli_overrides)?,
+            ForkTarget::Client(_) => cli_overrides,
+            ForkTarget::Initial(_) => cli_overrides, // ALAB(owned-local): genuine original fork params; no parent transport overlay.
+        };
         let include_turns = !exclude_turns;
         if attach_to_source {
             if ephemeral || defer_goal_continuation {
@@ -5480,9 +5522,9 @@ impl ThreadRequestProcessor {
                 "ephemeral paginated thread/fork requires `excludeTurns: true`",
             ));
         }
-        if paginated_source && include_turns {
+        if paginated_source && include_turns && let Some(request) = target.client() { // ALAB(upgrade): deprecation publication belongs to the actual client route.
             self.send_deprecation_notice(
-                request_id.connection_id,
+                request.connection_id,
                 PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY,
             )
             .await;
@@ -5656,7 +5698,7 @@ impl ThreadRequestProcessor {
             );
         }
         let (inherited_options, inherited_settings) = inherited_fork.unzip();
-        let options = if let Some(options) = inherited_options {
+        let mut options = if let Some(options) = inherited_options { // ALAB(upgrade): the actual fork owner installs its opaque private binding before Core.
             *options
         } else {
             // Derive a Config using the same logic as new conversation, honoring overrides if provided.
@@ -5670,10 +5712,11 @@ impl ThreadRequestProcessor {
                 ..StartThreadOptions::new(config)
             }
         };
+        target.configure(self, &mut options.config).await?; // ALAB(upgrade): actual backend binding; ordinary client policy is unchanged.
         let goals_enabled = options.config.features.enabled(Feature::Goals);
 
         let fallback_model_provider = options.config.model_provider_id.clone();
-        let parent_trace = self.request_trace_context(&request_id).await;
+        let parent_trace = target.trace(self).await; // ALAB(upgrade): backend trace is captured from its actual operation.
         let thread_source = thread_source.map(Into::into);
 
         let mut history_items = if prepared_fork.is_some() {
@@ -5759,6 +5802,11 @@ impl ThreadRequestProcessor {
             reserved_thread_id,
             ..options
         };
+        #[cfg(unix)]
+        if let Err(error) = target.before_core(self).await { // ALAB(owned-local): same reservation cleanup for actual backend/initial admission.
+            remove_pending_thread_metadata(self.thread_store.as_ref(), reserved_thread_id).await;
+            return Err(error);
+        }
         let new_thread = if let Some(prepared_fork) = prepared_fork {
             self.thread_manager
                 .fork_prepared_thread(fork_options, prepared_fork)
@@ -5797,6 +5845,8 @@ impl ThreadRequestProcessor {
             }
         };
 
+        #[cfg(unix)]
+        target.retain_created(thread_id, &forked_thread)?; // ALAB(upgrade): capture the exact birth before any fallible post-birth work.
         if let Some(settings) = inherited_settings {
             // Construct the restore future off the fork handler's stack
             Box::pin(async { Box::pin(forked_thread.restore_thread_settings(*settings)).await })
@@ -5856,17 +5906,20 @@ impl ThreadRequestProcessor {
         let instruction_sources = forked_thread.legacy_instruction_sources().await;
 
         // Auto-attach a conversation listener when forking a thread.
-        log_listener_attach_result(
-            self.ensure_conversation_listener(
-                thread_id,
-                request_id.connection_id,
-                /*raw_events_enabled*/ false,
-            )
-            .await,
-            thread_id,
-            request_id.connection_id,
-            "thread",
-        );
+        match &target { // ALAB(upgrade): backend observes lifecycle without a fabricated client subscription.
+            ForkTarget::Client(request) => log_listener_attach_result(
+                self.ensure_conversation_listener(thread_id, request.connection_id, /*raw_events_enabled*/ false).await,
+                thread_id, request.connection_id, "thread"),
+            #[cfg(unix)]
+            ForkTarget::Backend(scope) => scope.bind_listener(self, thread_id, &forked_thread).await?,
+            #[cfg(unix)]
+            ForkTarget::Initial(scope) => {
+                let request = scope.request();
+                log_listener_attach_result(self.ensure_conversation_listener(thread_id, request.connection_id, false).await,
+                    thread_id, request.connection_id, "thread");
+                scope.bind_fork_listener(self.listener_task_context(), thread_id, &forked_thread).await?;
+            }, // ALAB(owned-local): retain actual listener after C1 EOF without a synthetic subscriber.
+        }
 
         let config_snapshot = forked_thread.config_snapshot().await;
 
@@ -5968,6 +6021,22 @@ impl ThreadRequestProcessor {
             multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         };
 
+        #[cfg(unix)]
+        if let ForkTarget::Initial(scope) = &target { // ALAB(owned-local): exact captured fork/checkout bind precedes original success publication.
+            scope.stage_fork(thread_id, &forked_thread, &response, &thread_originator).await?;
+        }
+        #[cfg(unix)]
+        if let ForkTarget::Backend(scope) = &target { // ALAB(upgrade): direct typed result never waits for frontend publication or UI ACK.
+            return scope.complete(self, response).await;
+        }
+        let response = target.client_response(response)?; // ALAB(owned-local): only Initial adds its actual typed binding/compatibility observation.
+        let request_id = match target { // ALAB(upgrade): preserve actual client response/replay order below.
+            ForkTarget::Client(request) => request,
+            #[cfg(unix)]
+            ForkTarget::Initial(scope) => scope.request().clone(),
+            #[cfg(unix)]
+            ForkTarget::Backend(_) => return Err(internal_error("fork has no client result target")),
+        };
         let notif = thread_started_notification(thread);
         let connection_id = request_id.connection_id;
         self.outgoing
@@ -6979,7 +7048,8 @@ fn build_thread_from_snapshot(
         status: ThreadStatus::NotLoaded,
         path,
         cwd: config_snapshot.cwd().clone(),
-        cli_version: codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")).to_string(), // ALAB(version): running executable identity
+        cli_version: codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION"))
+            .to_string(), // ALAB(version): running executable identity
         originator: (!config_snapshot.originator.is_empty())
             .then(|| config_snapshot.originator.clone()),
         agent_nickname: config_snapshot.session_source.get_nickname(),
@@ -7046,3 +7116,28 @@ mod thread_processor_tests;
 // ALAB(exec-recovery): preserve captured configuration while using the canonical resume reader.
 #[path = "../../../alab-core/glue/exec_bootstrap_history.rs"]
 mod exec_bootstrap_history;
+
+#[path = "../../../alab-core/glue/initial_session_start_parameters.rs"]
+pub(crate) mod alab_initial_start; // ALAB(owned-local): share exact original start preparation with prospective validation.
+#[cfg(unix)]
+#[path = "../../../alab-core/glue/initial_session_operation.rs"]
+pub(crate) mod alab_initial_session; // ALAB(owned-local): one original queued worker with real permits/context.
+
+#[cfg(unix)]
+#[path = "../../../alab-core/glue/retained_primary_processor.rs"]
+mod alab_primary_processor; // ALAB(owned-local): same actual processor resource context for explicit primary ownership.
+
+#[path = "../../../alab-core/glue/initial_session_resume.rs"]
+pub(crate) mod alab_initial_resume; // ALAB(owned-local): actual client resume target, original complete loaded/cold policy.
+
+#[cfg(unix)]
+#[path = "../../../alab-core/glue/retained_frontier_runtime.rs"]
+pub(crate) mod alab_retained_frontier; // ALAB(retained-frontier): actual same-Core/lease consumer, no rebuilt runtime.
+
+#[cfg(unix)]
+#[path="../../../alab-core/glue/retained_side_view_unsubscribe.rs"]
+pub(crate) mod alab_side_view_unsubscribe; // ALAB(retained-side): original unsubscribe policy with private same-Core observer.
+
+#[cfg(unix)]
+#[path="../../../alab-core/glue/retained_side_rollback_target.rs"]
+pub(crate) mod alab_side_rollback_target; // ALAB(retained-side): exact root under original removal serialization.

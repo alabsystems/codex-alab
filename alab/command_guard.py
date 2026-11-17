@@ -14,8 +14,12 @@ observation stops the command; existing package clients retain exit 1 there.
 --inherit-fds preserves a compiler caller's inheritable descriptors; it is
 refused for cache guardians, whose existing descriptor policy stays in place.
 --result-file optionally records a normal command's normalized status only after
-the existing guardian retires its owned group; inherited-timeout records retain
-their separate raw-status format. Neither record is source qualification.
+the existing guardian retires its owned group; --result-fd does the same on an
+anonymous caller-owned inode that is not inherited by source children. macOS
+exposes no cross-process descriptor reopening primitive; Linux's documented
+uncontained mode is not a security boundary.
+Inherited-timeout records retain their separate raw-status format. No record is
+source qualification.
 """
 
 import errno
@@ -182,7 +186,7 @@ class Custodian:
         return self.returncode
 
 
-def caller_descriptors(inherit):
+def caller_descriptors(inherit, exclude=()):
     """Snapshot caller opt-in before internal pipes can occupy descriptor numbers."""
     if not inherit:
         return ()
@@ -191,7 +195,7 @@ def caller_descriptors(inherit):
         raise RuntimeError("caller descriptors cannot be enumerated on this host")
     descriptors = []
     for name in os.listdir(directory):
-        if not name.isdigit() or int(name) <= 2:
+        if not name.isdigit() or int(name) <= 2 or int(name) in exclude:
             continue
         descriptor = int(name)
         try:
@@ -334,10 +338,20 @@ def retire_command(child):
     return code if code >= 0 else 128 - code
 
 
-def serve_command(argv, env, descriptors, lifeline, events, restore_child_signals):
+def serve_command(argv, env, descriptors, lifeline, events, restore_child_signals,
+                  close_fds=()):
     """Forked single-threaded custodian; inherited flock closes only after retirement."""
     child, failure, code = None, None, 1
     try:
+        # Anonymous result writers belong only to the guardian parent. A
+        # same-UID source child must not recover one through this long-lived
+        # custodian ancestor's descriptor table.
+        for descriptor in close_fds:
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                if error.errno != errno.EBADF:
+                    raise
         os.setsid()
         child = subprocess.Popen(argv, start_new_session=True, close_fds=True,
                                  pass_fds=descriptors, preexec_fn=restore_child_signals,
@@ -358,7 +372,7 @@ def serve_command(argv, env, descriptors, lifeline, events, restore_child_signal
     return code
 
 
-def spawn_custodian(argv, env, descriptors, restore_child_signals):
+def spawn_custodian(argv, env, descriptors, restore_child_signals, close_fds=()):
     allocated = []
     reader, sender = None, None
     try:
@@ -390,7 +404,7 @@ def spawn_custodian(argv, env, descriptors, restore_child_signals):
         try:
             with sender:
                 code = serve_command(argv, env, descriptors, lifeline, sender,
-                                     restore_child_signals)
+                                     restore_child_signals, close_fds=close_fds)
         finally:
             os._exit(code)
     child.pid = pid
@@ -418,7 +432,7 @@ def spawn_custodian(argv, env, descriptors, restore_child_signals):
     return child
 
 
-def run(argv, *, disk_floor=None, env=None, inherit_fds=False):
+def run(argv, *, disk_floor=None, env=None, inherit_fds=False, exclude_fds=()):
     """Keep a surviving custodian responsible for the command until all writers stop."""
     if not hasattr(os, "waitid") and not hasattr(select, "kqueue"):
         raise RuntimeError("the cache guardian requires waitid or kqueue")
@@ -439,8 +453,9 @@ def run(argv, *, disk_floor=None, env=None, inherit_fds=False):
             signal.signal(signal.SIGCHLD, handlers[signal.SIGCHLD])
             signal.pthread_sigmask(signal.SIG_SETMASK, prior_mask)
 
-        descriptors = caller_descriptors(inherit_fds)
-        child = spawn_custodian(argv, env, descriptors, restore_child_signals)
+        descriptors = caller_descriptors(inherit_fds, exclude_fds)
+        child = spawn_custodian(argv, env, descriptors, restore_child_signals,
+                                close_fds=exclude_fds)
         started = read_event(child.events)
         if "error" in started:
             raise restore_error(started["error"])
@@ -551,6 +566,95 @@ def run_inherited(argv, *, timeout, result_file=None):
         return code if code >= 0 else 128 - code
 
 
+def completion_bytes(argv, code):
+    return json.dumps({"schema": 1, "kind": "guardian-command-completion",
+                       "completed": True, "argv": list(argv),
+                       "normalized_exit_status": code,
+                       "cleanup_scope": "owned command process group"},
+                      ensure_ascii=True).encode() + b"\n"
+
+
+def write_all(descriptor, data):
+    while data:
+        written = os.write(descriptor, data)
+        if written == 0:
+            raise OSError(errno.EIO, "zero-length command completion receipt write")
+        data = data[written:]
+
+
+def _receipt_cleanup_error(primary, cleanup_errors):
+    """Select failure authority after cleanup, then attempt only advisory notes."""
+    selected = primary
+    if issubclass(type(primary), Exception):
+        for _phase, error in cleanup_errors:
+            error_type = type(error)
+            if issubclass(error_type, KeyboardInterrupt):
+                selected = error
+                break
+            if error_type is not SystemExit:
+                continue
+            code = error.code
+            successful = code is None
+            if issubclass(type(code), int):
+                code = int.__index__(code)
+                successful = (code & 0xff == 0
+                              if os.name == "posix" and -sys.maxsize - 1 <= code <= sys.maxsize
+                              else code == 0)
+            if not successful:
+                selected = error
+                break
+    for phase, _error in cleanup_errors:
+        try:
+            selected.add_note(f"command completion receipt {phase} failed")
+        except BaseException:
+            pass
+    return selected
+
+
+def run_recorded_fd(argv, *, result_fd, disk_floor=None, inherit_fds=False):
+    """Publish live completion on an unlinked empty inode not inherited by the child.
+
+    Unlike retained --result-file evidence, this ephemeral controller channel
+    needs no durability flush. The exact write is the final fallible operation;
+    every earlier failure truncates the caller's still-open inode.
+    """
+    descriptor = os.dup(result_fd)
+    validated = False
+    try:
+        state = os.fstat(descriptor)
+        if not stat.S_ISREG(state.st_mode) or state.st_size != 0 or state.st_nlink != 0:
+            raise ValueError("--result-fd requires an empty unlinked regular file")
+        access = fcntl.fcntl(descriptor, fcntl.F_GETFL) & os.O_ACCMODE
+        if access not in (os.O_WRONLY, os.O_RDWR):
+            raise ValueError("--result-fd must be writable")
+        if os.lseek(descriptor, 0, os.SEEK_CUR) != 0:
+            raise ValueError("--result-fd must start at offset zero")
+        validated = True
+        code = run(argv, disk_floor=disk_floor, inherit_fds=inherit_fds,
+                   exclude_fds=(result_fd, descriptor))
+        write_all(descriptor, completion_bytes(argv, code))
+        # Keep this process's duplicate live until process exit: a late close or
+        # durability error must not turn exact live control bytes into failure.
+        descriptor = None
+        return code
+    except BaseException as primary:
+        cleanup_errors = []
+        if descriptor is not None:
+            if validated:
+                try:
+                    os.ftruncate(descriptor, 0)
+                except BaseException as error:
+                    cleanup_errors.append(("invalidation", error))
+            try:
+                os.close(descriptor)
+            except BaseException as error:
+                cleanup_errors.append(("close", error))
+        selected = _receipt_cleanup_error(primary, cleanup_errors)
+        if selected is not primary:
+            raise selected from primary
+        raise
+
+
 def run_recorded(argv, *, result_file, disk_floor=None, inherit_fds=False):
     """Claim a fresh receipt before launch; complete it only after run() retires.
 
@@ -571,17 +675,9 @@ def run_recorded(argv, *, result_file, disk_floor=None, inherit_fds=False):
         current = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
         if (current.st_dev, current.st_ino) != (claimed.st_dev, claimed.st_ino):
             raise RuntimeError("command completion receipt was replaced after its claim")
-        data = json.dumps({"schema": 1, "kind": "guardian-command-completion",
-                           "completed": True, "argv": list(argv),
-                           "normalized_exit_status": code,
-                           "cleanup_scope": "owned command process group"},
-                          ensure_ascii=True).encode() + b"\n"
+        data = completion_bytes(argv, code)
         # Raw writes cannot reflush a buffered complete record after invalidation.
-        while data:
-            written = os.write(descriptor, data)
-            if written == 0:
-                raise OSError(errno.EIO, "zero-length command completion receipt write")
-            data = data[written:]
+        write_all(descriptor, data)
         os.fsync(descriptor)
         os.fsync(parent)
         # Close inside the publication guard too: a close failure must invalidate
@@ -591,16 +687,13 @@ def run_recorded(argv, *, result_file, disk_floor=None, inherit_fds=False):
         finished, parent = parent, None
         os.close(finished)
         return code
-    except BaseException as error:
-        def note(cleanup_error):
-            if hasattr(error, "add_note"):
-                error.add_note(f"completion receipt invalidation failed: {cleanup_error}")
-
+    except BaseException as primary:
+        cleanup_errors = []
         if descriptor is not None:
             try:
                 os.ftruncate(descriptor, 0)
-            except OSError as invalidation_error:
-                note(invalidation_error)
+            except BaseException as error:
+                cleanup_errors.append(("invalidation", error))
         if claimed is not None:
             try:
                 current = os.stat(path.name if parent is not None else path,
@@ -609,16 +702,19 @@ def run_recorded(argv, *, result_file, disk_floor=None, inherit_fds=False):
                     os.unlink(path.name if parent is not None else path, dir_fd=parent)
             except FileNotFoundError:
                 pass
-            except OSError as invalidation_error:
+            except BaseException as error:
                 # A permanent/hostile filesystem may also refuse invalidation.
-                # Keep that limitation and the original failure; never return 0.
-                note(invalidation_error)
-        for remaining in (descriptor, parent):
+                # Record that limit and continue retiring the owned descriptors.
+                cleanup_errors.append(("invalidation", error))
+        for phase, remaining in (("close", descriptor), ("parent close", parent)):
             if remaining is not None:
                 try:
                     os.close(remaining)
-                except OSError as close_error:
-                    note(close_error)
+                except BaseException as error:
+                    cleanup_errors.append((phase, error))
+        selected = _receipt_cleanup_error(primary, cleanup_errors)
+        if selected is not primary:
+            raise selected from primary
         raise
 
 
@@ -627,6 +723,7 @@ def main():
     lockfile = None
     package_repo = None
     result_file = None
+    result_fd = None
     inherit_fds = False
     resource_stop = False
     disk_paths, minimum_gib = [], None
@@ -639,7 +736,9 @@ def main():
             inherit_fds = True
             argv = argv[1:]
             continue
-        if len(argv) < 2 or argv[0] not in ("--cache-lock", "--disk-path", "--min-free-gib", "--result-file", "--package-source-repo"):
+        if len(argv) < 2 or argv[0] not in ("--cache-lock", "--disk-path", "--min-free-gib",
+                                            "--result-file", "--result-fd",
+                                            "--package-source-repo"):
             break
         option, value, *argv = argv
         if option == "--cache-lock":
@@ -647,7 +746,19 @@ def main():
         elif option == "--disk-path":
             disk_paths.append(value)
         elif option == "--result-file":
+            if result_file is not None or result_fd is not None:
+                print("alab: a result receipt may be supplied only once", file=sys.stderr)
+                return 2
             result_file = value
+        elif option == "--result-fd":
+            if result_file is not None or result_fd is not None:
+                print("alab: a result receipt may be supplied only once", file=sys.stderr)
+                return 2
+            try:
+                result_fd = int(value)
+            except ValueError:
+                print("alab: result descriptor must be an integer", file=sys.stderr)
+                return 2
         elif option == "--package-source-repo":
             package_repo = value
         else:
@@ -659,7 +770,7 @@ def main():
     if argv[:1] == ["--"]:
         argv = argv[1:]
     if not argv:
-        print("usage: command_guard.py [--cache-lock FILE] [--result-file FILE] "
+        print("usage: command_guard.py [--cache-lock FILE] [--result-file FILE | --result-fd FD] "
               "[--min-free-gib N --disk-path PATH ...] -- COMMAND [ARG ...]", file=sys.stderr)
         return 2
     try:
@@ -667,13 +778,16 @@ def main():
         if disk_paths and disk_floor is None:
             raise ValueError("--disk-path requires --min-free-gib")
         if argv[:1] == ["--inherited-group-timeout"]:
-            if lockfile is not None or disk_floor is not None or package_repo is not None or inherit_fds or resource_stop:
+            if (lockfile is not None or disk_floor is not None or package_repo is not None
+                    or inherit_fds or resource_stop or result_fd is not None):
                 raise ValueError("an inherited-group command cannot own cache or disk guards")
             if len(argv) < 4 or argv[2] != "--":
                 raise ValueError("inherited-group timeout requires SECONDS -- COMMAND")
             return run_inherited(argv[3:], timeout=float(argv[1]), result_file=result_file)
-        if result_file is not None and lockfile is not None:
-            raise ValueError("--result-file cannot record a cache guardian")
+        if result_file is not None and result_fd is not None:
+            raise ValueError("--result-file and --result-fd are mutually exclusive")
+        if (result_file is not None or result_fd is not None) and lockfile is not None:
+            raise ValueError("a result receipt cannot record a cache guardian")
         if package_repo is not None and lockfile is None:
             raise ValueError("--package-source-repo requires --cache-lock")
         if inherit_fds and lockfile is not None:
@@ -695,6 +809,11 @@ def main():
         if result_file is not None:
             return run_recorded(argv, result_file=result_file, disk_floor=disk_floor,
                                 inherit_fds=inherit_fds)
+        if result_fd is not None:
+            if result_fd <= 2:
+                raise ValueError("--result-fd must be greater than 2")
+            return run_recorded_fd(argv, result_fd=result_fd, disk_floor=disk_floor,
+                                   inherit_fds=inherit_fds)
         if inherit_fds:
             return run(argv, disk_floor=disk_floor, inherit_fds=True)
         return run(argv) if disk_floor is None else run(argv, disk_floor=disk_floor)

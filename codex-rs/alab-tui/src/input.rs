@@ -79,6 +79,7 @@ pub fn buffer_input(bytes: &[u8]) -> io::Result<()> {
     broker().buffer_input(bytes, crossterm::terminal::is_raw_mode_enabled()?)
 }
 pub fn discard_buffered_input() -> io::Result<crossterm::event::InputDiscardStatus> {
+    crate::upgrade_editor_startup::check_input_discard()?;
     if !owned() {
         return crossterm::event::discard_buffered_input();
     }
@@ -173,6 +174,7 @@ pub fn cursor_position(
 /// Preserve the existing protected-screen policy using this same input owner.
 /// The caller supplies its platform's non-consuming OS-queue readability check.
 pub fn discard_pending(readable: impl Fn() -> io::Result<bool>) -> io::Result<()> {
+    crate::upgrade_editor_startup::check_input_discard()?;
     discard_buffered_input()?;
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
@@ -318,3 +320,26 @@ mod tests {
         println!("{SUCCESS}");
     }
 }
+
+#[cfg(unix)]
+#[path = "retained_original_editor_input.rs"]
+mod original_editor;
+#[cfg(unix)]
+pub use original_editor::OriginalEditorInput;
+#[cfg(unix)]
+pub use original_editor::OriginalEditorResources;
+#[cfg(unix)]
+pub use original_editor::OriginalEditorResourcesRefused;
+
+#[cfg(unix)]
+pub use original_editor::C0EditorResources;
+#[cfg(unix)]
+pub use original_editor::C0EditorStage;
+#[cfg(unix)]
+pub use original_editor::C0EditorStageRefused;
+#[cfg(unix)]
+pub use original_editor::OriginalEditorInputStage;
+#[cfg(unix)]
+pub use original_editor::OriginalEditorInputStageRefused;
+#[cfg(unix)]
+pub use original_editor::OriginalEditorInputStageRollbackRefused;

@@ -109,3 +109,8 @@ impl HistoryCell for StartupWarningsCell {
             .collect()
     }
 }
+
+// ALAB(retained-ui): retain original auxiliary cell fields, not rendered substitutes.
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_startup_warnings.rs"]
+pub(in crate::history_cell) mod alab_retained_startup_warnings;

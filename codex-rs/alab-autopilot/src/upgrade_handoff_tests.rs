@@ -576,6 +576,7 @@ where
 pub(super) struct Harness {
     pub(super) autopilot: Arc<Autopilot>,
     pub(super) fake: FakeAterm,
+    goal_lifecycle: Option<Arc<late_goal::LateGoal>>,
     pub(super) shared: &'static Shared,
     pub(super) rt: Arc<ThreadRt>,
     pub(super) test: TestCodex,
@@ -651,6 +652,43 @@ impl Default for HarnessOptions {
 }
 
 impl Harness {
+    pub(super) async fn start_goal_lifecycle(
+        &self,
+        session_store: &codex_extension_api::ExtensionData,
+        thread_store: &codex_extension_api::ExtensionData,
+    ) {
+        let source = codex_protocol::protocol::SessionSource::Exec;
+        self.goal_lifecycle
+            .as_ref()
+            .expect("installed native goal lifecycle")
+            .on_thread_start(codex_extension_api::ThreadStartInput {
+                config: &self.test.config,
+                session_source: &source,
+                persistent_thread_state_available: true,
+                environments: &[],
+                mcp_resource_client: None,
+                extension_metrics: None,
+                session_store,
+                thread_store,
+            })
+            .await;
+    }
+
+    pub(super) async fn stop_goal_lifecycle(
+        &self,
+        session_store: &codex_extension_api::ExtensionData,
+        thread_store: &codex_extension_api::ExtensionData,
+    ) {
+        self.goal_lifecycle
+            .as_ref()
+            .expect("installed native goal lifecycle")
+            .on_thread_stop(codex_extension_api::ThreadStopInput {
+                session_store,
+                thread_store,
+            })
+            .await;
+    }
+
     /// Request a bounded diagnostic export while these owned roots still exist.
     pub(super) fn retain_artifacts(&mut self) {
         lock(&self.diagnostics).requested = true;
@@ -723,6 +761,19 @@ impl Harness {
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
             .mount(&self._server)
+            .await;
+    }
+
+    pub(super) async fn retry_idle_goal(&self) {
+        let session = codex_extension_api::ExtensionData::new("goal-idle-retry");
+        self.goal_lifecycle
+            .as_ref()
+            .expect("installed native goal lifecycle")
+            .on_thread_idle(ThreadIdleInput {
+                cause: codex_extension_api::ThreadIdleCause::Completed,
+                session_store: &session,
+                thread_store: self.test.codex.thread_extension_data(),
+            })
             .await;
     }
 
@@ -994,17 +1045,16 @@ impl Harness {
         if let Some(hooks) = &hooks {
             builder.tool_lifecycle_contributor(Arc::clone(&hooks.observer));
         }
-        let late_goal = goals.as_ref().map(|_| {
-            let late = Arc::new(late_goal::LateGoal::with_event_sink(event_sink.clone()));
-            late.register(&mut builder);
-            if accounting_and_tools {
-                builder.config_contributor(Arc::clone(&late) as _);
-                builder.token_usage_contributor(Arc::clone(&late) as _);
-                builder.tool_lifecycle_contributor(Arc::clone(&late) as _);
-                builder.tool_contributor(Arc::clone(&late) as _);
-            }
-            late
-        });
+        // Capture the native goal runtime even without a pilot goal-service adapter.
+        let native_goals = goals.unwrap_or_else(|| Arc::new(GoalService::new()));
+        let late_goal = Arc::new(late_goal::LateGoal::with_event_sink(event_sink.clone()));
+        late_goal.register(&mut builder);
+        if accounting_and_tools {
+            builder.config_contributor(Arc::clone(&late_goal) as _);
+            builder.token_usage_contributor(Arc::clone(&late_goal) as _);
+            builder.tool_lifecycle_contributor(Arc::clone(&late_goal) as _);
+            builder.tool_contributor(Arc::clone(&late_goal) as _);
+        }
         observe("setup: start mock server");
         let server = responses::start_mock_server().await;
         let mut test_builder = test_codex().with_extensions(Arc::new(builder.build()));
@@ -1070,15 +1120,20 @@ impl Harness {
         }
         .unwrap_or_else(|err| panic!("{err}"));
         observe("setup: bind goal runtime");
+        *lock(&autopilot.upgrade_invocation_fixture) = Some(
+            codex_core::config::ExecConfiguration::capture(
+                &test.config,
+                &codex_core::config::ConfigOverrides::default(),
+            )
+            .expect("fixture's native loader inputs"),
+        );
         autopilot.bind_thread_manager(Arc::downgrade(&test.thread_manager));
-        if let (Some(late), Some(goals)) = (&late_goal, goals) {
-            late.bind(&test, Arc::clone(&goals)).await;
-            if is_resume {
-                goals
-                    .restore_thread_runtime_after_resume(test.session_configured.thread_id)
-                    .await
-                    .expect("restore the resumed native goal runtime");
-            }
+        late_goal.bind(&test, Arc::clone(&native_goals)).await;
+        if is_resume {
+            native_goals
+                .restore_thread_runtime_after_resume(test.session_configured.thread_id)
+                .await
+                .expect("restore the resumed native goal runtime");
         }
         observe("setup: fixture paths and launch identity");
         let rt = test
@@ -1171,6 +1226,7 @@ impl Harness {
         Self {
             autopilot,
             fake,
+            goal_lifecycle: Some(late_goal),
             shared,
             rt,
             test,

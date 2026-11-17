@@ -5864,7 +5864,7 @@ fn fresh_session_keeps_its_name_and_draft_when_cycling_backends() -> Result<()> 
                 .expect("start without an explicit default change");
                 assert_eq!(saved_defaults()?, expected_defaults);
                 assert_eq!(app.local_settings.tui.default_hosts, expected_defaults);
-                assert_eq!(app.new_thread_host_preference().await, Some("local"));
+                assert_eq!(app.new_thread_host_preference(backends.session_at(backends.displayed)).await, Some("local"));
                 backends.shutdown().await?;
                 proxy.await??;
                 Ok(())

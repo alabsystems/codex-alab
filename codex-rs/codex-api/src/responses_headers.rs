@@ -16,7 +16,7 @@ pub(crate) fn json_headers_to_http_headers(headers: &JsonMap<String, Value>) -> 
         let Some(header_value) = json_header_value(value) else {
             continue;
         };
-        mapped.insert(header_name, header_value);
+        alab_retry_headers::insert(&mut mapped, header_name, header_value); // ALAB(capacity): retain repeated provider retry advice before deadline selection.
     }
     mapped
 }
@@ -30,3 +30,6 @@ fn json_header_value(value: &Value) -> Option<HeaderValue> {
     };
     HeaderValue::from_str(&value).ok()
 }
+
+#[path = "../../alab-core/glue/json_retry_headers.rs"]
+mod alab_retry_headers; // ALAB(capacity): only retry advice changes JSON header collision handling.

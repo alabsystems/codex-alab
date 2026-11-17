@@ -6,11 +6,22 @@ request. The first request of every turn reads current backend usage; a later
 request of that turn reuses a reading that permitted it only while the reading's
 headroom proves the conservative 95% read threshold out of reach, and reads again
 otherwise (see "Reusing a clear usage reading" below). Automatic redemption needs
-the same five-hour or weekly window to report at least 99% utilization and a
-future natural refresh. A missing or elapsed refresh does not authorize redemption. Unknown identity or
+the weekly window to report at least 99% utilization and more than 24 hours until
+its natural refresh. Exactly 24 hours, a nearer refresh, a five-hour-only wall,
+and a missing or elapsed weekly refresh preserve the earned reset. Unknown identity or
 permission, nonordinary quota and explicit spend denial do not authorize this
 action. These checks apply to preflight, reactive recovery and uncertain request
 retries alike. No AI prompt chooses or redeems the reset.
+
+At a usage wall, Codex prints that it considered an earned reset, how many are
+available, each expiration, and the decision to redeem or the reason to preserve
+them. It reports the redemption result and only resumes when a fresh usage read
+confirms restoration. Failed inventory reads are reported as unavailable rather
+than as zero credits. This notice appears in the live TUI transcript and exec output.
+These warning events are transient: upstream's rollout persistence policy drops
+them, so reopening a saved thread does not restore earlier reset notices. Reset
+custody and receipts remain durable independently of this presentation.
+
 Immediately before every consumption POST, including a pending operation's retry,
 Codex fetches usage again and checks the same account and reset cycle. Credit-list
 waits and durable ledger writes cannot preserve an earlier reading's permission
@@ -26,8 +37,10 @@ Preflight uses the same account-bound custody lock and idempotent redemption
 record as reactive recovery. A consumed credit cannot lead to another preflight
 redemption before fresh usage has been observed below the threshold. The original
 request, input and completed tool results stay in place. Reactive recovery also
-handles ordinary five-hour exhaustion, including a request that consumes its
-remaining allowance before another preflight can run.
+handles ordinary five-hour exhaustion by waiting for restored allowance, while
+weekly exhaustion can redeem an earned reset under the same >24-hour policy.
+This includes a request that consumes its remaining allowance before another
+preflight can run.
 
 A live usage wall normally waits for its provider reset and retry backoff. It can
 resume earlier when an accepted full account usage read explicitly permits
@@ -71,8 +84,8 @@ their original reset deadline after restart; no account scope is inferred
 from a later usage read. A new live wall can bind the known native account even
 when no usage read preceded it. The bridge does not poll separately, buy credits,
 sign in or switch accounts. Root TUI and exec samplers redeem earned resets
-before ordinary five-hour or weekly exhaustion, using the preflight described
-above. They also retain reactive recovery if a request exhausts its remaining
+before ordinary weekly exhaustion when more than 24 hours remain, using the
+preflight described above. They also retain reactive recovery if a request exhausts its remaining
 allowance. Redemption binds the actual account, user and allowance cycle, retains
 the chosen credit and idempotency key before sending, and continues only after
 a fresh read confirms restored included usage. It never purchases credits.
@@ -288,19 +301,20 @@ package index, pin, selected runtime or credentials.
 ## Automatic earned resets
 
 An active ALab root turn can redeem an existing earned Codex reset credit when a
-fresh authenticated usage read reports a five-hour or weekly window at least
-99% used and that same window's natural refresh is still in the future, including
-refreshes more than 24 hours away. A missing or elapsed refresh is ineligible. An unknown account or user, explicit credit or spend-control refusal,
+fresh authenticated usage read reports a weekly window at least 99% used and
+that same window's natural refresh is more than 24 hours away. A five-hour-only
+wall, a refresh within 24 hours, and a missing or elapsed refresh are ineligible. An unknown account or user, explicit credit or spend-control refusal,
 and missing available reset credits do not authorize redemption. The operation
 does not purchase credits.
 
 Redemption policy is separate from the conservative 95% read-cache threshold.
-The common selector requires at least 99% utilization and a future refresh
-on one window before credit selection or retrying a pending
+The common selector requires at least 99% utilization and a refresh more than
+24 hours away on one weekly window before credit selection or retrying a pending
 redemption; utilization from
 one window and the refresh time of another cannot be combined. Scratch HTTP tests
 offer a real mock credit, admit weekly refreshes more than 24 hours away, and
-assert no consumption below 99% or after the refresh, including
+assert no consumption below 99%, within 24 hours of refresh, or on five-hour-only
+windows, including
 retries using a durable pending key. No live credits are used.
 An exhausted ordinary allowance with no available earned credit still polls for
 ordinary restoration or reaches an available account handoff. Pending or

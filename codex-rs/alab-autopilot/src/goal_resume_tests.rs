@@ -6,11 +6,9 @@
 use super::upgrade_handoff_tests::Harness;
 use super::upgrade_handoff_tests::native_test;
 use super::*;
+use crate::extension::test_progress;
 use std::future::Future;
 use std::task::Poll;
-
-#[path = "../tests/support/progress.rs"]
-mod test_progress;
 
 #[test]
 fn a_usage_resume_preserves_a_goal_changed_while_it_waits_for_the_mutation_permit() {
@@ -70,48 +68,63 @@ fn a_usage_resume_preserves_a_goal_changed_while_it_waits_for_the_mutation_permi
                 // the person's intent. The stale automatic resume must queue behind it.
                 let (held, holding) = tokio::sync::oneshot::channel();
                 let (change, changing) = tokio::sync::oneshot::channel();
+                let (applied, applying) = tokio::sync::oneshot::channel();
+                let (retire, retiring) = tokio::sync::oneshot::channel();
                 let service = Arc::clone(&goals);
                 let person_db = db.clone();
                 let id = h.rt.id;
                 let person = tokio::spawn(async move {
                     service
-                        .set_thread_goal(
-                            &person_db,
-                            GoalSetRequest {
-                                thread_id: id,
-                                objective: if changed == "objective" {
-                                    GoalObjectiveUpdate::Set("the person's revised task")
-                                } else {
-                                    GoalObjectiveUpdate::Keep
-                                },
-                                status: Some(match changed {
-                                    "paused" => codex_protocol::protocol::ThreadGoalStatus::Paused,
-                                    "blocked" => {
-                                        codex_protocol::protocol::ThreadGoalStatus::Blocked
-                                    }
-                                    "budget-limited" => {
-                                        codex_protocol::protocol::ThreadGoalStatus::BudgetLimited
-                                    }
-                                    "complete" => {
-                                        codex_protocol::protocol::ThreadGoalStatus::Complete
-                                    }
-                                    _ => codex_protocol::protocol::ThreadGoalStatus::UsageLimited,
-                                }),
-                                token_budget: if changed == "budget" {
-                                    GoalTokenBudgetUpdate::Set(Some(500))
-                                } else {
-                                    GoalTokenBudgetUpdate::Keep
-                                },
-                                max_goal_token_budget: None,
-                            },
-                            async {
-                                held.send(()).expect("person holds the mutation permit");
-                                changing.await.expect("release person's recorded intent");
-                                Ok(())
-                            },
-                        )
+                        .alab_scope_host_goal_mutation(id, async {
+                            let outcome = service
+                                .set_thread_goal(
+                                    &person_db,
+                                    GoalSetRequest {
+                                        thread_id: id,
+                                        objective: if changed == "objective" {
+                                            GoalObjectiveUpdate::Set("the person's revised task")
+                                        } else {
+                                            GoalObjectiveUpdate::Keep
+                                        },
+                                        status: Some(match changed {
+                                            "paused" => {
+                                                codex_protocol::protocol::ThreadGoalStatus::Paused
+                                            }
+                                            "blocked" => {
+                                                codex_protocol::protocol::ThreadGoalStatus::Blocked
+                                            }
+                                            "budget-limited" => {
+                                                codex_protocol::protocol::ThreadGoalStatus::BudgetLimited
+                                            }
+                                            "complete" => {
+                                                codex_protocol::protocol::ThreadGoalStatus::Complete
+                                            }
+                                            _ => codex_protocol::protocol::ThreadGoalStatus::UsageLimited,
+                                        }),
+                                        token_budget: if changed == "budget" {
+                                            GoalTokenBudgetUpdate::Set(Some(500))
+                                        } else {
+                                            GoalTokenBudgetUpdate::Keep
+                                        },
+                                        max_goal_token_budget: None,
+                                    },
+                                    async {
+                                        held.send(()).expect("person holds the mutation permit");
+                                        changing.await.expect("release person's recorded intent");
+                                        Ok(())
+                                    },
+                                )
+                                .await
+                                .expect("person's mutation");
+                            outcome.apply_runtime_effects(&service).await;
+                            applied.send(()).expect("person's exact effects applied");
+                            // Keep the real host permit while the test stages the newer
+                            // identity/input and reads its expected state. Releasing it
+                            // earlier would let the queued resume overtake those controls.
+                            retiring.await.expect("release person's mutation custody");
+                        })
                         .await
-                        .expect("person's mutation")
+                        .expect("person's native mutation custody")
                 });
                 progress.phase("wait for person's mutation permit");
                 holding
@@ -146,7 +159,7 @@ fn a_usage_resume_preserves_a_goal_changed_while_it_waits_for_the_mutation_permi
                 .await;
                 progress.phase("finish person's goal mutation");
                 change.send(()).expect("person's mutation goes first");
-                person.await.expect("person's mutation finished");
+                applying.await.expect("person's mutation and effects finished");
                 // A replacement may retain the same objective and limit; its identity
                 // still belongs to the person's new task, never the stale resume.
                 if changed == "replacement" {
@@ -187,6 +200,9 @@ fn a_usage_resume_preserves_a_goal_changed_while_it_waits_for_the_mutation_permi
                     .await
                     .expect("person's goal")
                     .expect("goal exists");
+                progress.phase("release person's mutation custody");
+                retire.send(()).expect("person's staged changes go first");
+                person.await.expect("person's mutation custody finished");
                 progress.phase("complete automatic goal resume");
                 let outcome = resuming.await;
                 progress.phase("read final goal");
@@ -551,11 +567,13 @@ fn a_goal_a_turn_error_blocked_at_a_retried_wall_is_that_walls_stop() {
         goal_id: active.goal_id.clone(),
         objective: active.objective.clone(),
         token_budget: active.token_budget,
+        chronology_fence_generation: None,
         turn: "turn-walled".to_string(),
         person_stops: 0,
     };
     let turn = |at_start: Option<codex_state::ThreadGoal>, tool: bool| TurnGoal {
         active_at_start: at_start,
+        chronology_generation: Some(None),
         goal_tool: tool,
         person_stops: (0, 0),
         turn: "turn-walled".to_string(),
@@ -589,6 +607,37 @@ fn a_goal_a_turn_error_blocked_at_a_retried_wall_is_that_walls_stop() {
             "{wall:?}"
         );
     }
+    let generation =
+        codex_alab_core::goal_chronology_fence::FenceGeneration::from_hex(&"11".repeat(32))
+            .unwrap();
+    assert_eq!(
+        wall_goal_after(
+            None,
+            false,
+            Some(&server),
+            false,
+            TurnGoal {
+                chronology_generation: Some(Some(generation)),
+                ..turn(Some(active.clone()), false)
+            },
+        )
+        .unwrap()
+        .chronology_fence_generation,
+        Some(generation),
+    );
+    assert!(
+        wall_goal_after(
+            None,
+            false,
+            Some(&server),
+            false,
+            TurnGoal {
+                chronology_generation: None,
+                ..turn(Some(active.clone()), false)
+            },
+        )
+        .is_none()
+    );
     // The autopilot's own compaction carries the binding, whatever its turn met.
     assert_eq!(
         wall_goal_after(Some(bound.clone()), true, None, false, turn(None, false)),
@@ -791,6 +840,157 @@ fn a_full_contexts_compaction_goes_past_the_goal_its_turn_error_blocked() {
         .await
         .expect("compaction past a wall's goal hang detector");
     });
+}
+
+async fn wall_goal_resume_chronology_case(settled: bool) {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        use codex_state::ThreadGoalStatus;
+        let h = Harness::new_with_goals(Some(Arc::new(GoalService::new()))).await;
+        h.fake.set_policy_key("upgrade", "false");
+        h.fake.set_status("autopilot", "land");
+        h.fake.set_policy_key("autopilot", "land");
+        upgrade_handoff_tests::wait_for_supervisor(|| {
+            h.autopilot
+                .sup
+                .policy()
+                .is_some_and(|policy| !policy.upgrade && policy.autopilot == decide::Mode::Land)
+        })
+        .await;
+        h.immediate_point().await;
+        h.hold_model_response().await;
+        let db = h.test.codex.state_db().expect("goal database");
+        let active = db
+            .thread_goals()
+            .replace_thread_goal(
+                h.rt.id,
+                "finish the original task",
+                ThreadGoalStatus::Active,
+                None,
+            )
+            .await
+            .expect("the active goal");
+        let blocked = db
+            .thread_goals()
+            .update_thread_goal(
+                h.rt.id,
+                codex_state::GoalUpdate {
+                    objective: None,
+                    status: Some(ThreadGoalStatus::Blocked),
+                    token_budget: None,
+                    expected_goal_id: Some(active.goal_id.clone()),
+                },
+            )
+            .await
+            .expect("the turn error's stop")
+            .expect("the same goal");
+        *lock(&h.rt.wall_goal) = Some(wall_goal_of(h.shared, &active));
+        let at = clock() - Duration::from_secs(3600);
+        h.rt.with_state(|state| {
+            state.observe_mode(decide::Mode::Land);
+            state.observe_turn_end(
+                TurnEnd {
+                    at,
+                    by_autopilot: true,
+                    by_person: false,
+                    text: None,
+                    earlier: None,
+                    questions: false,
+                    worked: Duration::from_secs(600),
+                    wall: Some(Wall::Server {
+                        what: "an API error (500)".to_string(),
+                        cut_off: false,
+                        retry_at: None,
+                    }),
+                    aborted: false,
+                    ran_tools: false,
+                    restored: false,
+                },
+                &h.autopilot.timing,
+            )
+        });
+
+        let (entered, mut entry) = tokio::sync::oneshot::channel();
+        let (release, blocked_at_submit) = tokio::sync::oneshot::channel();
+        *lock(&h.rt.before_submit) = Some((entered, blocked_at_submit));
+        let mut evaluating = Box::pin(Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)));
+        std::future::poll_fn(|cx| {
+            assert!(evaluating.as_mut().poll(cx).is_pending());
+            match entry.try_recv() {
+                Ok(()) => Poll::Ready(()),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => Poll::Pending,
+                Err(error) => panic!("wall resume preparation: {error}"),
+            }
+        })
+        .await;
+        let generation = codex_alab_core::goal_chronology_fence::arm(
+            h.test.codex_home_path(),
+            &h.rt.id.to_string(),
+        )
+        .expect("arm unresolved host chronology after the preparatory read");
+        if settled {
+            assert!(
+                codex_alab_core::goal_chronology_fence::clear_if_current(
+                    h.test.codex_home_path(),
+                    &h.rt.id.to_string(),
+                    generation,
+                )
+                .expect("settle the foreign host chronology generation")
+            );
+        }
+        release.send(()).expect("release the prepared wall resume");
+        evaluating.await;
+        let evaluation = h.rt.hold_eval_when_free().await;
+
+        assert_eq!(
+            db.thread_goals()
+                .get_thread_goal(h.rt.id)
+                .await
+                .expect("read the fenced goal"),
+            Some(blocked),
+            "a later host chronology generation must keep the wall's goal blocked"
+        );
+        assert!(!h.shared.turn_running_on(h.rt.key()));
+        assert!(h.fake.acts().is_empty());
+        assert_eq!(
+            codex_alab_core::goal_chronology_fence::read_active(
+                h.test.codex_home_path(),
+                &h.rt.id.to_string(),
+            )
+            .expect("read the retained chronology fence"),
+            (!settled).then_some(generation)
+        );
+        assert_eq!(
+            codex_alab_core::goal_chronology_fence::read_current(
+                h.test.codex_home_path(),
+                &h.rt.id.to_string(),
+            )
+            .expect("read the durable chronology serial"),
+            Some(generation)
+        );
+        codex_alab_core::goal_chronology_fence::clear(
+            h.test.codex_home_path(),
+            &h.rt.id.to_string(),
+        )
+        .expect("clear the test chronology fence");
+        drop(evaluation);
+        h.test
+            .codex
+            .shutdown_and_wait()
+            .await
+            .expect("native shutdown");
+    })
+    .await
+    .expect("wall chronology recheck hang detector");
+}
+
+#[test]
+fn a_wall_goal_resume_rechecks_unresolved_host_chronology_under_the_native_permit() {
+    native_test(|| wall_goal_resume_chronology_case(false));
+}
+
+#[test]
+fn a_wall_goal_resume_rechecks_settled_host_chronology_under_the_native_permit() {
+    native_test(|| wall_goal_resume_chronology_case(true));
 }
 
 /// THE WALL'S GOAL RESUMED IS BOOKED AS THE WALL'S OWN TRY (review of the forever-cruise lane,
@@ -1095,8 +1295,8 @@ fn a_policy_wall_survives_generic_goal_admission_retries_but_not_a_goal_change()
                     "Plan mode declines the policy continuation before a provider request"
                 );
 
-                let outcome = if replacement {
-                    goals
+                if replacement {
+                    let replacement = goals
                         .set_thread_goal(
                             &db,
                             GoalSetRequest {
@@ -1109,14 +1309,23 @@ fn a_policy_wall_survives_generic_goal_admission_retries_but_not_a_goal_change()
                             async { Ok(()) },
                         )
                         .await
-                        .expect("replace the goal before the generic retry")
-                } else {
-                    outcome
-                };
+                        .expect("replace the goal before the generic retry");
+                    replacement.apply_runtime_effects(&goals).await;
+                }
+                assert!(
+                    h._server
+                        .received_requests()
+                        .await
+                        .unwrap_or_default()
+                        .is_empty(),
+                    "Plan mode also defers the replacement until the real idle retry"
+                );
                 core_test_support::submit_thread_settings(&h.test.codex, mode(ModeKind::Default))
                     .await
                     .expect("permit the generic idle retry");
-                outcome.apply_runtime_effects(&goals).await;
+                // Exact mutation effects are consumed once. A generic retry enters
+                // the real idle lifecycle instead of replaying the old outcome.
+                h.retry_idle_goal().await;
 
                 let requests = tokio::time::timeout(Duration::from_secs(10), async {
                     loop {
@@ -1415,6 +1624,7 @@ fn a_walls_goal_outlives_a_re_exec_and_a_relaunch() {
         goal_id: "goal-1".to_string(),
         objective: "finish the original task".to_string(),
         token_budget: Some(1_000),
+        chronology_fence_generation: None,
         turn: WALLED_TURN.to_string(),
         person_stops: 0,
     };
@@ -1516,6 +1726,7 @@ fn a_persons_stop_before_a_restart_keeps_the_walls_goal_from_the_image_after() {
                 goal_id: "goal-1".to_string(),
                 objective: "finish the original task".to_string(),
                 token_budget: Some(1_000),
+                chronology_fence_generation: None,
                 turn: WALLED_TURN.to_string(),
                 person_stops: before.person_goal_stops(&rt.key),
             });
@@ -1568,6 +1779,7 @@ pub(super) fn wall_goal_of(
         goal_id: goal.goal_id.clone(),
         objective: goal.objective.clone(),
         token_budget: goal.token_budget,
+        chronology_fence_generation: None,
         turn: WALLED_TURN.to_string(),
         person_stops: shared.person_goal_stops(&goal.thread_id.to_string()),
     }

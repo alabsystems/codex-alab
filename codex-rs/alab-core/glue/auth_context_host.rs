@@ -120,6 +120,45 @@ impl AuthManager {
     }
 }
 
+/// Keep the real reload future behind a checked interface before refresh and
+/// credential-pair futures embed it. Host selection remains at the public entry.
+pub(super) fn reload(
+    manager: &AuthManager,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
+    Box::pin(async move { manager.reload_inner().await.unwrap_or(false) })
+}
+
+/// The host's recursive auth delegation crosses a concrete future interface,
+/// rather than asking a generic wrapper to prove the same async body's Send.
+pub(super) fn auth(
+    manager: &AuthManager,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<CodexAuth>> + Send + '_>> {
+    Box::pin(manager.auth())
+}
+
+pub(super) fn managed_load<'a>(
+    manager: &'a AuthManager,
+    cached_auth: Option<&'a CodexAuth>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Option<CodexAuth>, RefreshTokenError>> + Send + 'a>,
+> {
+    Box::pin(async move {
+        manager
+            .try_load_managed_auth(cached_auth)
+            .await
+            .map_err(RefreshTokenError::Transient)
+    })
+}
+
+impl AuthManager {
+    /// Read the same current auth through a checked Send future interface.
+    pub fn alab_auth(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<CodexAuth>> + Send + '_>> {
+        auth(self)
+    }
+}
+
 macro_rules! metadata {
     ($this:expr, $method:ident($($argument:expr),*)) => {
         if let Some(actual) = $this.alab_host_metadata() { return actual.$method($($argument),*); }
@@ -136,8 +175,8 @@ macro_rules! io {
     };
 }
 macro_rules! async_option {
-    ($this:expr, $method:ident($($argument:expr),*)) => {
-        if let Some(actual) = $this.alab_host_capture() { return match actual { Ok(actual) => Box::pin(actual.$method($($argument),*)).await, Err(_) => None }; }
+    ($this:expr, auth()) => {
+        if let Some(actual) = $this.alab_host_capture() { return match actual { Ok(actual) => $crate::auth::manager::alab_context_host::auth(&actual).await, Err(_) => None }; }
     };
 }
 macro_rules! async_result {

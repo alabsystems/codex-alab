@@ -70,6 +70,8 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::ThreadAttachmentUpdated(_)
         | ServerNotification::ThreadGoalUpdated(_)
         | ServerNotification::AlabGoalRuntimeUpdated(_) // ALAB(storage-status): no media in passive metadata.
+        | ServerNotification::AlabRetainedConfigured(_) // ALAB(retained-frontier): configured tail has no media.
+        | ServerNotification::AlabRetainedFrontier(_) // ALAB(owned-local): no media in ordered projection-tail DATA.
         | ServerNotification::ThreadPredictionUpdated(_)
         | ServerNotification::ThreadGoalCleared(_)
         | ServerNotification::ThreadQueueChanged(_)

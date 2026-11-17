@@ -95,7 +95,15 @@ impl Initial {
         }
     }
 
-    pub async fn finish(self, manager: &AuthManager, selected: Option<NoNativeReader>) {
+    pub fn finish(
+        self,
+        manager: &AuthManager,
+        selected: Option<NoNativeReader>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(self.finish_inner(manager, selected))
+    }
+
+    async fn finish_inner(self, manager: &AuthManager, selected: Option<NoNativeReader>) {
         let (lifetime, prepared) = match self {
             Self::Disabled | Self::Deferred => return,
             Self::Refused => {

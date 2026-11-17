@@ -53,6 +53,44 @@ fn from_event_when_active(
     Some(error)
 }
 
+/// Keep already captured advice when ordinary stream failure is selected later.
+/// Deferred failures may still be superseded by completion; no pending message
+/// or error category replaces the selected terminal cause.
+/// Typed rate/capacity advice can be pending after a live mode change.
+pub(super) fn terminal_with_buffered_advice(
+    selected: ApiError,
+    pending: Option<&ApiError>,
+) -> ApiError {
+    if !codex_alab_core::active() {
+        return selected;
+    }
+    match (selected, pending) {
+        (
+            ApiError::Stream(message),
+            Some(
+                ApiError::Retryable {
+                    retry_after: Some(retry_after),
+                    ..
+                }
+                | ApiError::RateLimitExceeded {
+                    retry_after: Some(retry_after),
+                    ..
+                }
+                | ApiError::ServerOverloaded {
+                    retry_after: Some(retry_after),
+                }
+                | ApiError::PolicyCapacityUnavailable {
+                    retry_after: Some(retry_after),
+                },
+            ),
+        ) => ApiError::Retryable {
+            message,
+            retry_after: Some(*retry_after),
+        },
+        (selected, _) => selected,
+    }
+}
+
 /// A recognized provider failure owns its outcome without awaiting EOF. Otherwise
 /// idle timeout can erase its retry deadline or terminal meaning, and a later
 /// completion can hide it. Unknown/malformed failures keep upstream buffering.

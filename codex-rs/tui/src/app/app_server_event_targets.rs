@@ -69,6 +69,8 @@ pub(super) fn server_notification_thread_target(
             Some(notification.thread_id.as_str())
         }
         ServerNotification::AlabGoalRuntimeUpdated(notification) => (!notification.reset).then_some(notification.thread_id.as_str()), // ALAB(storage-status): same native backend/thread routing admission.
+        ServerNotification::AlabRetainedConfigured(_) => None, // ALAB(retained-frontier): configured UI has no fake thread target; actual session consumes it.
+        ServerNotification::AlabRetainedFrontier(notification) => Some(notification.thread_id.as_str()), // ALAB(owned-local): preserve the actual backend/thread route of the projection tail.
         ServerNotification::ThreadGoalUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }

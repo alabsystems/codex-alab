@@ -44,3 +44,7 @@ impl TranscriptView {
 #[cfg(test)]
 #[path = "bookmark_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_transcript_bookmark.rs"]
+pub(in crate::transcript_view) mod alab_retained_bookmark; // ALAB(retained-ui): retain exact browsing origins without rendering during decode.

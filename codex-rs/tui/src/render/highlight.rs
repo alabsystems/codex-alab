@@ -1698,3 +1698,10 @@ mod tests {
 #[cfg(test)]
 #[path = "highlight_model_tests.rs"]
 mod model_tests;
+
+#[cfg(unix)]
+#[path="../../../alab-tui/glue/retained_image_theme.rs"]
+pub(crate) mod alab_retained_image_theme; // ALAB(retained-ui): exact installed semantic theme binds local cache generations, no defaults on decode.
+
+#[cfg(unix)]
+pub(crate) use streaming::alab_retained_highlighter; // ALAB(retained-ui): share native CPU cache DATA with the original stream fence.

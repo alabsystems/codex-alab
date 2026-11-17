@@ -1357,3 +1357,6 @@ client_id = "mcp-client"
         );
     }
 }
+
+#[path = "../../../alab-core/glue/retained_reader_config_processor.rs"]
+mod alab_retained_reader; // ALAB(retained-readers): same original typed config policy and actual loader DATA.

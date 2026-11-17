@@ -14,7 +14,7 @@
 //! hand to ask about or no notice may be typed there; the left point crosses in the record's
 //! pace, `codex_alab_core::session::LeftPoint`, edges-5); the session can be resumed exactly
 //! (`resumeArgv`, the rollout on disk); every loaded thread idle, with no background terminal;
-//! no goal Active; no autopilot wait pending that the record does not carry across the exec (a
+//! no autopilot wait pending that the record does not carry across the exec (a
 //! record write-through tried again, a goal's resume tried again: a wait in memory would be
 //! lost by the exec; a paced act's wait is carried, a not-now's too), nor a wall's try's
 //! (amended 2026-10-21 after the parity-3 review, F3, F10, F11: its measured hold is this
@@ -62,7 +62,6 @@ pub struct LoadedThread {
     pub id: String,
     pub idle: bool,
     pub background_terminals: usize,
-    pub goal_active: bool,
 }
 
 /// What the upgrade looks at.
@@ -130,9 +129,6 @@ pub fn check(facts: &UpgradeFacts) -> UpgradeCheck {
             "thread {} has {} background terminal(s)",
             t.id, t.background_terminals
         ));
-    }
-    if let Some(t) = facts.threads.iter().find(|t| t.goal_active) {
-        return UpgradeCheck::Wait(format!("thread {} has an active goal", t.id));
     }
     if facts.waits_pending {
         return UpgradeCheck::Wait("an autopilot wait is pending".to_string());

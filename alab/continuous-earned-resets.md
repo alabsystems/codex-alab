@@ -13,8 +13,10 @@ ledger, earliest expiry first. Unknown POST replies keep the same idempotency ke
 a consumed credit awaiting usage propagation cannot cause another redemption for
 the same cycle. Cancellation drops the wait and any held account lock. Identity
 changes and explicit spend or entitlement denials still stop this recovery path.
-Recovery also accepts a credit when the natural reset is less than five minutes
-away; that headroom threshold belongs only to preflight. Preflight remains one
+As of 2026-11-16, automatic redemption in both recovery and preflight requires
+the ordinary weekly allowance to be at least 99% used with its natural refresh
+strictly more than 24 hours away. Five-hour-only walls and nearer weekly
+refreshes preserve earned resets and print the reason. Preflight remains one
 bounded check.
 
 The headless exec quota observation also remains live while this recovery loop

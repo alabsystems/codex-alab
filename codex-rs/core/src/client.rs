@@ -27,6 +27,7 @@
 
 #[path = "../../alab-core/glue/auth_attempt.rs"] mod alab_auth_attempt; // ALAB(auth-renewal): retain the credential actually used by each foreground request.
 #[path = "../../alab-core/glue/assignment_model_client.rs"] mod alab_assignment; // ALAB(accounts): retire account-owned WebSocket and tool caches without disabling future sockets.
+#[path = "../../alab-core/glue/transport_model_client.rs"] mod alab_transport; // ALAB(recovery): drop a refused turn's routing state, and end an HTTPS fallback that upstream keeps for the session.
 
 use codex_login::AuthOwner;
 use std::collections::HashMap;
@@ -221,6 +222,7 @@ struct ModelClientState {
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
     disable_websockets: AtomicBool,
+    alab_https_fallback: codex_alab_core::https_fallback::HttpsFallback, // ALAB(recovery): when this session moved to HTTPS and whether it may return.
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
     /// Last full tool list used for sampling, retained across turns and connection resets.
@@ -635,6 +637,7 @@ impl ModelClient {
                 include_attestation,
                 attestation_provider,
                 disable_websockets: AtomicBool::new(false),
+                alab_https_fallback: Default::default(), // ALAB(recovery): no fallback yet.
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
                 last_inference_tools: StdMutex::new(None),
@@ -797,6 +800,7 @@ impl ModelClient {
         let activated =
             websocket_enabled && !self.state.disable_websockets.swap(true, Ordering::Relaxed);
         if activated {
+            self.alab_fell_back(); // ALAB(recovery): a fallback that followed failed requests ends after a quiet interval.
             warn!("falling back to HTTP");
             session_telemetry.counter(
                 "codex.transport.fallback_to_http",
@@ -2581,6 +2585,7 @@ impl ModelClientSession {
                     match event {
                         Ok(ResponseEvent::Completed { .. }) => break,
                         Err(err) if err.requires_http_fallback() => {
+                            self.alab_request_failed(/*unwell*/ false); // ALAB(recovery): a warmup refused for its size is this client's failed request, not a refused upgrade.
                             self.try_switch_fallback_transport(session_telemetry, model_info);
                             break;
                         }
@@ -2621,6 +2626,7 @@ impl ModelClientSession {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
             WireApi::Responses => {
+                self.alab_begin_request(); // ALAB(recovery): a request that is not a retry ends an HTTPS fallback that is due.
                 if self.client.responses_websocket_enabled() {
                     let request_trace = current_span_w3c_trace_context();
                     match self

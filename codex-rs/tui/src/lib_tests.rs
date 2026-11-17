@@ -1627,7 +1627,7 @@ async fn embedded_app_server_start_failure_is_returned() -> color_eyre::Result<(
         /*state_db*/ None,
         Arc::new(EnvironmentManager::default_for_tests()),
         Default::default(),
-        |_args| async { Err(std::io::Error::other("boom")) },
+        |_args| async { Err::<InProcessAppServerClient, _>(std::io::Error::other("boom")) }, // ALAB(owned-local): retain this original embedded failure control after the constructor becomes generic.
     )
     .await;
     let err = match result {

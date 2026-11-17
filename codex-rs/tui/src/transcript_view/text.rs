@@ -780,3 +780,7 @@ mod prompt_style_tests;
 #[cfg(test)]
 #[path = "text_tabs_tests.rs"]
 mod tab_tests;
+
+// ALAB(retained-ui): preserve exact held layout revisions without rendering.
+#[path = "../../../alab-tui/glue/retained_text_layout.rs"]
+pub(crate) mod alab_retained_layout;

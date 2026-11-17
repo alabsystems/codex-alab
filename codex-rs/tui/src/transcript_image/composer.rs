@@ -33,6 +33,7 @@ struct TileKey {
 }
 
 pub(crate) struct ComposerImages {
+    #[cfg(unix)] alab_retained: alab_retained_cache::RenderState, // ALAB(retained-ui): exact original key observations survive until actual first restored frame commits.
     protocol: ImageProtocol,
     cell_size: (u32, u32),
     background: (u8, u8, u8),
@@ -54,6 +55,7 @@ impl ComposerImages {
             return previous;
         }
         Some(Self {
+            #[cfg(unix)] alab_retained: Default::default(), // ALAB(retained-ui): fresh native cache has no restored key claim.
             protocol,
             cell_size,
             background,
@@ -81,6 +83,7 @@ impl ComposerImages {
         attachments: &[LocalImageAttachment],
         textarea: &TextArea,
     ) {
+        #[cfg(unix)] let Some(_alab_render) = self.alab_retained.begin(area, attachments, textarea) else { return; }; // ALAB(retained-ui): retain native cache/edit owner on mismatch; no saved path reload.
         let (visible, hidden) = visible_thumbnails(area.width, attachments.len());
         let mut cache = self.cache.borrow_mut();
         let mut previous = std::mem::take(&mut *cache);
@@ -106,6 +109,8 @@ impl ComposerImages {
         }
         for attachment in ordered.into_iter().take(visible) {
             let path = &attachment.path;
+            #[cfg(unix)] let Some(key) = self.alab_retained.key(attachment) else { return; }; // ALAB(retained-ui): first restored render consumes the SAME original observed key, not fresh metadata.
+            #[cfg(not(unix))]
             let key = TileKey {
                 path: path.clone(),
                 version: path
@@ -198,3 +203,7 @@ fn visible_thumbnails(width: u16, count: usize) -> (usize, usize) {
     }
     (visible, count - visible)
 }
+
+#[cfg(unix)]
+#[path="../../../alab-tui/glue/retained_composer_images.rs"]
+pub(crate) mod alab_retained_cache; // ALAB(retained-ui): exact native raster/failed-cache DATA, no path load on decode.

@@ -76,7 +76,12 @@ impl LateGoal {
             .codex
             .state_db()
             .unwrap_or_else(|| panic!("the goal database"));
-        let mut builder = self.event_sink.as_ref().map_or_else(ExtensionRegistryBuilder::<Config>::new, |sink| ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(sink)));
+        let mut builder = self
+            .event_sink
+            .as_ref()
+            .map_or_else(ExtensionRegistryBuilder::<Config>::new, |sink| {
+                ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(sink))
+            });
         codex_goal_extension::install_with_backend(
             &mut builder,
             db,

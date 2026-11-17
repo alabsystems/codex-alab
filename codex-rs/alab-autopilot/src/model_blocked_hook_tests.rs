@@ -174,6 +174,7 @@ enum StoppedCase {
     BeforeCommit,
     ModelPause,
     PersonPause,
+    HostRoundTrip,
 }
 
 async fn stopped_hook(case: StoppedCase) {
@@ -235,6 +236,22 @@ async fn stopped_hook(case: StoppedCase) {
                 .await
                 .expect("persist the person's explicit pause while the hook waits");
             outcome.apply_runtime_effects(&goals).await;
+        } else if matches!(case, StoppedCase::HostRoundTrip) {
+            super::source::host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Paused,
+            )
+            .await;
+            super::source::host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Blocked,
+            )
+            .await;
+            assert_eq!(h.shared.person_goal_stops(h.rt.key()), 0);
         }
         interrupt_hook(&h, &outcomes).await;
         let stopped = goal(&h).await;
@@ -242,7 +259,7 @@ async fn stopped_hook(case: StoppedCase) {
         assert_eq!(stopped.objective, original.objective);
         assert_eq!(
             stopped.status,
-            if matches!(case, StoppedCase::BeforeCommit) {
+            if matches!(case, StoppedCase::BeforeCommit | StoppedCase::HostRoundTrip) {
                 ThreadGoalStatus::Blocked
             } else {
                 ThreadGoalStatus::Paused
@@ -289,4 +306,9 @@ fn an_interrupted_post_tool_hook_does_not_turn_a_model_pause_into_a_recovery() {
 #[test]
 fn a_persons_pause_while_the_post_tool_hook_waits_defeats_the_committed_model_stop() {
     native_test(|| stopped_hook(StoppedCase::PersonPause));
+}
+
+#[test]
+fn a_host_round_trip_before_tool_finish_defeats_the_committed_model_stop() {
+    native_test(|| stopped_hook(StoppedCase::HostRoundTrip));
 }

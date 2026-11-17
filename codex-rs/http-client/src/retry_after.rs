@@ -18,7 +18,7 @@ impl RetryAfter {
 
     /// Reads either nonnegative delay seconds or an HTTP date from `Retry-After`.
     pub fn from_headers(headers: &HeaderMap) -> Option<Self> {
-        Self::from_header(headers.get(RETRY_AFTER)?.to_str().ok()?)
+        alab_retry_after::from_headers(headers) // ALAB(capacity): retain the latest valid repeated advice from one receipt.
     }
 
     /// Reads a `Retry-After` value, including values carried inside a streamed error.

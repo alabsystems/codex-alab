@@ -118,7 +118,17 @@ impl ChatWidget {
                 return;
             }
         };
-        interface::set_enabled(enabled);
+        let requested = enabled;
+        let enabled = interface::set_enabled(requested);
+        if enabled != requested {
+            self.add_error_message(
+                "Could not durably retire the previous recovery source; the interface mode was not changed."
+                    .into(),
+            );
+            self.refresh_status_surfaces();
+            self.request_redraw();
+            return;
+        }
         if !enabled {
             self.alab_close_account_details();
             self.alab_allowance.reset();

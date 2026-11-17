@@ -267,6 +267,7 @@ impl App {
         if let Err(err) = self
             .replace_chat_widget_with_app_server_thread(
                 tui,
+                Some(app_server), // ALAB(source-selection): retain actual session context for a retained construction.
                 started,
                 ThreadAttachPresentation::SessionLineage,
                 /*initial_user_message*/ None,

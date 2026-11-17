@@ -903,3 +903,7 @@ mod tests {
         assert_eq!(collector.finalize_and_take_source(), String::new());
     }
 }
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_stream_collector.rs"]
+pub(crate) mod alab_retained_collector; // ALAB(retained-ui): preserve original committed cursor and incomplete source.

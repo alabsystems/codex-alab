@@ -501,9 +501,7 @@ async fn harness_login_on(
     }
 }
 
-/// Run a test on its own runtime with 16 MiB stacks: a codex-core turn overflows libtest's
-/// 2 MiB default (upstream runs its tests with `RUST_MIN_STACK=8388608`; check.sh runs the
-/// ALab crates without it).
+/// Run each integration case on an isolated runtime with 16 MiB stacks.
 fn big_stack<F, Fut>(test: F)
 where
     F: FnOnce() -> Fut + Send + 'static,

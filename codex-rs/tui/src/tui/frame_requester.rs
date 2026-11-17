@@ -398,3 +398,7 @@ mod tests {
         assert!(second.is_err(), "unexpected extra draw received");
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_frame_binding.rs"]
+pub(crate) mod alab_retained_frames; // ALAB(retained-ui): bind native restored cells to the actual Tui scheduler, never a decoded/default sender.

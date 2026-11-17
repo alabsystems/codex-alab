@@ -161,3 +161,8 @@ fn thread_store_delete_error(err: ThreadStoreError) -> JSONRPCErrorError {
         err => internal_error(format!("failed to delete thread: {err}")),
     }
 }
+
+// ALAB(retained-side): SAME complete original delete policy under owned rollback worker.
+#[cfg(unix)]
+#[path="../../../alab-core/glue/retained_side_delete_policy.rs"]
+mod alab_side_delete;

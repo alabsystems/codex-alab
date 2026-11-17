@@ -150,3 +150,7 @@ mod tests {
         assert_eq!(state.active_cell_revision, 0);
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_widget_transcript.rs"]
+pub(crate) mod alab_retained; // ALAB(retained-ui): exact native transcript state shares the whole scene graph.

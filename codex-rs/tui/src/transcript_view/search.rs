@@ -956,3 +956,7 @@ fn find_literal(text: &str, query: &str, direction: Direction) -> Option<Range<u
 #[cfg(test)]
 #[path = "search_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_transcript_search.rs"]
+pub(in crate::transcript_view) mod alab_retained_search; // ALAB(retained-ui): retain the actual incremental search and shared native revisions.

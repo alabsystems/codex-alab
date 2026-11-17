@@ -13,6 +13,9 @@ mod applied;
 pub use applied::DestinationAckObservation;
 pub use applied::DestinationAppliedProof;
 
+type ManagerConstruction =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Arc<AuthManager>> + Send>>;
+
 pub struct DestinationEpoch {
     manager: Arc<AuthManager>,
     prepared: Arc<PreparedDestination>,
@@ -288,16 +291,16 @@ impl AuthManager {
         // The actor owns constructor/census before the first native OPEN. Losing
         // its waiter cannot cancel a pending PRELOAD/READY or forget cleanup.
         tokio::spawn(async move {
+            let constructor: ManagerConstruction = Box::pin(async move {
+                let manager =
+                    AuthManager::new_from_auth_config(destination_config, false, modes).await;
+                alab_manager_catalog::attach(Arc::new(manager))
+            });
             let attempted = factory
                 .scope(codex_alab_core::native_target::construct(
                     destination,
                     &operation,
-                    async {
-                        let manager =
-                            AuthManager::new_from_auth_config(destination_config, false, modes)
-                                .await;
-                        alab_manager_catalog::attach(Arc::new(manager))
-                    },
+                    constructor,
                 ))
                 .await;
             let constructed = match attempted {

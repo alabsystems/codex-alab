@@ -368,6 +368,7 @@ impl AppServerSession {
     ) -> Result<()> {
         let thread_id = ThreadId::from_string(&thread.id)
             .wrap_err("invalid thread id in bounded history response")?;
+        if self.alab_hydrate_observed_memory_history(thread)? { return Ok(()); } // ALAB(retained-ui): actual complete memory result, including empty, needs no unanchored fallback.
         if thread.history_mode == ThreadHistoryMode::Legacy {
             if thread.turns.is_empty() {
                 thread.turns = Box::pin(self.thread_read(thread_id, /*include_turns*/ true))
@@ -525,3 +526,7 @@ fn rendered_history_rows(
 #[cfg(test)]
 #[path = "history_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_session_history.rs"]
+pub(super) mod alab_retained_history; // ALAB(retained-history): cursor/loading DATA remains bound to the actual original Session.

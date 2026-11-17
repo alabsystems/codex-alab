@@ -110,3 +110,7 @@ fn image_path(_pid: u32) -> std::io::Result<PathBuf> {
         "native host image identity unavailable",
     ))
 }
+
+#[cfg(unix)]
+#[path = "retained_image_target_host.rs"]
+pub(crate) mod retained;

@@ -143,11 +143,15 @@ def write_helper(output, name, label=None, application=False):
         output.rmdir()
     startup = ""
     if name == "codex":
+        failure = mode.get("application_failures", {{}}).get(side)
+        if failure is None and mode.get("application_failure" if application else "cli_failure") == side:
+            failure = 17
         startup = ('if [ "$1" = --version ]; then\\n' +
-                   ("exit 17\\n" if mode.get("application_failure" if application else "cli_failure") == side else
+                   (("exit " + str(failure) + "\\n") if failure is not None else
                     "touch " + shlex.quote(str(output) + ".ready") + "\\n") + "fi\\n")
     log_name = "application-invocations" if application else "helper-invocations"
-    log = "printf '%s\\n' " + shlex.quote(side + ":" + (label or name)) + " >> " + shlex.quote(str(fake / log_name)) + "\\n"
+    log_value = side + ":" + (label or name) + ((":" + str(output)) if application else "")
+    log = "printf '%s\\n' " + shlex.quote(log_value) + " >> " + shlex.quote(str(fake / log_name)) + "\\n"
     output.write_text("#!/bin/sh\\n" + log + startup + "printf '%s\\n' '" + name + "'\\n")
     output.chmod(0o755)
 
@@ -217,14 +221,22 @@ elif "tippy" in args:
 elif args[:2] == ["trust", "build"]:
     assert "--certify" in args and "--locked" in args
     assert args[-4:] == ["-p", "codex-cli", "--bin", "codex"]
-    assert Path(args[args.index("--config") + 1]) == here.parent / "alab/proof-policy.toml"
-    if mode.get("certified_failure") == side:
-        sys.exit(101)
+    policy_root = Path(os.environ["ALAB_FAKE_LIBRARY_MANIFEST"]).parents[1]
+    assert Path(args[args.index("--config") + 1]) == policy_root / "alab/proof-policy.toml"
+    certified_status = mode.get("certified_failures", {{}}).get(side)
+    if certified_status is None and mode.get("certified_failure") == side:
+        certified_status = 101
+    if certified_status is not None:
+        sys.exit(certified_status)
     report = Path(args[args.index("--report-dir") + 1])
     report.mkdir()
-    if not mode.get("missing_certified_report"):
+    if mode.get("missing_certified_report") not in (True, side):
         (report / "report.json").write_text('{{"fixture":"observation, not proof"}}')
-    write_helper(effective_target / "debug/codex", "codex", application=True)
+    application_output = effective_target / "debug/codex"
+    if mode.get("missing_application") == side:
+        application_output.unlink(missing_ok=True)
+    else:
+        write_helper(application_output, "codex", application=True)
 elif "build" in args:
     if mode.get("build_failure") == side:
         sys.exit(101)
@@ -583,7 +595,7 @@ class CheckLintStepTests(unittest.TestCase):
         for name in (
             "check.sh", "lib.sh", "lint.jq", "retention.py", "unit-tests.sh", "unit_results.py",
             "command_guard.py", "upstream_gate.py", "upstream_intake.py", "features.toml", "native_helpers.py",
-            "pristine_state.py", "qualification.py", "source_content.py",
+            "pristine_state.py", "qualification.py", "cli_status.py", "file_hash.py", "source_content.py",
             "certified-build.sh", "project-targo.sh", "proof-policy.toml",
         ):
             self.write(self.repo / "alab" / name, (ROOT / "alab" / name).read_text())
@@ -648,7 +660,10 @@ raise SystemExit(mode.get("runtime_failure", 0))
             (self.fake / "pristine.jsonl").write_text("".join(line + "\n" for line in pristine))
             (self.fake / "pristine.rc").write_text("101")
         if not contained:
-            process = subprocess.run(["/bin/bash", "-c", '. "$1"; check_main', "check-body", str(self.repo / "alab/check.sh")], cwd=self.repo,
+            command = ('. "$1"; base="$(git merge-base HEAD upstream/main)"; '
+                       'alab_pristine_at "$PWD" "$base"; pristine="$(alab_pristine "$PWD" "$base")"; '
+                       'mkdir -p "${pristine}/codex-rs/target"; check_main')
+            process = subprocess.run(["/bin/bash", "-c", command, "check-body", str(self.repo / "alab/check.sh")], cwd=self.repo,
                                      env=self.environment, capture_output=True, text=True,
                                      timeout=60)
             return process.returncode, process.stderr + ("\n" + process.stdout if process.returncode else "")
@@ -697,20 +712,106 @@ raise SystemExit(mode.get("runtime_failure", 0))
         self.assertEqual(runtime[0][runtime[0].index("--codex") + 1],
                          str(self.repo / "codex-rs/target/debug/codex"))
 
-    def test_application_proof_and_runtime_failures_stop_before_unit_checks(self):
-        for mode, status in (({"certified_failure": "ours"}, 2),
-                             ({"missing_certified_report": True}, 2),
-                             ({"application_failure": "ours"}, 2),
-                             ({"runtime_failure": 37}, 1)):
+    def test_candidate_runtime_failures_use_certified_pristine_attribution(self):
+        for mode in ({"application_failure": "ours"},
+                     {"application_failures": {"ours": 1}}):
+            with self.subTest(mode=mode):
+                (self.fake / "unit-mode.json").write_text(json.dumps(mode))
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 2, stderr)
+                ours = self.calls("ours")
+                pristine = self.calls("pristine")
+                self.assertTrue(any(" trust build --certify " in call for call in ours))
+                self.assertTrue(any(" trust build --certify " in call for call in pristine))
+                self.assertFalse(any("--unverified" in call for call in pristine), pristine)
+                self.assertFalse(any(" test " in call for call in ours), ours)
+                self.assertEqual(self.helper_invocations("ours"), [])
+                self.assertIn("ALab's layer broke it", stderr)
+                invocations = (self.fake / "application-invocations").read_text().splitlines()
+                self.assertTrue(any(line.startswith("pristine:codex:")
+                                    and line.endswith("/codex-rs/target/debug/codex")
+                                    and not line.endswith(str(self.repo / "codex-rs/target/debug/codex"))
+                                    for line in invocations), invocations)
+
+    def test_pristine_exact_binary_runtime_failure_is_a_lane_fault(self):
+        for mode in ({"application_failures": {"ours": 1, "pristine": 1}},
+                     {"application_failures": {"ours": 17, "pristine": 23}}):
+            with self.subTest(mode=mode):
+                (self.fake / "unit-mode.json").write_text(json.dumps(mode))
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 6, stderr)
+                self.assertIn("Trust lane fault", stderr)
+                pristine = self.calls("pristine")
+                self.assertTrue(any(" trust build --certify " in call for call in pristine))
+                self.assertFalse(any("--unverified" in call for call in pristine), pristine)
+
+    def test_certification_setup_and_stops_never_become_source_verdicts(self):
+        cases = []
+        for failure in (1, 2, 3, 65, 69, 101, 126, 127):
+            cases.append(({"certified_failures": {"ours": failure}}, 1, False))
+        for failure, status in ((75, 75), (130, 130)):
+            cases.append(({"certified_failures": {"ours": failure}}, status, False))
+        for failure in (1, 2, 3, 65, 69, 101, 126, 127):
+            cases.append(({"application_failures": {"ours": 1},
+                           "certified_failures": {"pristine": failure}}, 1, True))
+        for failure, status in ((75, 75), (130, 130)):
+            cases.append(({"application_failures": {"ours": 1},
+                           "certified_failures": {"pristine": failure}}, status, True))
+        for mode, status, pristine_started in cases:
             with self.subTest(mode=mode):
                 (self.fake / "unit-mode.json").write_text(json.dumps(mode))
                 self.clear_helper_observations()
                 code, stderr = self.check(CLEAN)
                 self.assertEqual(code, status, stderr)
-                calls = self.calls("ours")
-                self.assertTrue(any(" trust build --certify " in call for call in calls))
-                self.assertFalse(any(" test " in call for call in calls), calls)
-                self.assertEqual(self.helper_invocations("ours"), [])
+                pristine = [call for call in self.calls("pristine")
+                            if " trust build --certify " in call]
+                self.assertEqual(bool(pristine), pristine_started, pristine)
+                self.assertNotIn("Trust lane fault", stderr)
+
+    def test_missing_report_or_exact_binary_is_setup_not_attribution(self):
+        for mode in ({"missing_certified_report": "ours"},
+                     {"missing_application": "ours"}):
+            with self.subTest(mode=mode):
+                (self.fake / "unit-mode.json").write_text(json.dumps(mode))
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 1, stderr)
+                self.assertEqual([call for call in self.calls("pristine")
+                                  if " trust build --certify " in call], [])
+
+    def test_missing_or_malformed_runtime_completion_is_setup_not_attribution(self):
+        guard = self.repo / "alab/command_guard.py"
+        original = guard.read_text()
+        missing = original.replace(
+            'return run_recorded_fd(argv, result_fd=result_fd, disk_floor=disk_floor,\n                                   inherit_fds=inherit_fds)',
+            'return run(argv, disk_floor=disk_floor, inherit_fds=inherit_fds,\n                       exclude_fds=(result_fd,))')
+        malformed = original.replace('"kind": "guardian-command-completion"',
+                                     '"kind": "fixture-malformed-completion"')
+        self.assertNotEqual(missing, original)
+        self.assertNotEqual(malformed, original)
+        for mutated in (missing, malformed):
+            with self.subTest(malformed=mutated is malformed):
+                guard.write_text(mutated)
+                (self.fake / "unit-mode.json").write_text("{}")
+                self.clear_helper_observations()
+                code, stderr = self.check(CLEAN)
+                self.assertEqual(code, 1, stderr)
+                self.assertEqual([call for call in self.calls("pristine")
+                                  if " trust build --certify " in call], [])
+                self.assertTrue((self.fake / "application-invocations").is_file())
+        guard.write_text(original)
+
+    def test_post_certification_runtime_failure_stops_before_units(self):
+        (self.fake / "unit-mode.json").write_text(json.dumps({"runtime_failure": 37}))
+        self.clear_helper_observations()
+        code, stderr = self.check(CLEAN)
+        self.assertEqual(code, 1, stderr)
+        calls = self.calls("ours")
+        self.assertTrue(any(" trust build --certify " in call for call in calls))
+        self.assertFalse(any(" test " in call for call in calls), calls)
+        self.assertEqual(self.compiler_calls("pristine"), [])
 
     def test_both_full_locked_graphs_resolve_before_the_first_compiler(self):
         code, stderr = self.check(CLEAN)
@@ -1064,7 +1165,7 @@ export CARGO_TARGET_DIR="$2"
 packages=(-p "$5")
 tree_config=()
 test_command=(/usr/bin/env)
-native_test_requirements
+native_test_requirements lib
 trap 'printf "caller cleanup\\n" > "$4"' EXIT
 before="$(trap -p EXIT)"
 before_cwd="$(pwd -P)"
@@ -1098,17 +1199,17 @@ exit "${rc}"
 . "$1/alab/unit-tests.sh"
 shift
 packages=("$@")
-native_test_requirements
-printf '%s %s %s %s\\n' "$need_metadata" "$need_v8" "$need_stdio" "$need_host"
+native_test_requirements lib
+printf '%s %s %s %s %s\\n' "$need_metadata" "$need_v8" "$need_stdio" "$need_host" "$need_cli"
 '''
         for names, expected in (
-                (("codex-alab-core",), [0, 0, 0, 0]),
-                (("codex-code-mode-host",), [0, 1, 0, 0]),
-                (("codex-code-mode-runtime",), [0, 1, 0, 0]),
-                (("codex-alab-autopilot",), [1, 1, 0, 1]),
-                (("codex-core",), [1, 1, 1, 1]),
-                (("codex-mcp",), [1, 0, 0, 0]),
-                (("codex-mcp", "codex-alab-autopilot", "codex-app-server"), [1, 1, 1, 1])):
+                (("codex-alab-core",), [0, 0, 0, 0, 0]),
+                (("codex-code-mode-host",), [0, 1, 0, 0, 0]),
+                (("codex-code-mode-runtime",), [0, 1, 0, 0, 0]),
+                (("codex-alab-autopilot",), [1, 1, 0, 1, 0]),
+                (("codex-core",), [1, 1, 1, 1, 0]),
+                (("codex-mcp",), [1, 0, 0, 0, 1]),
+                (("codex-mcp", "codex-alab-autopilot", "codex-app-server"), [1, 1, 1, 1, 1])):
             with self.subTest(packages=names):
                 selectors = [value for name in names for value in ("-p", name)]
                 process = subprocess.run(["/bin/bash", "-c", body, "native-requirement-plan",
@@ -1567,7 +1668,9 @@ Path(args[args.index("--out") + 1]).write_text(json.dumps({{
         return [line for line in path.read_text().splitlines() if line.startswith(side + ":")] if path.exists() else []
 
     def clear_helper_observations(self):
-        for name in ("calls", "environments.jsonl", "helper-invocations", "runner-returncodes.jsonl"):
+        for name in ("calls", "environments.jsonl", "helper-invocations",
+                     "application-invocations", "runtime-invocations.jsonl",
+                     "runner-returncodes.jsonl"):
             (self.fake / name).unlink(missing_ok=True)
 
     def hook_mcp(self):

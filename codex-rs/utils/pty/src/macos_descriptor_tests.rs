@@ -25,6 +25,8 @@ async fn explicit_stdio_excludes_inheritable_descriptors_without_changing_parent
     let script = format!("if [ -e /dev/fd/{raw} ]; then printf open; else printf closed; fi");
     let mut control = Command::new("/bin/sh");
     control.args(["-c", &script]);
+    control.descriptor_policy(DescriptorPolicy::Inherit); // ALAB(live-update): the negative control explicitly requests ambient inheritance.
+    control.fallback(SpawnFallback::ReturnError); // ALAB(live-update): native Inherit is the negative control; selected std excludes ambient FDs.
     let control = control.spawn()?.wait_with_output().await?;
     assert_eq!(
         (control.status.success(), control.stdout),
@@ -32,9 +34,7 @@ async fn explicit_stdio_excludes_inheritable_descriptors_without_changing_parent
     );
 
     let mut command = Command::new("/bin/sh");
-    command
-        .args(["-c", &script])
-        .descriptor_policy(DescriptorPolicy::Explicit);
+    command.args(["-c", &script]); // ALAB(live-update): test the default exclusion against the explicit-inheritance control.
     let output = command.spawn()?.wait_with_output().await?;
     assert_eq!(
         (output.status.success(), output.stdout, output.stderr),

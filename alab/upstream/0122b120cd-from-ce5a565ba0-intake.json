@@ -1,0 +1,378 @@
+{
+  "schema": 1,
+  "base": "ce5a565ba0f2e459e953bb18f1cedd5440f46d6b",
+  "target": "0122b120cd7d8375676ea2e72e113c2f892343b0",
+  "frontier": "ce5a565ba0f2e459e953bb18f1cedd5440f46d6b",
+  "commits": [
+    {
+      "sha": "378364e78429a0cef3992b5462a62bdd5eaea00a",
+      "subject": "Reuse regexes across rollout snippet searches (#62076)",
+      "paths": [
+        "codex-rs/rollout/src/compression_tests.rs",
+        "codex-rs/rollout/src/lib.rs",
+        "codex-rs/rollout/src/search.rs",
+        "codex-rs/rollout/src/search_tests.rs",
+        "codex-rs/thread-store/src/local/search_threads.rs",
+        "codex-rs/thread-store/src/local/search_threads_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "history-pagination"
+      ],
+      "decision": "adopt",
+      "reason": "Reuse lazy query-specific rollout regexes across files and catalog pages while retaining decoded text matching and per-file I/O error precedence.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 c24b1d06677ee27edcc56fec2093461d99980dc0ff0bb95e9c2ab8210ba6a7d4; 17554 bytes/427 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "RolloutSnippetMatcher opens the actual rollout before compiling two regexes and shares their Arc across scans. Different queries retain independent matchers; compressed readers keep match-before-tail-error behavior. No queried owned caller uses the removed first_rollout_content_match_snippet API.",
+        "Controls bind lazy once-per-matcher compilation, decoded Unicode/quote/newline text and concurrent independent searches across catalog refills; no history/input ownership is inferred from a match."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "2df29476aef67dd879fbd30ddd635bce25309078",
+      "subject": "Support device-code login for config servers (#62079)",
+      "paths": [
+        "codex-rs/cli/src/login.rs",
+        "codex-rs/cloud-config/src/bundle_loader.rs",
+        "codex-rs/cloud-config/src/config_server_tests.rs",
+        "codex-rs/cloud-config/src/lib.rs",
+        "codex-rs/login/src/lib.rs",
+        "codex-rs/login/src/oauth/device.rs",
+        "codex-rs/login/src/oauth_session.rs",
+        "codex-rs/login/src/oauth_session_device_tests.rs",
+        "codex-rs/login/src/oauth_session_login.rs",
+        "codex-rs/login/src/oauth_session_storage.rs",
+        "codex-rs/tui/src/startup_orchestration.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "native-session",
+        "product-policy"
+      ],
+      "decision": "adapt",
+      "reason": "Honor config-server device login and cross-process credential reservations, requiring the new explicit login method to pass through owned TUI readers without reauthenticating a retained frontend.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 36e71d43aaf5f499f261d877309caead5cdc30b78fdc8198297e1fda5e650533; 34451 bytes/838 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "Device authorization and token polling include the configured OAuth resource. OAuthLoginAttempt retains the per-credential File reservation through the selected flow; the shared credential-store lock remains separately usable while approval waits. Saved grants are reused, missing device endpoint and configuration/store failure remain explicit.",
+        "REQUIRED owned adaptation remains UNIMPLEMENTED at bf829: preserve upstream-selected ConfigServerLoginMethod::Browser from the startup ALab hook through owned_local_managed_readers::ensure_original_config_server_login, entered ensure_config_server_login and ensure_with_snapshot, forwarding it to both ordinary/non-Unix original ensure calls. Update all three existing owned fixture callsites; do not discard/default the new method.",
+        "Exact owned source IDs S241-S245 bind the two current two-argument calls, wrapper/startup hook and fixtures. Genuine decoded-E1 routing must still validate matching config-server DATA and await the same frozen backend loader; no local manager, destination credential read/refresh, login or new authority. Mismatch refuses and original constructor denial remains exact/evaluated once.",
+        "Meaningful source controls check prompt URL/code, config-specific endpoint failure, device/poll resource forms and replacement policy, second-manager sign-in refusal during approval, store availability and retry after cancellation. These are not observed process-lock or cancellation results."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "f99317520575edcb1dd9e732222152be32dd273c",
+      "subject": "Add policy-checked dispatch for bundled App hooks (#62080)",
+      "paths": [
+        "codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs",
+        "codex-rs/codex-mcp/src/connection_manager_tests.rs",
+        "codex-rs/codex-mcp/src/runtime.rs",
+        "codex-rs/codex-mcp/src/runtime/apps_tool_refresh_tests.rs",
+        "codex-rs/core/src/hook_mcp_executor.rs",
+        "codex-rs/core/src/hook_mcp_executor_tests.rs",
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/hooks/src/engine/discovery.rs",
+        "codex-rs/hooks/src/engine/dispatcher.rs",
+        "codex-rs/hooks/src/engine/mcp_runner.rs",
+        "codex-rs/hooks/src/engine/mcp_runner_tests.rs",
+        "codex-rs/hooks/src/engine/mod.rs",
+        "codex-rs/hooks/src/engine/mod_tests.rs",
+        "codex-rs/hooks/src/mcp.rs"
+      ],
+      "classes": [
+        "security",
+        "feature"
+      ],
+      "features": [
+        "product-policy",
+        "account-isolation",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Add current-policy-checked host App hook dispatch with exact connector identity, preserving hidden-tool visibility and refusing stale preparation before dispatch.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 b32e7e3d801fab8b0e19bd9dd88f2ea6614767728d888603ae2e2bad8ddb32c2; 36414 bytes/820 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "Host Apps registration, no environment override, enabled tool and approval-free mode are required. Core captures publication/auth admission before refreshing and rechecks after preparation and immediately before peer dispatch through the existing negotiated PreparedMcpCall admission path. Only superseded preparation retries in the new Core loop; that loop does not retry after dispatch. Transport-level exactly-once execution is unproved.",
+        "The selected Apps client catalog can prepare hidden app tools without publishing them to the model or starting unrelated required servers. The Session link is Weak. Production constructors changed in this patch keep expected_app_connector_id=None; the new Some App path is infrastructure exercised by the control, not a silently enabled hook.",
+        "Controls bind refreshed prompt/disabled policies, wrong connector, allowed recovery, hidden model visibility, unrelated startup exclusion, refresh invalidation and logout. Connector/policy DATA supplies no ALab native/model/Goal authority.",
+        "Independent bounded rows 3/4 source peer index 36526bc2ff6902f1d7356d8b9eb84a6d77a7804e5e6b8be52059278ed817f8fd verifies exact patches, nine selected declarations/cases and eight-symbol census in 1439 owned Rust paths. All controls UNRUN; preserve ALab extension order/account/startup/native hooks and existing feature defaults. No runtime or native qualification."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "6d94d4af1070d8c7230a1027a3a18753e0796c4e",
+      "subject": "Isolate Guardian v2 score caches by policy revision (#62083)",
+      "paths": [
+        "codex-rs/ext/guardian-v2/BUILD.bazel",
+        "codex-rs/ext/guardian-v2/src/async_scorer/approval.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/budget_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/classification.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/conversation.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/conversation_admission_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/conversation_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/decisions_lifecycle_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/extension.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/extension_cached_delivery_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/extension_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/observation.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/pending_score_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/score.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/score_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/wrapper_lag.rs"
+      ],
+      "classes": [
+        "security",
+        "fix"
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Scope Guardian score authorization and classifier history to the captured policy revision while sharing action freshness, failure invalidation and admission capacity.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 5251e72582f839016a2314e33e4fddce9f08fb46e5084194536221a957e438c2; 86415 bytes/1847 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "ConversationBackend selects from captured turn Config revision. Scores/history/authorization/generation remain policy-local; wrapper lag, active oversized calls, JS allowance, failures and capacity are shared. Late old-turn ignored actions still age the latest policy; failure coverage uses the accepted score source index rather than a newer coverage high-water mark.",
+        "Thread stop/backend replacement marks the shared active flag false, which preparation/publication paths check along with generation and current authorization. Missing score/scoring failure precede lag reasons. No cache identity or low score replaces original ALab account/native/Goal custody. These checks reject after observing inactivity; they do not form an atomic cancellation/drain barrier with later writes or in-flight effects.",
+        "Controls bind policy-specific retained histories, final shared admission slot and late old-policy classifications/failures. Source declaration/module bindings and unchanged final body hashes are not runtime retirement or cancellation proof.",
+        "Independent bounded rows 3/4 source peer index 36526bc2ff6902f1d7356d8b9eb84a6d77a7804e5e6b8be52059278ed817f8fd verifies exact patches, nine selected declarations/cases and eight-symbol census in 1439 owned Rust paths. All controls UNRUN; preserve ALab extension order/account/startup/native hooks and existing feature defaults. No runtime or native qualification."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "c08843a5bd16de5524129b2f4270490447991984",
+      "subject": "Skip redundant history materialization on flush (#62085)",
+      "paths": [
+        "codex-rs/thread-store/src/local/live_writer.rs",
+        "codex-rs/thread-store/src/local/thread_history_materialization.rs",
+        "codex-rs/thread-store/src/local/thread_history_materialization_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "history-pagination",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Skip redundant SQLite projection only when a nonzero saved JSONL offset equals the durable plain rollout length, retaining durable suffix catch-up.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 5431843416638bb31dc225964ee3ba80119f9f971fc7c7258ba8d7849ffd56c1; 7603 bytes/186 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "Only flush with an available state DB probes the plain rollout length. Compressed byte size is never a decoded JSONL offset; missing metadata keeps materialization active. JSONL remains canonical and projection failures retain existing handling.",
+        "The control marks a projected row with sentinel status to detect replay, then verifies ordinal/offset catch-up after plain and compressed durable suffixes. This does not settle live writer/recovery custody or authorize a source snapshot transition."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "4046bdf263019f6e990443a41068f874351ed679",
+      "subject": "Avoid an admission deadlock in the code mode spawn test (#62089)",
+      "paths": [
+        "codex-rs/core/tests/suite/code_mode_agent_message_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "qualification-fixtures",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Remove the nested completion barrier that can hold shared admission while a yielded CodeMode spawn needs exclusive admission.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 832c11749839602a9255161b8fcc351ea7a6762dc0847c9d1a84e602f9026a55; 3479 bytes/75 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "The fixture now uses standalone wait(cell_id=1) outside nested dispatch. It still steers cost_center from origin to current, completes the old cell/child and asserts original child metadata, exact task plaintext and exactly two threads.",
+        "Production ownership is unchanged. This control does not implement or qualify the required queued inherited map/full original active-turn map recovery adaptation from prior Row8."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "bc2c328483ee60e82e08ad48f3a5efbb5712f914",
+      "subject": "Append transcript provenance to Guardian JSON instructions (#62090)",
+      "paths": [
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_extra_policy__extra_policy_reaches_guardian_review.snap",
+        "codex-rs/ext/guardian-v2/src/async_scorer/config_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/extension_tests.rs",
+        "codex-rs/prompts/src/guardian_instructions.rs",
+        "codex-rs/prompts/src/guardian_instructions_tests.rs"
+      ],
+      "classes": [
+        "security",
+        "refactor"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Append full JSON transcript provenance after the Guardian policy/output contract, keeping classifier provenance outside the configured prompt token cap.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 457ca78e06de2634257651b2e1e82192ee38edeac01e922cc5c0505108ee27ce; 10920 bytes/193 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "Reviewer/classifier composition preserves instruction text and changes ordering. The cap applies to the configured prompt before provenance is appended. Source controls require the complete provenance suffix and output contract at the end of the capped configured portion.",
+        "Exact changed snapshot lines and full before/after hashes are projected separately. No authorization class, approval policy, default or native/Goal release is changed."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "444803ddcd91484112b4fd315e2b15f4e4ec845b",
+      "subject": "Skip recent rollouts before reading headers during compression (#62092)",
+      "paths": [
+        "codex-rs/rollout/src/compression.rs",
+        "codex-rs/rollout/src/compression_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "background"
+      ],
+      "features": [
+        "history-pagination"
+      ],
+      "decision": "adopt",
+      "reason": "Avoid reading recent rollout headers during compression scanning while preserving the encoding-time coldness check and skip metrics.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 c8361feb06d44444c1bb8757b6d5b5b8c11222ae8c5db1f22095be70e3e6fb8c; 9316 bytes/202 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "The early modification-time check skips files younger than seven days using the same is_cold helper as the later encoder path. Unknown modified time falls through to existing later validation; measured stats remain saturating.",
+        "The worker source control retains old active/archived compression, recent rollout access time, temporary-file behavior and aged malformed-header error coverage. No filesystem/compression behavior was executed."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "e9a43d43c5942e351da454a760bf04adcb4dcd6b",
+      "subject": "Return empty success output from v2 `send_message` (#62093)",
+      "paths": [
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__agent_eviction__idle_eviction_followup.snap"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "execution-continuity",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Use empty successful v2 message-tool output while retaining actual routing, activity and queue-only delivery behavior.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 b600caf1ce655e9054611658cf394af90cd2aece9239e40206531a23a11778f6; 4107 bytes/83 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "The shared handler removes the acceptance prose/followup hint and returns empty text with success. Actual captured encrypted child-to-root communication still asserts trigger_turn=false and no other recipients; the paired snapshot changes success content only.",
+        "An empty tool result is not a new wake/completion receipt, delivery-custody proof or permission to start work."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "04cfdee311a062e052f13594661376db1196e661",
+      "subject": "Ensure Windows sandbox passwords include every character class (#62094)",
+      "paths": [
+        "codex-rs/windows-sandbox-rs/src/setup_provisioning/sandbox_users.rs",
+        "codex-rs/windows-sandbox-rs/src/setup_provisioning/sandbox_users_tests.rs",
+        "codex-rs/windows-sandbox-rs/src/uninstall_windows/principals_tests.rs"
+      ],
+      "classes": [
+        "security",
+        "fix"
+      ],
+      "features": [
+        "build-and-adoption",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Generate sandbox account passwords with OsRng, all four required character classes and unbiased alphabet selection followed by shuffle.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 8513a80739fa0b5db5cb2d051213d875bb2da0ce894c31ec8a8ec475cf908ab8; 7119 bytes/161 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "A 24-byte password first receives upper/lower/digit/symbol characters, fills remaining slots with gen_range over the allowed alphabet and shuffles under OsRng. The 256-draw source control checks length/allowed characters/every class rather than exact randomness.",
+        "The profile-cleanup fixture observes delayed removal for at most ten seconds with specific transient Windows errors; it does not perform replacement deletion. Windows/elevated/platform qualification remains unrun."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "cb64621bf331061c6cfc207deeec9df2aa3a4946",
+      "subject": "Normalize Bedrock Mantle commentary before replay (#62095)",
+      "paths": [
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/tests/suite/client.rs",
+        "codex-rs/model-provider/src/amazon_bedrock/mod.rs",
+        "codex-rs/model-provider/src/provider.rs"
+      ],
+      "classes": [
+        "fix",
+        "model",
+        "protocol"
+      ],
+      "features": [
+        "provider-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve the Bedrock Mantle replay prefix by normalizing empty assistant-commentary annotations before model history.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 e2c270660d292988f5a7e945de1a31a8a045a737dd3ad420fdb7c43ee90df5aa; 9398 bytes/209 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "The provider trait default is a no-op. Only Mantle assistant Commentary OutputText with Some(empty annotations) becomes None; nonempty annotations, final answers and Bedrock Runtime output retain their data.",
+        "Two literal provider cases bind continuation plus later-turn replay, reasoning/tool order, nonempty citation and final-answer assertions. Payload normalization supplies no provider/native recovery or caller authority."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "0122b120cd7d8375676ea2e72e113c2f892343b0",
+      "subject": "Centralize app-server turn error conversion (#62096)",
+      "paths": [
+        "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "codex-rs/app-server-protocol/src/protocol/thread_history_projection.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs",
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/core/tests/suite/compact.rs",
+        "codex-rs/core/tests/suite/websocket_fallback_close.rs"
+      ],
+      "classes": [
+        "refactor",
+        "protocol"
+      ],
+      "features": [
+        "provider-recovery",
+        "history-pagination"
+      ],
+      "decision": "adopt",
+      "reason": "Centralize identical live/history/projection TurnError mappings without altering retry policy.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 a53820b99a4c643f04ff919dbcda2187ec60e3fff35efc1f59a82505751f34a0; 12614 bytes/251 lines. Exact single-parent/path identities are bound by raw index5640286b2147cb7db25c2e75c80f899722351ad0e46eedafdf64800d4deea61d.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-afterce5.md. Fixed ALab comparison bf829ff9a46314afc25ce25e3bcbefa2800589c5; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet18b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1 binds252 Git/path identities,21 selected exact original/final declarations/22 pre-cfg cases, final module contexts,14 Cargo manifests and both snapshot changed-line projections. All controls UNRUN; unchanged whole files are identity-bound, not whole semantic reads.",
+        "From<ErrorEvent> keeps message, codex_error_info and misalignment mappings and additional_details=None. The existing live/history consumers now share that conversion.",
+        "The renamed parameterized compaction test declares exactly one literal server_error,true case. Its recoverable=false branch has no instantiated terminal-error case; websocket comments add no cases or production logic. No new terminal-classifier/retry qualification is claimed."
+      ],
+      "revisit": ""
+    }
+  ]
+}

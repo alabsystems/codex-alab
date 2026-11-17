@@ -138,3 +138,7 @@ fn has_possible_closing_line(source: &str, marker: u8, marker_len: usize) -> boo
 #[cfg(test)]
 #[path = "code_fence_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_stream_code_fence.rs"]
+pub(crate) mod alab_retained_code_fence; // ALAB(retained-ui): preserve actual open-fence cursor and cache state.

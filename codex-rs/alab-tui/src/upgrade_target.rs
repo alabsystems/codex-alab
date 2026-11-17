@@ -9,7 +9,7 @@ use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 /// Typed CLI entry, kept out of upstream's argument implementation.
 #[derive(Debug, clap::Args)]
@@ -24,6 +24,10 @@ pub struct Command {
 pub struct Response {
     pub protocol: u32,
     pub exec_custody: u32,
+    pub full_runtime: u32,
+    pub runtime_readers: Vec<u32>,
+    #[serde(default)]
+    pub extensions: std::collections::BTreeMap<String, serde_json::Value>,
     pub exec_custody_adopted: bool,
     pub pid: u32,
     pub executable: PathBuf,
@@ -33,6 +37,29 @@ pub struct Response {
 }
 
 impl Response {
+    /// Exact signed-image/actual probe-child correlation for the Native E1
+    /// compatibility extension. This deliberately supplies no legacy forest
+    /// reader requirement, package admission or execution permission.
+    pub(crate) fn validate_retained_image_identity(
+        &self,
+        admitted: &crate::upgrade_admission::Receipt,
+        child_pid: u32,
+    ) -> std::io::Result<()> {
+        if self.protocol != PROTOCOL
+            || child_pid == 0
+            || self.pid != child_pid
+            || self.executable != admitted.executable.canonicalize()?
+            || self.device != admitted.device
+            || self.inode != admitted.inode
+            || self.product_version != admitted.version
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "retained target response does not match the actual admitted image",
+            ));
+        }
+        Ok(())
+    }
     /// Bind compatibility to the exact retained signed build and original probe
     /// child. This never turns a compatibility response into package admission.
     pub fn validate(
@@ -42,6 +69,7 @@ impl Response {
     ) -> std::io::Result<()> {
         if self.protocol != PROTOCOL
             || self.exec_custody != crate::upgrade_exec_custody::PROTOCOL
+            || !self.accepts_runtime(crate::upgrade_state::VERSION)
             || child_pid == 0
             || self.pid != child_pid
             || self.executable != admitted.executable.canonicalize()?
@@ -57,12 +85,42 @@ impl Response {
         Ok(())
     }
 
+    pub fn accepts_runtime(&self, version: u32) -> bool {
+        self.full_runtime != 0
+            && version != 0
+            && self
+                .runtime_readers
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+            && self
+                .runtime_readers
+                .first()
+                .is_none_or(|version| *version != 0)
+            && self.runtime_readers.contains(&version)
+            && self.runtime_readers.contains(&self.full_runtime)
+    }
+
     fn current() -> std::io::Result<Self> {
         let executable = std::env::current_exe()?.canonicalize()?;
         let metadata = std::fs::metadata(&executable)?;
         Ok(Self {
             protocol: PROTOCOL,
             exec_custody: crate::upgrade_exec_custody::startup_protocol(),
+            full_runtime: if crate::upgrade_exec_custody::startup_protocol()
+                == crate::upgrade_exec_custody::PROTOCOL
+            {
+                crate::upgrade_state::VERSION
+            } else {
+                0
+            },
+            runtime_readers: if crate::upgrade_exec_custody::startup_protocol()
+                == crate::upgrade_exec_custody::PROTOCOL
+            {
+                vec![crate::upgrade_state::VERSION]
+            } else {
+                Vec::new()
+            },
+            extensions: crate::upgrade_exec_custody::images::support_extensions(),
             exec_custody_adopted: crate::upgrade_exec_custody::adopted(),
             pid: std::process::id(),
             executable,

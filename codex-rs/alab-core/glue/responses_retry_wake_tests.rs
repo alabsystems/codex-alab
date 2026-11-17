@@ -11,6 +11,7 @@ use codex_alab_core::wake::Reading;
 use codex_alab_core::wake::WakeState;
 use codex_async_utils::OrCancelExt;
 use codex_http_client::RetryAfter;
+use codex_protocol::protocol::WarningEvent;
 use std::fs;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -373,6 +374,311 @@ async fn ordinary_retry(case: &str) {
     }
 }
 
+async fn capacity_notice(reason: CapacityReason, cancel: bool) {
+    let (mut session, turn, events) =
+        crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+            codex_login::CodexAuth::from_api_key("private-capacity-notice-test-key"),
+            Vec::new(),
+            |_| {},
+        )
+        .await;
+    Arc::get_mut(&mut session)
+        .expect("the fixture owns the session before any clone")
+        .realtime_history = Some(tokio::sync::Mutex::new(RealtimeHistoryState::default()));
+    let step = StepContext::for_test(turn);
+    let pacing = Arc::new(Mutex::new(Vec::new()));
+    let published = Arc::clone(&pacing);
+    step.turn
+        .extension_data
+        .insert(InFlightRetryObserver::new(move |deadline| {
+            published
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(deadline);
+        }));
+    let mut client = session.services.model_client.new_session();
+    let mut state = ResponsesStreamRetryState::default();
+    codex_alab_core::activate();
+    tokio::time::pause();
+    let start = Instant::now();
+    let before_deadline = start.into_std();
+    let advice = RetryAfter::from_delay_with_sleep_reading(WAIT, None)
+        .expect("positive representable provider advice");
+    let (error, expected_info, expected_notice, expected_details) = match reason {
+        CapacityReason::ServerOverloaded => (
+            CodexErr::ServerOverloaded,
+            CodexErrorInfo::ServerOverloaded,
+            "Model is at capacity; retrying automatically (interrupt to stop)...",
+            "Selected model is at capacity. Please try a different model.",
+        ),
+        CapacityReason::PolicyCapacityUnavailable => (
+            CodexErr::new(CodexErrorDetails::PolicyCapacityUnavailable),
+            CodexErrorInfo::PolicyCapacityUnavailable,
+            "Policy-restricted capacity is unavailable; retrying automatically (interrupt to stop)...",
+            "Policy-restricted capacity is unavailable. Please try again later.",
+        ),
+    };
+    let error = error.with_retry_after(advice);
+    let steering = CancellationToken::new();
+    let protected = super::preempt_for_retry(&error, &steering, &state, 3, &step.turn);
+    let turn_cancel = CancellationToken::new();
+    let mut delivery = Some(
+        session
+            .realtime_history
+            .as_ref()
+            .expect("real notice delivery lock")
+            .lock()
+            .await,
+    );
+    let live;
+    {
+        // This is the production retry selection and the caller's outer interrupt
+        // boundary, not a simulated input-admission or whole sampling request.
+        let mut retry = Box::pin(
+            super::super::handle_response_stream_error(
+                &mut state,
+                3,
+                error,
+                &mut client,
+                &session,
+                &step,
+                ResponsesStreamRequest::Sampling,
+            )
+            .or_cancel(&protected)
+            .or_cancel(&turn_cancel),
+        );
+        let hang = std::time::Instant::now() + Duration::from_secs(60);
+        live = loop {
+            assert!(
+                futures::poll!(&mut retry).is_pending(),
+                "the real handler cannot finish while notice delivery is held"
+            );
+            let deadline = pacing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .last()
+                .copied()
+                .flatten();
+            if let (Some(deadline), Some(live)) =
+                (deadline, step.turn.extension_data.get::<LiveCapacityWait>())
+                && let Some(published_reason) =
+                    live.publish_reason_if_current(|| before_deadline, |reason| reason)
+            {
+                assert!(deadline > before_deadline, "selected pacing is positive");
+                assert_eq!(published_reason, reason);
+                break live;
+            }
+            assert!(
+                std::time::Instant::now() < hang,
+                "capacity selection hang detector"
+            );
+            tokio::task::yield_now().await;
+        };
+        assert!(matches!(
+            events.try_recv(),
+            Err(async_channel::TryRecvError::Empty)
+        ));
+        steering.cancel();
+        assert!(steering.is_cancelled());
+        assert!(
+            !protected.is_cancelled(),
+            "capacity keeps its selected retry outcome"
+        );
+        assert!(
+            futures::poll!(&mut retry).is_pending(),
+            "representative steering cannot cancel the protected capacity handler"
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Err(async_channel::TryRecvError::Empty)
+        ));
+        if cancel {
+            turn_cancel.cancel();
+            assert!(matches!(retry.await, Err(CancelErr::Cancelled)));
+        } else {
+            drop(delivery.take());
+            let event = tokio::select! {
+                result = &mut retry => panic!("capacity completed before its notice and positive wait: {result:?}"),
+                event = events.recv() => event.expect("real capacity notice"),
+            };
+            assert_eq!(event.id, step.turn.sub_id);
+            let EventMsg::StreamError(notice) = event.msg else {
+                panic!("expected the exact capacity stream-error notice");
+            };
+            assert_eq!(notice.message, expected_notice);
+            assert_eq!(notice.codex_error_info, Some(expected_info));
+            assert_eq!(notice.additional_details.as_deref(), Some(expected_details));
+            assert!(matches!(
+                events.try_recv(),
+                Err(async_channel::TryRecvError::Empty)
+            ));
+            assert!(
+                futures::poll!(&mut retry).is_pending(),
+                "positive selected wait remains"
+            );
+            retry
+                .await
+                .expect("turn was not interrupted")
+                .expect("steering remains protected")
+                .expect("capacity retry completes");
+            assert!(
+                Instant::now() > start,
+                "completion followed a positive virtual wait"
+            );
+        }
+    }
+    // The owning future is gone. Checking at the original predeadline instant
+    // makes retirement distinguishable from a naturally expired live slot.
+    if cancel {
+        assert!(
+            delivery.is_some(),
+            "cancellation retires guards before unlocking delivery"
+        );
+        assert_eq!(
+            Instant::now(),
+            start,
+            "cancellation did not wait out the deadline"
+        );
+    }
+    assert_eq!(
+        pacing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last()
+            .copied(),
+        Some(None),
+        "the owned retry guard retires its transient pacing publication"
+    );
+    assert_eq!(
+        live.publish_reason_if_current(|| before_deadline, |reason| reason),
+        None
+    );
+    assert!(matches!(
+        events.try_recv(),
+        Err(async_channel::TryRecvError::Empty)
+    ));
+    // Retained SamplingRetryAdvice is a separate turn-scoped fact, not either
+    // transient guard checked above. Cancellation need not erase that advice.
+    drop(delivery.take());
+    for message in [
+        "capacity-notice-after-unlock",
+        "capacity-notice-after-deadline",
+    ] {
+        if message == "capacity-notice-after-deadline" {
+            tokio::time::advance(WAIT * 2).await;
+            assert!(Instant::now() > advice.deadline());
+        }
+        session
+            .send_event(
+                &step.turn,
+                EventMsg::Warning(WarningEvent {
+                    message: message.into(),
+                }),
+            )
+            .await;
+        let event = events.recv().await.expect("real session delivery barrier");
+        assert_eq!(event.id, step.turn.sub_id);
+        assert!(matches!(event.msg, EventMsg::Warning(warning) if warning.message == message));
+        assert!(matches!(
+            events.try_recv(),
+            Err(async_channel::TryRecvError::Empty)
+        ));
+        assert_eq!(
+            live.publish_reason_if_current(|| before_deadline, |reason| reason),
+            None
+        );
+        assert_eq!(
+            pacing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .last()
+                .copied(),
+            Some(None)
+        );
+    }
+}
+
+async fn legacy_compaction_expired_advice() {
+    let (_session, turn) = crate::session::tests::make_session_and_context().await;
+    let (_host, clock) = host_clock(BASE);
+    let selections = Arc::clone(&clock.selected);
+    let entered = Arc::clone(&clock.entered);
+    turn.extension_data.insert(clock);
+    let pacing = Arc::new(Mutex::new(Vec::new()));
+    let published = Arc::clone(&pacing);
+    turn.extension_data
+        .insert(InFlightRetryObserver::new(move |deadline| {
+            published
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(deadline);
+        }));
+    let current = || {
+        pacing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last()
+            .copied()
+    };
+    codex_alab_core::activate();
+    tokio::time::pause();
+    let advice = RetryAfter::from_delay_with_sleep_reading(WAIT, None)
+        .expect("representable provider receipt");
+    let error = CodexErr::InternalServerError.with_retry_after(advice);
+    tokio::time::advance(WAIT - 2 * SECOND).await;
+    let local_delay = error.retry_delay(1).expect("real positive caller delay");
+    assert_eq!(local_delay, 2 * SECOND);
+    // Model scheduler preemption after the caller's positive delay read, not
+    // an awaited operation between compact.rs's delay read and wait selection.
+    tokio::time::advance(3 * SECOND).await;
+    let selected_at = Instant::now();
+    assert!(
+        advice.deadline() < selected_at,
+        "provider advice really expired"
+    );
+    assert_eq!(error.retry_delay(1), Some(Duration::ZERO));
+    let selection = super::compact_retry_at(&error, local_delay, &turn)
+        .expect("active legacy compaction selects its wait before reporting");
+    let deadline = current()
+        .flatten()
+        .expect("actual selected pacing publication");
+    assert_eq!(selections.load(Ordering::SeqCst), 1);
+    assert_eq!(entered.load(Ordering::SeqCst), 0);
+    assert!(deadline > selected_at.into_std());
+    assert_eq!(deadline, (selected_at + local_delay).into_std());
+
+    // Model a bounded reporting interval without claiming that this fixture runs
+    // a complete compaction request or its actual notify_stream_error call.
+    tokio::time::advance(SECOND).await;
+    assert_eq!(current(), Some(Some(deadline)));
+    let mut waiting = Box::pin(super::compact_wait(advice.deadline(), Some(selection)));
+    assert!(
+        futures::poll!(&mut waiting).is_pending(),
+        "the real consumer keeps the positive selected minimum despite its expired fallback"
+    );
+    assert_eq!(entered.load(Ordering::SeqCst), 1);
+    assert_eq!(current(), Some(Some(deadline)));
+    tokio::time::advance(SECOND - Duration::from_millis(1)).await;
+    assert!(
+        futures::poll!(&mut waiting).is_pending(),
+        "the selected local interval has not elapsed"
+    );
+    assert_eq!(current(), Some(Some(deadline)));
+    tokio::time::advance(Duration::from_millis(1)).await;
+    waiting.await;
+    let completed_at = Instant::now();
+    assert!(completed_at >= selected_at + local_delay);
+    assert!(
+        completed_at <= selected_at + local_delay + Duration::from_millis(10),
+        "consuming the real wait does not restart the local delay after reporting"
+    );
+    assert_eq!(
+        current(),
+        Some(None),
+        "completion and owned-future drop retire the actual pacing guard"
+    );
+}
+
 fn child_name() -> String {
     let (_, module) = module_path!().split_once("::").expect("test crate prefix");
     format!("{module}::ordinary_retry_wake_child")
@@ -478,6 +784,27 @@ fn extreme_valid_provider_advice_does_not_evaluate_an_overflowing_unused_fallbac
 }
 
 #[test]
+fn capacity_notice_cancellation_retires_waits_before_delivery() -> std::io::Result<()> {
+    for case in ["capacity-server-cancel", "capacity-policy-cancel"] {
+        isolated(case)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn capacity_notice_release_delivers_then_retires_waits() -> std::io::Result<()> {
+    for case in ["capacity-server-release", "capacity-policy-release"] {
+        isolated(case)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn legacy_compaction_keeps_selected_local_backoff_after_expired_advice() -> std::io::Result<()> {
+    isolated("compact-expired-local-minimum")
+}
+
+#[test]
 fn ordinary_retry_wake_child() {
     let Ok(case) = std::env::var(CHILD) else {
         return;
@@ -491,9 +818,35 @@ fn ordinary_retry_wake_child() {
         .build()
         .expect("private fixture runtime")
         .block_on(async {
-            tokio::time::timeout(Duration::from_secs(60), ordinary_retry(&case))
-                .await
-                .expect("ordinary retry wake hang detector")
+            tokio::time::timeout(Duration::from_secs(60), async {
+                match case.as_str() {
+                    "compact-expired-local-minimum" => legacy_compaction_expired_advice().await,
+                    "capacity-server-cancel" => {
+                        capacity_notice(CapacityReason::ServerOverloaded, true).await
+                    }
+                    "capacity-policy-cancel" => {
+                        capacity_notice(CapacityReason::PolicyCapacityUnavailable, true).await
+                    }
+                    "capacity-server-release" => {
+                        capacity_notice(CapacityReason::ServerOverloaded, false).await
+                    }
+                    "capacity-policy-release" => {
+                        capacity_notice(CapacityReason::PolicyCapacityUnavailable, false).await
+                    }
+                    "sleep"
+                    | "no-sleep"
+                    | "old-sleep"
+                    | "no-advice"
+                    | "cancel"
+                    | "inactive"
+                    | "connection-sleep"
+                    | "connection-inactive"
+                    | "extreme" => ordinary_retry(&case).await,
+                    _ => panic!("unknown retry wake child selector"),
+                }
+            })
+            .await
+            .expect("ordinary retry wake hang detector")
         });
     #[expect(
         clippy::print_stdout,

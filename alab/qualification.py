@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run the existing native gate and retain a source-bound local observation."""
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
-import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from upstream_intake import git, git_environment
 
 validate_ident = runpy.run_path(str(Path(__file__).resolve().with_name('source_content.py')))['validate_ident']
+successful_exit = runpy.run_path(str(Path(__file__).with_name('cli_status.py')))['successful_exit']
+FILE_HASH = runpy.run_path(str(Path(__file__).resolve().with_name('file_hash.py')))
 
 LIMITS = ('Local gate execution and Git-state observation; not authenticated attestation, '
           'a replacement gate, artifact promotion or live entitlement.')
@@ -120,6 +123,80 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _cleanup_failure(primary, failures):
+    selected = primary
+    for _phase, error in failures:
+        if isinstance(selected, Exception) and not isinstance(error, Exception):
+            selected = error
+    for phase, error in [('qualification operation', primary), *failures]:
+        if error is selected:
+            continue
+        try:
+            if hasattr(selected, 'add_note'):
+                selected.add_note(f'{phase} failed: {error!r}')
+        except BaseException as note_error:
+            # Reporting must not replace the failure it describes.
+            if isinstance(selected, Exception) and not isinstance(note_error, Exception):
+                selected = note_error
+    return selected
+
+
+@contextmanager
+def _closing(resource, phase):
+    try:
+        yield resource
+    except BaseException as primary:
+        failures = []
+        try:
+            resource.close()
+        except BaseException as error:
+            failures.append((phase, error))
+        selected = _cleanup_failure(primary, failures)
+        if selected is not primary:
+            raise selected from primary
+        raise
+    else:
+        resource.close()
+
+
+def _cleanup_process(process, primary):
+    failures = []
+
+    def attempt(action, phase):
+        try:
+            action()
+            return True
+        except BaseException as error:
+            failures.append((phase, error))
+            return False
+
+    try:
+        if process.returncode is None:
+            attempt(lambda: process.terminate(), 'qualification terminate')
+            if process.returncode is None:
+                try:
+                    process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    pass  # The bounded wait requests escalation, not a new failure.
+                except BaseException as error:
+                    failures.append(('qualification wait', error))
+            if process.returncode is None:
+                killed = attempt(lambda: process.kill(), 'qualification kill')
+                while process.returncode is None:
+                    try:
+                        process.wait(timeout=None if killed else 30)
+                        break
+                    except BaseException as error:
+                        failures.append(('qualification reap', error))
+                        if not killed or isinstance(error, Exception):
+                            break
+    except BaseException as error:
+        failures.append(('qualification retirement', error))
+    finally:
+        attempt(lambda: process.stdout.close(), 'qualification stdout cleanup')
+    return _cleanup_failure(primary, failures)
+
+
 def run(repo, directory=None, stream=None):
     repo = Path(repo).resolve(strict=True)
     before = snapshot(repo)
@@ -143,7 +220,7 @@ def run(repo, directory=None, stream=None):
         raise ValueError('qualification output must stay outside candidate inputs')
     command = [str(repo / 'alab/check.sh')]
     started = now()
-    with (directory / 'start.json').open('x') as out:
+    with _closing((directory / 'start.json').open('x'), 'qualification start record') as out:
         json.dump({'schema': SCHEMA, 'before': before, 'command': command,
                    'started_at': started}, out, indent=2)
         out.write('\n')
@@ -151,7 +228,7 @@ def run(repo, directory=None, stream=None):
         stream = sys.stdout.buffer
     stream.write(('qualification log: ' + str(directory / 'gate.log') + '\n').encode())
     stream.flush()
-    with (directory / 'gate.log').open('xb') as log:
+    with _closing((directory / 'gate.log').open('xb'), 'qualification log') as log:
         environment = os.environ.copy()
         for name in list(environment):
             if name.startswith('GIT_'):
@@ -173,15 +250,12 @@ def run(repo, directory=None, stream=None):
                 stream.write(chunk)
                 stream.flush()
             status = process.wait()
-        except BaseException:
-            process.terminate()
-            try:
-                process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+        except BaseException as primary:
+            selected = _cleanup_process(process, primary)
+            if selected is not primary:
+                raise selected from primary
             raise
-        finally:
+        else:
             process.stdout.close()
     after = snapshot(repo)
     qualified = status == 0 and before == after and after['clean']
@@ -189,9 +263,9 @@ def run(repo, directory=None, stream=None):
               'before': before, 'after': after, 'command': command,
               'status': status, 'qualified_source': before['source'] if qualified else None,
               'started_at': started, 'completed_at': now(), 'log': 'gate.log',
-              'log_sha256': hashlib.sha256((directory / 'gate.log').read_bytes()).hexdigest(),
+              'log_sha256': FILE_HASH['file_sha256'](directory / 'gate.log'),
               'limits': LIMITS}
-    with (directory / 'record.json').open('x') as out:
+    with _closing((directory / 'record.json').open('x'), 'qualification final record') as out:
         json.dump(record, out, indent=2)
         out.write('\n')
     stream.write(('qualification record: ' + str(directory / 'record.json') + '\n').encode())
@@ -208,12 +282,16 @@ def inspect(repo, path):
     path = Path(path)
     if path.is_symlink() or (path.parent / 'gate.log').is_symlink():
         raise ValueError('qualification record and log must not be symlinks')
-    record = json.loads(path.read_text())
+    _metadata, data = FILE_HASH['file_bytes_snapshot'](path)
+    with io.TextIOWrapper(io.BytesIO(data)) as text:
+        record = json.loads(text.read())
     if (not isinstance(record, dict) or type(record.get('schema')) is not int
             or record['schema'] != SCHEMA or record.get('kind') != 'native-check-execution-observation'
             or type(record.get('status')) is not int or record['status'] != 0
-            or not isinstance(record.get('before'), dict) or record['before'] != record.get('after')
-            or record['before'].get('clean') is not True or record.get('log') != 'gate.log'):
+            or not isinstance(record.get('before'), dict) or not isinstance(record.get('after'), dict)
+            or record['before'] != record['after']
+            or record['before'].get('clean') is not True or record['after'].get('clean') is not True
+            or record.get('log') != 'gate.log'):
         raise ValueError('qualification record has no successful unchanged-source gate outcome')
     source = record.get('qualified_source')
     if not isinstance(source, str) or source != record['before'].get('source'):
@@ -229,11 +307,28 @@ def inspect(repo, path):
     upstream = record['before'].get('upstream')
     if not isinstance(upstream, str) or git(repo, 'merge-base', source, upstream) != upstream:
         raise ValueError('qualification upstream differs from the source frontier')
-    if hashlib.sha256((path.parent / 'gate.log').read_bytes()).hexdigest() != record.get('log_sha256'):
+    if FILE_HASH['file_sha256'](path.parent / 'gate.log') != record.get('log_sha256'):
         raise ValueError('qualification log hash changed')
     return {'source': source, 'upstream': record['before'].get('upstream'),
             'completed_at': record.get('completed_at'), 'record': str(path.resolve()),
             'limits': LIMITS}
+
+
+def _report_failure(error, *, incomplete=False):
+    try:
+        if incomplete:
+            message = 'qualification observation incomplete: observer requested a successful exit'
+        else:
+            message = 'qualification observation: ' + str(error)
+        print(message, file=sys.stderr)
+        for note in getattr(error, '__notes__', ()):
+            print('qualification observation note: ' + str(note), file=sys.stderr)
+    except SystemExit as report_error:
+        if not successful_exit(report_error):
+            raise
+    except Exception:
+        pass  # A diagnostic sink failure cannot make the observation successful.
+    return 1
 
 
 def main():
@@ -243,9 +338,12 @@ def main():
     args = parser.parse_args()
     try:
         return run(args.repo, args.directory)
+    except SystemExit as error:
+        if successful_exit(error):
+            return _report_failure(error, incomplete=True)
+        raise
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
-        print('qualification observation: ' + str(error), file=sys.stderr)
-        return 1
+        return _report_failure(error)
 
 
 if __name__ == '__main__':

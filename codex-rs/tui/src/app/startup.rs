@@ -18,6 +18,9 @@ use crate::session_start::complete_session_start;
 use crate::unarchive_prompt::run_unarchive_prompt;
 use color_eyre::eyre::ContextCompat;
 
+#[path = "../../../alab-tui/glue/owned_local_configured_startup_call.rs"]
+mod alab_configured; // ALAB(retained-ui): wrap the complete original config installation only for an actual pending owner.
+
 fn spawn_startup_thread_start(
     app_server: &AppServerSession,
     local_settings: crate::local_settings::LocalSettings,
@@ -61,6 +64,7 @@ pub(super) async fn prepare_fresh_startup_config(
     environments: &EnvironmentManager,
 ) -> Result<crate::projectless::AppliedDefaults> {
     let defaults_cwd = match app_server_target {
+        #[cfg(unix)] AppServerTarget::OwnedLocal { .. } => config.cwd.as_path(), // ALAB(owned-local): retain the original local defaults and workspace policy.
         AppServerTarget::Embedded | AppServerTarget::LocalDaemon { .. } => config.cwd.as_path(),
         AppServerTarget::Remote { .. } | AppServerTarget::Cloud => {
             app_server.remote_cwd_override().unwrap_or(Path::new("."))
@@ -319,6 +323,8 @@ impl App {
                 }
             };
         }
+        #[cfg(unix)]
+        let alab_constructor = startup_try!(startup_draft.alab_constructor_owner(|| crate::chatwidget::create_initial_user_message(initial_prompt.clone(), initial_images.clone(), Vec::new()))); // ALAB(retained-ui): retain mandatory original constructor/Entry before startup awaits.
         // Adopt actual launch ownership before constructing session-local preferences.
         startup_try!(tui.prepare_owned_screen(config.tui_fullscreen_transcript));
         let mut local_settings = crate::local_settings::LocalSettings::for_tui(&config, tui);
@@ -328,6 +334,9 @@ impl App {
         {
             startup_try!(target.ensure_backend(app_server.backend_id()));
         }
+        #[cfg(unix)] // ALAB(retained-ui): retain actual receiver-pair identity weakly in this outer event/upgrade frame.
+        let (app_event_tx, mut app_event_rx, _alab_event_queue) = crate::copy_input_guard::alab_retained_graph::channel();
+        #[cfg(not(unix))]
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
         if let Some(message) = project_config_warning(&config) {
@@ -382,19 +391,18 @@ impl App {
             }
         }
         let startup_defaults = if fresh_start {
-            match startup_draft
-                .run_until(
-                    tui,
-                    prepare_fresh_startup_config(
-                        &mut config,
-                        &app_server,
-                        &app_server_target,
-                        &cli_kv_overrides,
-                        &harness_overrides,
-                        &environment_manager,
-                    ),
-                )
-                .await
+            match alab_configured::prepare( // ALAB(retained-ui): preserve original config/read and every conversion before the actual UI witness.
+                &mut startup_draft,
+                tui,
+                alab_configured::Inputs {
+                    config: &mut config,
+                    app_server: &mut app_server,
+                    target: &app_server_target,
+                    cli_kv_overrides: &cli_kv_overrides,
+                    harness_overrides: &harness_overrides,
+                    environments: &environment_manager,
+                },
+            ).await
             {
                 Ok(Ok(defaults)) => defaults,
                 Ok(Err(err)) => {
@@ -502,16 +510,12 @@ impl App {
         if let Some(updated_model) = config.model.clone() {
             model = updated_model;
         }
-        let mut source_overrides = harness_overrides.clone();
-        source_overrides.cwd = None;
-        app_server.worktree_source_config_builder = Some(Box::new(
-            crate::legacy_core::config::ConfigBuilder::default()
-                .codex_home(config.codex_home.to_path_buf())
-                .cli_overrides(cli_kv_overrides.clone())
-                .harness_overrides(source_overrides)
-                .loader_overrides(loader_overrides.clone())
-                .cloud_config_bundle(cloud_config_bundle.clone()),
-        ));
+        app_server.worktree_source_config_builder = Some(crate::app_server_session::alab_builder_owner::Owned::new(
+            crate::owned_worktree_source_builder::create(
+                &config.codex_home, cli_kv_overrides.clone(), harness_overrides.clone(),
+                loader_overrides.clone(), cloud_config_bundle.clone(),
+            ),
+        )); // ALAB(owned-local): retain the exact original builder in its using process.
         let dynamic_tool_status_updates = tokio::sync::broadcast::channel(/*capacity*/ 64).0;
         if matches!(
             &app_server_target,
@@ -630,12 +634,19 @@ impl App {
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
                     workspace_command_runner: Some(workspace_command_runner.clone()),
-                    initial_user_message: crate::chatwidget::create_initial_user_message(
-                        initial_prompt.clone(),
-                        initial_images.clone(),
-                        // CLI prompt args are plain strings, so they don't provide element ranges.
-                        Vec::new(),
-                    ),
+                    initial_user_message: { // ALAB(retained-ui): authoritative captured Pending/Empty precedes any configured escrow.
+                        let original = || crate::chatwidget::create_initial_user_message(
+                            initial_prompt.clone(),
+                            initial_images.clone(),
+                            // CLI prompt args are plain strings, so they don't provide element ranges.
+                            Vec::new(),
+                        );
+                        #[cfg(unix)]
+                        let initial_message = startup_try!(alab_constructor.initial_message_for_constructor(original));
+                        #[cfg(not(unix))]
+                        let initial_message = original();
+                        initial_message
+                    },
                     enhanced_keys_supported,
                     has_chatgpt_account,
                     requires_openai_auth,
@@ -783,12 +794,19 @@ impl App {
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
                     workspace_command_runner: Some(workspace_command_runner.clone()),
-                    initial_user_message: crate::chatwidget::create_initial_user_message(
-                        initial_prompt.clone(),
-                        initial_images.clone(),
-                        // CLI prompt args are plain strings, so they don't provide element ranges.
-                        Vec::new(),
-                    )
+                    initial_user_message: { // ALAB(retained-ui): authoritative captured Pending/Empty precedes any configured escrow.
+                        let original = || crate::chatwidget::create_initial_user_message(
+                            initial_prompt.clone(),
+                            initial_images.clone(),
+                            // CLI prompt args are plain strings, so they don't provide element ranges.
+                            Vec::new(),
+                        );
+                        #[cfg(unix)]
+                        let initial_message = startup_try!(alab_constructor.initial_message_for_constructor(original));
+                        #[cfg(not(unix))]
+                        let initial_message = original();
+                        initial_message
+                    }
                     .filter(|_| resumed.is_some()),
                     enhanced_keys_supported,
                     has_chatgpt_account,
@@ -895,12 +913,19 @@ impl App {
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
                     workspace_command_runner: Some(workspace_command_runner.clone()),
-                    initial_user_message: crate::chatwidget::create_initial_user_message(
-                        initial_prompt.clone(),
-                        initial_images.clone(),
-                        // CLI prompt args are plain strings, so they don't provide element ranges.
-                        Vec::new(),
-                    )
+                    initial_user_message: { // ALAB(retained-ui): authoritative captured Pending/Empty precedes any configured escrow.
+                        let original = || crate::chatwidget::create_initial_user_message(
+                            initial_prompt.clone(),
+                            initial_images.clone(),
+                            // CLI prompt args are plain strings, so they don't provide element ranges.
+                            Vec::new(),
+                        );
+                        #[cfg(unix)]
+                        let initial_message = startup_try!(alab_constructor.initial_message_for_constructor(original));
+                        #[cfg(not(unix))]
+                        let initial_message = original();
+                        initial_message
+                    }
                     .filter(|_| forked.is_some()),
                     enhanced_keys_supported,
                     has_chatgpt_account,
@@ -921,10 +946,20 @@ impl App {
                 (ChatWidget::new_with_app_event(init), forked)
             }
         };
+        #[cfg(unix)]
+        startup_try!(startup_draft.alab_share_entered_startup_clock(&mut chat_widget)); // ALAB(retained-ui): original live pump clock follows actual widget before callback replay.
+        #[cfg(unix)]
+        startup_try!(alab_constructor.install_original_messages(&mut chat_widget)); // ALAB(retained-ui): whole original message graph respects post-filter initial value before hold/drain.
+        #[cfg(unix)]
+        startup_try!(alab_constructor.constructed(&chat_widget.initial_user_message)); // ALAB(retained-ui): actual post-filter message is retained before configured hold.
+        #[cfg(unix)]
+        startup_try!(startup_draft.alab_hold_configured_initial_message(&mut chat_widget)); // ALAB(retained-ui): retain the exact CLI message before original session-event submission.
         let startup_session_cancelled = initial_started_thread.is_none()
             && !pending_startup_thread_start
             && !start_in_agents_overview;
+        #[cfg(unix)] chat_widget.alab_bind_retained_startup(&app_server_target); // ALAB(retained-frontier): install the actual target inhibitor before any session-configured event/CLI auto-submit.
         if startup_session_cancelled {
+            #[cfg(unix)] chat_widget.cancel_startup_submission(); // ALAB(retained-ui): original cancelled session cannot inherit captured confirmation.
             start_in_agents_overview = true;
         }
         chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
@@ -985,6 +1020,10 @@ See the Codex keymap documentation for supported actions and examples."
         let agents_overview =
             agents_overview::AgentsOverviewState::new(local_settings.tui.agents_overview_grouping);
         let mut app = Self {
+            #[cfg(unix)] alab_external_editor: Default::default(), // ALAB(retained-editor): new actual actor has no accepted original job.
+            #[cfg(unix)]
+            _alab_configured: None, // ALAB(retained-ui): the actual pump transfers its owner before provisional input is consumed.
+            #[cfg(unix)] _alab_startup_editor: None, // ALAB(retained-ui): no pending native provisional editor before final original handoff.
             provider_writes,
             feature_write_lock: Arc::default(),
             config_notification_test_generation: 0,
@@ -1074,6 +1113,8 @@ See the Codex keymap documentation for supported actions and examples."
             saved_openings: Default::default(),
             sidebars: HashMap::new(),
             side_companions: HashMap::new(),
+            #[cfg(unix)]
+            alab_side_history_projection: Default::default(), // ALAB(retained-ui): no projection or readiness synthesized at startup.
             zoomed_thread: None,
             exact_sidebar_width: None,
             divider_drag: None,
@@ -1119,6 +1160,12 @@ See the Codex keymap documentation for supported actions and examples."
             #[cfg(test)]
             _test_codex_home: None,
         };
+        #[cfg(unix)]
+        if codex_alab_tui::input::owned() {
+            startup_try!(app.alab_bind_original_editor_driver(&_alab_event_queue)); // ALAB(retained-editor): SAME original pair, before App event dispatch.
+        }
+        #[cfg(unix)]
+        if app_server.retained_frontend().is_some() { startup_try!(alab_constructor.adopt_reply_owner(&mut app, &app_server)); startup_try!(app.alab_bind_retained_reply_owner(&app_server)); startup_try!(alab_constructor.bind_callback_transfer(&mut app,&app_server)); } // ALAB(retained-ui): SAME actual final tenure owns replies before first event drain.
         if tui.is_owned_screen()
             && app.right_click_paste_environment.wsl
             && app.right_click_paste_environment.allows(
@@ -1170,7 +1217,7 @@ See the Codex keymap documentation for supported actions and examples."
             match startup_draft
                 .run_until(
                     tui,
-                    app.enqueue_primary_thread_session(started.session, started.turns),
+                    super::alab_construction_app::install_primary(&mut app, &mut app_server, started, super::session_lifecycle::ThreadAttachPresentation::SessionLineage), // ALAB(source-selection): keep the original result through projection and actual installation.
                 )
                 .await
             {
@@ -1238,7 +1285,19 @@ See the Codex keymap documentation for supported actions and examples."
         // Keep cancelled resume/fork text editable, but never carry confirmation to another session.
         let mut pending_startup_submission =
             startup_draft.take_submission_intent() && !startup_session_cancelled;
-        let mut pending_startup_draft = Some(startup_draft.into_draft());
+        #[cfg(unix)]
+        {
+            let (submission, owner) = startup_try!(startup_draft.alab_hold_configured_submission(pending_startup_submission)); // ALAB(retained-ui): configured completion cannot dispatch the original confirmed draft.
+            pending_startup_submission = submission;
+            app._alab_configured = owner;
+            if let Some(owner)=&app._alab_configured { startup_try!(owner.install_original_confirmation(&mut app.chat_widget)); } // ALAB(retained-ui): original queue owns confirmation before any App input/cancellation event.
+        }
+        #[cfg(unix)]
+        let (mut pending_startup_draft, native_recovery) = startup_draft.alab_finish_entered_editor(&mut app.chat_widget); // ALAB(retained-ui): actual late editor moves; refusal returns its original owner, never drops it.
+        #[cfg(unix)]
+        { app._alab_startup_editor = native_recovery; }
+        #[cfg(not(unix))]
+        let mut pending_startup_draft = startup_draft.alab_into_startup_draft(); // ALAB(upgrade): the restored native editor never passes through a provisional snapshot.
         if app_event_rx.is_empty() && !app.has_queued_startup_protected_request() {
             app.chat_widget.restore_startup_input_when_ready(
                 &mut pending_startup_draft,
@@ -1339,6 +1398,8 @@ See the Codex keymap documentation for supported actions and examples."
             Ok(exit_reason)
         } else {
             loop {
+                #[cfg(unix)]
+                app.alab_wait_local_original_editor(tui).await; // ALAB(retained-editor): keep held original jobs ahead of replay/reconnect/input maintenance.
                 let displayed_session = backends.displayed;
                 let displayed_owner = backends.displayed_owner();
                 if let Some(events) = parked_side_completions.remove(&displayed_owner) {
@@ -1756,6 +1817,8 @@ See the Codex keymap documentation for supported actions and examples."
                         AppRunControl::Continue
                     }
                 };
+                #[cfg(unix)]
+                app.alab_wait_local_original_editor(tui).await; // ALAB(retained-editor): a selected Launch finishes before original post-select drains or input.
                 if App::should_stop_waiting_for_initial_session(
                     waiting_for_initial_session_configured,
                     app.primary_thread_id,
@@ -1801,6 +1864,10 @@ See the Codex keymap documentation for supported actions and examples."
         app.chat_widget.mention_usage_mut().flush().await;
         if let Err(err) = backends.shutdown().await {
             tracing::warn!(error = %err, "failed to shut down embedded app server");
+        }
+        #[cfg(unix)] // ALAB(retained-ui): actual physical close precedes joining accepted readonly UI observers.
+        if let Err(error) = crate::boxed_future!(app.alab_join_callback_observers()).await {
+            tracing::warn!(%error,"retained callback observer drainage remains unobserved");
         }
         let clear_pet_result = tui.alab_clear_pet_images_on_exit(); // ALAB(pet-perf): text erasure alone leaves the picker's Kitty image on an inline screen
         let clear_images = tui.terminal.clear_frame_images(&mut tui.retained_images);

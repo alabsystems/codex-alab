@@ -55,6 +55,8 @@ pub use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;
 use codex_app_server::in_process::LogDbLayer;
 pub use codex_app_server::in_process::StateDbHandle;
+#[cfg(unix)]
+pub use codex_app_server::in_process::RetainedRuntimeOwner; // ALAB(owned-local): expose the actual lifecycle owner through the existing client facade.
 pub use codex_app_server::verified_local_daemon_socket;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
@@ -208,6 +210,7 @@ fn decode_typed_response<T>(
 where
     T: DeserializeOwned,
 {
+    retained_model_reads::before_decode(method, &response); // ALAB(retained-ui): keep the actual prefetched read response before original conversion.
     let response = response.map_err(|source| TypedRequestError::Transport {
         method: method.to_string(),
         source,
@@ -788,7 +791,7 @@ impl AppServerRequestHandle {
         T: DeserializeOwned,
     {
         let method = request.method_name();
-        let response = self.request(request).await;
+        let response = retained_configured::original::request(self, request).await; // ALAB(retained-frontier): original conversion stays intact; only the exact scoped projection replaces its wire send.
         decode_typed_response(method, response)
     }
 }
@@ -2315,3 +2318,36 @@ mod tests {
         assert!(completed.load(Ordering::Acquire));
     }
 }
+
+#[path = "../../alab-core/glue/initial_session_client.rs"]
+mod alab_initial_session_client;
+pub use alab_initial_session_client::{scope_original_side_injection, SideRollbackOperation, SideRollbackCheckpoint, SideView, SideViewCloseOperation, SideViewCloseCheckpoint, InitialSessionSelection, InitialSessionResult, NextSelection, InitialAction, InitialConstructionOperation, InitialConstructionCheckpoint, ClientConstructionOperation, ClientConstructionCheckpoint, ClientPreparationRetirement, ClientConstructionOffer, ClientConstructionSelection, ClientConstructionResult, ClientPresentation, observe_client_construction, observe_initial_session, owns_construction_fallback, scope_initial_session, initial_session_result, next_initial_selection}; // ALAB(owned-local): typed metadata on real IO, never a synthesized client.
+
+#[cfg(unix)]
+pub use codex_app_server::in_process::{InitialSessionKind, InitialSessionPlan}; // ALAB(owned-local): full backend input carrier, no runtime fabricated in frontend.
+
+#[path = "../../alab-core/glue/retained_frontier_client.rs"]
+pub mod retained_frontier; // ALAB(retained-frontier): real same-client codec preserves typed payload; metadata alone grants nothing.
+
+#[cfg(unix)]
+#[path = "../../alab-core/glue/retained_source_selection_client.rs"]
+pub mod source_selection; // ALAB(owned-local): distinct S2 codec around original policy, no R receipt cast.
+
+#[path = "../../alab-core/glue/retained_configured_client.rs"]
+pub mod retained_configured; // ALAB(retained-frontier): original same-client config/read completion DATA, no scheduling release.
+
+#[path = "../../alab-core/glue/retained_reader_client.rs"]
+pub mod retained_readers; // ALAB(retained-readers): actual same-client backend managed snapshot DATA, no frontend credential constructor.
+
+#[path = "../../alab-core/glue/retained_callback_client.rs"]
+pub mod retained_callbacks; // ALAB(retained-ui): actual pinned Source endpoint capture/observation/semantic ACK.
+
+#[path = "../../alab-core/glue/retained_model_read.rs"]
+pub mod retained_model_reads; // ALAB(retained-ui): original model read bookkeeping is separate from all runtime authority.
+
+#[cfg(unix)]
+#[path = "../../alab-core/glue/retained_backend_client_identity.rs"]
+mod alab_retained_backend_identity; // ALAB(retained-ui): bind aggregate local controls to exact original client resources.
+
+#[cfg(unix)]
+pub use alab_retained_backend_identity::OriginalRequestIdentity; // ALAB(retained-ui): opaque weak original-command identity carries no client/credential owner.

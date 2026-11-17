@@ -486,3 +486,7 @@ mod tests {
         assert_eq!(strip_blockquote_prefix("no prefix"), "no prefix");
     }
 }
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_stream_fence_tracker.rs"]
+pub(crate) mod alab_retained_fence; // ALAB(retained-ui): preserve original streaming fence scanner.

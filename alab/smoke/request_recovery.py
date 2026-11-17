@@ -12,9 +12,12 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import runpy
 import sys
 
 import capacity_exec as probe
+
+CLI = runpy.run_path(str(Path(__file__).resolve().parents[1] / "cli_status.py"))
 
 CASES = (
     ("overload", 503, {"error": {"code": "server_is_overloaded", "message": "Model is at capacity."}}, True),
@@ -22,6 +25,11 @@ CASES = (
     ("specific", 400, {"error": {"code": "invalid_prompt", "message": "Invalid tool schema"}}, False),
     ("array", 400, ["Bad Request"], False),
 )
+
+# ResponseItem's native work tags; unrelated history metadata is not tool work.
+TOOL_CALL_TYPES = frozenset(("function_call", "custom_tool_call", "local_shell_call",
+                             "tool_search_call", "web_search_call", "image_generation_call"))
+TOOL_OUTPUT_TYPES = frozenset(("function_call_output", "custom_tool_call_output", "tool_search_output"))
 
 
 class Rejection(probe.Mock):
@@ -49,18 +57,22 @@ def check_result(code, events, requests, recover):
                   "original request input was lost or changed")
     # This fresh exec receives exactly one fixture tool call. Another ID must
     # not hide duplicated work or an unpaired record from the oracle.
-    calls = [item for item in history if item.get("type") == "function_call"]
-    probe.require(len(calls) == 1 and calls[0].get("call_id") == probe.CALL_ID
-                  and calls[0].get("name") == "update_plan",
+    calls = [item for item in history if item.get("type") in TOOL_CALL_TYPES]
+    probe.require(len(calls) == 1 and calls[0].get("type") == "function_call"
+                  and calls[0].get("call_id") == probe.CALL_ID
+                  and calls[0].get("name") == "update_plan"
+                  and calls[0].get("namespace") in (None, "", "functions"),
                   "completed plan call is missing, duplicated or changed")
     # History retains the fixture's raw argument string, not a re-encoded view.
     # Equality between two requests alone cannot prove that the first kept it.
     expected_arguments = json.dumps({"plan": [{"step": probe.PLAN, "status": "completed"}]})
     probe.require(calls[0].get("arguments") == expected_arguments,
                   "completed plan call arguments differ from the fixture")
-    outputs = [item for item in history
-               if item.get("type") == "function_call_output"]
-    probe.require(len(outputs) == 1 and outputs[0].get("call_id") == probe.CALL_ID,
+    outputs = [item for item in history if item.get("type") in TOOL_OUTPUT_TYPES]
+    probe.require(len(outputs) == 1 and outputs[0].get("type") == "function_call_output"
+                  and outputs[0].get("call_id") == probe.CALL_ID
+                  and outputs[0].get("name") in (None, "update_plan")
+                  and outputs[0].get("namespace") in (None, "", "functions"),
                   "completed plan output is missing, duplicated or changed")
     probe.require(outputs[0].get("output") == "Plan updated",
                   "completed plan output does not record the successful update")
@@ -68,61 +80,24 @@ def check_result(code, events, requests, recover):
                   "completed plan result precedes its call")
     if recover:
         probe.require(code == 0, "retryable error did not recover")
-        probe.require(types.count("turn.completed") == 1 and "turn.failed" not in types,
+        probe.require("error" not in types, "recovery stream reported a fatal error")
+        probe.require(types.count("turn.started") == types.count("turn.completed") == 1
+                      and "turn.failed" not in types,
                       "recovery did not retain one successful turn")
         probe.require(requests[2]["body"]["input"] == requests[1]["body"]["input"],
                       "retry changed the input or completed tool output")
-        answers = [event.get("item", {}).get("text") for event in events
+        answers = [(index, event["item"].get("text")) for index, event in enumerate(events)
                    if event.get("type") == "item.completed"
                    and event.get("item", {}).get("type") == "agent_message"]
-        probe.require(answers == [probe.ANSWER], "missing or duplicated recovered answer")
+        probe.require(len(answers) == 1 and answers[0][1] == probe.ANSWER,
+                      "missing or duplicated recovered answer")
+        probe.require(types.index("turn.started") < answers[0][0] < types.index("turn.completed"),
+                      "recovered answer is outside its original turn")
         return probe.retry_after_delay(requests[1], requests[2])
     probe.require(code == 1, "specific refusal did not exit with failure")
     probe.require(types.count("turn.failed") == 1 and "turn.completed" not in types,
                   "specific refusal was retried or reported as successful")
     return None
-
-
-def _error_fields(error):
-    fields = {"error": f"{type(error).__name__}: {error}"}
-    if notes := getattr(error, "__notes__", None):
-        fields["errorNotes"] = list(notes)
-    return fields
-
-
-def _cleanup_case(server, thread, root, model, result, primary):
-    failures = []
-    pending = primary
-    stopped = False
-    actions = (("shutdown", server.shutdown), ("join", thread.join),
-               ("close", server.server_close),
-               ("write", lambda: probe.write_json(root / "requests.json", model.requests)))
-    for phase, action in actions:
-        if phase == "join" and not stopped:
-            failures.append("case cleanup join: skipped because shutdown failed")
-            continue
-        try:
-            action()
-        except BaseException as error:
-            failures.append(f"case cleanup {phase}: {type(error).__name__}: {error}")
-            if not isinstance(error, Exception) and (pending is None or isinstance(pending, Exception)):
-                pending = error
-        else:
-            if phase == "shutdown":
-                stopped = True
-    if pending is not None:
-        if pending is not primary and primary is not None:
-            pending.add_note(f"case body: {type(primary).__name__}: {primary}")
-            for note in getattr(primary, "__notes__", []):
-                pending.add_note(f"case body note: {note}")
-        elif primary is None and "error" in result:
-            pending.add_note(f"case verifier: {result['error']}")
-        for failure in failures:
-            pending.add_note(failure)
-        raise pending
-    if failures:
-        result.update(passed=False, cleanupErrors=failures)
-        result.setdefault("error", "case cleanup failed")
 
 
 def case(codex, output, name, status, envelope, recover):
@@ -151,7 +126,8 @@ def case(codex, output, name, status, envelope, recover):
         primary = error
         raise
     finally:
-        _cleanup_case(server, thread, root, model, result, primary)
+        probe.cleanup_case(
+            server, thread, lambda: probe.write_json(root / "requests.json", model.requests), result, primary)
 
 
 def digest(path):
@@ -162,7 +138,7 @@ def digest(path):
     return result.hexdigest()
 
 
-def main():
+def _arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--codex", type=Path)
@@ -171,6 +147,12 @@ def main():
     args = parser.parse_args()
     if sys.version_info < (3, 11):
         parser.error("the request recovery smoke requires Python 3.11 or newer")
+    return args
+
+
+def main(args=None):
+    if args is None:
+        args = _arguments()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     report = {"passed": False, "cases": []}
@@ -189,7 +171,7 @@ def main():
             try:
                 result = case(codex, output, name, status, envelope, recover)
             except Exception as error:
-                result = {"case": name, "passed": False, **_error_fields(error)}
+                result = {"case": name, "passed": False, **probe.case_error_fields(error)}
             report["cases"].append(result)
             probe.write_json(output / name / "result.json", result)
             del report["activeCase"]
@@ -200,10 +182,10 @@ def main():
             report["error"] = f"binary identity unavailable after smoke: {error}"
         report["passed"] = "error" not in report and all(item["passed"] for item in report["cases"])
     except Exception as error:
-        report.update(_error_fields(error))
+        report.update(probe.case_error_fields(error))
     except (KeyboardInterrupt, SystemExit) as error:
         interrupted = error
-        report.update(passed=False, interrupted=True, **_error_fields(error))
+        report.update(passed=False, interrupted=True, **probe.case_error_fields(error))
     try:
         probe.write_json(output / "result.json", report)
         print(json.dumps(report, indent=2))
@@ -215,5 +197,12 @@ def main():
     return 0 if report["passed"] else 1
 
 
+def cli():
+    # Help and argument errors finish before an observation starts. The API
+    # preserves cancellation objects; the CLI must refuse incomplete success.
+    args = _arguments()
+    return CLI["run_operation"](lambda: main(args), "request recovery: ")
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

@@ -678,6 +678,310 @@ fn inactive_nested_error_headers_keep_outer_conversion_only() {
     }
 }
 
+#[cfg(debug_assertions)]
+fn receipt_payload(code: &str, layer: &str, values: &[&str]) -> String {
+    let header =
+        |value: &&str| format!("\"retry-after\":{}", serde_json::to_string(value).unwrap());
+    let fields = match layer {
+        "nested-fields" => format!(
+            "\"error\":{{\"code\":\"{code}\",\"headers\":{{{}}}}}",
+            values.iter().map(header).collect::<Vec<_>>().join(",")
+        ),
+        "nested-headers" => format!(
+            "\"error\":{{\"code\":\"{code}\",{}}}",
+            values
+                .iter()
+                .map(|value| format!("\"headers\":{{{}}}", header(value)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        "nested-errors" => values
+            .iter()
+            .map(|value| {
+                format!(
+                    "\"error\":{{\"code\":\"{code}\",\"headers\":{{{}}}}}",
+                    header(value)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        "outer-fields" => format!(
+            "\"error\":{{\"code\":\"{code}\"}},\"headers\":{{{}}}",
+            values.iter().map(header).collect::<Vec<_>>().join(",")
+        ),
+        "outer-headers" => format!(
+            "\"error\":{{\"code\":\"{code}\"}},{}",
+            values
+                .iter()
+                .map(|value| format!("\"headers\":{{{}}}", header(value)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        other => panic!("unknown receipt layer: {other}"),
+    };
+    format!("{{\"type\":\"error\",\"status\":403,\"status_code\":503,{fields}}}")
+}
+
+#[cfg(debug_assertions)]
+fn receipt_check(
+    label: &str,
+    payload: &str,
+    expected_seconds: Option<u64>,
+    later_captures_after_sleep: bool,
+    evaluate_after_sleep: bool,
+) {
+    use codex_alab_core::wake::Reading;
+    let started = Instant::now();
+    // Synthetic totals exceed native counters, so intermediate deadline() reads
+    // cannot normalize them. Only the supplied final reading advances sleep.
+    let baseline = Duration::MAX - Duration::from_secs(120);
+    let reading = |asleep| Some(Reading { asleep, last: None });
+    let mut captured = false;
+    let result = alab_error_headers::parse_for_stream_with_advice(payload, |headers| {
+        // Use the real shared parser/converter. Only its accepted receipt reading
+        // is synthetic; do not copy Retry-After grammar or normalize the raw JSON.
+        let parsed = RetryAfter::from_headers(headers)?;
+        let delay = parsed
+            .sleep_deadline()
+            .at_reading(None, started.into_std())
+            .saturating_duration_since(started.into_std());
+        let asleep = if captured && later_captures_after_sleep {
+            Duration::MAX
+        } else {
+            baseline
+        };
+        let advice = RetryAfter::from_delay_with_sleep_reading(delay, reading(asleep));
+        assert!(advice.is_some(), "accepted small advice can be rebound");
+        captured = true;
+        advice
+    });
+    let error = match result {
+        Err(error) => error,
+        other => panic!("actual ambiguous envelope must select bounded retry: {other:?}"),
+    };
+    let ApiError::Retryable {
+        message,
+        retry_after,
+    } = &error
+    else {
+        panic!("ambiguous refusal cannot invent a typed capacity/HTTP error: {error:?}");
+    };
+    assert_eq!(message, "invalid WebSocket error metadata");
+    let advice = *retry_after;
+    assert_eq!(
+        advice.map(|advice| advice.sleep_deadline().at_reading(None, started.into_std())),
+        expected_seconds.map(|seconds| (started + Duration::from_secs(seconds)).into_std()),
+        "the original parsed duration survives selection"
+    );
+    let copied = advice;
+    let mapped = map_api_error(error);
+    assert!(matches!(mapped.details(), CodexErrorDetails::Stream(_)));
+    assert_eq!(mapped.http_status_code_value(), None);
+    assert_eq!(mapped.retry_after(), copied);
+    assert!(mapped.retry_delay(1).is_some());
+    assert_eq!(
+        serde_json::to_value(mapped.to_codex_protocol_error()).unwrap(),
+        json!("other")
+    );
+    assert_eq!(
+        Instant::now(),
+        started,
+        "paused time does not model host sleep by advancing timers"
+    );
+    println!("ALAB_RAW_WS_RECEIPT:case={label}:stage=late_deadline");
+    let after = if evaluate_after_sleep {
+        Duration::MAX
+    } else {
+        baseline
+    };
+    match (copied, expected_seconds) {
+        (Some(advice), Some(seconds)) => {
+            let actual = advice
+                .sleep_deadline()
+                .at_reading(reading(after), started.into_std());
+            if evaluate_after_sleep {
+                assert!(
+                    actual <= started.into_std(),
+                    "one event's provider advice expired during the supplied sleep"
+                );
+            } else {
+                assert_eq!(actual, (started + Duration::from_secs(seconds)).into_std());
+            }
+            assert_eq!(
+                mapped
+                    .retry_after()
+                    .unwrap()
+                    .sleep_deadline()
+                    .at_reading(reading(after), started.into_std()),
+                actual
+            );
+        }
+        (None, None) => {}
+        _ => panic!("advice presence changed"),
+    }
+    println!("ALAB_RAW_WS_RECEIPT:case={label}:stage=complete");
+}
+
+#[cfg(debug_assertions)]
+fn positive_receipts(layers: &[&str]) {
+    for code in ["server_is_overloaded", "policy_capacity_unavailable"] {
+        receipt_check(
+            &format!("{code}-single"),
+            &receipt_payload(code, layers[0], &["7"]),
+            Some(7),
+            true,
+            true,
+        );
+        for layer in layers {
+            receipt_check(
+                &format!("{code}-{layer}-3-7"),
+                &receipt_payload(code, layer, &["3", "7"]),
+                Some(7),
+                true,
+                true,
+            );
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn receipt_controls() {
+    for values in [
+        ["3", "7"],
+        ["7", "3"],
+        ["18446744073709551616", "7"],
+        ["3, 7", "7"],
+    ] {
+        receipt_check(
+            "same-receipt-latest",
+            &receipt_payload("server_is_overloaded", "nested-fields", &values),
+            Some(7),
+            false,
+            false,
+        );
+    }
+    for (value, seconds) in [("3", 3), ("0", 0), ("Thu, 01 Jan 1970 00:00:00 GMT", 0)] {
+        let payload = format!(
+            "{{\"type\":\"error\",\"status\":403,\"status_code\":503,\"error\":{{\"code\":\"server_is_overloaded\",\"headers\":{{\"retry-after\":{}}}}},\"headers\":{{\"retry-after\":\"900\"}}}}",
+            serde_json::to_string(value).unwrap()
+        );
+        receipt_check(
+            "nested-presence-before-outer",
+            &payload,
+            Some(seconds),
+            false,
+            false,
+        );
+    }
+    for headers in [
+        "null",
+        "[]",
+        "42",
+        "\"malformed\"",
+        "{\"retry-after\":\"invalid\"}",
+        "{\"retry-after\":[]}",
+    ] {
+        let payload = format!(
+            "{{\"type\":\"error\",\"status\":403,\"status_code\":503,\"error\":{{\"code\":\"server_is_overloaded\",\"headers\":{headers}}},\"headers\":{{\"retry-after\":\"7\"}}}}"
+        );
+        receipt_check(
+            "invalid-nested-outer-fallback",
+            &payload,
+            Some(7),
+            true,
+            true,
+        );
+    }
+    for headers in [
+        r#"{"retry-after":"invalid"}"#,
+        r#"{"retry-after":"3, 7"}"#,
+        r#"{"x-unrelated":"7","retry after":"7","retry-after":[],"other":null}"#,
+    ] {
+        let payload = format!(
+            "{{\"type\":\"error\",\"status\":403,\"status_code\":503,\"error\":{{\"code\":\"server_is_overloaded\",\"headers\":{headers}}}}}"
+        );
+        receipt_check("no-valid-advice", &payload, None, true, true);
+    }
+    receipt_check(
+        "whole-date-comma",
+        &receipt_payload(
+            "server_is_overloaded",
+            "outer-fields",
+            &["Thu, 01 Jan 1970 00:00:00 GMT"],
+        ),
+        Some(0),
+        false,
+        false,
+    );
+    for payload in [
+        r#"{"type":"error","status":403,"error":{"code":"server_is_overloaded","headers":{"retry-after":"7"}}}"#,
+        r#"{"type":"error","status":403,"status_code":403,"error":{"code":"server_is_overloaded","headers":{"retry-after":"7"}}}"#,
+        r#"{"type":"error","status":403,"error":{"code":42,"headers":{"retry-after":"7"}}}"#,
+    ] {
+        assert!(matches!(
+            alab_error_headers::parse_for_stream_with_advice(payload, |_| panic!(
+                "strict/recovered routes must not use fallback factory"
+            )),
+            Ok(Some(_))
+        ));
+    }
+    for payload in [
+        "{",
+        r#"{"type":"response.completed","status":403,"status_code":503}"#,
+        r#"{"type":"error","status":403,"status_code":503,"error":{"code":"unknown","headers":{"retry-after":"7"}}}"#,
+        r#"{"type":"error","status":503,"status_code":"invalid","error":{"code":"server_is_overloaded","headers":{"retry-after":"7"}}}"#,
+    ] {
+        assert!(matches!(
+            alab_error_headers::parse_for_stream_with_advice(payload, |_| panic!(
+                "ignored routes must not use fallback factory"
+            )),
+            Ok(None)
+        ));
+    }
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn raw_nested_duplicate_advice_fields_keep_one_receipt() -> std::io::Result<()> {
+    isolated("receipt-nested-fields")
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn raw_nested_advice_containers_keep_one_receipt() -> std::io::Result<()> {
+    isolated("receipt-nested-containers")
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn raw_outer_duplicate_advice_fields_keep_one_receipt() -> std::io::Result<()> {
+    isolated("receipt-outer-fields")
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn raw_outer_advice_containers_keep_one_receipt() -> std::io::Result<()> {
+    isolated("receipt-outer-containers")
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn raw_advice_receipt_controls_keep_routing_and_precedence() -> std::io::Result<()> {
+    assert!(!codex_alab_core::active());
+    for payload in [
+        receipt_payload("server_is_overloaded", "nested-fields", &["3", "7"]),
+        r#"{"type":"error","status":403,"error":{"code":"server_is_overloaded"}}"#.into(),
+    ] {
+        assert!(
+            alab_error_headers::parse_for_stream_with_advice(&payload, |_| panic!(
+                "inactive parser never uses factory"
+            ))
+            .is_ok()
+        );
+    }
+    isolated("receipt-controls")
+}
+
 #[tokio::test(start_paused = true)]
 async fn active_header_boundary_child() {
     let Ok(case) = std::env::var(CHILD) else {
@@ -697,6 +1001,16 @@ async fn active_header_boundary_child() {
         }
         "opaque-handshake" => opaque_handshake_keeps_its_body_and_provider_deadline(true),
         "correlation-headers" => active_nested_correlation_header_matrix(),
+        #[cfg(debug_assertions)]
+        "receipt-nested-fields" => positive_receipts(&["nested-fields"]),
+        #[cfg(debug_assertions)]
+        "receipt-nested-containers" => positive_receipts(&["nested-headers", "nested-errors"]),
+        #[cfg(debug_assertions)]
+        "receipt-outer-fields" => positive_receipts(&["outer-fields"]),
+        #[cfg(debug_assertions)]
+        "receipt-outer-containers" => positive_receipts(&["outer-headers"]),
+        #[cfg(debug_assertions)]
+        "receipt-controls" => receipt_controls(),
         other => panic!("unexpected isolated case: {other}"),
     }
     println!("{COMPLETE}:{case}");

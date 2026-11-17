@@ -157,6 +157,13 @@ pub trait ThreadStore: Any + Send + Sync {
     /// Creates a new live thread.
     fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreFuture<'_, ()>;
 
+    /// ALAB(retained-history): return identity from the SAME actual acquisition.
+    /// Default stores keep their original behavior and supply no writer observation.
+    fn create_thread_with_retained_writer(&self, params: CreateThreadParams)
+        -> ThreadStoreFuture<'_, Option<crate::RetainedWriterIdentity>> {
+        Box::pin(crate::alab_retained_deferred::acquisition::create(self, params))
+    }
+
     /// Stages host-owned metadata for a thread ID reserved before Core starts the thread.
     ///
     /// The entry remains in memory until the first successful metadata update for that thread.
@@ -219,6 +226,14 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
+    /// ALAB(retained-history): keep the actual original resume/preparation result
+    /// and its writer identity in one acquisition, without a later ID lookup.
+    fn resume_thread_with_retained_writer(&self, params: ResumeThreadParams,
+        preparation: Option<ThreadStoreResumePreparation>,
+    ) -> ThreadStoreFuture<'_, (Arc<Vec<RolloutItem>>, Option<crate::RetainedWriterIdentity>)> {
+        Box::pin(crate::alab_retained_deferred::acquisition::resume(self, params, preparation))
+    }
+
     /// Appends raw rollout items to a live thread.
     ///
     /// Implementations should apply the shared rollout persistence policy before writing durable
@@ -263,6 +278,30 @@ pub trait ThreadStore: Any + Send + Sync {
     /// Implementations should release any live writer resources for the thread while preserving
     /// already-durable thread data.
     fn discard_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
+
+    /// ALAB(retained-history): Some is a writer-ordered observation of this exact live
+    /// thread's deferred history. None supplies no history and requires the original path.
+    /// Stores without such a live-writer observation never synthesize an empty snapshot.
+    fn retained_deferred_history(
+        &self,
+        _thread_id: ThreadId,
+        _writer: crate::RetainedWriterIdentity, // ALAB(retained-history): actual acquisition identity, never a serialized ID.
+    ) -> ThreadStoreFuture<'_, Option<crate::RetainedDeferredHistory>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// ALAB(retained-history): no complete deferred display snapshot unless this
+    /// actual store supports it. None is NOT an empty-history success.
+    fn retained_deferred_display_history(&self, _thread_id: ThreadId, _writer: crate::RetainedWriterIdentity)
+        -> ThreadStoreFuture<'_, Option<crate::RetainedDeferredDisplayHistory>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    // ALAB(retained-side): unsupported stores never synthesize a local writer cut.
+    fn retained_local_history(&self, _thread_id: ThreadId, _writer: crate::RetainedWriterIdentity, _max_bytes: usize)
+        -> ThreadStoreFuture<'_, crate::RetainedLocalHistory> {
+        Box::pin(async { Err(crate::ThreadStoreError::Unsupported { operation: "retained_local_history" }) })
+    }
 
     /// Loads persisted history for resume, fork, and memory jobs.
     fn load_history(

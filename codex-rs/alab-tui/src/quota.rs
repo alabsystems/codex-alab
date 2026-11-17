@@ -30,6 +30,31 @@ const MIN_ESTIMATE_SECONDS: i64 = 30 * 60;
 const MAX_SAMPLE_AGE_SECONDS: i64 = 30 * 60;
 const MAX_FILE_BYTES: u64 = 512 * 1024;
 
+/// Recovery decisions are part of the active conversation, including the decision to
+/// retain a reset. Ordinary diagnostics keep upstream's warning-footer presentation.
+pub fn reset_notice_visible(message: &str) -> bool {
+    reset_notice_visible_when_active(crate::active(), message)
+}
+
+fn reset_notice_visible_when_active(active: bool, message: &str) -> bool {
+    active && message.starts_with("[codex-alab reset] ")
+}
+
+#[cfg(test)]
+#[test]
+fn only_active_reset_decisions_are_visible_in_the_conversation() {
+    let decision = "[codex-alab reset] Considering 1 reset; expires tomorrow.";
+    assert!(reset_notice_visible_when_active(true, decision));
+    assert!(!reset_notice_visible_when_active(false, decision));
+    for diagnostic in [
+        "Ordinary warning",
+        "[codex-alab reset]",
+        "unrelated [codex-alab reset] warning",
+    ] {
+        assert!(!reset_notice_visible_when_active(true, diagnostic));
+    }
+}
+
 /// An authoritative native usage reading. All times are Unix seconds.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WeeklySnapshot {

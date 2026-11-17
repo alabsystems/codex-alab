@@ -4,6 +4,9 @@
 //! motions include the destination, while backward motions exclude the original cursor.
 //! All four motions share these boundaries for navigation, `c`/`d`/`y`, and semantic `.` replay.
 
+#[path = "../../../../alab-tui/glue/editor_upgrade_vim_commands.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): preserve native editor transactions as data for runtime transfer.
+
 use super::TextArea;
 use super::VimMode;
 use super::VimMotion;

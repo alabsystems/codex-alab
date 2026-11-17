@@ -425,6 +425,160 @@ fn complete(name: &str) {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn repeated_http_retry_headers_keep_the_longest_valid_wait() {
+    const NAME: &str = "repeated_http_retry_headers_keep_the_longest_valid_wait";
+    if isolated(NAME).await {
+        return;
+    }
+    codex_alab_core::activate();
+    for values in [
+        vec!["3", "7"],
+        vec!["7", "3"],
+        vec!["invalid", "7"],
+        vec!["7", "invalid"],
+        vec!["18446744073709551615", "7"],
+        vec!["Thu, 01 Jan 1970 00:00:00 GMT", "7"],
+        vec!["0", "7"],
+        vec!["7, 3", "7"],
+    ] {
+        let mut headers = http::HeaderMap::new();
+        for value in values {
+            headers.append(http::header::RETRY_AFTER, value.parse().unwrap());
+        }
+        let before = Instant::now();
+        let advice = codex_http_client::RetryAfter::from_headers(&headers)
+            .expect("one valid provider wait survives other values");
+        let after = Instant::now();
+        assert!(advice.deadline() >= before + Duration::from_secs(7));
+        assert!(advice.deadline() <= after + Duration::from_secs(7));
+    }
+    let mut headers = http::HeaderMap::new();
+    headers.append(
+        http::header::RETRY_AFTER,
+        http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+    );
+    headers.append(http::header::RETRY_AFTER, "7".parse().unwrap());
+    let before = Instant::now();
+    let advice = codex_http_client::RetryAfter::from_headers(&headers)
+        .expect("invalid UTF-8 cannot erase the valid field");
+    let after = Instant::now();
+    assert!(advice.deadline() >= before + Duration::from_secs(7));
+    assert!(advice.deadline() <= after + Duration::from_secs(7));
+    for values in [vec!["invalid", "7, 3"], vec!["", "-1"]] {
+        let mut headers = http::HeaderMap::new();
+        for value in values {
+            headers.append(http::header::RETRY_AFTER, value.parse().unwrap());
+        }
+        assert!(codex_http_client::RetryAfter::from_headers(&headers).is_none());
+    }
+    complete(NAME);
+}
+
+fn retry_collision_frame(first: &str, second: &str, status: u16) -> String {
+    json!({"type":"error", "status":status,
+        "headers":{"retry-after":"11", "x-request-id":"req_repeated-1",
+            "cf-ray":"ray_repeated-1", "authorization":OUTER_AUTH, "x-unrelated":PRIVATE},
+        "error":{"code":"unknown_error", "message":PRIVATE,
+            "headers":{"Retry-After":first, "retry-after":second}}})
+    .to_string()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn active_retry_headers_preserve_dates_and_expired_advice() {
+    const NAME: &str = "active_retry_headers_preserve_dates_and_expired_advice";
+    if isolated(NAME).await {
+        return;
+    }
+    codex_alab_core::activate();
+    let date = httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(120));
+    let target = httpdate::parse_http_date(&date).unwrap();
+    for values in [vec![date.as_str()], vec!["7", &date], vec![&date, "7"]] {
+        let mut headers = http::HeaderMap::new();
+        for value in values {
+            headers.append(http::header::RETRY_AFTER, value.parse().unwrap());
+        }
+        let wall_before = std::time::SystemTime::now();
+        let before = Instant::now();
+        let advice = codex_http_client::RetryAfter::from_headers(&headers)
+            .expect("the whole comma-bearing date remains advice");
+        let after = Instant::now();
+        let wall_after = std::time::SystemTime::now();
+        assert!(
+            advice.deadline() >= before + target.duration_since(wall_after).unwrap_or_default()
+        );
+        assert!(
+            advice.deadline() <= after + target.duration_since(wall_before).unwrap_or_default()
+        );
+    }
+    for value in ["0", "Thu, 01 Jan 1970 00:00:00 GMT"] {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(http::header::RETRY_AFTER, value.parse().unwrap());
+        let before = Instant::now();
+        let advice = codex_http_client::RetryAfter::from_headers(&headers)
+            .expect("expired advice remains present");
+        let after = Instant::now();
+        assert!(advice.deadline() >= before);
+        assert!(advice.deadline() <= after);
+        assert_eq!(advice.remaining_delay(), Duration::ZERO);
+    }
+    assert!(codex_http_client::RetryAfter::from_headers(&http::HeaderMap::new()).is_none());
+    complete(NAME);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn strict_websocket_header_collisions_keep_longest_retry_advice() {
+    const NAME: &str = "strict_websocket_header_collisions_keep_longest_retry_advice";
+    if isolated(NAME).await {
+        return;
+    }
+    codex_alab_core::activate();
+    for status in [401, 400, 403, 429, 503] {
+        for (first, second) in [("3", "7"), ("7", "3"), ("7", "invalid"), ("invalid", "7")] {
+            exchange(
+                retry_collision_frame(first, second, status),
+                Expected::Http {
+                    status,
+                    delay: 7,
+                    ids: ("req_repeated-1", "ray_repeated-1"),
+                },
+            )
+            .await;
+        }
+    }
+    complete(NAME);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn inactive_repeated_retry_headers_keep_original_selection() {
+    const NAME: &str = "inactive_repeated_retry_headers_keep_original_selection";
+    if isolated(NAME).await {
+        return;
+    }
+    assert!(!codex_alab_core::active());
+    let mut headers = http::HeaderMap::new();
+    headers.append(http::header::RETRY_AFTER, "invalid".parse().unwrap());
+    headers.append(http::header::RETRY_AFTER, "7".parse().unwrap());
+    assert!(codex_http_client::RetryAfter::from_headers(&headers).is_none());
+    headers.remove(http::header::RETRY_AFTER);
+    headers.append(http::header::RETRY_AFTER, "3".parse().unwrap());
+    headers.append(http::header::RETRY_AFTER, "7".parse().unwrap());
+    let before = Instant::now();
+    let advice = codex_http_client::RetryAfter::from_headers(&headers).unwrap();
+    assert!(advice.deadline() >= before + Duration::from_secs(3));
+    assert!(advice.deadline() <= Instant::now() + Duration::from_secs(3));
+    exchange(
+        retry_collision_frame("7", "3", 401),
+        Expected::Http {
+            status: 401,
+            delay: 3,
+            ids: ("req_repeated-1", "ray_repeated-1"),
+        },
+    )
+    .await;
+    complete(NAME);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn malformed_websocket_error_fields_preserve_explicit_http_status() {
     const NAME: &str = "malformed_websocket_error_fields_preserve_explicit_http_status";
     if isolated(NAME).await {

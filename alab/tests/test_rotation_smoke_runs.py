@@ -558,7 +558,7 @@ class MatrixInputTests(unittest.TestCase):
         names = [path.name for path in renewal_matrix.pinned_inputs(host, world.package)]
         self.assertEqual(names, ["renewal_matrix.py", "renewal_follow.py", "capacity_exec.py",
             "provider_fixture.py", "native_host_record.py", "package_standing.py",
-            "command_guard.py",
+            "command_guard.py", "cli_status.py", "file_hash.py",
             "aterm-stand-in-host", "build.json", "codex", "alab-build.json", "codex-package.json"])
         # Everything the controller imports from its own directory is among them.
         imported = {Path(module.__file__).name for module in (

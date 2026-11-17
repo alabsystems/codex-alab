@@ -232,6 +232,7 @@ async fn safety_recourse_handles_a_policy_block() -> Result<()> {
         let source_id = started.session.thread_id;
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
+            None, // ALAB(source-selection): retain actual session context for a retained construction.
             started,
             ThreadAttachPresentation::SessionLineage,
             /*initial_user_message*/ None,
@@ -494,6 +495,7 @@ stream_max_retries = 0
     let thread_id = started.session.thread_id;
     app.replace_chat_widget_with_app_server_thread(
         &mut tui,
+        None, // ALAB(source-selection): retain actual session context for a retained construction.
         started,
         ThreadAttachPresentation::SessionLineage,
         /*initial_user_message*/ None,
@@ -909,6 +911,7 @@ safety_recourse = true
     started.session.thread_name = Some(SAFETY_RETRY_THREAD_NAME.to_string());
     app.replace_chat_widget_with_app_server_thread(
         &mut tui,
+        None, // ALAB(source-selection): retain actual session context for a retained construction.
         started,
         ThreadAttachPresentation::SessionLineage,
         /*initial_user_message*/ None,

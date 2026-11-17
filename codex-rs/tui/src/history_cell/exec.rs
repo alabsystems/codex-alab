@@ -272,3 +272,7 @@ pub(crate) fn new_unified_exec_processes_output(
     let summary = UnifiedExecProcessesCell::new(processes);
     CompositeHistoryCell::new(vec![Box::new(command), Box::new(summary)])
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_terminal_cells.rs"]
+pub(in crate::history_cell) mod alab_retained_terminal; // ALAB(retained-ui): preserve exact native activity state and shared graph identity.

@@ -107,15 +107,20 @@ impl super::GoalRuntimeHandle {
     pub async fn alab_defer_auth_recovery(&self, wall: &str) -> Result<(), String> {
         let _permit = self.goal_state_permit().await?;
         self.inner
-            .state_dbs
-            .thread_goals()
-            .alab_defer_auth_recovery(self.thread_id(), wall)
-            .await
-            .map_err(|error| error.to_string())?;
-        let deferred = self
-            .inner
-            .state_dbs
-            .thread_goals()
+            .alab_auth_deferred
+            .store(true, std::sync::atomic::Ordering::SeqCst); // ALAB(goal-recovery): an error or cancelled checkpoint retains live admission custody.
+        let store = self.inner.state_dbs.thread_goals();
+        if let Err(error) = store.alab_defer_auth_recovery(self.thread_id(), wall).await {
+            let deferred = store
+                .has_thread_goal_continuation_deferral(self.thread_id())
+                .await
+                .unwrap_or(true);
+            self.inner
+                .alab_auth_deferred
+                .store(deferred, std::sync::atomic::Ordering::SeqCst);
+            return Err(error.to_string());
+        }
+        let deferred = store
             .has_thread_goal_continuation_deferral(self.thread_id())
             .await
             .map_err(|error| error.to_string())?;
@@ -192,6 +197,16 @@ impl super::GoalRuntimeHandle {
                 .clear_thread_goal_continuation_deferral(self.thread_id())
                 .await
                 .map_err(|error| error.to_string())?;
+            self.inner
+                .state_dbs
+                .thread_goals()
+                .alab_durable_goal_barrier()
+                .await
+                .map_err(|error| {
+                    format!(
+                        "auth recovery cancellation committed but its durability is unknown: {error}"
+                    )
+                })?; // ALAB(goal-recovery): do not reopen native admission until the durable hold is gone.
             self.inner
                 .alab_auth_deferred
                 .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -283,7 +298,9 @@ impl super::GoalRuntimeHandle {
     ) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
         let permit = self.goal_state_permit().await?;
         if self.alab_goal_persistence_held() {
-            return Err("account recovery is held until failed goal persistence is reconciled".into());
+            return Err(
+                "account recovery is held until failed goal persistence is reconciled".into(),
+            );
         }
         let store = self.inner.state_dbs.thread_goals();
         let current = store
@@ -314,38 +331,94 @@ impl super::GoalRuntimeHandle {
         if context.as_ref().map(|goal| goal.as_deref()) != Some(expected_goal) {
             return Err("the original account-recovery goal proof was invalidated".into());
         }
-        let alab_mutation = self.alab_begin_goal_mutation();
-        let Some(restored) = store
+        let mut alab_mutation = if codex_alab_core::is_alab_binary() {
+            Some(
+                self.accounting_state()
+                    .alab_begin_dispatched_mutation()
+                    .map_err(|error| error.to_string())?,
+            )
+        } else {
+            None
+        }; // ALAB(storage): recovery's final clock cutoff and SQL dispatch admission exclude callbacks atomically.
+        let restored = match store
             .alab_restore_auth_goal_with_deferral(self.thread_id(), wall, durable_deferral)
             .await
-            .map_err(|e| e.to_string())?
-        else {
-            return Err("the goal is not the unchanged account-recovery goal".into());
+        {
+            Ok(Some(restored)) => restored,
+            Ok(None) => {
+                // Another database owner may have changed the row after the
+                // pre-dispatch read; retain the frozen divergence boundary.
+                self.alab_settle_mutation_unknown(&mut alab_mutation);
+                return Err("the goal is not the unchanged account-recovery goal".into());
+            }
+            Err(error) => {
+                self.alab_settle_mutation_error(&mut alab_mutation, &error);
+                return Err(error.to_string());
+            }
         };
-        if !store
+        let accepted = match store
             .alab_accept_auth_goal(self.thread_id(), wall, reserved_turn)
             .await
-            .map_err(|e| e.to_string())?
         {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                // Restore is a separate committed transaction. Even an error
+                // that proves the accept transaction rolled back cannot undo it.
+                self.alab_settle_mutation_unknown(&mut alab_mutation);
+                return Err(error.to_string());
+            }
+        };
+        if !accepted {
+            self.alab_settle_mutation_unknown(&mut alab_mutation);
             return Err("account recovery belongs to a different native admission".into());
         }
-        if let Some(alab_mutation) = alab_mutation { alab_mutation.commit_mutation(); }
-        self.inner
-            .accounting_state
-            .mark_idle_goal_active(restored.goal_id.clone());
-        if current.status != restored.status {
+        let alab_effect = alab_mutation
+            .and_then(codex_alab_core::goal_persistence::Write::commit_mutation)
+            .map(|transition| transition.effect);
+        if alab_effect.is_some() {
+            self.alab_reconcile_unowned_goal_mutation();
+        }
+        let apply = async {
             self.inner
-                .metrics
-                .record_resumed_if_status_changed(Some(current.status), restored.status);
-            self.inner.analytics.status_changed(
-                &restored,
-                Some(current.status),
-                super::GoalEventAttribution::Turn(wall),
-            );
-            self.inner.event_emitter.thread_goal_updated(
-                format!("{wall}:auth-restored"),
-                Some(wall.to_owned()),
-                super::protocol_goal_from_state(restored),
+                .accounting_state
+                .mark_idle_goal_active(restored.goal_id.clone());
+            if codex_alab_core::is_alab_binary()
+                && codex_alab_core::goal_persistence::mutation_effect_rejected()
+            {
+                return false;
+            }
+            if codex_alab_core::is_alab_binary() {
+                codex_alab_core::goal_persistence::mutation_effect_applied();
+            }
+            if current.status != restored.status {
+                self.inner
+                    .metrics
+                    .record_resumed_if_status_changed(Some(current.status), restored.status);
+                self.inner.analytics.status_changed(
+                    &restored,
+                    Some(current.status),
+                    super::GoalEventAttribution::Turn(wall),
+                );
+                self.inner.event_emitter.thread_goal_updated(
+                    format!("{wall}:auth-restored"),
+                    Some(wall.to_owned()),
+                    super::protocol_goal_from_state(restored),
+                );
+            }
+            true
+        };
+        let applied = if let Some(effect) = alab_effect {
+            self.alab_scope_exact_mutation_effect(effect, apply)
+                .await
+                .unwrap_or(false)
+        } else if codex_alab_core::is_alab_binary() {
+            false
+        } else {
+            apply.await
+        };
+        if !applied {
+            return Err(
+                "account recovery committed without an exact runtime effect boundary".into(),
             );
         }
         Ok(permit)

@@ -43,6 +43,7 @@ pub(crate) type PendingThreadUnloads = Arc<Mutex<HashMap<ThreadId, watch::Sender
 
 pub(crate) struct PendingThreadResumeRequest {
     pub(crate) request_id: ConnectionRequestId,
+    pub(crate) alab_retained_resume: Option<crate::request_processors::ResumePublication>, // ALAB(owned-local): same accepted operation, no invented subscriber.
     pub(crate) history_items: Vec<RolloutItem>,
     /// Usage attribution already resolved while cold-loading a paginated child.
     pub(crate) cold_resume_token_usage_turn_id: Option<String>,
@@ -60,10 +61,15 @@ pub(crate) struct PendingThreadResumeRequest {
         Option<codex_app_server_protocol::TurnsPage>,
     pub(crate) resume_cursor_store: Option<Arc<dyn codex_thread_store::ThreadStore>>,
     pub(crate) redact_resume_payloads: bool,
+    #[cfg(unix)]
+    pub(crate) alab_retained_tail: Option<Arc<crate::request_processors::RetainedProjection>>, // ALAB(retained-frontier): actual ordered listener completion only.
 }
 
 // ThreadListenerCommand is used to perform operations in the context of the thread listener, for serialization purposes.
 pub(crate) enum ThreadListenerCommand {
+    #[cfg(unix)]
+    AlabRetainedProjection(Box<crate::request_processors::RetainedProjectionCommand>), // ALAB(retained-frontier): no snapshot/subscription gap or growth of every original listener command.
+
     // SendThreadResumeResponse is used to resume an already running thread by sending the thread's history to the client and atomically subscribing for new updates.
     SendThreadResumeResponse {
         request: Box<PendingThreadResumeRequest>,
@@ -74,6 +80,9 @@ pub(crate) enum ThreadListenerCommand {
         turn_id: Option<String>,
         goal: ThreadGoal,
     },
+    RunExtension(
+        std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    ), // ALAB(extension): stable listener-order hook; extension behavior remains outside upstream files.
     // EmitThreadQueueChanged orders durable queue updates with thread notifications.
     EmitThreadQueueChanged,
     // EmitWarning is used to order extension warnings with other thread notifications.
@@ -138,6 +147,8 @@ pub(crate) struct ThreadState {
     last_thread_settings: Option<ThreadSettings>,
     listener_command_tx: Option<mpsc::UnboundedSender<ThreadListenerCommand>>,
     current_turn_history: ThreadHistoryBuilder,
+    pub(crate) alab_side_boundary: alab_side_boundary::State, // ALAB(retained-side): actual ordered listener cut only.
+    pub(crate) alab_live_agent: alab_live_agent::State, // ALAB(stream-replay): retain unfinished canonical text across frontend attachment.
     history_mode: ThreadHistoryMode,
     evict_superseded_agent_text: bool,
     listener_thread: Option<Weak<CodexThread>>,
@@ -198,6 +209,8 @@ impl ThreadState {
         self.shutdown_drain = None;
         self.listener_command_tx = None;
         self.current_turn_history.reset();
+        self.alab_side_boundary.clear(); // ALAB(retained-side): replaced listener cannot vouch for an old local occurrence.
+        self.alab_live_agent.clear(); // ALAB(stream-replay): a replaced listener cannot replay another incarnation.
         self.listener_thread = None;
         self.watch_registration = WatchRegistration::default();
     }
@@ -234,6 +247,12 @@ impl ThreadState {
     }
 
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
+        if let EventMsg::PrivateSessionEvent(private)=event && let codex_protocol::protocol::PrivateSessionEventPayload::AlabSideBoundary(receipt)=&private.event { // ALAB(retained-side): actual Core queue order, before unchanged live/history tracking.
+            let active=self.active_turn_snapshot_with_items_view(TurnItemsView::Full);
+            let live=self.alab_live_agent.for_resume(private.thread_id,self.active_turn_metadata_snapshot().as_ref(),Some(&TurnItemsView::Full));
+            self.alab_side_boundary.observe(private.thread_id,receipt,active,live);
+        }
+        self.alab_live_agent.observe(event_turn_id, event); // ALAB(stream-replay): capture live items under the existing listener lock.
         if let EventMsg::TurnStarted(payload) = event {
             self.turn_summary = TurnSummary {
                 started_at: payload.started_at,
@@ -774,3 +793,9 @@ impl ThreadStateManager {
             .map(|thread_entry| thread_entry.has_connections_watcher.subscribe())
     }
 }
+
+#[path = "../../alab-core/glue/live_agent_replay.rs"]
+pub(crate) mod alab_live_agent; // ALAB(stream-replay): unfinished display data stays outside persisted history.
+
+#[path = "../../alab-core/glue/retained_side_listener_cut.rs"]
+pub(crate) mod alab_side_boundary; // ALAB(retained-side): nonserialized actual listener occurrence, no Native or CoreCurrent grant.

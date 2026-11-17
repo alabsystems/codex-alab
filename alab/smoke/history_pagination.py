@@ -74,128 +74,151 @@ def guardian(spec):
     outcome = {'forced': False, 'command': setting['argv'],
                'forced_definition': 'guardian cancellation, timeout or protocol error; group teardown is recorded separately'}
     pending = None
-    prior = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    handlers = {}
+    primary = None
+    published = None
     def cancel(signum, _frame):
         # Never raise across forkpty's returned originals or waitpid's native
         # return before their ownership state has been published in Python.
         nonlocal pending
         pending = signum
-    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(signum, cancel)
-    with Path(setting['raw']).open('xb', buffering=0) as raw:
+
+    def signal_original(*, group):
+        require(pid is not None and pid > 0 and not reaped,
+                'PTY signaling requires the actual unreaped child')
+        effect = {'signal': int(signal.SIGKILL), 'result': 'attempted'}
         try:
-            pid, master = pty.fork()
-            if pid == 0:
-                try:
-                    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-                        signal.signal(signum, signal.SIG_DFL)
-                    os.chdir(setting['cwd'])
-                    # forkpty has provided actual controlling tty/session/group.
-                    os.execve(setting['argv'][0], setting['argv'], setting['env'])
-                except BaseException as error:
-                    os.write(2, str(error).encode())
-                    os._exit(127)
-            fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 76, 0, 0))
-            emit({'started': pid})
-            incoming, query = b'', b''
-            end = time.monotonic() + GUARDIAN_SECONDS
-            while True:
-                require(pending is None, f'PTY guardian cancelled by signal {pending}')
-                observed = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
-                if observed is not None:
-                    break
-                require(time.monotonic() < end, 'PTY child exceeded original guardian deadline')
-                readable, _, _ = select.select([0, master], [], [], .1)
-                if 0 in readable:
-                    data = os.read(0, 65536)
-                    if not data:
-                        raise RuntimeError('parent lifeline EOF')
-                    incoming += data
-                    require(len(incoming) <= 65536, 'oversize parent command')
-                    while b'\n' in incoming:
-                        line, incoming = incoming.split(b'\n', 1)
-                        command = json.loads(line)
-                        if 'write' in command:
-                            os.write(master, base64.b64decode(command['write'], validate=True))
-                        elif 'resize' in command:
-                            rows, cols = command['resize']
-                            require(rows == 32 and cols in (38, 76), 'unexpected resize')
-                            fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
-                        else:
-                            raise RuntimeError('unknown parent command')
-                        emit({'ack': command['id']})
-                if master in readable:
-                    try:
-                        data = os.read(master, 65536)
-                    except OSError as error:
-                        if error.errno != errno.EIO:
-                            raise
-                        data = b''
-                    if data:
-                        require(raw.tell() + len(data) <= OUTPUT_LIMIT_BYTES, 'PTY output byte bound')
-                        raw.write(data)
-                        query += data
-                        for request, reply in ((b'\x1b[6n', b'\x1b[1;1R'),
-                                               (b'\x1b[c', b'\x1b[?62;22c'),
-                                               (b'\x1b[0c', b'\x1b[?62;22c'),
-                                               (b'\x1b[?u', b'\x1b[?0u')):
-                            if request in query:
-                                os.write(master, reply)
-                                query = query.replace(request, b'')
-                        query = query[-16:]
-            # WNOWAIT retains the actual original child/group identity until
-            # any remaining group members have been cancelled. This is our
-            # child, never a PID supplied by a fixture result or process scan.
-            outcome['cleanup_signal'] = {'signal': int(signal.SIGKILL), 'result': 'attempted'}
-            try:
-                os.killpg(pid, signal.SIGKILL)
-                outcome['cleanup_signal']['result'] = 'sent'
-            except ProcessLookupError:
-                outcome['cleanup_signal']['result'] = 'not-found'
-            except PermissionError:
-                # A refused signal is no closure observation. The actual owning
-                # wait and subsequent native absence check remain mandatory.
-                outcome['cleanup_signal']['result'] = 'permission-denied'
-            _, status = os.waitpid(pid, 0)
-            reaped = True
-            outcome['exit'] = os.waitstatus_to_exitcode(status)
-            try:
-                os.killpg(pid, 0)
-            except ProcessLookupError:
-                outcome['group_absent_after_reap'] = True
-            except PermissionError:
-                outcome['group_absent_after_reap'] = False
-            else:
-                outcome['group_absent_after_reap'] = False
-            require(outcome['group_absent_after_reap'], 'PTY group remains after actual owning reap')
-            # Quiet is not EOF; the shared drain retains the SAME original
-            # endpoint/byte cap and watches the parent's actual lifeline too.
-            outcome['phase'] = 'post-reap-drain'
-            drain_pty(master, raw, end, lambda: pending, 0)
-        except BaseException as error:
-            outcome['error'] = f'{type(error).__name__}: {error}'
+            (os.killpg if group else os.kill)(pid, signal.SIGKILL)
+            effect['result'] = 'sent'
+        except ProcessLookupError:
+            effect['result'] = 'not-found'
+        except PermissionError:
+            effect['result'] = 'permission-denied'
+        return effect
+
+    def cancellation_bookend():
+        outcome['cancellation_signal'] = pending
+        if pending is not None:
             outcome['forced'] = True
-        finally:
-            # Close PTY first to remove output backpressure on forced cleanup.
-            if master is not None:
-                os.close(master)
-            if pid is not None and pid != 0 and not reaped:
-                # This is exclusively the unreaped forkpty child's owned group;
-                # no externally observed PID is accepted as signaling authority.
-                outcome['cleanup_signal'] = {'signal': int(signal.SIGKILL), 'result': 'attempted'}
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                    outcome['cleanup_signal']['result'] = 'sent'
-                except ProcessLookupError:
-                    outcome['cleanup_signal']['result'] = 'not-found'
-                except PermissionError:
-                    outcome['cleanup_signal']['result'] = 'permission-denied'
+            outcome.setdefault('error', f'PTY guardian cancelled by signal {pending}')
+
+    def publish():
+        nonlocal published
+        text = json.dumps(outcome, indent=2) + '\n'
+        Path(setting['result']).write_text(text)
+        published = text
+
+    def diagnostic(error):
+        kind = 'BaseException'
+        try:
+            label = type(error).__name__
+            if type(label) is str:
+                kind = label
+        except BaseException:
+            pass
+        try:
+            message = str(error)
+            if type(message) is str:
+                return kind + ': ' + message
+        except BaseException:
+            pass
+        return kind
+
+    def note_primary(message):
+        try:
+            primary.add_note(message)
+        except BaseException:
+            pass
+
+    def successful_primary_exit():
+        # Keep this standalone policy aligned with alab/cli_status.py.
+        if not issubclass(type(primary), SystemExit):
+            return False
+        if type(primary) is not SystemExit:
+            raise RuntimeError("unsupported SystemExit type") from None
+        code = primary.code
+        if code is None:
+            return True
+        if not issubclass(type(code), int):
+            return False
+        code = int.__index__(code)
+        if os.name == 'posix' and -sys.maxsize - 1 <= code <= sys.maxsize:
+            return code & 0xff == 0
+        return code == 0
+
+    try:
+        for signum, handler in ((signal.SIGCHLD, signal.SIG_DFL), (signal.SIGINT, cancel),
+                                (signal.SIGTERM, cancel), (signal.SIGHUP, cancel)):
+            handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, handler)
+        with Path(setting['raw']).open('xb', buffering=0) as raw:
+            try:
+                pid, master = pty.fork()
+                if pid == 0:
+                    try:
+                        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                            signal.signal(signum, signal.SIG_DFL)
+                        os.chdir(setting['cwd'])
+                        # forkpty has provided actual controlling tty/session/group.
+                        os.execve(setting['argv'][0], setting['argv'], setting['env'])
+                    except BaseException as error:
+                        os.write(2, str(error).encode())
+                        os._exit(127)
+                fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 76, 0, 0))
+                emit({'started': pid})
+                incoming, query = b'', b''
+                end = time.monotonic() + GUARDIAN_SECONDS
+                while True:
+                    require(pending is None, f'PTY guardian cancelled by signal {pending}')
+                    observed = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+                    if observed is not None:
+                        break
+                    require(time.monotonic() < end, 'PTY child exceeded original guardian deadline')
+                    readable, _, _ = select.select([0, master], [], [], .1)
+                    if 0 in readable:
+                        data = os.read(0, 65536)
+                        if not data:
+                            raise RuntimeError('parent lifeline EOF')
+                        incoming += data
+                        require(len(incoming) <= 65536, 'oversize parent command')
+                        while b'\n' in incoming:
+                            line, incoming = incoming.split(b'\n', 1)
+                            command = json.loads(line)
+                            if 'write' in command:
+                                os.write(master, base64.b64decode(command['write'], validate=True))
+                            elif 'resize' in command:
+                                rows, cols = command['resize']
+                                require(rows == 32 and cols in (38, 76), 'unexpected resize')
+                                fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+                            else:
+                                raise RuntimeError('unknown parent command')
+                            emit({'ack': command['id']})
+                    if master in readable:
+                        try:
+                            data = os.read(master, 65536)
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                            data = b''
+                        if data:
+                            require(raw.tell() + len(data) <= OUTPUT_LIMIT_BYTES, 'PTY output byte bound')
+                            raw.write(data)
+                            query += data
+                            for request, reply in ((b'\x1b[6n', b'\x1b[1;1R'),
+                                                   (b'\x1b[c', b'\x1b[?62;22c'),
+                                                   (b'\x1b[0c', b'\x1b[?62;22c'),
+                                                   (b'\x1b[?u', b'\x1b[?0u')):
+                                if request in query:
+                                    os.write(master, reply)
+                                    query = query.replace(request, b'')
+                            query = query[-16:]
+                # WNOWAIT retains the actual original child/group identity until
+                # any remaining group members have been cancelled. This is our
+                # child, never a PID supplied by a fixture result or process scan.
+                outcome['cleanup_signal'] = signal_original(group=True)
                 _, status = os.waitpid(pid, 0)
-                outcome['exit'] = os.waitstatus_to_exitcode(status)
                 reaped = True
-            outcome['owning_reap'] = reaped
-            outcome['cancellation_signal'] = pending
-            if reaped and 'group_absent_after_reap' not in outcome:
+                outcome['exit'] = os.waitstatus_to_exitcode(status)
                 try:
                     os.killpg(pid, 0)
                 except ProcessLookupError:
@@ -204,9 +227,84 @@ def guardian(spec):
                     outcome['group_absent_after_reap'] = False
                 else:
                     outcome['group_absent_after_reap'] = False
-            signal.signal(signal.SIGCHLD, prior)
-    Path(setting['result']).write_text(json.dumps(outcome, indent=2) + '\n')
-    emit({'completed': outcome})
+                require(outcome['group_absent_after_reap'], 'PTY group remains after actual owning reap')
+                # Quiet is not EOF; the shared drain retains the SAME original
+                # endpoint/byte cap and watches the parent's actual lifeline too.
+                outcome['phase'] = 'post-reap-drain'
+                drain_pty(master, raw, end, lambda: pending, 0)
+            except BaseException as error:
+                outcome['error'] = diagnostic(error)
+                outcome['forced'] = True
+            finally:
+                # Close PTY first to remove output backpressure on forced cleanup.
+                if master is not None:
+                    os.close(master)
+                if pid is not None and pid != 0 and not reaped:
+                    # This is exclusively the unreaped forkpty child's owned group;
+                    # no externally observed PID is accepted as signaling authority.
+                    outcome['cleanup_signal'] = signal_original(group=True)
+                    if outcome['cleanup_signal']['result'] == 'not-found':
+                        # forkpty's parent can return before the child's session/group
+                        # exists. Its actual unreaped PID is still ours to cancel.
+                        # A permission refusal never authorizes this fallback.
+                        outcome['owned_child_signal'] = signal_original(group=False)
+                        if outcome['owned_child_signal']['result'] == 'sent':
+                            # Keep the original child's identity pinned after it exits,
+                            # then clear any group it formed during the signal race.
+                            os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+                            outcome['cleanup_group_after_child_exit'] = signal_original(group=True)
+                    _, status = os.waitpid(pid, 0)
+                    outcome['exit'] = os.waitstatus_to_exitcode(status)
+                    reaped = True
+                outcome['owning_reap'] = reaped
+                outcome['cancellation_signal'] = pending
+                if reaped and 'group_absent_after_reap' not in outcome:
+                    try:
+                        os.killpg(pid, 0)
+                    except ProcessLookupError:
+                        outcome['group_absent_after_reap'] = True
+                    except PermissionError:
+                        outcome['group_absent_after_reap'] = False
+                    else:
+                        outcome['group_absent_after_reap'] = False
+        cancellation_bookend()
+        publish()
+        cancellation_bookend()
+        if json.dumps(outcome, indent=2) + '\n' != published:
+            publish()
+        emit({'completed': outcome})
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        restoration_errors = []
+        for signum, handler in reversed(list(handlers.items())):
+            try:
+                signal.signal(signum, handler)
+            except BaseException as error:
+                restoration_errors.append(f'signal restoration {signum}: {diagnostic(error)}')
+        if restoration_errors:
+            outcome['forced'] = True
+            outcome['signal_restore_errors'] = restoration_errors
+            outcome.setdefault('error', 'PTY guardian signal restoration failed')
+            if primary is not None:
+                for error in restoration_errors:
+                    note_primary(error)
+        # Include signals witnessed during descriptor close, result writing,
+        # completion emission or restoration in the final saved verdict.
+        cancellation_bookend()
+        if published is not None and json.dumps(outcome, indent=2) + '\n' != published:
+            try:
+                publish()
+            except BaseException as error:
+                failure = 'final custody publication: ' + diagnostic(error)
+                if primary is None:
+                    raise RuntimeError(failure) from error
+                note_primary(failure)
+                if successful_primary_exit():
+                    # A healthy earlier file plus a success-shaped primary exit
+                    # cannot qualify an uncommitted corrective publication.
+                    raise RuntimeError(failure) from primary
     return 0 if outcome.get('exit') == 0 and not outcome['forced'] else 1
 
 if len(sys.argv) > 1 and sys.argv[1] == '--guardian':
@@ -253,28 +351,66 @@ class Model:
                 return 200, b'{"data":[],"models":[]}', 'application/json'
             return 404, b'{"error":"unexpected fixture route"}', 'application/json'
 
-def main():
-    global ROOT, SOURCE, BINARY, EXPECTED
+def _arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--codex', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    args = parser.parse_args()
+    return parser.parse_args()
+
+def main(args=None):
+    global ROOT, SOURCE, BINARY, EXPECTED
+    if args is None:
+        args = _arguments()
     ROOT = args.output.absolute()
     SOURCE = Path(__file__).resolve().parents[2]
     BINARY = args.codex.resolve(strict=True)
-    with BINARY.open('rb') as original:
-        EXPECTED = hashlib.file_digest(original, 'sha256').hexdigest()
+    EXPECTED = weekly.file_sha256(BINARY)
     ROOT.mkdir(mode=0o700)
     env = probe.fresh_environment(ROOT)
     model = Model()
-    server, worker = weekly.serve(model)
     state = {'binary':str(BINARY),'sha256':EXPECTED,'turns':260,'limits':[
         'Isolated fake auth + loopback provider only; no user configuration/channel/credits.',
         'Actual app-created saved thread and native TUI render; no old-bug reproduction or proof claim.',
         'PTY custodian owns actual child/reap; no arbitrary descendant containment claim.'],
         'passed':False}
     completed = False
+    primary = None
+    listener = None
+
+    def mark_failure(error):
+        state['passed'] = False
+        state.update(probe.case_error_fields(error))
+        if not isinstance(error, Exception):
+            state['interrupted'] = True
+
+    def write_result():
+        (ROOT/'result.json').write_text(json.dumps(state,indent=2)+'\n')
+
+    def publish_result(active=None):
+        healthy = state['passed']
+        try:
+            write_result()
+        except BaseException as error:
+            selected = active if active is not None else error
+            mark_failure(selected)
+            if healthy:
+                # An interrupted healthy publication gets one failed correction.
+                try:
+                    write_result()
+                finally:
+                    raise selected
+            raise selected
+        if active is not None:
+            raise active
+
+    def verify_identity():
+        if completed:
+            require(weekly.file_sha256(BINARY) == EXPECTED,
+                    'immutable binary SHA changed during smoke')
+
     try:
+        listener = weekly.serve(model)
+        server, worker = listener
         # Pagination exercises a custom provider with a fake local API key.
         # ChatGPT workspace routing correctly requires HTTPS and is a separate
         # family from these loopback-only history/rendering observations.
@@ -307,20 +443,26 @@ def main():
         require(not any(request['path'].startswith('/backend-api/') for request in model.requests),
                 'custom-provider history smoke consulted a ChatGPT account endpoint')
         completed = True
+    except BaseException as error:
+        primary = error
     finally:
-        server.shutdown()
-        worker.join()
-        server.server_close()
-        (ROOT/'http.json').write_text(json.dumps(model.requests,indent=2)+'\n')
         try:
-            if completed:
-                with BINARY.open('rb') as original:
-                    require(hashlib.file_digest(original, 'sha256').hexdigest() == EXPECTED,
-                            'immutable binary SHA changed during smoke')
-                state['passed'] = True
-        finally:
-            (ROOT/'result.json').write_text(json.dumps(state,indent=2)+'\n')
-    emit({'passed':True,'older_pages':state['older_history_page_requests'],'tui_bytes':state['tui_bytes']})
+            probe.cleanup_resources(
+                (('history', *listener),) if listener is not None else (),
+                (('http.json', lambda: (ROOT/'http.json').write_text(json.dumps(model.requests,indent=2)+'\n')),
+                 ('binary-identity', verify_identity)), state, primary)
+        except BaseException as error:
+            primary = error
+            mark_failure(error)
+        else:
+            state['passed'] = completed and not state.get('cleanupErrors')
+        publish_result(primary)
+    require(state['passed'], state.get('error', 'history cleanup or evidence export failed'))
+    try:
+        emit({'passed':True,'older_pages':state['older_history_page_requests'],'tui_bytes':state['tui_bytes']})
+    except BaseException as error:
+        mark_failure(error)
+        publish_result(error)
 
 def run_tui(env, state):
     env = dict(env)
@@ -430,9 +572,20 @@ def run_tui(env, state):
             state['guardian_returncode']=child.returncode
             (ROOT/'guardian-events.json').write_text(json.dumps(pending,indent=2)+'\n')
 
-if __name__=='__main__':
+def cli():
+    args = _arguments()
     try:
-        main()
+        main(args)
     except BaseException as error:
-        emit({'failed':f'{type(error).__name__}: {error}'})
-        raise
+        failure = {'failed': probe.case_error_fields(error)['error']}
+        if isinstance(error, SystemExit) and weekly.CLI['successful_exit'](error):
+            return weekly.CLI['report_failure']('history pagination: ', error, incomplete=True,
+                                                 stdout_line=json.dumps(failure))
+        try:
+            emit(failure)
+        finally:
+            raise error
+    return 0
+
+if __name__=='__main__':
+    sys.exit(cli())

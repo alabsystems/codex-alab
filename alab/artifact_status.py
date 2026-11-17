@@ -15,6 +15,27 @@ import sys
 from promote import file_identity, regular_fd_bytes
 
 
+def _close_descriptor(descriptor, primary):
+    """Close once without replacing an already pending cancellation."""
+    try:
+        os.close(descriptor)
+    except BaseException as cleanup_error:
+        if primary is None:
+            raise
+        selected, secondary = primary, cleanup_error
+        phase = 'artifact descriptor cleanup'
+        if isinstance(primary, Exception) and not isinstance(cleanup_error, Exception):
+            selected, secondary = cleanup_error, primary
+            phase = 'artifact observation'
+        try:
+            selected.add_note(f'{phase} failed: {secondary!r}')
+        except BaseException as note_error:
+            if isinstance(selected, Exception) and not isinstance(note_error, Exception):
+                raise note_error from selected
+        if selected is not primary:
+            raise selected from primary
+
+
 def package_identity(directory):
     root = Path(directory).resolve(strict=True)
     manifest = root / 'alab-build.json'
@@ -24,7 +45,7 @@ def package_identity(directory):
 
         def hold(path, parent=None, directory=False):
             fd = os.open(path, flags | (os.O_DIRECTORY if directory else 0), dir_fd=parent)
-            opened.callback(os.close, fd)
+            opened.push(lambda _kind, primary, _traceback: _close_descriptor(fd, primary))
             return fd, os.fstat(fd)
 
         root_fd, root_before = hold(root, directory=True)
@@ -160,4 +181,9 @@ def observe(package=None, selected_executable=None, running_pid=None):
             result['observations'][stage] = observation
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             result['errors'].append(stage + ': ' + str(error))
+            try:
+                for note in getattr(error, '__notes__', ()):
+                    result['errors'].append(stage + ' note: ' + str(note))
+            except Exception:
+                pass  # Advisory notes must not discard the primary error or later stages.
     return result

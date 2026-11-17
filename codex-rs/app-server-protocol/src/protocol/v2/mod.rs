@@ -1,5 +1,9 @@
 mod shared;
 
+#[path = "../../../../alab-core/glue/retained_frontier_protocol.rs"]
+mod alab_retained_frontier; // ALAB(owned-local): ordered projection-tail DATA, no native permission.
+pub use alab_retained_frontier::{RetainedFrontierFailure, RetainedFrontierNotification, RetainedFrontierOutcome};
+
 mod account;
 mod application;
 mod apps;
@@ -93,3 +97,8 @@ pub use windows_sandbox::*;
 mod tests;
 
 pub use codex_protocol::protocol::{AlabGoalPersistencePhase, AlabGoalRuntimeUpdatedNotification}; // ALAB(storage-status): shared passive wire types.
+
+
+#[path = "../../../../alab-core/glue/retained_configured_protocol.rs"]
+mod alab_retained_configured; // ALAB(retained-frontier): configured tail DATA has no Core or Native authority.
+pub use alab_retained_configured::RetainedConfiguredNotification;

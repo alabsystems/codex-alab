@@ -30,18 +30,11 @@ pub fn config_server_bundle_loader(
     codex_home: PathBuf,
     factory: HttpClientFactory,
 ) -> CloudConfigBundleLoader {
-    match ConfigServerSource::from_config_server(config.clone(), codex_home.clone(), factory) {
-        Ok(source) => {
-            let service = CloudConfigBundleService::from_source(
-                source,
-                codex_home,
-                CLOUD_CONFIG_BUNDLE_TIMEOUT,
-            );
-            crate::bundle_loader::managed_config_bundle_loader_for_service(service).0
-        }
-        Err(error) => CloudConfigBundleLoader::new(std::future::ready(Err(error))),
+    match alab_owned::parts(config.clone(), codex_home, factory) { // ALAB(owned-local): same source factory, with optional custody of its original refresh.
+        Ok((loader, _refresh)) => loader,
+        Err(error) => CloudConfigBundleLoader::new(std::future::ready(Err(error)))
+            .with_config_server(config),
     }
-    .with_config_server(config)
 }
 
 pub fn config_server_auth_manager(
@@ -272,3 +265,6 @@ fn auth_failure() -> CloudConfigBundleLoadError {
 #[cfg(test)]
 #[path = "config_server_tests.rs"]
 mod tests;
+
+#[path = "../../alab-core/glue/cloud_config_server_owner.rs"]
+pub(crate) mod alab_owned; // ALAB(owned-local): preserve original config-server source construction.

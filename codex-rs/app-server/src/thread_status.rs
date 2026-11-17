@@ -15,6 +15,10 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+#[cfg(unix)]
+#[path = "../../alab-core/glue/task_status_watch.rs"]
+mod alab_task_status_watch; // ALAB(upgrade): read-only waits subscribe atomically only to already tracked runtimes.
+
 #[derive(Clone)]
 pub(crate) struct ThreadWatchManager {
     state: Arc<Mutex<ThreadWatchState>>,

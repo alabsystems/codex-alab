@@ -1,0 +1,463 @@
+{
+  "schema": 1,
+  "base": "4f556fdd6db3f614207bacc037b1bc4452e301bf",
+  "target": "d3b7695db912fd7fc8c30d814d172e75fefbadde",
+  "frontier": "4f556fdd6db3f614207bacc037b1bc4452e301bf",
+  "commits": [
+    {
+      "sha": "e3b721754e1e7e1e942db94431dff957c509e67e",
+      "subject": "Freeze Guardian review views at ordered evidence cutoffs (#61929)",
+      "paths": [
+        "codex-rs/ext/guardian-v3/BUILD.bazel",
+        "codex-rs/ext/guardian-v3/Cargo.toml",
+        "codex-rs/ext/guardian-v3/src/cutoff.rs",
+        "codex-rs/ext/guardian-v3/src/cutoff_tests.rs",
+        "codex-rs/ext/guardian-v3/src/evidence.rs",
+        "codex-rs/ext/guardian-v3/src/host.rs",
+        "codex-rs/ext/guardian-v3/src/lib.rs",
+        "codex-rs/ext/guardian-v3/tests/common/board_host.rs",
+        "codex-rs/ext/guardian-v3/tests/evidence.rs",
+        "codex-rs/ext/guardian-v3/tests/housekeeping.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "security-notices",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Order actual Guardian evidence snapshots and review subscription views through one bounded writer queue so overlapping reviews cannot see later revocations. This repairs evidence visibility without enabling Guardian or turning transcript evidence into execution or Goal authority.",
+      "evidence": [
+        "Canonical patch SHA256 f86890bbf5058bb891c0dd473849a3c7815ff7b080e6d4793bd6aa3673cc8a90; 39476 bytes / 1039 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Retain the real flush/read/provenance and sole housekeeper routing-before-view boundary, plus root cancellation/worker join. Cursor acknowledgement is queue admission, never a durable board-write or policy receipt.",
+        "Integration requirement: Keep existing Guardian defaults and apps/plugins gates; cutoffs and retained-source order do not create native Goal/request/tool permission.",
+        "Coverage limit: The three new real-history/board controls establish candidate cutoff semantics only and may skip without network. They do not exercise actual native approval consumption or certify durability.",
+        "Coverage limit: One-slot backpressure serializes flush/read/reservation and adds an activity worker; no latency, allocation-free or zero-IO claim."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "d32c2ba608b18f82c92cb266ab51060d4059212c",
+      "subject": "Log Windows MXC deny-read glob expansion timings (#61931)",
+      "paths": [
+        "codex-rs/mxc-sandbox/src/lib.rs",
+        "codex-rs/mxc-sandbox/src/policy_tests.rs",
+        "codex-rs/mxc-sandbox/src/windows.rs",
+        "codex-rs/windows-sandbox-rs/src/deny_read_resolver.rs",
+        "codex-rs/windows-sandbox-rs/src/lib.rs",
+        "codex-rs/windows-sandbox-rs/src/logging.rs"
+      ],
+      "classes": [
+        "telemetry",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Bind Windows MXC runtime logging to the host-selected home rather than workload CODEX_HOME and report aggregate deny-glob expansion timings without changing policy expansion.",
+      "evidence": [
+        "Canonical patch SHA256 2074d2780d4d997d01b5c07cae74b31d598994aef9e62645a65af682fc789975; 7875 bytes / 202 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Preserve optional host argument, absolute-path-only runtime initialization and existing platform/security policy handling. Do not use timing logs as containment or performance qualification.",
+        "Coverage limit: Existing wrapper selector verifies transport argv/cwd plus optional argument shape; it does not verify Windows log destination, missing home or host/workload override matrix. Actual Windows launcher/log controls remain required.",
+        "Coverage limit: No glob strings, file contents or credential values are added to the timing record; ordinary Windows logging retains its existing custody boundaries."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "9537934ed6d5a6658fc77032b3290650765466a1",
+      "subject": "Allow independent app-server thread resumes to overlap (#61934)",
+      "paths": [
+        "codex-rs/app-server/src/request_processors/thread_list_state.rs",
+        "codex-rs/app-server/src/request_processors/thread_list_state_tests.rs",
+        "codex-rs/app-server/src/request_processors/thread_listener_shutdown_tests.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor/resume_permit.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_resume.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "native-session",
+        "history-pagination",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Share list permits only for canonical-ID independent root resumes, with exact source/ID checks and FIFO-preserving exclusive upgrade for uncertain ownership. ALab archive/delete management still calls the unchanged exclusive API.",
+      "evidence": [
+        "Canonical patch SHA256 4b5cfeb9fca593b43b8d25fa6114a9e1dc2860574be4128e83c204ed1a12d749; 29820 bytes / 737 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Preserve aliases/path/supplied-history/daemon/parent-linked/unknown-source exclusivity, actual per-ID request queue and retry source checks. Config/MCP work may overlap only after the native source probe completes.",
+        "Integration requirement: Keep ALab retained task management and delete helpers under the real exclusive permit through their original notification boundaries; no extra outer self-deadlocking permit. Retain Goal resume, actual account and source guards.",
+        "Coverage limit: Selected actual MCP/canonical-path/permit-order controls are UNRUN; no proof of all account/source race schedules or latency improvement.",
+        "Coverage limit: Read/list serialization is not native turn admission, a transferred source receipt, or permission to enable held receiver routes."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "cc356fd384b9d3c46350758dacd37774b8f6a088",
+      "subject": "Preserve partial Git metadata when worktree status is slow (#61939)",
+      "paths": [
+        "codex-rs/core/src/responses_metadata.rs",
+        "codex-rs/core/src/responses_metadata_tests.rs",
+        "codex-rs/core/src/turn_metadata.rs",
+        "codex-rs/core/src/turn_metadata_tests.rs",
+        "codex-rs/core/tests/suite/git_enrichment.rs",
+        "codex-rs/git-utils/src/info.rs",
+        "codex-rs/git-utils/src/lib.rs",
+        "codex-rs/git-utils/src/status.rs",
+        "codex-rs/git-utils/src/status_tests.rs",
+        "codex-rs/memories/write/src/phase1.rs",
+        "codex-rs/memories/write/src/runtime.rs",
+        "codex-rs/memories/write/src/startup_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "account-isolation",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Publish partial verified Git metadata before a Memory deadline, tie status to its own HEAD, and use completed positive-only recent-directory probes without blocking model dispatch on them.",
+      "evidence": [
+        "Canonical patch SHA256 99b2c55a25ebfd19c806e823b00f720c667333687ccadeb1545a203c17b62e29; 60598 bytes / 1581 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Retain one-second deadline/cancellation, credential-sanitized remotes, committed/unborn/unavailable HEAD distinction and stale-status rejection. The probe can establish dirty only when HEAD matches and full status remains unknown.",
+        "Integration requirement: Memory remains independently gated and nonforeground for native Goal origin; metadata does not grant original request authority, native budget enforcement or permission to activate memory/cloud routes.",
+        "Coverage limit: At most four chosen root directories become literal pathspecs, but enumerating the root and full Git status IO are not globally bounded; no total IO/latency benchmark claim.",
+        "Coverage limit: Selected parser/shared-scan/cancellation/actual-Git/partial-clone controls are static candidates; FIFO test is Unix, network/helper conditions remain."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "9b2d2c12db7a6d658203f2911dc7c83165967bb4",
+      "subject": "Add saved environment listing to the Cloud client (#61940)",
+      "paths": [
+        "codex-rs/cloud-client/Cargo.toml",
+        "codex-rs/cloud-client/src/client_tests.rs",
+        "codex-rs/cloud-client/src/environments.rs",
+        "codex-rs/cloud-client/src/lib.rs",
+        "codex-rs/cloud-client/src/prewarm.rs",
+        "codex-rs/cloud-client/src/types.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "model-discovery",
+        "account-isolation",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Add an explicitly invoked authenticated Cloud environment catalog without activating Cloud, creating a thread or changing account/provider selection.",
+      "evidence": [
+        "Canonical patch SHA256 39f9554e344c7e0c4cd55917f3b0cd4b2b4472e47e2dd388795067372bd160c6; 10290 bytes / 256 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Keep fixed original Client credentials/account headers, independent user/workspace cursors, scope-assigned sharing, non-draft filter and typed failure. An environment ID/name/shared flag is catalog data, not account activation or native cwd/root/exec authority.",
+        "Integration requirement: Preserve existing Cloud opt-in and source isolation; do not auto-refresh this catalog merely because the API exists.",
+        "Coverage limit: Ten seconds bounds the whole catalog and one MiB bounds each page, not aggregate bytes, retained entries or number of pages; cursor repetition fails.",
+        "Coverage limit: The one new happy pagination/header/default-filter selector does not cover timeout, oversize, malformed pages, repeated cursors, blank IDs/names or failure cleanup. No live Cloud request ran."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "1d9786941238f103b77f5f8a1392f4f42ddf0941",
+      "subject": "Route turn-start client metadata through a dedicated helper (#61941)",
+      "paths": [
+        "codex-rs/core/src/session/turn_input.rs",
+        "codex-rs/core/src/session/turn_input_tests.rs",
+        "codex-rs/core/src/turn_metadata.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "native-session",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Route both existing turn-start metadata updates through a dedicated delegating helper with unchanged native input ordering and merge semantics.",
+      "evidence": [
+        "Canonical patch SHA256 93e70227795cd5d7832afedee394872ba30e83d5d95be8c8a0cf9aaeef909350; 3252 bytes / 80 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Preserve reserved metadata ownership, real start-or-steer/start-if-idle guards and settings/native admission chronology. Client metadata is not new policy authority.",
+        "Coverage limit: No new declaration was introduced; selected existing merge/input controls remain UNRUN and do not independently qualify every start-path schedule."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "c656014177079dae2dcc5e1e70c03e3158383a27",
+      "subject": "Centralize exec-server launches in `WrappedSandboxCommand` (#61942)",
+      "paths": [
+        "codex-rs/cli/src/debug_sandbox.rs",
+        "codex-rs/core/src/exec.rs",
+        "codex-rs/core/src/sandboxing/mod.rs",
+        "codex-rs/core/src/shell_snapshot_sandbox.rs",
+        "codex-rs/core/src/tools/sandboxing.rs",
+        "codex-rs/core/tests/windows_sandbox.rs",
+        "codex-rs/exec-server/src/fs_sandbox.rs",
+        "codex-rs/exec-server/src/lib.rs",
+        "codex-rs/exec-server/src/local_process.rs",
+        "codex-rs/exec-server/src/process_sandbox.rs",
+        "codex-rs/exec-server/src/process_sandbox_tests.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/backend_tests.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/bubblewrap.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/dependencies.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/mxc.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/runner.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/runner_tests.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/seatbelt.rs",
+        "codex-rs/exec-server/src/shell_snapshot.rs",
+        "codex-rs/exec-server/src/shell_snapshot_credentials.rs",
+        "codex-rs/exec-server/src/shell_snapshot_tests.rs",
+        "codex-rs/exec-server/tests/exec_process.rs",
+        "codex-rs/exec-server/tests/exec_process/windows_sandbox.rs",
+        "codex-rs/sandboxing/src/launch.rs",
+        "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/sandboxing/src/manager_tests.rs",
+        "codex-rs/sandboxing/src/sandbox_integrity/mod.rs",
+        "codex-rs/sandboxing/src/sandbox_integrity/request.rs",
+        "codex-rs/sandboxing/src/spawn.rs"
+      ],
+      "classes": [
+        "refactor",
+        "security"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff",
+        "account-isolation",
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Keep process launch, Windows token-session restrictions and snapshot script replacement in the actual prepared WrappedSandboxCommand while preserving explicit proxy and inherited-FD ownership. The bounded fixed-main caller census found no ALab use of the changed direct APIs.",
+      "evidence": [
+        "Canonical patch SHA256 c8b768f548d7d2b8783e025a883cd98eeb3039ec324e1a62ecc20973758815e0; 115733 bytes / 2630 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Preserve real native_program separately from argv0, command/policy cwd, validated env, sandbox/proxy/SID/filesystem overrides and attached/inherited stdio/FD lifetimes through actual spawn. Fallible plain-request conversion must refuse required Windows token sessions.",
+        "Integration requirement: Retain ALab native wrapper/admission FD/root/parent/source/input/mailbox/history/Goal/lease semantics. This refactor does not supersede a394/598/e51 or authorize deletion/activation of ALab transfer/held SourceV1 routes.",
+        "Integration requirement: Keep snapshot replacement limited to the submitted inner shell and original prepared sandbox/proxy. None versus Some(empty) runtime-readable paths is intentional automatic-CA versus executor-complete selection, never broadened filesystem access.",
+        "Coverage limit: Integrity checks remain observation-only with existing worker timeout; borrowed facts or timings are not containment proof. New WindowsSessionPolicy Box and retained proxy resources have unmeasured costs.",
+        "Coverage limit: Selected real proxy-after-leader-exit, snapshot retries, native validation, Unix helper and Windows TEMP/SID controls require actual applicable platform/backend/helper execution. Status0 helper checks do not claim the separate Core exit17 oracle."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "34c7cbb454b359ce7dd9f30f728de60618322755",
+      "subject": "Allow host-started forks to inherit the root session ID (#61945)",
+      "paths": [
+        "codex-rs/core/src/agent/host/types.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/tests/suite/agent_control_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "native-session",
+        "exec-handoff",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Permit a trusted host to supply inherited root session identity for prepared forks while keeping child thread IDs distinct, rejecting explicit resume/native-child inheritance and retaining their actual ownership paths.",
+      "evidence": [
+        "Canonical patch SHA256 9c12991d8c1cc0358958d9ba95360212b2084d27db5c2c1ad063eb3adcf48458; 7982 bytes / 177 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Keep actual fork/history/session persistence, host startup ExtensionData authority and native controller session inheritance. A shared session ID does not substitute for native parent/root/cwd/account/resource/FD leases or a source receipt.",
+        "Integration requirement: Preserve ALab prepared-fork/exec recovery and held-root restrictions; never turn transferred/session text into authorization.",
+        "Coverage limit: Three declared host history cases exercise real startup/resume and explicit invalid overrides but may skip without network. They do not qualify ALab image handoff or held receiver routes."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "0637230e89beaaf34b882f60dcfa85cca59c0c50",
+      "subject": "Include enclosing tool context in nested Guardian approvals (#61946)",
+      "paths": [
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/guardian/mod.rs",
+        "codex-rs/core/src/guardian/prompt.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/core/tests/suite/guardian_mcp_elicitation.rs",
+        "codex-rs/core/tests/suite/scenarios.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_nested_elicitation.snap",
+        "codex-rs/ext/guardian-reviewer/src/planned_action.rs",
+        "codex-rs/ext/guardian-reviewer/src/prompt_tests.rs",
+        "codex-rs/features/src/lib.rs",
+        "codex-rs/guardian-context/src/action.rs",
+        "codex-rs/guardian-context/src/allocation.rs",
+        "codex-rs/guardian-context/src/allocation_tests.rs",
+        "codex-rs/guardian-context/src/budget_tests.rs",
+        "codex-rs/guardian-context/src/composition.rs",
+        "codex-rs/guardian-context/src/composition_tests.rs",
+        "codex-rs/guardian-context/src/enforcement.rs",
+        "codex-rs/guardian-context/src/enforcement_tests.rs",
+        "codex-rs/guardian-context/src/entry.rs",
+        "codex-rs/guardian-context/src/images_tests.rs",
+        "codex-rs/guardian-context/src/lib.rs",
+        "codex-rs/guardian-context/src/preparation/elastic_tests.rs",
+        "codex-rs/guardian-context/src/preparation/mod.rs",
+        "codex-rs/guardian-context/src/preparation/transcript.rs",
+        "codex-rs/guardian-context/src/retained_instructions.rs",
+        "codex-rs/guardian-context/src/transcript.rs",
+        "codex-rs/guardian-context/src/transcript_record.rs",
+        "codex-rs/guardian-context/src/transcript_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "security",
+        "defaults"
+      ],
+      "features": [
+        "security-notices",
+        "product-policy",
+        "native-session"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Keep new GuardianNestedApprovalContext disabled by default. When explicitly enabled, host-matched enclosing call context is optional review evidence while the nested action remains the exact independent action under review.",
+      "evidence": [
+        "Canonical patch SHA256 3cd65c8593beb27db804f1141d12318a98823145ab068aca53b4818488819799; 74070 bytes / 1730 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Preserve explicit defaultfalse/ALab defaults absence, JS preflight exclusion, actual host originating call ID and ambiguous/omitted evidence refusal. Provider IDs or equal argument strings do not identify original authority.",
+        "Integration requirement: Only spare fixed/elastic budget may admit enclosing context, after ordinary transcript and screenshots. It must not displace action/evidence, upgrade a denied native Cause or mint foreground Goal permission.",
+        "Coverage limit: Actual MCP five-request snapshot/default-off and macro attribution cases plus pure budget/image tests are UNRUN; loops are not extra declarations.",
+        "Coverage limit: Nested context has redacted Debug but deliberately carries real original arguments in the opt-in review prompt; original tool permissions/account/source/privacy boundaries still apply. No generic/Empty/request authority gap closes."
+      ],
+      "revisit": "Consider activation only after actual native nested MCP attribution/default-off/ambiguous or missing evidence/budget/screenshot controls and ALab original cause/approval integration are qualified; preserve independent verdicts and original Goal ownership."
+    },
+    {
+      "sha": "ad161203cb8e3733b2420a29df623ec05d37f632",
+      "subject": "Mask system SSH config drop-ins in the Linux sandbox (#61947)",
+      "paths": [
+        "codex-rs/linux-sandbox/README.md",
+        "codex-rs/linux-sandbox/src/bwrap.rs",
+        "codex-rs/linux-sandbox/tests/fixtures/ssh_handshake.sh",
+        "codex-rs/linux-sandbox/tests/suite/sandbox.rs",
+        "codex-rs/linux-sandbox/tests/suite/ssh_config_tests.rs"
+      ],
+      "classes": [
+        "security",
+        "fix"
+      ],
+      "features": [
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Mask inherited system SSH drop-ins in filesystem-restricted Linux sandbox commands to avoid unmapped root-ownership rejection, preserving explicit read/write grants and safe path targeting.",
+      "evidence": [
+        "Canonical patch SHA256 48648e96a633d9845754a2aabac72da090c638bbee4b52faa77f887191b8912e; 10501 bytes / 242 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Preserve existing unreadable-root precedence, explicit descendant reads/overlapping writes and symlink/safe-ancestor refusal; main/user SSH configuration and native host-key checks remain actual.",
+        "Integration requirement: Record compatibility impact: masked site settings including KnownHostsCommand are skipped. This does not activate networking, grant SSH credentials, infer account permission or justify changing ALab admission/held routes.",
+        "Coverage limit: The real two-owner private-namespace SSH/changed-host-key fixture may return successfully without executing when nonroot or helpers/namespaces unavailable. Linux declarations do not require tests to execute on this Mac.",
+        "Coverage limit: No focused new explicit-read/write/symlink matrix was added. No machine SSH files were touched or live handshake executed by this review."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "5b3d2c7fce11a62d0df0105e9cc7290f50f2a0f8",
+      "subject": "Extract user input preparation into `codex-user-input` (#61949)",
+      "paths": [
+        ".github/CODEOWNERS",
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/core/Cargo.toml",
+        "codex-rs/core/src/compact.rs",
+        "codex-rs/core/src/session/file_audio_tests.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/turn_start_mcp_tests.rs",
+        "codex-rs/core/tests/suite/client_websockets.rs",
+        "codex-rs/ext/queue/Cargo.toml",
+        "codex-rs/ext/queue/src/service.rs",
+        "codex-rs/protocol/src/lib.rs",
+        "codex-rs/protocol/src/local_media.rs",
+        "codex-rs/protocol/src/local_media_tests.rs",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/protocol/src/user_input.rs",
+        "codex-rs/tui/Cargo.toml",
+        "codex-rs/tui/src/chatwidget/image_submission.rs",
+        "codex-rs/user-input/BUILD.bazel",
+        "codex-rs/user-input/Cargo.toml",
+        "codex-rs/user-input/src/lib.rs",
+        "codex-rs/user-input/src/local_media.rs",
+        "codex-rs/user-input/src/local_media_tests.rs",
+        "codex-rs/user-input/src/message.rs",
+        "codex-rs/user-input/src/message_tests.rs"
+      ],
+      "classes": [
+        "refactor",
+        "packaging",
+        "protocol"
+      ],
+      "features": [
+        "execution-continuity",
+        "native-ui",
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Move local attachment snapshot and UserInput-to-content conversion to codex-user-input while preserving wire data, image-slot indices, labels and error placeholders. Fixed-main owned codecs hold UserInput data rather than calling the removed conversion APIs.",
+      "evidence": [
+        "Canonical patch SHA256 90f5fbdf69015c2a5df45df4dd5e9ed1d2ba4b45af867c5080dcb6d45f95b909; 101694 bytes / 2646 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Retain actual pre-conversion accepted-input/source ownership, original snapshot/read errors, Process/Defer image-index mapping, queued media snapshots and ALab retained input/mail delivery/copy authority. Do not re-read source attachments on a destination or invent a media permission.",
+        "Integration requirement: Use actual new crate exports for any newly discovered conversion caller; remove obsolete protocol API compatibility rather than restoring blanket From conversions. Accept upstream manifest/workspace/lock changes normally and re-resolve ALab entries through maintained tooling later; no manual lock edits.",
+        "Coverage limit: The moved snapshot helper bounds actual media reads; the separate existing message converter still uses fs::read before preparation, so this extraction is not a new universal IO/memory bound.",
+        "Coverage limit: Stable generated asset was bounded-decompressed and parsed; only the two LocalImage/LocalAudio description strings changed inside RolloutLine schema. No schema generator/conformance/Rust run. Moved tests are one preserved declaration each, not new runtime evidence."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "d3b7695db912fd7fc8c30d814d172e75fefbadde",
+      "subject": "Refactor composer undo and redo history (#61951)",
+      "paths": [
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/agents_navigation_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/edit_history.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/edit_history_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/history_search.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/history_search_draft.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/inline_input.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/paste_input.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/reconnect.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/sparkle.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/vim_history.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/vim_history_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/vim_search.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff",
+        "execution-continuity"
+      ],
+      "decision": "adapt",
+      "reason": "Migrate actual ALab retained editor/stash/search/strict codec references from removed vim_history::VimHistory and composer fields to edit_history::EditHistory. Dropping native undo/redo/pending transactions would lose retained user state.",
+      "evidence": [
+        "Canonical patch SHA256 1fd0c72e29c914daff266fa76f912e143ea373f2ca726cbb85d8bfbe519cdd2b; 103819 bytes / 2639 lines. Whole production/tests/snapshots/manifests reviewed; generated stable asset separately bounded-decompressed and compared for row11; duplicate moved test bodies checked by exact rename correspondence.",
+        "alab/reviews/upstream-intake-2026-11-17-after4f556.md; fixed comparison 73dceee9d2f3a8398c3a7fa9db56a1a93d92018e; final canonical cohort d3b7695db912fd7fc8c30d814d172e75fefbadde. Source only, every candidate not_run/UNRUN and final_binding null; no import, Rust or qualification.",
+        "Integration requirement: Move the existing ALAB editor-state codec module hook from the removed upstream vim_history path to the new stable edit_history path, and update owned private types/fields/history_bytes/native constants in all eight identified retained editor/stash/search/capture/restore paths. Keep behavior ALab-owned and upstream hook thin/marked.",
+        "Integration requirement: Preserve exact rich draft text/elements/images/mention bindings/paste payloads, both bounded undo/redo stacks, pending transaction, temporary search original history and active Vim mode/register state across supported stash/exec transfer. Do not default, re-render, drop history or treat restored text as new input/admission.",
+        "Integration requirement: Review strict deny_unknown_fields and actual version/preflight negotiation before changing serialized field names; either support actual typed data with complete validation or explicitly refuse unsupported payloads. No silent old/new-schema flattening or invented destination ownership.",
+        "Coverage limit: The875-line renamed upstream test source is byte-identical after recorded identifier/comment renames; only production stack transfer is consolidated. It adds no new semantic test cases.",
+        "Coverage limit: Selected native composer and actual ALab no-primary/stash/occupied-owner controls are existing candidates requiring re-execution after real adaptation. No retained codec implementation or source import is made by this record."
+      ],
+      "revisit": ""
+    }
+  ]
+}

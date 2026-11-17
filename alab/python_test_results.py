@@ -7,8 +7,12 @@ from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 from pathlib import Path
+import runpy
 import sys
 import unittest
+
+
+CLI = runpy.run_path(str(Path(__file__).with_name('cli_status.py')))
 
 
 class NamedResult(unittest.TextTestResult):
@@ -113,19 +117,22 @@ def main():
     parser.add_argument('--pattern', default='test*.py')
     parser.add_argument('--record', type=Path, required=True)
     args = parser.parse_args()
-    # Refuse existing output before discovery or test side effects begin.
-    with args.record.open('x') as stream:
-        suite = unittest.TestLoader().discover(str(args.start_directory.resolve()), args.pattern)
-        record = execute(suite)
-        json.dump(record, stream, indent=2)
-        stream.write('\n')
-    sys.stdout.write(record['output'])
-    return record['exit_status']
+    try:
+        # Refuse existing output before discovery or test side effects begin.
+        with args.record.open('x') as stream:
+            suite = unittest.TestLoader().discover(str(args.start_directory.resolve()), args.pattern)
+            record = execute(suite)
+            json.dump(record, stream, indent=2)
+            stream.write('\n')
+        sys.stdout.write(record['output'])
+        return record['exit_status']
+    except SystemExit as error:
+        if not CLI['successful_exit'](error):
+            raise
+        return CLI['report_failure']('Python test results: ', error, incomplete=True)
+    except (OSError, ImportError) as error:
+        return CLI['report_failure']('Python test results: ', error)
 
 
 if __name__ == '__main__':
-    try:
-        sys.exit(main())
-    except (OSError, ImportError) as error:
-        print('Python test results: ' + str(error), file=sys.stderr)
-        sys.exit(1)
+    sys.exit(main())

@@ -29,6 +29,10 @@ mod unix_socket;
 #[cfg(test)]
 mod unix_socket_tests;
 mod websocket;
+#[cfg(unix)]
+#[path = "../../../alab-core/glue/native_incoming_transport.rs"] mod alab_native_incoming; // ALAB(upgrade): owned native streams reuse the actual WebSocket connection loop.
+#[cfg(unix)]
+pub use alab_native_incoming::start_native_incoming_acceptor; // ALAB(upgrade): explicit owned-stream transport entry.
 
 pub use remote_control::REMOTE_CONTROL_DISABLED_ENV_VAR;
 pub use remote_control::RemoteControlDisabledByRequirements;
@@ -185,12 +189,14 @@ pub enum TransportEvent {
         connection_id: ConnectionId,
         origin: ConnectionOrigin,
         auth: Option<crate::ConnectionAuth>,
+        resource: Option<codex_alab_core::connection_resource::ConnectionResource>, // ALAB(owned-local): same accepted resource; no authority from presence.
         writer: mpsc::Sender<QueuedOutgoingMessage>,
         disconnect_sender: Option<CancellationToken>,
     },
     ConnectionClosed {
         connection_id: ConnectionId,
     },
+    AlabIngressDrained { connection_id: ConnectionId }, // ALAB(retained-ui): original reader task has actually joined; not merely EOF.
     IncomingMessage {
         connection_id: ConnectionId,
         message: JSONRPCMessage,

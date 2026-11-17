@@ -127,7 +127,7 @@ impl RuntimeAuthBinding {
         self: &Arc<Self>,
         selection: &PlatformResourceSelection,
     ) -> Result<RuntimeAuth, RuntimeAuthError> {
-        self.select_auth(selection, /*expected_source*/ None).await
+        alab_auth_pair::select(self, selection, /*expected_source*/ None).await // ALAB(accounts): bound selection before embedding it in provider futures.
     }
 
     #[expect(
@@ -319,7 +319,7 @@ impl RuntimeAuthBinding {
         source_generation: u64,
         selection: &PlatformResourceSelection,
     ) -> Result<RuntimeAuth, RuntimeAuthError> {
-        self.select_auth(selection, Some(source_generation)).await
+        alab_auth_pair::select(self, selection, Some(source_generation)).await // ALAB(accounts): retain the original source behind the checked future interface.
     }
 
     fn check_source(&self, expected: Option<u64>) -> Result<(), RuntimeAuthError> {

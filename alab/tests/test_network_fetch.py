@@ -47,7 +47,7 @@ class NetworkFetchTests(unittest.TestCase):
         self.repo.mkdir()
         self.git("init", "-q", "-b", "main")
         (self.repo / "alab").mkdir()
-        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py"):
+        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py", "cli_status.py"):
             shutil.copyfile(ROOT / "alab" / name, self.repo / "alab" / name)
         (self.repo / "VERSION").write_text("0.164.0\n")
         self.git("add", ".")

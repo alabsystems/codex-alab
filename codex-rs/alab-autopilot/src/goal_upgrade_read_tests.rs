@@ -5,6 +5,7 @@
 //! displayed idle root cannot protect a different loaded root's persisted work.
 
 use super::upgrade_handoff_tests::Harness;
+use super::upgrade_handoff_tests::NATIVE_HANG;
 use super::upgrade_handoff_tests::native_test;
 use super::*;
 use codex_alab_core::session::Frame;
@@ -12,13 +13,44 @@ use codex_alab_core::session::ProgramState;
 use core_test_support::responses::received_responses_requests;
 use sqlx::Connection;
 
+/// Settle a setup mutation without admitting the Active goal's ordinary continuation.
+async fn apply_setup_goal(
+    goals: &GoalService,
+    db: &codex_state::StateRuntime,
+    thread_id: codex_protocol::ThreadId,
+    outcome: codex_goal_extension::GoalSetOutcome,
+) {
+    let goal = db
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await
+        .expect("read setup goal")
+        .expect("setup goal exists");
+    db.thread_goals()
+        .replace_thread_goal_snapshot(&goal)
+        .await
+        .expect("persist setup-only continuation deferral");
+    outcome.apply_runtime_effects(goals).await;
+    db.thread_goals()
+        .clear_thread_goal_continuation_deferral(thread_id)
+        .await
+        .expect("clear setup-only continuation deferral");
+    assert!(
+        !goals
+            .alab_goal_runtime(thread_id)
+            .expect("setup goal runtime")
+            .alab_goal_persistence_held(),
+        "the setup-only continuation deferral must settle mutation custody"
+    );
+}
+
 #[test]
 fn goal_preparation_cancelled_waiter_finishes_accounting_once_and_reopens_admission() {
     native_test(|| async {
         let goals = Arc::new(GoalService::new());
         let h = Harness::new_with_goals(Some(goals.clone())).await;
         let db = h.test.codex.state_db().unwrap();
-        goals
+        let outcome = goals
             .set_thread_goal(
                 &db,
                 GoalSetRequest {
@@ -32,6 +64,7 @@ fn goal_preparation_cancelled_waiter_finishes_accounting_once_and_reopens_admiss
             )
             .await
             .unwrap();
+        apply_setup_goal(&goals, &db, h.rt.id, outcome).await;
         let runtime = h
             .test
             .codex
@@ -215,7 +248,7 @@ fn native_clock_adoption_validates_persisted_goal_and_accounts_the_carried_inter
         let goals = Arc::new(GoalService::new());
         let h = Harness::new_with_goals(Some(goals.clone())).await;
         let db = h.test.codex.state_db().unwrap();
-        goals
+        let outcome = goals
             .set_thread_goal(
                 &db,
                 GoalSetRequest {
@@ -229,6 +262,7 @@ fn native_clock_adoption_validates_persisted_goal_and_accounts_the_carried_inter
             )
             .await
             .unwrap();
+        apply_setup_goal(&goals, &db, h.rt.id, outcome).await;
         let runtime = h
             .test
             .codex
@@ -392,7 +426,7 @@ fn all_goal_capture_waits_for_source_quiescence_and_survives_a_lost_waiter() {
             .await
             .unwrap();
         let db = h.test.codex.state_db().unwrap();
-        goals
+        let outcome = goals
             .set_thread_goal(
                 &db,
                 GoalSetRequest {
@@ -408,6 +442,7 @@ fn all_goal_capture_waits_for_source_quiescence_and_survives_a_lost_waiter() {
             )
             .await
             .unwrap();
+        apply_setup_goal(&goals, &db, h.rt.id, outcome).await;
         db.thread_goals()
             .account_thread_goal_usage(
                 h.rt.id,
@@ -680,7 +715,7 @@ fn all_goal_checkpoints_protect_absence_and_hidden_stopped_state_until_one_commi
                 .await
                 .unwrap();
             let db = hidden.thread.state_db().unwrap();
-            goals
+            let outcome = goals
                 .set_thread_goal(
                     &db,
                     GoalSetRequest {
@@ -694,6 +729,7 @@ fn all_goal_checkpoints_protect_absence_and_hidden_stopped_state_until_one_commi
                 )
                 .await
                 .unwrap();
+            outcome.apply_runtime_effects(&goals).await;
             let mut memory = h.test.config.clone();
             memory.ephemeral = true;
             let mut child_options = codex_core::StartThreadOptions::new(memory);
@@ -754,7 +790,16 @@ fn all_goal_checkpoints_protect_absence_and_hidden_stopped_state_until_one_commi
             assert_eq!(saved.status, codex_state::ThreadGoalStatus::Paused);
             assert_eq!(saved.token_budget, Some(900));
             assert_eq!(snapshots[2], (child.thread_id, None));
-            goals
+            let mut invalidated = Box::pin(prepared.invalidated());
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(std::future::Future::poll(
+                    invalidated.as_mut(),
+                    cx
+                )))
+                .await
+                .is_pending()
+            );
+            let outcome = goals
                 .set_thread_goal(
                     &db,
                     GoalSetRequest {
@@ -766,10 +811,17 @@ fn all_goal_checkpoints_protect_absence_and_hidden_stopped_state_until_one_commi
                         token_budget: GoalTokenBudgetUpdate::Keep,
                         max_goal_token_budget: None,
                     },
-                    async { Ok(()) },
+                    async {
+                        tokio::time::timeout(Duration::from_secs(5), invalidated.as_mut())
+                            .await
+                            .unwrap();
+                        Ok(())
+                    },
                 )
                 .await
                 .unwrap();
+            drop(invalidated);
+            outcome.apply_runtime_effects(&goals).await;
             assert!(!prepared.valid());
             assert!(
                 !prepared
@@ -850,7 +902,16 @@ fn an_absent_goal_checkpoint_is_revoked_before_a_new_goal_is_persisted() {
                 .await
                 .unwrap();
         assert!(prepared.snapshots().next().unwrap().1.is_none());
-        goals
+        let mut invalidated = Box::pin(prepared.invalidated());
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(std::future::Future::poll(
+                invalidated.as_mut(),
+                cx
+            )))
+            .await
+            .is_pending()
+        );
+        let outcome = goals
             .set_thread_goal(
                 &db,
                 GoalSetRequest {
@@ -864,11 +925,16 @@ fn an_absent_goal_checkpoint_is_revoked_before_a_new_goal_is_persisted() {
                 },
                 async {
                     assert!(!prepared.valid());
+                    tokio::time::timeout(Duration::from_secs(5), invalidated.as_mut())
+                        .await
+                        .unwrap();
                     Ok(())
                 },
             )
             .await
             .unwrap();
+        drop(invalidated);
+        apply_setup_goal(&goals, &db, h.rt.id, outcome).await;
         assert!(!prepared.commit_if(|| panic!("cannot commit an obsolete absent goal")));
         drop(prepared);
         assert_eq!(
@@ -898,7 +964,7 @@ fn native_goal_checkpoint_revokes_before_mutation_and_commits_without_losing_acc
                 .get::<codex_goal_extension::GoalRuntimeHandle>()
                 .expect("actual native goal runtime");
             assert!(runtime.alab_upgrade_goal_checkpoint().await.is_err());
-            goals
+            let outcome = goals
                 .set_thread_goal(
                     &db,
                     GoalSetRequest {
@@ -912,6 +978,7 @@ fn native_goal_checkpoint_revokes_before_mutation_and_commits_without_losing_acc
                 )
                 .await
                 .expect("persist active goal");
+            apply_setup_goal(&goals, &db, h.rt.id, outcome).await;
             db.thread_goals()
                 .account_thread_goal_usage(
                     h.rt.id,
@@ -987,7 +1054,7 @@ fn native_goal_checkpoint_revokes_before_mutation_and_commits_without_losing_acc
             assert!(resumed.time_used_seconds > before.time_used_seconds);
             assert_eq!(resumed.tokens_used, before.tokens_used);
             let before = resumed;
-            goals
+            let outcome = goals
                 .set_thread_goal(
                     &db,
                     GoalSetRequest {
@@ -1004,6 +1071,7 @@ fn native_goal_checkpoint_revokes_before_mutation_and_commits_without_losing_acc
                 )
                 .await
                 .expect("a real native user pause is never stranded by preparation");
+            outcome.apply_runtime_effects(&goals).await;
             assert!(!runtime.alab_commit_goal_upgrade(&mut transfer, || panic!(
                 "a user mutation revoked the UI decision"
             )));
@@ -1153,10 +1221,10 @@ fn a_failed_goal_read_in_a_hidden_loaded_root_holds_the_upgrade() {
             let db = hidden.thread.state_db().expect("hidden root goal database");
             let displayed_db = h.test.codex.state_db().expect("displayed root database");
 
-            // A healthy empty store grants an update; the same native manager must
-            // then refuse a persisted Active goal, even while its root is hidden.
+            // Both absent and active goals can cross a prepared runtime forest.
+            // A hidden active goal must join the actual checkpoint inventory.
             let empty = h.autopilot.upgrade_facts().await;
-            goals
+            let outcome = goals
                 .set_thread_goal(
                     &db,
                     GoalSetRequest {
@@ -1170,6 +1238,7 @@ fn a_failed_goal_read_in_a_hidden_loaded_root_holds_the_upgrade() {
                 )
                 .await
                 .expect("real goal service persists the hidden root's active goal");
+            apply_setup_goal(&goals, &db, hidden.thread_id, outcome).await;
             let active = h.autopilot.upgrade_facts().await;
             let saved = db
                 .thread_goals()
@@ -1178,6 +1247,20 @@ fn a_failed_goal_read_in_a_hidden_loaded_root_holds_the_upgrade() {
                 .expect("healthy active goal read")
                 .expect("persisted goal");
             assert_eq!(saved.status, codex_state::ThreadGoalStatus::Active);
+            let forest = h.autopilot.prepare_upgrade_forest().await.unwrap();
+            let source = crate::upgrade_source::Prepared::from_forest(
+                h.test.codex.exec_thread_id(),
+                forest,
+            )
+            .await
+            .unwrap();
+            let (_, checkpoint) = source
+                .goal_snapshots()
+                .find(|(id, _)| *id == hidden.thread_id)
+                .expect("hidden root joins source checkpointing");
+            assert_eq!(checkpoint, Some(&saved));
+            assert!(source.valid());
+            drop(source);
 
             // Force a real hidden-row decoding error. The native thread manager
             // shares a store, so the displayed root's absent row stays readable.
@@ -1201,8 +1284,7 @@ fn a_failed_goal_read_in_a_hidden_loaded_root_holds_the_upgrade() {
             hidden_shutdown.expect("hidden native root shutdown");
             displayed_shutdown.expect("displayed native root shutdown");
             assert_eq!(upgrade::check(&empty), upgrade::UpgradeCheck::Go);
-            assert!(matches!(upgrade::check(&active), upgrade::UpgradeCheck::Wait(why)
-                if why.contains(rt.key()) && why.contains("active goal")));
+            assert_eq!(upgrade::check(&active), upgrade::UpgradeCheck::Go);
             assert!(displayed_healthy.is_ok(), "the displayed store remains readable");
             assert_eq!(displayed_state, ProgramState::Idle);
             assert!(
@@ -1218,7 +1300,7 @@ fn a_failed_goal_read_in_a_hidden_loaded_root_holds_the_upgrade() {
 #[test]
 fn a_failed_goal_read_holds_native_submission_and_owes_a_recheck() {
     native_test(|| async {
-        tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::time::timeout(NATIVE_HANG, async {
             let goals = Arc::new(GoalService::new());
             let h = Harness::new_with_goals(Some(Arc::clone(&goals))).await;
             h.immediate_point().await;
@@ -1271,7 +1353,7 @@ fn a_failed_goal_read_holds_native_submission_and_owes_a_recheck() {
                 .expect("real completed goal");
             assert!(!h.autopilot.goal_owns_pace(&h.rt, &h.test.codex, &authority).await);
             assert_eq!(h.rt.owed_timer().map(|owed| owed.not_before), Some(original.not_before));
-            goals
+            let outcome = goals
                 .set_thread_goal(
                     &db,
                     GoalSetRequest {
@@ -1285,6 +1367,7 @@ fn a_failed_goal_read_holds_native_submission_and_owes_a_recheck() {
                 )
                 .await
                 .expect("real goal service persists a paused goal");
+            outcome.apply_runtime_effects(&goals).await;
             Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
             assert!(!h.rt.timer_pending() && h.rt.owed_timer().is_none());
             assert!(h.shared.owed_act().is_none(), "a paused goal retires the former wall carry");
@@ -1335,15 +1418,16 @@ fn a_failed_goal_read_holds_native_submission_and_owes_a_recheck() {
                 .autopilot
                 .goal_owns_pace(&h.rt, &h.test.codex, &authority)
                 .await;
-            goals
+            let cleared = goals
                 .clear_thread_goal(&db, h.rt.id, async { Ok(()) })
                 .await
                 .expect("clear only the restored scratch goal");
+            cleared.apply_runtime_effects(&goals).await;
             let recovered_holds = h
                 .autopilot
                 .goal_owns_pace(&h.rt, &h.test.codex, &authority)
                 .await;
-            h.test
+            let submission = h.test
                 .codex
                 .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
                     text: "A new private native turn".into(),
@@ -1351,11 +1435,22 @@ fn a_failed_goal_read_holds_native_submission_and_owes_a_recheck() {
                 }]))
                 .await
                 .expect("new native input accepted");
+            assert!(
+                matches!(
+                    submission,
+                    codex_protocol::turn_input::TurnInputSubmission::Started { .. }
+                ),
+                "the private native input must start its own turn: {submission:?}"
+            );
             // Core sends the model request after its turn-start hooks settle,
             // including cancellation of the previous native point's timer.
-            while received_responses_requests(&h._server).await.is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+            tokio::time::timeout(Duration::from_secs(60), async {
+                while received_responses_requests(&h._server).await.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the new native turn did not reach its model request after lifecycle setup");
             h.autopilot.schedule(&h.rt, clock() + Duration::from_secs(3600));
             assert!(h.rt.timer_pending());
             let new_generation = lock(&h.rt.timer).as_ref().expect("new wait").generation;
@@ -1364,8 +1459,37 @@ fn a_failed_goal_read_holds_native_submission_and_owes_a_recheck() {
             assert!(h.autopilot.goal_read_owns_pace(&h.rt, Err(read_error.clone()), &authority).await);
             assert_eq!(lock(&h.rt.timer).as_ref().expect("new wait remains").generation, new_generation, "an old unread goal cannot replace a new native wait with its recheck");
             Autopilot::cancel_timer(&h.rt).await;
-            let shutdown = h.test.codex.shutdown_and_wait().await;
-            shutdown.expect("native goal read fixture shutdown");
+            // Interrupt publishes an abort which Autopilot evaluates. Hold its
+            // automatic submit, enqueue Shutdown ahead of it, then prove queue
+            // closure releases the goal permit before runtime retirement.
+            let (entered, entry) = tokio::sync::oneshot::channel();
+            let (release, blocked) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.before_submit) = Some((entered, blocked));
+            h.test
+                .codex
+                .submit(codex_protocol::protocol::Op::Interrupt)
+                .await
+                .expect("interrupt the deliberately held native model response");
+            tokio::time::timeout(Duration::from_secs(60), entry)
+                .await
+                .expect("interrupted turn did not reach automatic submit")
+                .expect("interrupt evaluation ended before automatic submit");
+            let mut shutdown = Box::pin(h.test.codex.shutdown_and_wait());
+            std::future::poll_fn(|cx| {
+                assert!(
+                    std::future::Future::poll(shutdown.as_mut(), cx).is_pending(),
+                    "shutdown cannot finish before the blocked automatic submit is released"
+                );
+                std::task::Poll::Ready(())
+            })
+            .await;
+            release
+                .send(())
+                .expect("release automatic submit behind shutdown");
+            tokio::time::timeout(Duration::from_secs(60), shutdown.as_mut())
+                .await
+                .expect("queued automatic input deadlocked native shutdown")
+                .expect("native goal read fixture shutdown");
             assert!(!absent_holds, "a healthy absent goal does not own the pace");
             assert!(paused_holds && restored_holds, "a healthy paused goal owns its pace");
             assert!(!recovered_holds, "a recovered empty goal store releases the guard");

@@ -499,6 +499,7 @@ pub(super) async fn submission_loop(
         let sub = tokio::select! {
             biased;
             _ = sess.services.local_agent_runtime.shutdown.cancelled() => {
+                assignment_gate.close_submission_admission(&rx_sub); // ALAB(shutdown): release queued native permits before extension retirement.
                 shutdown_received = shutdown(&sess, super::new_submission_id()).await;
                 break;
             }
@@ -675,8 +676,12 @@ pub(super) async fn submission_loop(
                 }
                 Op::SuspendTurnAndShutdown { reply } => {
                     let result =
-                        super::turn_suspension::suspend_turn_and_shutdown(&sess, sub.id.clone())
-                            .await;
+                        super::turn_suspension::suspend_turn_and_shutdown(
+                            &sess,
+                            sub.id.clone(),
+                            || assignment_gate.close_submission_admission(&rx_sub),
+                        )
+                        .await; // ALAB(shutdown): a successful suspension drains queued permit owners at its terminal boundary.
                     // Exit only after history is durable and its writer has closed; an error
                     // must leave responsibility for the thread with the current worker.
                     let should_exit = matches!(
@@ -836,7 +841,10 @@ pub(super) async fn submission_loop(
                         .await;
                     false
                 }
-                Op::Shutdown => shutdown(&sess, sub.id.clone()).await,
+                Op::Shutdown => {
+                    assignment_gate.close_submission_admission(&rx_sub); // ALAB(shutdown): a queued automatic input must release its goal permit before teardown.
+                    shutdown(&sess, sub.id.clone()).await
+                }
                 Op::Review { review_request } => {
                     review(&sess, &config, sub.id.clone(), review_request).await;
                     false
@@ -858,6 +866,7 @@ pub(super) async fn submission_loop(
     // If the submission loop exits because the channel closed without an
     // explicit shutdown op, still run session teardown.
     if !shutdown_received {
+        assignment_gate.close_submission_admission(&rx_sub); // ALAB(shutdown): deferred source owners cannot outlive channel-close teardown.
         shutdown_session_runtime(&sess).await;
         if let Some(live_thread) = sess.live_thread()
             && let Err(err) = live_thread.shutdown().await

@@ -306,11 +306,16 @@ pub(crate) fn person_goal_stop_since(items: &[RolloutItem], turn: &str) -> bool 
         .any(|active| !active)
 }
 
-/// A saved model stop cannot cross a later stop or goal edit, even if another
-/// model call restores Blocked with the old objective and budget. The rollout
-/// has no exact committed call identity, so use the original turn's first start
-/// and fail closed on a conflicting update anywhere after it. In particular,
-/// an Active update cannot undo a Paused or edited boundary in this history.
+/// A saved model stop cannot cross a later user goal instruction, stop or goal
+/// edit, even if another model call restores Blocked with the old objective and
+/// budget. A user's durable Active instruction revokes model provenance too:
+/// its SQL mutation can definitely roll back without producing an outcome, but
+/// the old source must not return after restart. It remains distinct from a
+/// person's wall stop, which [`person_goal_stop_since`] deliberately does not
+/// count for Active. The rollout has no exact committed call identity, so use
+/// the original turn's first start and fail closed on a conflicting update
+/// anywhere after it. In particular, an Active update cannot undo a Paused or
+/// edited boundary in this history.
 pub(crate) fn model_goal_stop_revoked_since(
     items: &[RolloutItem],
     id: ThreadId,
@@ -324,12 +329,28 @@ pub(crate) fn model_goal_stop_revoked_since(
     }) else {
         return true;
     };
+    if items[start..]
+        .iter()
+        .filter_map(person_goal_set)
+        .any(|active| active)
+    {
+        return true;
+    }
     items[start..].iter().any(|item| {
         let RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(update)) = item else {
             return false;
         };
         if update.thread_id != id {
             return false;
+        }
+        // Host/API outcomes carry a persistence-only attribution; idle native
+        // accounting legitimately has no turn and does not revoke by itself.
+        match update.turn_id.as_deref() {
+            Some(codex_alab_core::goal_persistence::HOST_MUTATION_TURN_ID) => return true,
+            // Before attribution sentinels, host/API writes and idle accounting
+            // both used `None`; old chronology cannot prove which occurred.
+            None => return true,
+            Some(_) => {}
         }
         let goal = &update.goal;
         goal.thread_id != id

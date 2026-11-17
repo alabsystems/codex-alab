@@ -30,6 +30,10 @@ mod daybreak_recovery_tests;
 #[path = "turns_session_tests.rs"]
 mod turns_session_tests;
 
+#[cfg(test)]
+#[path = "live_stream_replay_tests.rs"]
+mod live_stream_replay_tests;
+
 impl ChatWidget {
     /// An active claimed root has no person available to settle a headless prompt.
     pub(crate) fn alab_autonomous_root_active(&self) -> bool {
@@ -253,6 +257,33 @@ fn program_status_of(state: ProgramState) -> Option<ProgramStatus> {
         ProgramState::Done => ProgramStatus::Done,
         ProgramState::Error => ProgramStatus::Error,
     })
+}
+
+#[cfg(unix)]
+impl ChatWidget {
+    pub(crate) fn alab_capture_runtime_editor(&self) -> std::io::Result<Vec<u8>> {
+        self.bottom_pane
+            .alab_capture_draft_checkpoint(codex_alab_tui::upgrade_exec_custody::MAX_STATE_BYTES)
+    }
+    pub(crate) fn alab_restore_runtime_editor(
+        &mut self,
+        primary: codex_protocol::ThreadId,
+        bytes: &[u8],
+    ) -> std::io::Result<()> {
+        crate::bottom_pane::BottomPane::alab_prepare_draft_checkpoint(
+            bytes,
+            primary,
+            codex_alab_tui::upgrade_exec_custody::MAX_STATE_BYTES,
+            codex_alab_tui::upgrade_exec_custody::MAX_STATE_BYTES / 8,
+        )?
+        .install(&mut self.bottom_pane)?;
+        // The original invocation's initial message was already consumed by this runtime.
+        self.initial_user_message = None;
+        Ok(())
+    }
+    pub(crate) fn alab_runtime_editor_has_layout(&self) -> bool {
+        self.bottom_pane.alab_draft_has_layout()
+    }
 }
 
 /// The box glue (`ALAB(answer)`) through the chat widget's real view stack: the hooks in the

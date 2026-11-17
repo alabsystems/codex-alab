@@ -9,6 +9,9 @@ use codex_alab_core::native_source_lifetime::Lifetime;
 use codex_alab_core::native_source_lifetime::MemberIncarnation;
 use codex_alab_core::native_source_lifetime::ReaderLoaded;
 
+type ReaderLoad =
+    std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<Option<CodexAuth>>> + Send>>;
+
 pub(super) struct Reader {
     identity: MemberIncarnation,
     observer: Observer,
@@ -139,7 +142,7 @@ pub(super) async fn load(
     let parent = codex_alab_core::assignment::current_activity();
     // This owned actor survives a dropped caller. It retains every accepted
     // constructor/load until an actual result and subsequent cleanup settle.
-    let worker = Box::pin(async move {
+    let worker: ReaderLoad = Box::pin(async move {
         let factory = catalog::global()
             .factory(codex_alab_core::assignment::current_activity().as_ref())
             .map_err(|_| codex_alab_core::managed_auth::unavailable())?;

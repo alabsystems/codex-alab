@@ -14,7 +14,7 @@ use async_channel::Sender;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
-use tokio::process::Child;
+use crate::spawn::Child; // ALAB(live-update): native-retained tools have no local wait or signal authority.
 use tokio_util::sync::CancellationToken;
 
 use crate::sandboxing::ExecOptions;
@@ -984,11 +984,15 @@ async fn exec(
 /// Consumes the output of a child process according to the configured capture
 /// policy.
 async fn consume_output(
-    mut child: Child,
+    child: impl Into<Child>, // ALAB(live-update): local callers retain their existing child interface.
     expiration: ExecExpiration,
     capture_policy: ExecCapturePolicy,
     stdout_stream: Option<StdoutStream>,
 ) -> Result<RawExecToolCallOutput> {
+    let mut child = match child.into() { // ALAB(live-update): retained-tool cancellation awaits native cohort settlement.
+        Child::Local(child) => child,
+        #[cfg(unix)] Child::Native(child) => return alab_native_output::consume_output(*child, expiration, capture_policy, stdout_stream).await,
+    };
     // Both stdout and stderr were configured with `Stdio::piped()`
     // above, therefore `take()` should normally return `Some`.  If it doesn't
     // we treat it as an exceptional I/O error
@@ -1279,3 +1283,5 @@ fn synthetic_exit_status_for_code(code: i32) -> ExitStatus {
 #[cfg(test)]
 #[path = "exec_tests.rs"]
 mod tests;
+
+#[cfg(unix)] #[path = "../../alab-core/glue/native_root_output.rs"] mod alab_native_output; // ALAB(live-update): consume retained tool IO without Source-side process signaling.

@@ -1,6 +1,9 @@
 //! Surface-independent literal Vim search queries. Matches span complete graphemes;
 //! callers own navigation, operator ranges, and the lifetime of accepted versus pending input.
 
+#[path = "../../alab-tui/glue/editor_upgrade_search_query.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): preserve native editor transactions as data for runtime transfer.
+
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 

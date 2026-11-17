@@ -250,6 +250,7 @@ impl ChatWidget {
 
     /// If idle and there are queued inputs, submit exactly one to start the next turn.
     pub(crate) fn maybe_send_next_queued_input(&mut self) -> bool {
+        #[cfg(unix)] if self.alab_holds_retained_startup() { return false; } // ALAB(retained-frontier): hold exact original queued submissions without reconstructing or resending them.
         if self.thread_stream_disconnected
             || !self.is_session_configured()
             || self.fork_in_progress

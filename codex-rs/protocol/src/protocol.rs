@@ -2191,6 +2191,7 @@ pub struct PrivateSessionEvent {
 /// Recorded state and cancellation needed by observers awaiting response acceptance.
 #[derive(Debug, Clone)]
 pub enum PrivateSessionEventPayload {
+    AlabSideBoundary(std::sync::Arc<()>), // ALAB(retained-side): nonserialized actual Core/listener occurrence identity; no Native or Current permission.
     RecordedItem(RawResponseItemEvent),
     TurnAborted(TurnAbortedEvent),
 }

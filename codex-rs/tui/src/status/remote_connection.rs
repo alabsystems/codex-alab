@@ -24,6 +24,10 @@ pub(crate) fn remote_connection_status_value(
     server_version: Option<&str>,
 ) -> Option<RemoteConnectionStatus> {
     let endpoint = match app_server_target {
+        #[cfg(unix)] AppServerTarget::OwnedLocal { .. } => return Some(RemoteConnectionStatus { // ALAB(owned-local): display local service semantics without exporting private selection data.
+            address: "Local".into(), version: server_version.unwrap_or("unknown").into(),
+            is_local_daemon: false, is_managed_daemon: false,
+        }),
         AppServerTarget::Embedded => return None,
         AppServerTarget::Cloud => {
             return Some(RemoteConnectionStatus {
@@ -97,6 +101,9 @@ pub(crate) fn server_version_notice_key(
     server_version_notice(client, Some(server))?;
     let mut hasher = Sha256::new();
     let endpoint = match target {
+        #[cfg(unix)] AppServerTarget::OwnedLocal { target } => { // ALAB(owned-local): namespace notice DATA by actual selected service, never by a fake URL.
+            hash_identity_part(&mut hasher, b"owned-local:", target.service_data().as_bytes()); None
+        }
         AppServerTarget::Embedded | AppServerTarget::Cloud => None,
         AppServerTarget::LocalDaemon { endpoint, .. } | AppServerTarget::Remote { endpoint } => {
             Some(endpoint)

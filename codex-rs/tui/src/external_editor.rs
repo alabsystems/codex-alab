@@ -178,55 +178,10 @@ pub(crate) async fn run_editor(
     file_system_policy: &FileSystemSandboxPolicy,
     cwd: &Path,
 ) -> Result<String> {
-    if editor_cmd.is_empty() {
-        return Err(Report::msg("editor command is empty"));
-    }
-
-    let default_codex_home = dirs::home_dir().map(|home| home.join(".codex"));
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let project_codex_home = cwd.join(".codex");
-    let mut candidate_homes = vec![codex_home];
-    if let Some(default_codex_home) = default_codex_home.as_deref() {
-        candidate_homes.push(default_codex_home);
-    }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    candidate_homes.push(&project_codex_home);
-    let editor_directory = editor_directory(&candidate_homes, file_system_policy, cwd)?;
-    // Convert to TempPath immediately so no file handle stays open on Windows.
-    let temp_path = Builder::new()
-        .suffix(".md")
-        .tempfile_in(editor_directory)?
-        .into_temp_path();
-    fs::write(&temp_path, seed)?;
-
-    let mut cmd = {
-        #[cfg(windows)]
-        {
-            // handles .cmd/.bat shims
-            Command::new(resolve_windows_program(&editor_cmd[0]))
-        }
-        #[cfg(not(windows))]
-        {
-            Command::new(&editor_cmd[0])
-        }
-    };
-    if editor_cmd.len() > 1 {
-        cmd.args(&editor_cmd[1..]);
-    }
-    let status = cmd
-        .arg(&temp_path)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .await?;
-
-    if !status.success() {
-        return Err(Report::msg(format!("editor exited with status {status}")));
-    }
-
-    let contents = fs::read_to_string(&temp_path)?;
-    Ok(contents)
+    // ALAB(retained-editor): original policy/Command/TempPath are shared with the real retained job producer.
+    alab_prepared_editor::prepare(seed, editor_cmd, codex_home, file_system_policy, cwd)?
+        .run_original()
+        .await
 }
 
 #[cfg(test)]
@@ -314,3 +269,6 @@ mod tests {
 #[cfg(test)]
 #[path = "external_editor_tests.rs"]
 mod buffer_tests;
+
+#[path = "../../alab-tui/glue/prepared_external_editor.rs"]
+pub(crate) mod alab_prepared_editor; // ALAB(retained-editor): move original prepared resources, never recreate document authority from a path.

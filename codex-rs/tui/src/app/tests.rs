@@ -1,5 +1,8 @@
 //! App-level orchestration tests for the TUI.
 
+#[path = "../../../alab-tui/glue/owned_local_attachment_tests.rs"]
+mod alab_attachment_regression_tests; // ALAB(source-selection): ordinary real RPC and App attachment policy regression controls, no Native grants.
+
 #[path = "tests/terminal_size_telemetry_tests.rs"]
 mod terminal_size_telemetry_tests;
 
@@ -731,7 +734,9 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.replace_chat_widget_with_app_server_thread(
         &mut tui,
+        None, // ALAB(source-selection): retain actual session context for a retained construction.
         AppServerStartedThread {
+            #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
             session: test_thread_session(ThreadId::new(), app.config.cwd.to_path_buf()),
             turns: Vec::new(),
             blocks_direct_input: false,
@@ -3116,6 +3121,7 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
         assert!(resumed.blocks_direct_input);
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
+            None, // ALAB(source-selection): retain actual session context for a retained construction.
             resumed,
             crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
             /*initial_user_message*/ None,
@@ -8321,6 +8327,7 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
     app.apply_refreshed_snapshot_thread(
         child_thread_id,
         AppServerStartedThread {
+            #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
             session: test_thread_session(child_thread_id, test_path_buf("/tmp/child")),
             turns: Vec::new(),
             blocks_direct_input: false,
@@ -9041,6 +9048,12 @@ async fn make_test_app() -> Box<App> {
     let session_telemetry = test_session_telemetry(&config, model.as_str());
 
     Box::new(App {
+
+        #[cfg(unix)] alab_side_history_projection: Default::default(), // ALAB(retained-history): ordinary fixture owns no projection capture.
+        #[cfg(unix)]
+        _alab_configured: None, // ALAB(retained-ui): ordinary fixture has no real Native configured owner.
+        #[cfg(unix)] _alab_startup_editor: None, // ALAB(retained-ui): no pending native provisional editor before final original handoff.
+        #[cfg(unix)] alab_external_editor: Default::default(), // ALAB(retained-editor): original native fixture has no accepted job.
         provider_writes: HashMap::new(),
         feature_write_lock: Arc::default(),
         config_notification_test_generation: 0,
@@ -9185,6 +9198,11 @@ pub(super) async fn make_test_app_with_channels() -> (
 
     (
         Box::new(App {
+            #[cfg(unix)] alab_side_history_projection: Default::default(), // ALAB(retained-history): ordinary fixture owns no projection capture.
+        #[cfg(unix)]
+        _alab_configured: None, // ALAB(retained-ui): ordinary fixture has no real Native configured owner.
+        #[cfg(unix)] _alab_startup_editor: None, // ALAB(retained-ui): no pending native provisional editor before final original handoff.
+        #[cfg(unix)] alab_external_editor: Default::default(), // ALAB(retained-editor): original native fixture has no accepted job.
             provider_writes: HashMap::new(),
             feature_write_lock: Arc::default(),
             config_notification_test_generation: 0,
@@ -9692,7 +9710,9 @@ async fn app_server_thread_replacement_clears_previous_transcript_before_replay(
     let next_thread_id = ThreadId::new();
     app.replace_chat_widget_with_app_server_thread(
         &mut tui,
+        None, // ALAB(source-selection): retain actual session context for a retained construction.
         AppServerStartedThread {
+            #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
             session: test_thread_session(next_thread_id, test_path_buf("/tmp/next")),
             turns: vec![test_turn(
                 "next-turn",
@@ -12241,6 +12261,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
     app.apply_refreshed_snapshot_thread(
         thread_id,
         AppServerStartedThread {
+            #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
             session: resumed_session.clone(),
             turns: resumed_turns.clone(),
             blocks_direct_input: true,
@@ -13229,3 +13250,11 @@ mod navigation_reconnect;
 
 #[path = "tests/backend_event_tests.rs"]
 mod backend_event_tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_backend_sessions_tests.rs"]
+mod alab_retained_backend_sessions; // ALAB(retained-ui): verify all actual backend resources/parked queues, no Native grants.
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_original_editor_app_tests.rs"]
+mod alab_original_editor_tests; // ALAB(retained-editor): actual original App/PTY/resource controls, no Native fixtures.

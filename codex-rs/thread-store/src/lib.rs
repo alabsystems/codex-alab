@@ -4,6 +4,11 @@
 //! Implementations are responsible for resolving that id to local rollout files, RPC requests, or
 //! any other backing store.
 
+// ALAB(retained-history): retain logical identity alongside the actual live writer snapshot.
+#[path = "../../alab-core/glue/retained_deferred_history.rs"]
+mod alab_retained_deferred;
+pub use alab_retained_deferred::{RetainedDeferredHistory, RetainedDeferredDisplayHistory, RetainedWriterIdentity};
+pub use alab_retained_deferred::RetainedLocalHistory; // ALAB(retained-side): same writer-local cutoff, never a logical-ID fallback.
 mod error;
 mod in_memory;
 mod live_thread;

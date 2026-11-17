@@ -210,6 +210,89 @@ class DiskGuardWiringTests(unittest.TestCase):
         self.assertEqual(args[args.index("--min-free-gib") + 1], "20")
         self.assertFalse(target.exists(), "guard wiring does not allocate a build target")
 
+    def test_sync_guard_completion_receipt_is_control_data_not_child_argv(self):
+        receipt = self.fixture / "fresh completion.json"
+        args = self.shell('. "$1/alab/lib.sh"; cd "$1/codex-rs"; '
+                          'alab_build_command --result-file "$2" /usr/bin/true child-argument',
+                          str(receipt))
+        self.assertLess(args.index("--result-file"), args.index("--min-free-gib"))
+        self.assertEqual(args[args.index("--result-file") + 1], str(receipt))
+        separator = args.index("--")
+        self.assertEqual(args[separator + 1:], ["/usr/bin/true", "child-argument"])
+        self.assertNotIn("--result-file", args[separator + 1:])
+        self.assertFalse(receipt.exists(), "the inert guardian recorder runs no command")
+
+    def test_anonymous_result_fd_is_control_data_and_gate_fds_do_not_reach_child(self):
+        result = self.fixture / "anonymous-result"
+        args = self.shell('. "$1/alab/lib.sh"; cd "$1/codex-rs"; '
+                          'touch "$2"; exec 7>"$2"; rm -f "$2"; '
+                          'alab_build_command --result-fd 7 /usr/bin/true child-argument; exec 7>&-',
+                          str(result))
+        self.assertLess(args.index("--result-fd"), args.index("--min-free-gib"))
+        self.assertEqual(args[args.index("--result-fd") + 1], "7")
+        separator = args.index("--")
+        self.assertEqual(args[separator + 1:], ["/usr/bin/true", "child-argument"])
+
+        marker = self.fixture / "preserved-fd"
+        marker.write_text("allowed\n")
+        environment = dict(self.environment, ALAB_PYTHON=sys.executable)
+        script = r'''
+set -euo pipefail
+. "$1/alab/lib.sh"
+cd "$1/codex-rs"
+touch "$2"; exec 11>"$2"; rm -f "$2"
+exec 8</dev/null; exec 9>/dev/null; exec 10</dev/null
+exec 12</dev/null; exec 13>/dev/null; exec 43<"$3"
+unset ALAB_CHECK_VERDICT_FD ALAB_CHECK_RESULT_FD
+ALAB_CHECK_VERDICT_FD=9
+ALAB_CHECK_RESULT_FD=11
+alab_build_command --result-fd 11 "$4" -I -c '
+import os
+assert all(not os.path.exists(f"/dev/fd/{number}") for number in range(8, 14))
+assert os.read(43, 8) == b"allowed\n"
+'
+'''
+        done = subprocess.run(["/bin/bash", "-c", script, "disk-fixture", str(ROOT),
+                               str(result), str(marker), sys.executable],
+                              env=environment, capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+        for invocation in ('alab_build_command --result-fd 13 /usr/bin/true',
+                           'alab_build_command /usr/bin/true'):
+            with self.subTest(invocation=invocation):
+                self.record.unlink(missing_ok=True)
+                mismatch = subprocess.run(
+                    ["/bin/bash", "-c",
+                     '. "$1/alab/lib.sh"; cd "$1/codex-rs"; '
+                     'touch "$2" "$3"; exec 11>"$2"; exec 13>"$3"; rm -f "$2" "$3"; '
+                     'ALAB_CHECK_RESULT_FD=11; ' + invocation,
+                     "disk-fixture", str(ROOT), str(self.fixture / "mismatch-11"),
+                     str(self.fixture / "mismatch-13")],
+                    env=self.environment, capture_output=True, text=True, timeout=20)
+                self.assertEqual(mismatch.returncode, 1, mismatch.stderr)
+                self.assertFalse(self.record.exists(), "mismatched control FD reached guardian")
+
+    def test_sync_guard_refuses_unsafe_completion_receipts_before_guardian(self):
+        existing = self.fixture / "existing completion.json"
+        existing.write_text("preserve\n")
+        target = self.fixture / "symlink target"
+        target.write_text("preserve target\n")
+        linked = self.fixture / "linked completion.json"
+        linked.symlink_to(target)
+        for receipt in ("relative-completion.json", str(existing), str(linked)):
+            with self.subTest(receipt=receipt):
+                self.record.unlink(missing_ok=True)
+                done = subprocess.run(
+                    ["/bin/bash", "-c", '. "$1/alab/lib.sh"; cd "$1/codex-rs"; '
+                     'alab_build_command --result-file "$2" /usr/bin/true',
+                     "disk-fixture", str(ROOT), receipt],
+                    env=self.environment, capture_output=True, text=True, timeout=20)
+                self.assertEqual(done.returncode, 1, done.stderr)
+                self.assertFalse(self.record.exists(), "invalid control path reached guardian")
+        self.assertEqual(existing.read_text(), "preserve\n")
+        self.assertTrue(linked.is_symlink())
+        self.assertEqual(target.read_text(), "preserve target\n")
+
     def test_routed_build_volume_is_checked_even_with_a_healthy_nominal_target(self):
         target = self.fixture / "routed target"
         build = self.fixture / "routed intermediates"

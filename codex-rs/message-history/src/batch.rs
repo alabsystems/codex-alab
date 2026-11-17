@@ -410,3 +410,7 @@ fn try_parse_entry(raw: &[u8]) -> Option<HistoryEntry> {
     let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
     serde_json::from_slice(raw).ok()
 }
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_history_cursor.rs"]
+mod alab_retained_cursor; // ALAB(retained-ui): cursor DATA keeps actual file revision checks in original reader.

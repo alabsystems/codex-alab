@@ -29,8 +29,12 @@ pub(super) struct ListenerTaskContext {
     pub(super) turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
 }
 
+#[path = "../../../alab-core/glue/retained_primary_lifetime.rs"]
+pub(super) mod alab_primary_lifetime; // ALAB(owned-local): real backend primary owner, never a fake client/SDK role.
+
 struct UnloadingState {
     delay: Duration,
+    primary: alab_primary_lifetime::LifetimeWatch,
     has_subscribers_rx: watch::Receiver<bool>,
     has_subscribers: (bool, Instant),
     thread_status_rx: watch::Receiver<ThreadStatus>,
@@ -42,6 +46,7 @@ impl UnloadingState {
         delay: Duration,
         has_subscribers_rx: watch::Receiver<bool>,
         thread_status_rx: watch::Receiver<ThreadStatus>,
+        primary: alab_primary_lifetime::LifetimeWatch,
     ) -> Self {
         let has_subscribers = (*has_subscribers_rx.borrow(), Instant::now());
         let is_active = (
@@ -50,6 +55,7 @@ impl UnloadingState {
         );
         Self {
             delay,
+            primary,
             has_subscribers_rx,
             has_subscribers,
             thread_status_rx,
@@ -58,6 +64,7 @@ impl UnloadingState {
     }
 
     fn unloading_target(&self) -> Option<Instant> {
+        if self.primary.held() { return None; } // ALAB(owned-local): exact live primary owner inhibits idle only.
         match (self.has_subscribers, self.is_active) {
             ((false, has_no_subscribers_since), (false, is_inactive_since)) => {
                 std::cmp::max(has_no_subscribers_since, is_inactive_since).checked_add(self.delay)
@@ -109,6 +116,7 @@ impl UnloadingState {
             };
             tokio::select! {
                 _ = unloading_sleep => return true,
+                () = self.primary.changed() => {}, // ALAB(owned-local): release/acquire wake eligibility without a past-deadline spin.
                 changed = self.has_subscribers_rx.changed() => {
                     if changed.is_err() {
                         return false;
@@ -146,8 +154,15 @@ pub(super) fn thread_closing_for_resume(thread_id: impl std::fmt::Display) -> JS
 /// Marks this exact runtime after listener startup, even after its app-server state is removed.
 struct ListenerStarted;
 
+#[path = "../../../alab-core/glue/retained_task_listener.rs"]
+pub(super) mod alab_retained_listener; // ALAB(upgrade): backend startup shares actual serialized listener installation.
+
 enum ListenerStartup<'a> {
     Active,
+    Backend, // ALAB(upgrade): no subscriber; preserve pending-unload and exact-runtime gates.
+    #[cfg(unix)]
+    Primary(&'a alab_primary_lifetime::Candidate), // ALAB(owned-local): actual owner acquired under the same serialized install.
+    BackendSubscribe { connection_id: ConnectionId, raw_events_enabled: bool }, // ALAB(owned-local): same exact-runtime gates with an actual replaying subscriber.
     Subscribe {
         connection_id: ConnectionId,
         raw_events_enabled: bool,
@@ -159,6 +174,8 @@ enum ListenerStartup<'a> {
 }
 
 enum ListenerStartOutcome {
+    #[cfg(unix)]
+    PrimaryAcquired, // ALAB(owned-local): resource acquisition does not start or claim a listener.
     Started { attached: bool },
     Stale,
     Rejected,
@@ -174,6 +191,8 @@ impl ListenerStartOutcome {
             Self::Started { attached: false } => {
                 Ok(EnsureConversationListenerResult::ConnectionClosed)
             }
+            #[cfg(unix)]
+            Self::PrimaryAcquired => Err(internal_error("primary owner is not a listener subscription")), // ALAB(owned-local): never report resource custody as an attachment.
             Self::Stale => Err(invalid_request(format!(
                 "thread {thread_id} is closing; retry after the thread is closed"
             ))),
@@ -237,6 +256,8 @@ pub(super) async fn attach_created_thread_listener(
         .await
         {
             ListenerStartOutcome::Started { .. } | ListenerStartOutcome::Rejected => return,
+            #[cfg(unix)]
+            ListenerStartOutcome::PrimaryAcquired => return, // ALAB(owned-local): this ordinary path never requests primary acquisition.
             ListenerStartOutcome::Stale => continue,
         }
     }
@@ -334,6 +355,10 @@ async fn start_listener(
     listener_state: ListenerStateCandidate,
     startup: ListenerStartup<'_>,
 ) -> ListenerStartOutcome {
+    let primary = match alab_primary_lifetime::watch(&conversation) { // ALAB(owned-local): owner-count0 preserves every ordinary/task-child unload deadline.
+        Ok(watch) => watch,
+        Err(_) => return ListenerStartOutcome::Rejected,
+    };
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let (drained_tx, drained_rx) = watch::channel(false);
     let config_snapshot = conversation.config_snapshot().await;
@@ -352,12 +377,16 @@ async fn start_listener(
     let thread_settings_baseline = thread_settings_from_config_snapshot(&config_snapshot);
     let thread_state = Arc::clone(listener_state.state());
     let (mut listener_command_rx, listener_generation, mut unloading_state, attached) = {
+        let backend = matches!(&startup, ListenerStartup::Backend | ListenerStartup::BackendSubscribe { .. }); // ALAB(upgrade): this variant changes custody, never client authority.
+        #[cfg(unix)]
+        let backend = backend || matches!(&startup, ListenerStartup::Primary(_)); // ALAB(owned-local): same serialization for actual ownership, no subscriber.
         let (created, connection_ids, raw_events_enabled) = match &startup {
             ListenerStartup::Active => (false, &[][..], false),
-            ListenerStartup::Subscribe {
-                connection_id,
-                raw_events_enabled,
-            } => (
+            #[cfg(unix)]
+            ListenerStartup::Primary(_) => (false, &[][..], false), // ALAB(owned-local): no client/approval subscriber is invented.
+            ListenerStartup::Backend => (false, &[][..], false), // ALAB(upgrade): no invented subscriber or created-shutdown exception.
+            ListenerStartup::Subscribe { connection_id, raw_events_enabled }
+            | ListenerStartup::BackendSubscribe { connection_id, raw_events_enabled } => (
                 false,
                 std::slice::from_ref(connection_id),
                 *raw_events_enabled,
@@ -368,13 +397,13 @@ async fn start_listener(
             } => (true, *connection_ids, *raw_events_enabled),
         };
         // Publish the drain receiver before a cold resume can start a replacement.
-        let _admission_guard = if created {
+        let _admission_guard = if created || backend { // ALAB(upgrade): serialize backend installation against replacement and unload.
             Some(ThreadState::lock_goal_resume(&thread_state).await)
         } else {
             None
         };
         let (pending, mut state) = loop {
-            let pending = if created || !connection_ids.is_empty() {
+            let pending = if created || backend || !connection_ids.is_empty() { // ALAB(upgrade): share actual pending-unload and Current gates.
                 let pending = listener_task_context.pending_thread_unloads.lock().await;
                 if pending.contains_key(&conversation_id) {
                     return ListenerStartOutcome::Stale;
@@ -394,7 +423,7 @@ async fn start_listener(
             }
             break (pending, state);
         };
-        if created || !connection_ids.is_empty() {
+        if created || backend || !connection_ids.is_empty() { // ALAB(upgrade): share actual pending-unload and Current gates.
             match listener_task_context
                 .thread_manager
                 .thread_registration(conversation_id, &conversation)
@@ -413,6 +442,13 @@ async fn start_listener(
                     return ListenerStartOutcome::Rejected;
                 }
             }
+        }
+        #[cfg(unix)]
+        if let ListenerStartup::Primary(owner) = &startup { // ALAB(owned-local): exact Current/pending gates and goal lock are already held here.
+            if owner.install_serialized(&conversation).is_err() { return ListenerStartOutcome::Rejected; }
+            // Preserve original raw-event/listener startup timing. The actual
+            // caller next attaches its original client/backend listener.
+            return ListenerStartOutcome::PrimaryAcquired;
         }
         let installed = listener_task_context
             .thread_state_manager
@@ -472,7 +508,9 @@ async fn start_listener(
             };
         drop(pending);
         // A cold V2 resume can install the child's listener before its creation callback runs.
-        if created || is_v2_child {
+        if backend { // ALAB(upgrade): register actual status without waiting on a frontend outbox.
+            listener_task_context.thread_watch_manager.upsert_thread_silently(&conversation_id.to_string()).await;
+        } else if created || is_v2_child {
             listener_task_context
                 .thread_watch_manager
                 .upsert_thread(&conversation_id.to_string())
@@ -489,6 +527,7 @@ async fn start_listener(
                 config.thread_unload_delay,
                 has_subscribers_rx,
                 thread_status_rx,
+                primary,
             ),
             attached,
         )
@@ -934,6 +973,8 @@ pub(super) async fn handle_thread_listener_command(
     listener_command: ThreadListenerCommand,
 ) {
     match listener_command {
+        #[cfg(unix)]
+        ThreadListenerCommand::AlabRetainedProjection(command) => command.run(conversation).await, // ALAB(retained-frontier): same actual listener, then original typed resume/replay body.
         ThreadListenerCommand::SendThreadResumeResponse {
             request: resume_request,
             completion_tx,
@@ -967,6 +1008,7 @@ pub(super) async fn handle_thread_listener_command(
                 ))
                 .await;
         }
+        ThreadListenerCommand::RunExtension(extension) => extension.await, // ALAB(extension): execute already-owned behavior at this exact listener position.
         ThreadListenerCommand::EmitThreadQueueChanged => {
             let subscribed_connection_ids = thread_state_manager
                 .subscribed_connection_ids(conversation_id)
@@ -997,7 +1039,18 @@ pub(super) async fn handle_thread_listener_command(
                 .await;
         }
         ThreadListenerCommand::EmitThreadGoalSnapshot { state_db } => {
-            crate::extensions::alab_goal_status::before_goal_read(outgoing, conversation.and_then(|conversation| conversation.thread_extension_data().get::<codex_goal_extension::GoalRuntimeHandle>()).and_then(|runtime| runtime.alab_runtime_status_snapshot()), send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db)).await; // ALAB(storage-status): an ordered listener never queues its own status behind a DB await.
+            crate::extensions::alab_goal_status::before_goal_read(
+                outgoing,
+                conversation
+                    .and_then(|conversation| {
+                        conversation
+                            .thread_extension_data()
+                            .get::<codex_goal_extension::GoalRuntimeHandle>()
+                    })
+                    .and_then(|runtime| runtime.alab_runtime_status_snapshot()),
+                send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db),
+            )
+            .await; // ALAB(storage-status): an ordered listener never queues its own status behind a DB await.
         }
         ThreadListenerCommand::ResolveServerRequest {
             request_id,
@@ -1031,7 +1084,11 @@ pub(super) async fn handle_pending_thread_resume_request(
     pending_thread_unloads: &PendingThreadUnloads,
     mut pending: crate::thread_state::PendingThreadResumeRequest,
 ) {
-    let (active_turn_metadata, mut active_turn, active_page_params) = {
+    #[cfg(unix)]
+    let alab_retained_tail = pending.alab_retained_tail.take(); // ALAB(retained-frontier): preserve original replay ordering with an optional exact owned tail.
+    #[cfg(unix)]
+    if let Some(tail) = &alab_retained_tail { tail.listener_started(); } // ALAB(retained-frontier): original early errors remain the sole RPC error.
+    let (active_turn_metadata, mut active_turn, active_page_params, alab_live_items) = { // ALAB(stream-replay): capture unfinished items at the same listener frontier.
         let state = thread_state.lock().await;
         let active_page_params = pending.initial_turns_page.as_ref().filter(|params| {
             pending
@@ -1057,8 +1114,10 @@ pub(super) async fn handle_pending_thread_resume_request(
             state.active_turn_metadata_snapshot(),
             active_turn,
             active_page_params,
+            state.alab_live_agent.for_resume(conversation_id, state.active_turn_metadata_snapshot().as_ref(), items_view.as_ref()), // ALAB(stream-replay): only actual unfinished canonical items, without changing persisted history.
         )
     };
+    let mut alab_live_items = match alab_live_items { Ok(items) => items, Err(error) => { outgoing.send_error(pending.request_id, error).await; return; } }; // ALAB(stream-replay): refuse an incomplete live snapshot before the resume response.
     if let Some(store) = pending.resume_cursor_store.as_deref()
         && let Some(turn) = &mut active_turn
         && turn.items_view == TurnItemsView::Full
@@ -1099,6 +1158,10 @@ pub(super) async fn handle_pending_thread_resume_request(
         if let Some(turns) = pending.paginated_turns.take() {
             thread.turns = turns;
         } else {
+            #[cfg(unix)]
+            if let Some(tail) = &alab_retained_tail { tail.populate_history(&mut thread, &pending.history_items); } // ALAB(retained-frontier): exact actual memory writer/journal keeps its canonical mode.
+            else { populate_thread_turns_from_history(&mut thread, &pending.history_items, None); }
+            #[cfg(not(unix))]
             populate_thread_turns_from_history(
                 &mut thread,
                 &pending.history_items,
@@ -1140,16 +1203,21 @@ pub(super) async fn handle_pending_thread_resume_request(
         );
         Some(page)
     } else if let Some(params) = pending.initial_turns_page.as_ref() {
-        match super::thread_processor::build_thread_resume_initial_turns_page(
+        #[cfg(unix)]
+        let page = if let Some(tail) = &alab_retained_tail { tail.initial_page(&pending.history_items, thread.status.clone(), has_live_in_progress_turn, active_turn, params) } // ALAB(retained-frontier): original limits/live overlay for actual canonical memory history.
+        else { super::thread_processor::build_thread_resume_initial_turns_page(&pending.history_items, thread.status.clone(), has_live_in_progress_turn, active_turn, params) };
+        #[cfg(not(unix))]
+        let page = super::thread_processor::build_thread_resume_initial_turns_page(
             &pending.history_items,
             thread.status.clone(),
             has_live_in_progress_turn,
             active_turn,
             params,
-        ) {
+        );
+        match page {
             Ok(page) => Some(page),
             Err(error) => {
-                outgoing.send_error(request_id, error).await;
+                super::thread_processor::alab_initial_resume::send_error(pending.alab_retained_resume.clone(), outgoing, request_id, error).await; // ALAB(owned-local): actual failure retained.
                 return;
             }
         }
@@ -1177,14 +1245,14 @@ pub(super) async fn handle_pending_thread_resume_request(
             || matches!(conversation.agent_status().await, AgentStatus::Shutdown)
         {
             drop(pending_thread_unloads);
-            outgoing
-                .send_error(request_id, thread_closing_for_resume(conversation_id))
-                .await;
+            super::thread_processor::alab_initial_resume::send_error(pending.alab_retained_resume.clone(), outgoing,
+                request_id, thread_closing_for_resume(conversation_id)).await; // ALAB(owned-local): actual failure retained.
             return;
         }
         if !thread_state_manager
             .try_add_connection_to_thread(conversation_id, connection_id)
             .await
+            && !pending.alab_retained_resume.as_ref().is_some_and(super::thread_processor::alab_initial_resume::ResumePublication::accepts_closed_observer) // ALAB(owned-local): accepted result custody survives observer loss without a subscriber.
         {
             tracing::debug!(
                 thread_id = %conversation_id,
@@ -1206,7 +1274,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         {
             Ok(cursors) => cursors,
             Err(error) => {
-                outgoing.send_error(request_id, error).await;
+                super::thread_processor::alab_initial_resume::send_error(pending.alab_retained_resume.clone(), outgoing, request_id, error).await; // ALAB(owned-local): actual failure retained.
                 return;
             }
         }
@@ -1214,6 +1282,13 @@ pub(super) async fn handle_pending_thread_resume_request(
         (None, None)
     };
 
+    #[cfg(unix)]
+    if let Some(tail) = &alab_retained_tail { // ALAB(retained-frontier): refresh actual settings only after real subscription, preserving later event FIFO.
+        match tail.refresh_settings(conversation).await {
+            Ok((snapshot, sources)) => { pending.config_snapshot = snapshot; pending.instruction_sources = sources; apply_live_thread_settings(&mut thread, &pending.config_snapshot); }
+            Err(error) => { outgoing.send_error(request_id, error).await; return; }
+        }
+    }
     let config_snapshot = pending.config_snapshot;
     let sandbox = config_snapshot.sandbox_policy().into();
     let cwd = config_snapshot.cwd().clone();
@@ -1264,9 +1339,14 @@ pub(super) async fn handle_pending_thread_resume_request(
             .as_ref()
             .map(|(id, status)| (id.as_str(), status)),
     );
-    outgoing
-        .send_response_with_thread_originator(request_id, response, originator)
-        .await;
+    #[cfg(unix)]
+    if let Err((request, error)) = super::thread_processor::alab_retained_frontier::publish_resume(alab_retained_tail.as_ref(), pending.alab_retained_resume.clone(), outgoing,
+        request_id, conversation_id, conversation, (response, originator)).await { // ALAB(retained-frontier): ordinary Resume publication stays original; exact R projection adds typed completion DATA.
+        outgoing.send_error(request, error).await; return;
+    }
+    #[cfg(not(unix))]
+    super::thread_processor::alab_initial_resume::publish(pending.alab_retained_resume.clone(), outgoing,
+        request_id, conversation_id, conversation, response, originator).await; // ALAB(owned-local): actual original listener-frontier result, no reconstruction.
     // Warm metadata-only resumes skip history reconstruction. Cold paginated children can
     // replay usage using attribution captured before the listener was attached.
     if let Some(token_usage_turn_id) = token_usage_turn_id {
@@ -1283,18 +1363,35 @@ pub(super) async fn handle_pending_thread_resume_request(
     }
     if pending.emit_thread_goal_update {
         if let Some(state_db) = pending.thread_goal_state_db {
-            crate::extensions::alab_goal_status::before_goal_read(outgoing, conversation.thread_extension_data().get::<codex_goal_extension::GoalRuntimeHandle>().and_then(|runtime| runtime.alab_runtime_status_snapshot()), send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db)).await; // ALAB(storage-status): deliver native snapshot inline before this listener polls its DB read.
+            crate::extensions::alab_goal_status::before_goal_read(
+                outgoing,
+                conversation
+                    .thread_extension_data()
+                    .get::<codex_goal_extension::GoalRuntimeHandle>()
+                    .and_then(|runtime| runtime.alab_runtime_status_snapshot()),
+                send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db),
+            )
+            .await; // ALAB(storage-status): deliver native snapshot inline before this listener polls its DB read.
         } else {
-            if let Some(update) = conversation.thread_extension_data().get::<codex_goal_extension::GoalRuntimeHandle>().and_then(|runtime| runtime.alab_runtime_status_snapshot()) { crate::extensions::alab_goal_status::send(outgoing, update).await; } // ALAB(storage-status): absent DB access cannot hide a live native hold.
+            if let Some(update) = conversation
+                .thread_extension_data()
+                .get::<codex_goal_extension::GoalRuntimeHandle>()
+                .and_then(|runtime| runtime.alab_runtime_status_snapshot())
+            {
+                crate::extensions::alab_goal_status::send(outgoing, update).await;
+            } // ALAB(storage-status): absent DB access cannot hide a live native hold.
             tracing::warn!(
                 thread_id = %conversation_id,
                 "state db unavailable when reading thread goal for running thread resume"
             );
         }
     }
-    outgoing
-        .replay_requests_to_connection_for_thread(connection_id, conversation_id)
-        .await;
+    #[cfg(unix)]
+    if let Some(tail)=&alab_retained_tail && let Err(error)=tail.filter_side_live(&mut alab_live_items) {tail.fail_side_listener(error,outgoing).await;return;} // ALAB(retained-side): real pre-occurrence live items stay outside child-visible replay.
+    crate::thread_state::alab_live_agent::replay(outgoing, connection_id, alab_live_items).await; // ALAB(stream-replay): resume reply precedes live prefixes; later deltas remain ordered by this listener.
+    if let Err(error)=outgoing.replay_requests_to_connection_for_thread(connection_id,conversation_id).await { // ALAB(retained-ui): failed replay cannot reach Native ACK/required Ready tail or idle continuation.
+        tracing::warn!(%error,"actual callback replay admission failed"); return;
+    }
     // ALAB(retry-status): restore display after ordered resume snapshots and pending requests.
     outgoing
         .alab_replay_capacity_wait(
@@ -1309,6 +1406,8 @@ pub(super) async fn handle_pending_thread_resume_request(
     conversation
         .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
         .await;
+    #[cfg(unix)]
+    if let Some(tail) = alab_retained_tail { let _ = tail.finish_listener(conversation, outgoing).await; } // ALAB(retained-frontier): ACK and required tail follow ALL original listener replay, never a sliced UI drain.
 }
 
 pub(super) async fn send_thread_goal_snapshot_notification(

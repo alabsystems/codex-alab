@@ -616,7 +616,7 @@ mod tests {
             let source = AuthManager::from_auth_for_testing(value);
             let captured = source.auth_cached().unwrap();
             let epoch = captured.alab_credential_epoch().epoch().unwrap().clone();
-            let destination = AuthManager::from_auth_for_testing(captured.clone());
+            let destination = AuthManager::from_auth_for_testing(captured);
             let copied = destination.auth_cached().unwrap();
             assert!(copied.alab_credential_epoch().epoch().unwrap().same(&epoch));
             assert!(

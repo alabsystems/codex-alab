@@ -5,6 +5,7 @@ use crate::sqlite::SqliteWriteQueryExt;
 use uuid::Uuid;
 
 #[path = "../../../alab-core/glue/auth_goal_store.rs"] mod alab_auth_goal; // ALAB(renewal): atomic auth-block provenance, revoked by every subsequent goal edit.
+#[path = "../../../alab-core/glue/goal_store_durability.rs"] mod alab_durability; // ALAB(goal-recovery): settle a clear fence only after its WAL commit is power-loss durable.
 
 #[derive(Clone)]
 pub struct GoalStore {
@@ -418,7 +419,9 @@ WHERE thread_id = ?
             return Ok(None);
         }
 
-        self.get_thread_goal(thread_id).await
+        self.get_thread_goal(thread_id)
+            .await
+            .map_err(crate::alab_goal_read_recovery::after_mutation_commit) // ALAB(storage): the autocommit UPDATE settled before this fallible result read.
     }
 
     pub async fn pause_active_thread_goal(
@@ -470,7 +473,9 @@ WHERE thread_id = ?
             return Ok(None);
         }
 
-        self.get_thread_goal(thread_id).await
+        self.get_thread_goal(thread_id)
+            .await
+            .map_err(crate::alab_goal_read_recovery::after_mutation_commit) // ALAB(storage): do not misclassify a post-commit read error as a rolled-back status mutation.
     }
 
     pub async fn delete_thread_goal(

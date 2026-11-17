@@ -26,7 +26,7 @@ const ROLLOUT_SIZE_BYTES_METRIC: &str = "codex.rollout.size_bytes";
 pub(super) async fn create_thread(
     store: &LocalThreadStore,
     params: CreateThreadParams,
-) -> ThreadStoreResult<()> {
+) -> ThreadStoreResult<crate::RetainedWriterIdentity> { // ALAB(retained-history): preserve the original acquisition and return its actual identity.
     let thread_id = params.thread_id;
     let inherited_cursor = if params.initial_window_id.allocation().is_some()
         && let (Some(parent), Some(base)) = (params.forked_from_id, params.history_base)
@@ -76,17 +76,17 @@ pub(super) async fn create_thread(
             return Err(error);
         }
     }
-    store
+    let retained_writer = store // ALAB(retained-history): issued under this same actual lifecycle guard.
         .insert_live_recorder(thread_id, recorder, thread_id, history_mode, writer_lock)
         .await?;
     *cursor = inherited_cursor;
-    Ok(())
+    Ok(retained_writer) // ALAB(retained-history): marker only; writer ownership stays original.
 }
 
 pub(super) async fn resume_thread(
     store: &LocalThreadStore,
     params: ResumeThreadParams,
-) -> ThreadStoreResult<Arc<Vec<RolloutItem>>> {
+) -> ThreadStoreResult<crate::alab_retained_deferred::AcquiredHistory> { // ALAB(retained-history): history and original writer identity are atomic acquisition output.
     let mut cursor = store.live_writer_locks.lock(params.thread_id).await;
     store.ensure_live_recorder_absent(params.thread_id).await?;
     let writer_lock = store.acquire_writer_lock(params.thread_id)?;
@@ -169,7 +169,7 @@ pub(super) async fn resume_thread(
     .map_err(|err| ThreadStoreError::Internal {
         message: format!("failed to resume local thread recorder: {err}"),
     })?;
-    store
+    let retained_writer = store // ALAB(retained-history): issued by this exact original resume installation.
         .insert_live_recorder(
             params.thread_id,
             recorder,
@@ -179,7 +179,7 @@ pub(super) async fn resume_thread(
         )
         .await?;
     *cursor = codex_rollout::next_model_id_ordinals(&history).0;
-    Ok(history)
+    Ok((history, retained_writer)) // ALAB(retained-history): no later current-map lookup.
 }
 
 #[tracing::instrument(

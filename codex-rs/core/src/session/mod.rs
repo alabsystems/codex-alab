@@ -4207,6 +4207,7 @@ impl Session {
             .chain(items.into_iter().map(RolloutItem::ResponseItem))
             .collect::<Vec<_>>();
         let persisted = self.persist_rollout_items(&rollout_items).await;
+        crate::codex_thread::alab_retained_side::recorded(self, &rollout_items, &turn_context.sub_id, persisted).await; // ALAB(retained-side): actual canonical recording outcome, never an RPC/no-active inference.
         drop(settings_guard);
         if persisted && let Some(revision) = mcp_revision {
             self.services
@@ -6212,3 +6213,6 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "world_state_item_tests.rs"]
 mod world_state_item_tests;
+
+#[path = "../../../alab-core/glue/retained_side_delivery.rs"]
+pub(crate) mod alab_side_delivery; // ALAB(retained-side): actual original event queue, no wire or canonical replay event.

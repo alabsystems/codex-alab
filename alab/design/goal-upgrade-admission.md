@@ -1,49 +1,49 @@
 <!-- Copyright 2026 Andrew Yates; SPDX-License-Identifier: Apache-2.0 -->
 # Native goal admission during an update
 
-An active goal can cross a process boundary only after its native runtime has
-checkpointed the persisted goal and committed a handoff with the final native UI
-decision. This document describes the admission primitive; the updater does not
-yet use it to relax its active-goal hold.
+An active goal crosses through its actual runtime checkpoint, joined with the
+Core forest and terminal/input owners at one final synchronous source decision.
+The updater inventories every loaded root, including hidden roots, before asking
+native source-exec preparation to become ready. Active status itself no longer
+blocks preparation. An unreadable goal, missing native runtime, queued mutation,
+or invalidated checkpoint still refuses it.
+
+This is a development path, not a qualified live-update claim. Native execution
+discovery remains unavailable until the complete signed transition and recovery
+are qualified. Other restrictions, including idle turns and an empty composer,
+remain and do not satisfy the goal of immediate seamless updates.
 
 The checkpoint obtains the existing goal mutation semaphore, requires an idle
 enabled runtime with no recovery or persisted continuation deferral, and reads
-the entire active goal row after flushing idle progress through native accounting.
+the entire saved goal after flushing idle progress through native accounting.
 It never replaces a saved goal from a checkpoint snapshot. Objective, identity,
 budget and accumulated accounting remain owned by the native goal service.
 
-Holding the semaphore through asynchronous UI teardown would strand a queued
-continuation. Instead, preparation returns an owned, revocable transfer. Every
+Holding the semaphore through asynchronous preparation would strand a queued
+continuation. Preparation instead returns an owned, revocable transfer. Every
 native goal mutation registers before waiting for the semaphore. A registered
-writer prevents preparation; a later writer revokes preparation before it can
-mutate. Cancellation cannot make that revoked attempt valid again. Configuration
-changes also revoke preparation.
+writer prevents preparation; a later writer revokes it before mutation. A
+configuration change also revokes it. Core or goal revocation cancels the
+updater's native readiness wait; abandoning that wait cancels its unused native
+reservation before a detached worker can later seal input.
 
-The final synchronous decision checks that the token belongs to this runtime,
-rechecks runtime readiness, and serializes the UI decision with writer admission.
-A refusal leaves rollback available. Dropping an uncommitted transfer reopens its
-own generation only. A successful decision seals the old runtime: new mutations
-refuse, and idle continuations skip instead of waiting through teardown. This
-primitive supplies no execution authority and does not authenticate an update.
+The final decision checks runtime ownership/readiness and serializes the UI
+and native host decision with writer admission. Refusal leaves rollback available.
+Dropping an uncommitted transfer reopens its own generation only. Commitment
+seals the old runtimes, waits for Core producers and actual SDK reader retirement,
+then flushes final goal accounting and retains the full frame on the native host.
+A failed final capture is fatal cleanup, not permission to restart old producers.
 
-The updater must still retain and validate the exact target executable, preserve
-the native session and all carried work, exclude active hidden roots, and commit
-the real UI frame. Removing the blanket active-goal guard before those pieces
-exist would violate the handoff contract.
+The target protocol is 3, with exec custody 2 and full-runtime format 1. Capability
+data supplies no package or constructor authority. The exact target image must
+have native signed-build admission; native source-exec Go binds its original
+operation, fresh constructor command, primary and retained frame digest/size.
+The destination loads through that constructor's runtime host, restores its
+Core/goal forest behind admission, then activates after primary UI attachment
+and event replay. Settlement retains its original connection until native
+cleanup finishes. No decoded checkpoint grants model work by itself.
 
-The target-side `debug upgrade-capabilities [--hold]` entry emits one bounded
-JSON frame identifying protocol 1, its process, canonical executable, file
-identity and compiled product version. With `--hold`, it flushes the frame before
-waiting for EOF on standard input. Unexpected input refuses. This handshake
-does not authenticate a package, authorize a restart, or advertise active-goal
-restore support. The caller must authenticate the exact build through atpkg's
-signed named-build lease, compare the returned identity with its retained target,
-and own the helper until rollback or exec closes its pipe. The caller and final
-exec integration remain to be implemented.
-
-Validation covers cancelled and queued writers, stale rollback, exhausted
-generations, conditional refusal and concurrent writer/commit linearization.
-The native runtime integration test exercises persisted accounting, continuation
-deferral, a real pause mutation, foreign-token refusal, committed admission and
-idle shutdown. Existing hidden-root and failed-goal-read regressions remain in
-place.
+Validation covers hidden loaded goals, failed native row reads, queued mutations,
+revocation before writes, final accounting, cancellation, concurrent commit/writer
+admission, and destination accounting before native continuation. These component
+fixtures do not substitute for a signed end-to-end live handoff and recovery run.

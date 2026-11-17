@@ -215,3 +215,8 @@ fn split_request_user_input_answer(
 #[cfg(test)]
 #[path = "request_user_input_tests.rs"]
 mod tests;
+
+// ALAB(retained-ui): retain original auxiliary cell fields, not rendered substitutes.
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_request_user_input.rs"]
+pub(in crate::history_cell) mod alab_retained_request_user_input;

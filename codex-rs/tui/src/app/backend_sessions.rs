@@ -339,3 +339,7 @@ impl BackendSessions {
         first_error.map_or(Ok(()), Err)
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_backend_sessions.rs"]
+pub(crate) mod alab_retained; // ALAB(retained-ui): bind every real backend/parked queue through one enclosing scene.

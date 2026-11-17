@@ -1,5 +1,9 @@
 //! Editable composer draft state kept separate from composer control flow.
 
+#[cfg(unix)]
+#[path = "../../../../alab-tui/glue/editor_upgrade_draft_state.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): carry native structured draft data and register relationships.
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 

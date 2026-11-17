@@ -2978,7 +2978,7 @@ impl AuthManager {
     /// Reloads auth from the active source. Returns whether the auth value changed.
     pub async fn reload(&self) -> bool {
         alab_context_host::async_bool!(self, reload()); // ALAB(accounts): select the real current epoch before default access.
-        self.reload_inner().await.unwrap_or(false)
+        alab_context_host::reload(self).await // ALAB(accounts): bound the real reload future before embedding it in refresh callers.
     }
 
     async fn reload_inner(&self) -> Result<bool, RefreshTokenError> {
@@ -3175,9 +3175,7 @@ impl AuthManager {
             };
         }
 
-        self.try_load_managed_auth(cached_auth)
-            .await
-            .map_err(RefreshTokenError::Transient)
+        alab_context_host::managed_load(self, cached_auth).await // ALAB(accounts): keep managed-load future expansion behind its host interface.
     }
 
     async fn try_load_managed_auth(

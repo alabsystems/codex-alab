@@ -188,3 +188,7 @@ pub(crate) fn new_web_search_call(
     cell.complete();
     cell
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_web_cells.rs"]
+pub(in crate::history_cell) mod alab_retained_web; // ALAB(retained-ui): preserve exact native activity state and shared graph identity.

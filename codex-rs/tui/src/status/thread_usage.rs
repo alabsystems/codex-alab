@@ -354,3 +354,7 @@ pub(crate) fn format_estimated_usd_micros(micros: i64) -> Option<String> {
 #[cfg(test)]
 #[path = "thread_usage_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_status_thread_usage.rs"]
+pub(super) mod alab_retained_usage; // ALAB(retained-ui): preserve native status/handle shared UI state without a callback or account constructor.

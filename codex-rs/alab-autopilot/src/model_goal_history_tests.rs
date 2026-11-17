@@ -20,6 +20,7 @@ fn bound() -> WallGoal {
         goal_id: "the-original-goal".into(),
         objective: OBJECTIVE.into(),
         token_budget: Some(1_000),
+        chronology_fence_generation: None,
         turn: ORIGIN.into(),
         person_stops: 0,
     }
@@ -46,7 +47,7 @@ fn updated(
 ) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
         thread_id: id,
-        turn_id: None,
+        turn_id: Some("a-native-goal-turn".into()),
         goal: ThreadGoal {
             thread_id: id,
             objective: objective.into(),
@@ -66,6 +67,33 @@ fn matching(id: ThreadId, status: ThreadGoalStatus) -> RolloutItem {
     updated(id, status, OBJECTIVE, Some(1_000))
 }
 
+fn external(id: ThreadId, status: ThreadGoalStatus) -> RolloutItem {
+    let mut item = matching(id, status);
+    let RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(update)) = &mut item else {
+        unreachable!("goal update fixture");
+    };
+    update.turn_id = Some(codex_alab_core::goal_persistence::HOST_MUTATION_TURN_ID.to_owned());
+    item
+}
+
+fn idle_accounting(id: ThreadId, status: ThreadGoalStatus) -> RolloutItem {
+    let mut item = matching(id, status);
+    let RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(update)) = &mut item else {
+        unreachable!("goal update fixture");
+    };
+    update.turn_id = Some(codex_alab_core::goal_persistence::IDLE_ACCOUNTING_TURN_ID.to_owned());
+    item
+}
+
+fn legacy_unattributed(id: ThreadId, status: ThreadGoalStatus) -> RolloutItem {
+    let mut item = matching(id, status);
+    let RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(update)) = &mut item else {
+        unreachable!("goal update fixture");
+    };
+    update.turn_id = None;
+    item
+}
+
 fn person_goal(update: codex_core::context::UserGoalUpdate) -> RolloutItem {
     RolloutItem::ResponseItem(codex_core::context::ContextualUserFragment::into(update).into())
 }
@@ -83,20 +111,42 @@ fn active_and_repeated_blocked_updates_preserve_the_same_model_stop() {
         // Older holds belong to a time before this binding's native turn.
         matching(id, ThreadGoalStatus::Paused),
         updated(id, ThreadGoalStatus::Active, "an older objective", None),
-        started(ORIGIN),
-        matching(id, ThreadGoalStatus::Active),
-        matching(id, ThreadGoalStatus::Blocked),
-        started("an-unrelated-later-question"),
         person_goal(codex_core::context::UserGoalUpdate::Set {
             objective: None,
             status: Some(ThreadGoalStatus::Active),
         }),
+        started(ORIGIN),
+        matching(id, ThreadGoalStatus::Active),
+        matching(id, ThreadGoalStatus::Blocked),
+        started("an-unrelated-later-question"),
         accounted,
         matching(id, ThreadGoalStatus::Active),
         matching(id, ThreadGoalStatus::Blocked),
         matching(id, ThreadGoalStatus::Blocked),
     ];
     assert!(!model_goal_stop_revoked_since(&items, id, &bound()));
+}
+
+#[test]
+fn a_durable_user_active_instruction_revokes_model_provenance_without_becoming_a_wall_stop() {
+    let id = ThreadId::new();
+    let active = person_goal(codex_core::context::UserGoalUpdate::Set {
+        objective: None,
+        status: Some(ThreadGoalStatus::Active),
+    });
+    let items = [
+        started(ORIGIN),
+        matching(id, ThreadGoalStatus::Blocked),
+        active,
+        // A definite SQL rollback has no ThreadGoalUpdated outcome. The
+        // separately durable instruction must still keep the stale saved
+        // model source from returning after restart.
+    ];
+    assert!(model_goal_stop_revoked_since(&items, id, &bound()));
+    assert!(
+        !crate::resume_history::person_goal_stop_since(&items, ORIGIN),
+        "Active revokes model provenance without counting as a person's wall stop"
+    );
 }
 
 #[test]
@@ -124,6 +174,70 @@ fn every_saved_terminal_or_quota_stop_revokes_custody_even_if_reverted() {
             );
         }
     }
+}
+
+#[test]
+fn an_external_same_value_update_revokes_model_provenance() {
+    let id = ThreadId::new();
+    for status in [ThreadGoalStatus::Active, ThreadGoalStatus::Blocked] {
+        let items = [
+            started(ORIGIN),
+            matching(id, ThreadGoalStatus::Blocked),
+            external(id, status),
+            matching(id, ThreadGoalStatus::Blocked),
+        ];
+        assert!(
+            model_goal_stop_revoked_since(&items, id, &bound()),
+            "an external {status:?} write cannot borrow a model turn's source"
+        );
+    }
+}
+
+#[test]
+fn attributed_idle_accounting_preserves_model_provenance() {
+    let id = ThreadId::new();
+    let items = [
+        started(ORIGIN),
+        matching(id, ThreadGoalStatus::Blocked),
+        idle_accounting(id, ThreadGoalStatus::Blocked),
+    ];
+    assert!(!model_goal_stop_revoked_since(&items, id, &bound()));
+}
+
+#[test]
+fn attributed_idle_accounting_still_validates_the_goal_payload() {
+    let id = ThreadId::new();
+    for status in [ThreadGoalStatus::BudgetLimited, ThreadGoalStatus::Complete] {
+        let items = [
+            started(ORIGIN),
+            matching(id, ThreadGoalStatus::Blocked),
+            idle_accounting(id, status),
+        ];
+        assert!(model_goal_stop_revoked_since(&items, id, &bound()));
+    }
+
+    let mut corrupt = idle_accounting(id, ThreadGoalStatus::Blocked);
+    let RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(update)) = &mut corrupt else {
+        unreachable!("goal update fixture");
+    };
+    update.goal.thread_id = ThreadId::new();
+    let items = [
+        started(ORIGIN),
+        matching(id, ThreadGoalStatus::Blocked),
+        corrupt,
+    ];
+    assert!(model_goal_stop_revoked_since(&items, id, &bound()));
+}
+
+#[test]
+fn legacy_unattributed_updates_fail_closed() {
+    let id = ThreadId::new();
+    let items = [
+        started(ORIGIN),
+        matching(id, ThreadGoalStatus::Blocked),
+        legacy_unattributed(id, ThreadGoalStatus::Blocked),
+    ];
+    assert!(model_goal_stop_revoked_since(&items, id, &bound()));
 }
 
 #[test]

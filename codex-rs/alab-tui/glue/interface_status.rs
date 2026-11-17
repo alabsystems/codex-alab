@@ -66,6 +66,10 @@ impl ChatWidget {
 
     pub(in crate::chatwidget) fn alab_configure_interface(&self) {
         if interface::available() {
+            let _ = codex_alab_tui::session::start(
+                codex_alab_tui::session::shared(),
+                &self.config.codex_home,
+            );
             let enabled = self
                 .config
                 .config_layer_stack

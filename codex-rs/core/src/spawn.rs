@@ -3,7 +3,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::process::Child;
+#[path = "../../alab-core/glue/native_root_spawn.rs"] pub(crate) mod alab_native; // ALAB(live-update): private backend tools retain native child custody.
+pub(crate) use alab_native::Child; // ALAB(live-update): distinguish retained children from local Tokio children.
 use tokio::process::Command;
 use tracing::trace;
 
@@ -50,6 +51,7 @@ pub(crate) struct SpawnChildRequest<'a> {
 }
 
 pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io::Result<Child> {
+    if let Some(child) = alab_native::spawn(&request).await? { return Ok(child); } // ALAB(live-update): an owned backend never falls back to local tool birth.
     let SpawnChildRequest {
         program,
         args,
@@ -141,7 +143,7 @@ pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io
         }
     }
 
-    cmd.kill_on_drop(true).spawn()
+    cmd.kill_on_drop(true).spawn().map(Child::Local) // ALAB(live-update): preserve ordinary local child semantics.
 }
 
 #[cfg(test)]

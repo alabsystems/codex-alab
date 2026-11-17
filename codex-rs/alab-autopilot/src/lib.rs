@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Core runtime types form a recursive graph during auto-trait evaluation.
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 //! codex-alab's native autopilot (CONTRACT §5): what aterm's screen-scraping Codex lane did
 //! (retired at aterm 83bd43c206), done inside codex from Codex's own events, while

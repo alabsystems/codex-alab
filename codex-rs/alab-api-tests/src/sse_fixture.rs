@@ -3,6 +3,7 @@
 
 //! One real HTTP request with bounded phases and a gated semantic SSE failure.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -12,6 +13,9 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 const WAIT: Duration = Duration::from_secs(5);
+// Longer than the test's selected-outcome deadline: an expired gate must not
+// turn an incorrectly deferred immediate error into an apparently valid EOF.
+const EOF_RELEASE_WAIT: Duration = Duration::from_secs(15);
 const MAX_REQUEST_PART: usize = 64 * 1024;
 
 #[derive(Debug)]
@@ -42,6 +46,9 @@ pub(crate) struct SseFixture {
     uri: String,
     body_started: oneshot::Receiver<()>,
     release: Option<oneshot::Sender<()>>,
+    event_written: oneshot::Receiver<()>,
+    eof_release: Option<oneshot::Sender<()>>,
+    consumer_read_pending: Option<oneshot::Receiver<()>>,
     task: Option<JoinHandle<Result<(), FixtureError>>>,
 }
 
@@ -51,6 +58,31 @@ impl SseFixture {
     }
 
     async fn start_with_body_deadline(body_deadline: Duration) -> Self {
+        Self::start_response(
+            body_deadline,
+            b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\nx-request-id: invalid identifier\r\nx-oai-request-id: req_context-1\r\ncf-ray: ray_context-1\r\nauthorization: Bearer never-log-header\r\n\r\n".to_vec(),
+            b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"invalid_access_program\",\"message\":\"never-log-provider-content\"}}}\n\n".to_vec(),
+            false,
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_scripted_response(headers: Vec<u8>, event: Vec<u8>) -> Self {
+        Self::start_response(WAIT, headers, event, true, false).await
+    }
+
+    pub(crate) async fn start_consumer_close_response(headers: Vec<u8>, event: Vec<u8>) -> Self {
+        Self::start_response(WAIT, headers, event, true, true).await
+    }
+
+    async fn start_response(
+        body_deadline: Duration,
+        headers: Vec<u8>,
+        event: Vec<u8>,
+        hold_eof: bool,
+        observe_consumer_close: bool,
+    ) -> Self {
         let listener = tokio::time::timeout(WAIT, TcpListener::bind("127.0.0.1:0"))
             .await
             .expect("SSE listener bind deadline")
@@ -58,6 +90,14 @@ impl SseFixture {
         let address = listener.local_addr().unwrap();
         let (release, gate) = oneshot::channel();
         let (body_started, body_phase) = oneshot::channel();
+        let (event_written, event_phase) = oneshot::channel();
+        let (eof_release, eof_gate) = oneshot::channel();
+        let (mut pending_notice, consumer_read_pending) = if observe_consumer_close {
+            let (notice, pending) = oneshot::channel();
+            (Some(notice), Some(pending))
+        } else {
+            (None, None)
+        };
         let task = tokio::spawn(async move {
             let (mut socket, _) = tokio::time::timeout(WAIT, listener.accept())
                 .await
@@ -88,9 +128,9 @@ impl SseFixture {
             })
             .await
             .map_err(|_| FixtureError::Deadline("headers"))??;
-            let headers = std::str::from_utf8(&request[..header_end])
+            let request_headers = std::str::from_utf8(&request[..header_end])
                 .map_err(|_| FixtureError::Malformed("non-UTF8 headers"))?;
-            let content_length = headers
+            let content_length = request_headers
                 .lines()
                 .find_map(|line| {
                     let (name, value) = line.split_once(':')?;
@@ -118,20 +158,67 @@ impl SseFixture {
             })
             .await
             .map_err(|_| FixtureError::Deadline("body"))??;
-            tokio::time::timeout(WAIT, socket.write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\nx-request-id: invalid identifier\r\nx-oai-request-id: req_context-1\r\ncf-ray: ray_context-1\r\nauthorization: Bearer never-log-header\r\n\r\n",
-            )).await.map_err(|_| FixtureError::Deadline("opening headers"))?.map_err(|error| FixtureError::Io("opening headers", error))?;
+            tokio::time::timeout(WAIT, socket.write_all(&headers))
+                .await
+                .map_err(|_| FixtureError::Deadline("opening headers"))?
+                .map_err(|error| FixtureError::Io("opening headers", error))?;
             tokio::time::timeout(WAIT, gate)
                 .await
                 .map_err(|_| FixtureError::Deadline("release"))?
                 .map_err(|_| FixtureError::ReleaseCancelled)?;
-            tokio::time::timeout(WAIT, socket.write_all(
-                b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"invalid_access_program\",\"message\":\"never-log-provider-content\"}}}\n\n",
-            )).await.map_err(|_| FixtureError::Deadline("event send"))?.map_err(|error| FixtureError::Io("event send", error))?;
-            tokio::time::timeout(WAIT, socket.shutdown())
+            tokio::time::timeout(WAIT, socket.write_all(&event))
                 .await
-                .map_err(|_| FixtureError::Deadline("close"))?
-                .map_err(|error| FixtureError::Io("close", error))?;
+                .map_err(|_| FixtureError::Deadline("event send"))?
+                .map_err(|error| FixtureError::Io("event send", error))?;
+            let _ = event_written.send(());
+            if observe_consumer_close {
+                let mut unexpected = [0_u8; 1];
+                let mut read = Box::pin(socket.read(&mut unexpected));
+                let closed = tokio::time::timeout(
+                    WAIT,
+                    std::future::poll_fn(|context| {
+                        let result = read.as_mut().poll(context);
+                        if result.is_pending()
+                            && let Some(notice) = pending_notice.take()
+                        {
+                            let _ = notice.send(());
+                        }
+                        result
+                    }),
+                )
+                .await
+                .map_err(|_| FixtureError::Deadline("consumer close"))?;
+                // Only this read may establish consumer retirement. Do not
+                // release EOF or close the server socket to create evidence.
+                return match closed {
+                    Ok(0) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => Ok(()),
+                    Ok(_) => Err(FixtureError::Malformed("data after complete request")),
+                    Err(error) => Err(FixtureError::Io("consumer close", error)),
+                };
+            }
+            if hold_eof {
+                tokio::time::timeout(EOF_RELEASE_WAIT, eof_gate)
+                    .await
+                    .map_err(|_| FixtureError::Deadline("EOF release"))?
+                    .map_err(|_| FixtureError::ReleaseCancelled)?;
+            }
+            let closed = tokio::time::timeout(WAIT, socket.shutdown())
+                .await
+                .map_err(|_| FixtureError::Deadline("close"))?;
+            match closed {
+                Ok(()) => {}
+                Err(error)
+                    if hold_eof
+                        && matches!(
+                            error.kind(),
+                            std::io::ErrorKind::BrokenPipe
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::NotConnected
+                        ) => {}
+                Err(error) => return Err(FixtureError::Io("close", error)),
+            }
             Ok(())
         });
         Self {
@@ -139,6 +226,9 @@ impl SseFixture {
             uri: format!("http://{address}"),
             body_started: body_phase,
             release: Some(release),
+            event_written: event_phase,
+            eof_release: hold_eof.then_some(eof_release),
+            consumer_read_pending,
             task: Some(task),
         }
     }
@@ -153,6 +243,39 @@ impl SseFixture {
             .expect("one failure release")
             .send(())
             .expect("server awaits caller context exit");
+    }
+
+    pub(crate) async fn wait_for_event_written(&mut self) {
+        tokio::time::timeout(WAIT, &mut self.event_written)
+            .await
+            .expect("event write observation deadline")
+            .expect("server wrote the complete event");
+    }
+
+    pub(crate) async fn wait_for_consumer_read_pending(&mut self) {
+        tokio::time::timeout(
+            WAIT,
+            self.consumer_read_pending
+                .take()
+                .expect("consumer-close fixture has one pending-read witness"),
+        )
+        .await
+        .expect("peer consumer-read pending deadline")
+        .expect("peer read was actually polled pending before consumer drop");
+    }
+
+    pub(crate) fn eof_is_held(&self) -> bool {
+        self.eof_release
+            .as_ref()
+            .is_some_and(|release| !release.is_closed())
+    }
+
+    pub(crate) fn release_eof(&mut self) {
+        self.eof_release
+            .take()
+            .expect("one scripted EOF release")
+            .send(())
+            .expect("server is still holding EOF");
     }
 
     async fn wait_for_body_phase(&mut self) {

@@ -15,7 +15,7 @@ pub(super) struct CopyMode {
     pub(super) response: Option<(EntryKey, Arc<str>)>,
     pub(super) whole: bool,
     pub(super) source: Option<String>,
-    pub(super) label: &'static str,
+    pub(super) label: std::borrow::Cow<'static, str>, // ALAB(retained-ui): own historical copy labels without leaking them.
 }
 
 impl TranscriptView {
@@ -48,7 +48,7 @@ impl TranscriptView {
             }),
             whole: true,
             source: None,
-            label: "Whole response",
+            label: "Whole response".into(), // ALAB(retained-ui): ordinary labels remain borrowed.
         });
         if !self.select_copy_response(cells) {
             self.move_copy_target(cells, KeyCode::Up);
@@ -96,7 +96,7 @@ impl TranscriptView {
             return;
         }
         let Some(mode) = &self.copy_mode else { return };
-        let label = mode.label;
+        let label = mode.label.clone(); // ALAB(retained-ui): retain the captured historical label while navigating.
         let edge = matches!(direction, KeyCode::Home | KeyCode::End);
         let older = matches!(direction, KeyCode::Up | KeyCode::End);
         if mode.whole && !older && !edge {
@@ -235,7 +235,7 @@ impl TranscriptView {
                     .filter(|(at, _)| *at == index)
                     .and_then(|(_, range)| {
                         ranges.iter().position(|(candidate, candidate_label, _)| {
-                            candidate == range && *candidate_label == label
+                            candidate == range && *candidate_label == label.as_ref() // ALAB(retained-ui): compare historical labels by exact text.
                         })
                     });
             let target = if older {
@@ -247,7 +247,7 @@ impl TranscriptView {
                 let range = range.clone();
                 if let Some(mode) = &mut self.copy_mode {
                     mode.whole = false;
-                    mode.label = label;
+                    mode.label = (*label).into(); // ALAB(retained-ui): native target labels remain borrowed.
                     mode.source = source.clone();
                 }
                 self.select_copy_range(cells, index, range);
@@ -337,7 +337,7 @@ impl TranscriptView {
         };
         mode.whole = true;
         mode.source = None;
-        mode.label = "Whole response";
+        mode.label = "Whole response".into(); // ALAB(retained-ui): native whole-response label remains borrowed.
         let Some(layout) = self.layout(cells, index) else {
             return false;
         };
@@ -398,3 +398,7 @@ fn literal_block_ranges(
 #[cfg(test)]
 #[path = "copy_mode_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_transcript_copy_mode.rs"]
+pub(in crate::transcript_view) mod alab_retained_copy; // ALAB(retained-ui): retain actual copy targets and shared local pause identities.

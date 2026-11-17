@@ -200,7 +200,7 @@ async fn creditless_five_hours_reading(read: ResponseTemplate) -> Fixture {
     Mock::given(method("GET"))
         .and(path(CREDITS))
         .respond_with(credits(&[]))
-        .expect(1)
+        .expect(0)
         .mount(&fixture.server)
         .await;
     Mock::given(method("POST"))
@@ -217,7 +217,7 @@ fn hour_ahead() -> i64 {
 }
 
 fn distant_week_reset() -> i64 {
-    chrono::Utc::now().timestamp() + 25 * 3600
+    chrono::Utc::now().timestamp() + 72 * 3600
 }
 
 /// A spent week whose credit list is `list`, with no redemption permitted.

@@ -31,11 +31,13 @@
 //! empty (there, codex-alab never finds an aterm).
 #![cfg(unix)]
 
+#[cfg(all(feature = "native-source-proof", not(debug_assertions)))]
+compile_error!("native Source proof APIs require debug assertions");
+
 pub mod account_move;
 pub mod account_recovery;
 pub mod accounts;
 mod client;
-mod runtime_claim;
 pub mod conn;
 pub mod context;
 pub mod enrollment;
@@ -45,15 +47,20 @@ pub mod exec_grant;
 pub mod exec_route;
 mod exec_selection;
 pub mod facts;
+pub mod frontend_control;
 pub mod locate;
 pub mod mail;
 pub mod managed_auth;
 pub mod native_source;
 pub mod policy;
 pub mod renewal;
+#[cfg(unix)]
+mod retained_fd;
 pub mod rotation;
+mod runtime_claim;
 pub mod secrets;
 pub mod source_member;
+pub mod source_retained_service;
 pub mod status;
 pub mod wire;
 
@@ -119,6 +126,9 @@ pub enum Error {
     /// The connection is closed.
     #[error("aterm connection closed")]
     Closed,
+    /// The policy was forgotten or the client closed while its answer was pending.
+    #[error("aterm harness policy read was invalidated")]
+    PolicyInvalidated,
     /// aterm is busy (switching versions, every lane taken): wait `retry_ms`, then retry.
     #[error("aterm busy: {line}")]
     Busy {

@@ -64,8 +64,11 @@ conflicts about once a quarter. Upstream lands about 44 commits a day.
   hook redundant and you dropped it, rerun with `ALAB_ALLOW_HOOK_LOSS=1`. Then `--continue`.
 - Exit 5: an earlier sync still waits, for its resolver or for a `--no-push` merge to land:
   `--continue` it, or `--abort`.
-- Exit 6: upstream itself does not build and run with Trust. That is a lane fault, fixed in
-  Trust; then `--continue`.
+- Exit 6: after the candidate certified binary's authenticated runtime failure, the exact
+  certified pristine binary also fails its authenticated runtime check. That is a Trust lane
+  fault, fixed in Trust; then `--continue`. A nonzero certification status is unresolved:
+  resource status 75 and signals propagate; every other status remains check exit 1 / sync
+  exit 4.
 - Exit 1 (or a git status such as 128): an error, named on stderr. The next unattended run
   resumes an unattended sync that stopped this way; after your own `--continue`, rerun it.
 - A new clone runs `alab/setup.sh --train-rerere` once. Never push to `upstream`.

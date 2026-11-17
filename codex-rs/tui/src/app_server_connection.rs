@@ -16,6 +16,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 
 pub(crate) async fn connect(target: &AppServerTarget) -> color_eyre::Result<AppServerClient> {
     match target {
+        #[cfg(unix)] AppServerTarget::OwnedLocal { target } => Ok(target.reconnect().await?), // ALAB(owned-local): a new admitted physical stream preserves local target semantics.
         AppServerTarget::Cloud => {
             color_eyre::eyre::bail!("Reopen Codex to reconnect the cloud backend.");
         }

@@ -85,6 +85,9 @@ pub struct RejectionMetadata {
     pub outcome: RejectionBodyOutcome,
     pub capture_elapsed: Duration,
     pub decoded_body_bytes: Option<usize>,
+    /// Entity bytes accepted by a created decoder, including incomplete bodies.
+    /// Excludes framing and data rejected by the decoder's retention limit.
+    pub entity_bytes_accepted: Option<usize>,
 }
 
 struct Captured {
@@ -446,6 +449,7 @@ impl<S> RejectionStream<S> {
         retry_after: Option<RetryAfter>,
         outcome: RejectionBodyOutcome,
     ) {
+        let entity_bytes_accepted = decoder.as_ref().map(|decoder| decoder.body.len());
         let body = decoder
             .filter(|_| outcome == RejectionBodyOutcome::Complete)
             .map(|decoder| decoder.body);
@@ -460,6 +464,7 @@ impl<S> RejectionStream<S> {
                 outcome,
                 capture_elapsed: self.header_received.elapsed(),
                 decoded_body_bytes,
+                entity_bytes_accepted,
             },
         });
         self.timer = None;

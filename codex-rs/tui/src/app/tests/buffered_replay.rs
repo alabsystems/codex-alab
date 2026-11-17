@@ -100,6 +100,7 @@ async fn refreshed_active_reasoning_accepts_later_deltas_and_complete_summary() 
             app.apply_refreshed_snapshot_thread(
                 thread_id,
                 AppServerStartedThread {
+                    #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
                     session,
                     turns: vec![turn],
                     blocks_direct_input: false,

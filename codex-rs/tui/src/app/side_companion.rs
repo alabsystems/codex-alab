@@ -20,6 +20,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 pub(super) struct SideCompanion {
+    #[cfg(unix)]
+    pub(super) alab_identity: Arc<()>, // ALAB(retained-ui): actual parked view incarnation, not a thread selector.
+    #[cfg(unix)]
+    pub(super) alab_retained: Option<Arc<super::alab_retained_passive::PassiveBinding>>, // ALAB(retained-ui): same accepted passive projection custody.
+    #[cfg(unix)] pub(super) alab_command_delivery: super::alab_side_delivery::Applied, // ALAB(retained-side): exact store delivery high-water; no text dedup.
     pub(super) display: CapturedSideDisplay,
     pub(super) cells: Vec<Arc<dyn HistoryCell>>,
     pub(super) view: TranscriptView,
@@ -52,7 +57,14 @@ impl SideAnswer {
 impl SideCompanion {
     pub(super) fn empty(cwd: AbsolutePathBuf) -> Self {
         Self {
+            #[cfg(unix)]
+            alab_identity: Arc::new(()), // ALAB(retained-ui): minted by actual original view allocation.
+            #[cfg(unix)]
+            alab_retained: None, // ALAB(retained-ui): no UI/Native receipt inferred from an empty draft.
+            #[cfg(unix)] alab_command_delivery: super::alab_side_delivery::Applied::default(), // ALAB(retained-side): no applied delivery inferred.
             display: CapturedSideDisplay {
+                #[cfg(unix)]
+                alab_history: crate::app::alab_new_side_provenance(), // ALAB(retained-ui): genuine empty companion starts its own DATA provenance.
                 rendered_completion_turn_ids: Default::default(),
                 active: None,
                 auxiliary: Vec::new(),
@@ -76,6 +88,10 @@ impl SideCompanion {
         store: &ThreadEventStore,
         new_status: impl FnOnce() -> crate::status_indicator_widget::StatusIndicatorWidget,
     ) -> bool {
+        #[cfg(unix)]
+        if let Some(receipt)=store.alab_side_delivery.current(notification).ok().flatten() { // ALAB(retained-side): genuine original input delivery, unchanged ordinary fallback otherwise.
+            match self.alab_apply_command(notification,&receipt) {Ok(Some(changed))=>return changed,Err(_)=>{self.alab_command_delivery.fail();return false},_=>{}}
+        }
         match notification {
             ServerNotification::TurnStarted(event)
                 if self
@@ -161,6 +177,8 @@ impl SideCompanion {
                     )
                 {
                     self.cells.push(Arc::new(completion));
+            #[cfg(unix)]
+            self.alab_note_end(&turn.id,self.cells.len()-1); // ALAB(retained-ui): actual completion row retains original turn identity.
                 }
             }
             ServerNotification::ThreadClosed(_) => return self.display.work.take().is_some(),
@@ -186,6 +204,8 @@ impl SideCompanion {
         if let Some(answer) = &mut self.answer {
             answer.index = shift(answer.index);
         }
+        #[cfg(unix)]
+        self.display.alab_history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).removed(&self.cells[range.clone()]); // ALAB(retained-ui): exact original splice invalidates only removed cell provenance.
         self.cells.splice(range, cells);
     }
 
@@ -212,6 +232,8 @@ impl SideCompanion {
                         text.clone(),
                         questions.as_deref().unwrap_or_default(),
                     );
+                    #[cfg(unix)]
+                    self.alab_note_answer(turn,id,index,Some(item.clone())); // ALAB(retained-ui): bind real completed answer payload to exact original cell.
                 }
                 self.display.last_completed_agent_message = Some((turn.to_owned(), id.clone()));
             }
@@ -250,6 +272,8 @@ impl SideCompanion {
                 {
                     // Later answer deltas may already have appended a cell after the parked command.
                     self.cells.insert(self.parked_tail, Arc::from(active));
+                    #[cfg(unix)]
+                    self.alab_note_answer(turn,id,self.parked_tail,Some(item.clone())); // ALAB(retained-ui): real completed command cell shares actual source identity.
                     if let Some(answer) = &mut self.answer
                         && answer.index >= self.parked_tail
                     {
@@ -272,6 +296,8 @@ impl SideCompanion {
             return;
         };
         let index = answer.index;
+        #[cfg(unix)]
+        let alab_item=(answer.turn_id.clone(),answer.item_id.clone()); // ALAB(retained-ui): exact original streaming source before write.
         let mut source = self
             .cells
             .get(index)
@@ -281,6 +307,8 @@ impl SideCompanion {
         source.push_str(&answer.pending);
         answer.pending.clear();
         self.write_answer(index, source, &[]);
+        #[cfg(unix)]
+        self.alab_note_answer(&alab_item.0,&alab_item.1,index,None); // ALAB(retained-ui): real streaming cell range, no completed payload invented.
     }
 
     fn write_answer(&mut self, index: usize, source: String, questions: &[AsyncUserInputQuestion]) {
@@ -302,3 +330,7 @@ impl SideCompanion {
         }
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/owned_local_side_history_companion.rs"]
+mod alab_side_history_companion; // ALAB(retained-ui): actual original cell producer identities, not rendered-text inference.

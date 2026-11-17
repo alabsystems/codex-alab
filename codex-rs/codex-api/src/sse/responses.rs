@@ -638,6 +638,7 @@ async fn process_sse_with_treatment(
                     ) => ApiError::Transport(error),
                     error => ApiError::Stream(error.to_string()),
                 };
+                let error = alab_capacity::terminal_with_buffered_advice(error, response_error.as_ref()); // ALAB(recovery): retain buffered advice for selected stream failures without masking policy denial.
                 if let Some(t) = telemetry.as_ref() { t.on_sse_error(&error); } // ALAB(recovery): correlate selected terminal errors before their channel send.
                 let _ = tx_event.send(Err(error)).await;
                 return;
@@ -652,6 +653,7 @@ async fn process_sse_with_treatment(
             }
             Err(_) => {
                 let error = ApiError::Stream("idle timeout waiting for SSE".into());
+                let error = alab_capacity::terminal_with_buffered_advice(error, response_error.as_ref()); // ALAB(recovery): a selected idle timeout cannot erase captured provider advice.
                 if let Some(t) = telemetry.as_ref() { t.on_sse_error(&error); } // ALAB(recovery): a timeout is a terminal delivery, not just a raw poll.
                 let _ = tx_event.send(Err(error)).await;
                 return;

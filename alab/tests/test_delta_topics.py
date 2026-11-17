@@ -420,6 +420,23 @@ class DeltaTopicsTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertIn("is not an ancestor", result.stderr)
 
+    def test_explicit_base_read_error_is_not_a_nonancestor_result(self):
+        tools = self.repo / "test-bin"
+        tools.mkdir()
+        wrapper = tools / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "merge-base" ] && [ "$2" = "--is-ancestor" ]; then exit 128; fi\n'
+            f"exec {shlex.quote(self.git)} \"$@\"\n"
+        )
+        wrapper.chmod(0o700)
+        env = dict(self.env, PATH=str(tools) + os.pathsep + self.env.get("PATH", ""))
+        result = self.delta("--base=" + self.initial, env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("cannot read ancestry", result.stderr)
+        self.assertNotIn("is not an ancestor", result.stderr)
+
     def test_explicit_base_resolves_historical_source_and_empty_patch(self):
         self.write("src/hooks.rs", "// ALAB(gamma): later change\n")
         self.commit("later source")

@@ -398,3 +398,8 @@ impl HistoryCell for PlanUpdateCell {
         lines
     }
 }
+
+// ALAB(retained-ui): retain original auxiliary cell fields, not rendered substitutes.
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_plans.rs"]
+pub(in crate::history_cell) mod alab_retained_plans;

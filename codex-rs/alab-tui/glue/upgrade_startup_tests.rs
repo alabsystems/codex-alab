@@ -53,6 +53,30 @@ fn startup_exec_preserves_the_screen_without_queries_and_completes_the_paste() {
             let view = capture.startup_snapshot().unwrap().clone();
             assert!(view.screen.active && view.screen.mouse_active && view.owned_screen);
             assert_eq!(view.saved_viewport, Some([0, 4, 80, 3]));
+            let input = capture.input_snapshot().to_vec();
+            let modes = serde_json::to_vec(capture.mode_snapshot()).unwrap();
+            let mut invalid = view.clone();
+            invalid.version = 99;
+            assert!(capture.refresh_startup(invalid).is_err());
+            assert_eq!(capture.startup_snapshot(), Some(&view));
+            assert!(capture.valid());
+            // Exercise an actual post-fence native draw. It changes the cursor
+            // and viewport DATA without replacing the joined parser/mode owner.
+            tui.terminal.set_viewport_area(Rect::new(0, 2, 80, 4));
+            tui.terminal
+                .draw(|frame| {
+                    frame.set_cursor_position(Position::new(3, 2));
+                })
+                .unwrap();
+            tui.terminal_focused.store(true, Ordering::Relaxed);
+            let view = tui.alab_upgrade_startup_snapshot();
+            assert_eq!(view.cursor, [3, 2]);
+            assert!(view.focused);
+            capture.refresh_startup(view.clone()).unwrap();
+            assert_eq!(capture.startup_snapshot(), Some(&view));
+            assert_eq!(capture.input_snapshot(), input.as_slice());
+            assert_eq!(serde_json::to_vec(capture.mode_snapshot()).unwrap(), modes);
+            assert!(capture.valid());
             std::fs::write(
                 &path,
                 serde_json::to_vec(&(
@@ -66,7 +90,7 @@ fn startup_exec_preserves_the_screen_without_queries_and_completes_the_paste() {
             .unwrap();
             assert!(
                 codex_alab_tui::upgrade_startup::restore(
-                    view,
+                    view.clone(),
                     capture.mode_snapshot(),
                     capture.input_snapshot()
                 )
@@ -74,6 +98,8 @@ fn startup_exec_preserves_the_screen_without_queries_and_completes_the_paste() {
             );
             assert!(capture.valid());
             assert!(capture.commit_if(|| true).unwrap());
+            assert!(capture.refresh_startup(view.clone()).is_err());
+            assert_eq!(capture.startup_snapshot(), Some(&view));
             restore_after_exit_with_events(Some(&tui.event_broker)).unwrap();
             write!(std::io::stdout(), "{DROP_BEGIN}").unwrap();
             std::io::stdout().flush().unwrap();

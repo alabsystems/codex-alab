@@ -288,12 +288,28 @@ alab_check_targets_ready() {
 }
 
 # Run one sync/check compiler command under the existing 20 GiB disk guardian.
+# An optional leading --result-file <fresh-absolute-path> or --result-fd <FD>
+# retains the guardian's exact command-completion receipt for a caller that
+# must distinguish exec from setup. The FD form is an anonymous empty inode.
 # Each Cargo boundary owns its group, including unit runtime calls that used to
 # detach through Perl. Preserve inherited descriptors, argv and environment; no
 # source/cache ownership or deletion policy changes here.
 alab_build_command() {
   local target common cargo_home trust_home private_home build alternate shared workspace manifest="" word next=0
-  local extra=()
+  local extra=() result_args=() result_fd=""
+  case "${1:-}" in
+    --result-file)
+      [[ $# -ge 3 && "$2" == /* && ! -e "$2" && ! -L "$2" ]] || return 1
+      result_args=(--result-file "$2")
+      shift 2
+      ;;
+    --result-fd)
+      [[ $# -ge 3 && "$2" =~ ^([3-9]|[1-9][0-9]+)$ && -e "/dev/fd/$2" ]] || return 1
+      result_args=(--result-fd "$2")
+      result_fd="$2"
+      shift 2
+      ;;
+  esac
   workspace="$(pwd -P)" || return 75
   # The runner helper names ALab's workspace while building from pristine's
   # cwd. These producers name workspace manifests, never a member manifest.
@@ -339,11 +355,30 @@ alab_build_command() {
   fi
   common="$(git rev-parse --path-format=absolute --git-common-dir)" || return 1
   private_home="$(alab_cargo_home)" || return 1
-  "${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${alab_library_root}/alab/command_guard.py" \
-    --inherit-fds --resource-stop --min-free-gib 20 --disk-path "${target}" \
-    --disk-path "${target}/build.noindex" --disk-path "${workspace}" --disk-path "$(pwd -P)" --disk-path "${common}" \
-    --disk-path "${cargo_home}" --disk-path "${trust_home}" --disk-path "${private_home}" \
-    --disk-path /tmp --disk-path "${TMPDIR:-/tmp}" ${extra[@]+"${extra[@]}"} -- "$@"
+  local guardian=("${ALAB_PYTHON:-/usr/bin/python3}" -I -B
+    "${alab_library_root}/alab/command_guard.py" --inherit-fds --resource-stop
+    ${result_args[@]+"${result_args[@]}"} --min-free-gib 20 --disk-path "${target}"
+    --disk-path "${target}/build.noindex" --disk-path "${workspace}" --disk-path "$(pwd -P)" --disk-path "${common}"
+    --disk-path "${cargo_home}" --disk-path "${trust_home}" --disk-path "${private_home}"
+    --disk-path /tmp --disk-path "${TMPDIR:-/tmp}" ${extra[@]+"${extra[@]}"} -- "$@")
+  [[ -z "${ALAB_CHECK_VERDICT_FD:-}" || "${ALAB_CHECK_VERDICT_FD}" == 9 ]] || return 1
+  case "${ALAB_CHECK_RESULT_FD:-}" in
+    11 | 13) [[ "${result_fd}" == "${ALAB_CHECK_RESULT_FD}" ]] || return 1 ;;
+    "") [[ "${result_fd}" != 11 && "${result_fd}" != 13 ]] || return 1 ;;
+    *) return 1 ;;
+  esac
+  case "${ALAB_CHECK_RESULT_FD:-}" in
+    11) "${guardian[@]}" 8>&- 9>&- 10>&- 12>&- 13>&- ;;
+    13) "${guardian[@]}" 8>&- 9>&- 10>&- 11>&- 12>&- ;;
+    "")
+      if [[ "${ALAB_CHECK_VERDICT_FD:-}" == 9 ]]; then
+        "${guardian[@]}" 8>&- 9>&- 10>&- 11>&- 12>&- 13>&-
+      else
+        "${guardian[@]}"
+      fi
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 # Keep one package cache immutable through the command guardian's group stop.
@@ -408,6 +443,17 @@ _alab_package_cache_guard() {
     exec "${guardian[@]}"
   fi
   "${guardian[@]}"
+}
+
+# Only Git's 0/1 answers may drive ancestry branches. Read errors terminate even
+# when a caller uses if, !, || or while, where errexit alone would not protect it.
+alab_ancestor_check() {
+  local rc=0
+  "$@" || rc=$?
+  case "${rc}" in
+    0 | 1) return "${rc}" ;;
+    *) alab_die "cannot read ancestry (git exit ${rc})" ;;
+  esac
 }
 
 # Sync identity is in the subject, never a marker quoted in a merge's body.

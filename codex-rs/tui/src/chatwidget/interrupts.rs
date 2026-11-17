@@ -25,6 +25,10 @@ pub(crate) enum QueuedInterrupt {
     },
     RequestPermissions(RequestPermissionsEvent),
     RequestUserInput(ToolRequestUserInputParams),
+    #[cfg(unix)]
+    AlabUserInput(ToolRequestUserInputParams, std::sync::Arc<crate::app::retained_original_input::Item>), // ALAB(retained-ui): defer SAME actual callback with original input DATA.
+    #[cfg(unix)]
+    AlabApproval(Box<QueuedInterrupt>, std::sync::Arc<crate::app::retained_original_input::Item>), // ALAB(retained-ui): exact source callback survives original stream deferral.
     ItemStarted(ThreadItemPayload),
     ItemCompleted(ThreadItemPayload),
 }
@@ -49,6 +53,7 @@ impl InterruptManager {
     /// Excludes lifecycle events that never claim protected interactive input.
     pub(crate) fn has_pending_prompt(&self) -> bool {
         self.queue.iter().any(|interrupt| {
+            #[cfg(unix)] if matches!(interrupt, QueuedInterrupt::AlabUserInput(..) | QueuedInterrupt::AlabApproval(..)) { return true; } // ALAB(retained-ui): protected original prompt remains pending.
             matches!(
                 interrupt,
                 QueuedInterrupt::ExecApproval(_)
@@ -61,12 +66,13 @@ impl InterruptManager {
     }
 
     pub(crate) fn push_exec_approval(&mut self, ev: ExecApprovalRequestEvent) {
+        #[cfg(unix)] if let Some(item) = crate::app::retained_original_input::current() { self.queue.push_back(QueuedInterrupt::AlabApproval(Box::new(QueuedInterrupt::ExecApproval(ev)), item)); return; } // ALAB(retained-ui): retain actual incoming owner before original interrupt queue.
         self.queue.push_back(QueuedInterrupt::ExecApproval(ev));
     }
 
     pub(crate) fn push_apply_patch_approval(&mut self, ev: ApplyPatchApprovalRequestEvent) {
-        self.queue
-            .push_back(QueuedInterrupt::ApplyPatchApproval(ev));
+        #[cfg(unix)] if let Some(item) = crate::app::retained_original_input::current() { self.queue.push_back(QueuedInterrupt::AlabApproval(Box::new(QueuedInterrupt::ApplyPatchApproval(ev)), item)); return; } // ALAB(retained-ui): original patch queue keeps its own callback.
+        self.queue.push_back(QueuedInterrupt::ApplyPatchApproval(ev));
     }
 
     pub(crate) fn push_elicitation(
@@ -79,11 +85,15 @@ impl InterruptManager {
     }
 
     pub(crate) fn push_request_permissions(&mut self, ev: RequestPermissionsEvent) {
-        self.queue
-            .push_back(QueuedInterrupt::RequestPermissions(ev));
+        #[cfg(unix)] if let Some(item) = crate::app::retained_original_input::current() { self.queue.push_back(QueuedInterrupt::AlabApproval(Box::new(QueuedInterrupt::RequestPermissions(ev)), item)); return; } // ALAB(retained-ui): original permissions queue keeps its own callback.
+        self.queue.push_back(QueuedInterrupt::RequestPermissions(ev));
     }
 
     pub(crate) fn push_user_input(&mut self, ev: ToolRequestUserInputParams) {
+        #[cfg(unix)] // ALAB(retained-ui): original defer preserves the exact preclaimed per-item owner.
+        if let Some(item) = crate::app::retained_original_input::current() {
+            self.queue.push_back(QueuedInterrupt::AlabUserInput(ev, item)); return;
+        }
         self.queue.push_back(QueuedInterrupt::RequestUserInput(ev));
     }
 
@@ -123,6 +133,7 @@ impl InterruptManager {
     pub(crate) fn flush_all(&mut self, chat: &mut ChatWidget) {
         while let Some(q) = self.queue.pop_front() {
             match q {
+                #[cfg(unix)] QueuedInterrupt::AlabApproval(original, item) => item.with_scope(|| original.alab_apply_now(chat)), // ALAB(retained-ui): re-enter only the actual queue item's original scope.
                 QueuedInterrupt::ExecApproval(ev) => chat.handle_exec_approval_now(ev),
                 QueuedInterrupt::ApplyPatchApproval(ev) => chat.handle_apply_patch_approval_now(ev),
                 QueuedInterrupt::Elicitation { request_id, params } => {
@@ -130,6 +141,8 @@ impl InterruptManager {
                 }
                 QueuedInterrupt::RequestPermissions(ev) => chat.handle_request_permissions_now(ev),
                 QueuedInterrupt::RequestUserInput(ev) => chat.handle_request_user_input_now(ev),
+                #[cfg(unix)] // ALAB(retained-ui): restore exact original callback scope only through its actual queue resource.
+                QueuedInterrupt::AlabUserInput(ev, item) => item.with_scope(|| chat.handle_request_user_input_now(ev)),
                 QueuedInterrupt::ItemStarted(item) => chat.handle_queued_item_started_now(item),
                 QueuedInterrupt::ItemCompleted(item) => {
                     chat.handle_queued_item_completed_now(item);
@@ -142,6 +155,7 @@ impl InterruptManager {
 impl QueuedInterrupt {
     fn matches_resolved_prompt(&self, request: &ResolvedAppServerRequest) -> bool {
         match self {
+            #[cfg(unix)] QueuedInterrupt::AlabApproval(original, item) => item.matches_resolved() && original.matches_resolved_prompt(request), // ALAB(retained-ui): equal native fields cannot retire a different callback.
             QueuedInterrupt::ExecApproval(ev) => {
                 matches!(request, ResolvedAppServerRequest::ExecApproval { id, .. }
                     if ev.effective_approval_id() == id.as_str())
@@ -159,6 +173,10 @@ impl QueuedInterrupt {
             QueuedInterrupt::RequestPermissions(ev) => {
                 matches!(request, ResolvedAppServerRequest::PermissionsApproval { id, .. }
                     if ev.call_id == id.as_str())
+            }
+            #[cfg(unix)] // ALAB(retained-ui): preserve original dismissal predicate; exact RPC dismissal scope is checked by the owned resource.
+            QueuedInterrupt::AlabUserInput(ev, item) => {
+                item.matches_resolved() && matches!(request, ResolvedAppServerRequest::UserInput { call_id } if ev.item_id == *call_id)
             }
             QueuedInterrupt::RequestUserInput(ev) => {
                 matches!(request, ResolvedAppServerRequest::UserInput { call_id }
@@ -297,3 +315,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_original_interrupt.rs"]
+mod alab_original_input; // ALAB(retained-ui): original deferred dispatch consumes SAME private owner.

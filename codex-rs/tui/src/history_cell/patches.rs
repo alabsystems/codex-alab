@@ -331,3 +331,12 @@ impl HistoryCell for ImageGenerationHistoryCell {
         self.saved_path.clone()
     }
 }
+
+// ALAB(retained-ui): retain original auxiliary cell fields, not rendered substitutes.
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_patches.rs"]
+pub(in crate::history_cell) mod alab_retained_patches;
+
+#[cfg(unix)]
+#[path="../../../alab-tui/glue/retained_history_image_cells.rs"]
+pub(in crate::history_cell) mod alab_retained_images; // ALAB(retained-ui): exact image cell DATA requires actual renderer ownership before restore.

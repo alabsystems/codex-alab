@@ -396,19 +396,109 @@ class PythonWorkflowTests(unittest.TestCase):
             with self.subTest(observation=name):
                 self.assertEqual(actual, expected)
 
+    def test_duplicate_expected_failure_callback_cannot_qualify_complete_pure_coverage(self):
+        private_text = "private-duplicate-expected-failure"
+        with self.fixture() as f:
+            @unittest.expectedFailure
+            def duplicate_expected_failure(case):
+                try:
+                    case.fail(private_text)
+                except AssertionError:
+                    case._outcome.result.addExpectedFailure(case, sys.exc_info())
+                case.fail("ordinary expected body failure")
+
+            f.pure.test_one = duplicate_expected_failure
+            cases = self.cases(f)[:-1]
+            selected = cases[-1].id()
+            result = self.run_cases(cases)
+        phase = result.summary["phases"]["pure"]
+        self.assertTrue(result.summary["phases"]["native"]["qualified"])
+        self.assertTrue(result.summary["full_scope"])
+        self.assertTrue(phase["complete"])
+        self.assertTrue(phase["was_successful"])
+        self.assertEqual(phase["tests_run"], 1)
+        self.assertEqual(phase["expected_failures"], 2)
+        self.assertEqual(phase["started_ids"], [selected])
+        self.assertEqual(phase["finished_ids"], [selected])
+        self.assertEqual(phase["successful_ids"], [])
+        self.assertEqual(result.status, 1)
+        self.assertFalse(phase["qualified"])
+        self.assertFalse(result.summary["success"])
+        self.assertEqual(phase["integrity_errors"], ["duplicate_expected_failure"])
+        self.assertNotIn(private_text, result.stdout)
+
+    def test_expected_failures_for_distinct_cases_reset_callback_tracking(self):
+        with self.fixture() as f:
+            f.pure.test_one = unittest.expectedFailure(lambda case: case.fail("ordinary first"))
+            f.pure.test_two = unittest.expectedFailure(lambda case: case.fail("ordinary second"))
+            result = self.run_cases(self.cases(f))
+        phase = result.summary["phases"]["pure"]
+        self.assertEqual(result.status, 0)
+        self.assertTrue(result.summary["success"])
+        self.assertTrue(phase["qualified"])
+        self.assertEqual(phase["tests_run"], 2)
+        self.assertEqual(phase["expected_failures"], 2)
+        self.assertEqual(phase["integrity_errors"], [])
+
+    def test_real_cleanup_and_expected_failure_callbacks_match_default_unittest(self):
+        @unittest.expectedFailure
+        def expected_with_cleanup_skip(case):
+            case.addCleanup(lambda: case.skipTest("ordinary cleanup skip"))
+            case.fail("ordinary expected body failure")
+
+        @unittest.expectedFailure
+        def expected_with_subtest_skip(case):
+            with case.subTest(optional=True):
+                case.skipTest("ordinary optional subtest")
+            case.fail("ordinary expected body failure")
+
+        def cleanup_skips(case):
+            case.addCleanup(lambda: case.skipTest("ordinary first cleanup skip"))
+            case.addCleanup(lambda: case.skipTest("ordinary second cleanup skip"))
+
+        def cleanup_errors(case):
+            def fail(label):
+                raise RuntimeError(label)
+            case.addCleanup(fail, "ordinary first cleanup error")
+            case.addCleanup(fail, "ordinary second cleanup error")
+
+        for body in (expected_with_cleanup_skip, expected_with_subtest_skip,
+                     cleanup_skips, cleanup_errors):
+            with self.subTest(scenario=body.__name__), self.fixture() as f:
+                raw_case = type("RawCase", (unittest.TestCase,), {"test_case": body})
+                raw = unittest.TestResult()
+                raw_case("test_case").run(raw)
+                f.pure.test_one = body
+                result = self.run_cases(self.cases(f)[:-1])
+                phase = result.summary["phases"]["pure"]
+                self.assertEqual(result.status, 0 if raw.wasSuccessful() else 1)
+                self.assertEqual(result.summary["success"], raw.wasSuccessful())
+                self.assertTrue(result.summary["full_scope"])
+                self.assertEqual(phase["qualified"], raw.wasSuccessful())
+                self.assertEqual(phase["tests_run"], 1)
+                self.assertEqual(phase["skipped"], len(raw.skipped))
+                self.assertEqual(phase["expected_failures"], len(raw.expectedFailures))
+                self.assertEqual(phase["errors"], len(raw.errors))
+                self.assertEqual(phase["integrity_errors"], [])
+
     def test_fixed_discovery_flattens_once_without_executing_cases(self):
         with self.fixture() as f:
             cases = self.cases(f)
             loader = mock.Mock(errors=[])
-            loader.discover.return_value = unittest.TestSuite([
-                unittest.TestSuite(cases[:2]), unittest.TestSuite(cases[2:])])
+            loader.discover.side_effect = [
+                unittest.TestSuite([unittest.TestSuite(cases[:1]), unittest.TestSuite(cases[1:2])]),
+                *(unittest.TestSuite(cases[index:index + 1]) for index in range(2, 5)),
+            ]
             with mock.patch.object(WORKFLOW.unittest, "TestLoader", return_value=loader):
                 actual, errors = WORKFLOW._discover()
             self.assertEqual(actual, tuple(cases))
             self.assertEqual(errors, ())
             self.assertEqual(f.events, [])
-            loader.discover.assert_called_once_with(
-                str(WORKFLOW.TESTS), pattern="test_*.py", top_level_dir=str(WORKFLOW.TESTS))
+            self.assertEqual(loader.discover.call_args_list, [
+                mock.call(str(WORKFLOW.TESTS), pattern="test_*.py", top_level_dir=str(WORKFLOW.TESTS)),
+                *(mock.call(str(WORKFLOW.SMOKE), pattern=name, top_level_dir=str(WORKFLOW.SMOKE))
+                  for name in WORKFLOW.SMOKE_TEST_FILES),
+            ])
 
     def test_main_discovery_exception_and_cli_bypass_arguments_fail_closed(self):
         for kind in ("exception", "arguments"):

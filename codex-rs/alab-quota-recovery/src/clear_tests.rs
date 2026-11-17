@@ -29,8 +29,8 @@ async fn reactive_restoration_cannot_chain_preflight_credits_before_clear_usage(
         let mut body = usage(used, allowed);
         let window = &mut body["rate_limit"]["primary_window"];
         window["limit_window_seconds"] = 604800.into();
-        window["reset_at"] = (chrono::Utc::now().timestamp() + 12 * 3600).into();
-        window["reset_after_seconds"] = 43200.into();
+        window["reset_at"] = (chrono::Utc::now().timestamp() + 72 * 3600).into();
+        window["reset_after_seconds"] = (72 * 3600).into();
         body
     }
 
@@ -528,16 +528,20 @@ async fn serve_redemption(fixture: &Fixture) {
 async fn automatic_http_redemption_requires_both_policy_conditions_on_one_window() {
     for minutes in [300, 10080] {
         for purpose in [Purpose::Preflight, Purpose::Recover] {
-            for (used, remaining, eligible) in [
-                (95, 3600, false),
-                (98, 3600, false),
-                (99, 3600, true),
-                (100, 3600, true),
-                (99, 24 * 3600, true),
-                (100, 25 * 3600, true),
+            for (used, remaining, eligible_week) in [
+                (95, 72 * 3600, false),
+                (98, 72 * 3600, false),
+                (99, 3600, false),
+                (100, 3600, false),
+                (99, 24 * 3600, false),
+                (99, 25 * 3600, true),
+                (100, 48 * 3600, true),
+                (99, 72 * 3600, true),
+                (100, 72 * 3600, true),
                 (100, 0, false),
                 (100, -3600, false),
             ] {
+                let eligible = minutes == 10080 && eligible_week;
                 let fixture = Fixture::new().await;
                 offer_credit(&fixture, usize::from(eligible)).await;
                 if eligible {
@@ -658,7 +662,7 @@ async fn pending_redemption_rechecks_policy_before_reusing_its_key() {
             base: fixture.server.uri(),
             factory: Fixture::factory(),
         };
-        for (used, remaining) in [(98, 3600), (100, -3600)] {
+        for (used, remaining) in [(98, 72 * 3600), (100, 24 * 3600), (100, -3600)] {
             fixture.serve(policy_usage(
                 used,
                 10080,
@@ -694,7 +698,7 @@ async fn pending_redemption_rechecks_policy_before_reusing_its_key() {
         fixture.serve(policy_usage(
             99,
             10080,
-            25 * 3600,
+            72 * 3600,
             purpose == Purpose::Preflight,
         ));
         recover(
@@ -718,59 +722,107 @@ async fn pending_redemption_rechecks_policy_before_reusing_its_key() {
 }
 
 #[tokio::test]
-async fn a_credit_list_wait_cannot_redeem_after_the_natural_refresh() {
-    let fixture = Fixture::new().await;
-    Mock::given(method("GET"))
-        .and(path(USAGE))
-        .respond_with(|_: &wiremock::Request| {
-            ResponseTemplate::new(200).set_body_json(policy_usage(100, 10080, 2, false))
-        })
-        .with_priority(1)
-        .expect(1)
-        .mount(&fixture.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(CREDITS))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({
-                    "available_count":1,"credits":[{
-                        "id":"A","reset_type":"codex_rate_limits","status":"available",
-                        "granted_at":"2026-01-01T00:00:00Z","expires_at":"2030-01-01T00:00:00Z"
-                    }]
-                }))
-                .set_delay(Duration::from_secs(3)),
-        )
-        .with_priority(1)
-        .expect(1)
-        .mount(&fixture.server)
-        .await;
-    let state = fixture.turn().await;
-    let config = Settings {
-        home: fixture.home.path().to_owned(),
-        base: fixture.server.uri(),
-        factory: Fixture::factory(),
-    };
-    assert_eq!(
-        recover(
-            &fixture.manager,
-            &config,
-            state.owner.as_ref().unwrap(),
-            "slow-credit-list-turn",
-            Purpose::Recover,
-        )
-        .await,
-        Recovery::Wait,
-    );
-    assert!(
-        fixture
-            .server
-            .received_requests()
-            .await
-            .unwrap()
-            .iter()
-            .all(|request| request.url.path() != CONSUME),
-    );
+async fn credit_listing_rechecks_the_24_hour_boundary_and_retains_pending_custody() {
+    use std::sync::atomic::AtomicI64;
+    use std::sync::atomic::Ordering;
+
+    let reset_at = 1000 + 24 * 3600 + 1;
+    for purpose in [Purpose::Preflight, Purpose::Recover] {
+        for after_listing in [1000, 1001, 1002] {
+            let fixture = Fixture::new().await;
+            let mut body = policy_usage(100, 10080, 24 * 3600 + 1, purpose == Purpose::Preflight);
+            body["rate_limit"]["primary_window"]["reset_at"] = reset_at.into();
+            fixture.serve(body);
+            let clock = Arc::new(AtomicI64::new(1000));
+            let advanced = Arc::clone(&clock);
+            Mock::given(method("GET"))
+                .and(path(CREDITS))
+                .respond_with(move |_: &wiremock::Request| {
+                    // Advance only when the actual awaited list is answered. Setup and
+                    // scheduling cannot spend the initial one-second policy margin.
+                    advanced.store(after_listing, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "available_count":1,"credits":[{
+                            "id":"A","reset_type":"codex_rate_limits","status":"available",
+                            "granted_at":"2026-01-01T00:00:00Z","expires_at":"2030-01-01T00:00:00Z"
+                        }]
+                    }))
+                })
+                .with_priority(1)
+                .expect(1)
+                .mount(&fixture.server)
+                .await;
+            let eligible = after_listing == 1000;
+            if eligible {
+                serve_redemption(&fixture).await;
+            }
+            let state = fixture.turn().await;
+            let config = Settings {
+                home: fixture.home.path().to_owned(),
+                base: fixture.server.uri(),
+                factory: Fixture::factory(),
+            };
+            let now = || clock.load(Ordering::SeqCst);
+            assert_eq!(
+                recover_with_clocks(
+                    &fixture.manager,
+                    &config,
+                    state.owner.as_ref().unwrap(),
+                    "listing-boundary-turn",
+                    purpose,
+                    None,
+                    RecoveryClocks {
+                        quota: &now,
+                        expiry: &now,
+                    },
+                )
+                .await,
+                if eligible {
+                    Recovery::Restored
+                } else {
+                    Recovery::Wait
+                },
+            );
+            let requests = fixture.server.received_requests().await.unwrap();
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request.url.path() == CONSUME)
+                    .count(),
+                usize::from(eligible),
+            );
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request.url.path() == USAGE)
+                    .count(),
+                if eligible { 3 } else { 1 },
+            );
+            let account = digest(&format!("{}\0account\0user", fixture.server.uri()));
+            let dir = fixture
+                .home
+                .path()
+                .join(format!("weekly-reset-{account}.d"));
+            let ledger = load::<Ledger>(&dir.join("state.json")).unwrap().unwrap();
+            let op = ledger.current.unwrap();
+            assert_eq!(ledger.next_generation, 2);
+            assert_eq!(op.generation, 1);
+            assert_eq!(op.cycle, reset_at);
+            assert_eq!(op.key, operation_key(&account, reset_at, "A", 1));
+            assert_eq!(op.credit, "A");
+            assert!(
+                op.outcome
+                    == if eligible {
+                        Outcome::Consumed
+                    } else {
+                        Outcome::AwaitingAck
+                    }
+            );
+            let credit = credit_at(&dir, "A").unwrap();
+            assert_eq!(credit.consumed, eligible);
+            assert_eq!(credit.retry_released, eligible);
+        }
+    }
 }
 
 #[tokio::test]
@@ -779,13 +831,13 @@ async fn usage_changed_during_credit_listing_cannot_authorize_a_post() {
     for purpose in [Purpose::Preflight, Purpose::Recover] {
         for change in ["lower_usage", "later_reset", "restored"] {
             let fixture = Fixture::new().await;
-            let initial = policy_usage(99, 10080, 3600, purpose == Purpose::Preflight);
+            let initial = policy_usage(99, 10080, 72 * 3600, purpose == Purpose::Preflight);
             let mut changed = initial.clone();
             let window = &mut changed["rate_limit"]["primary_window"];
             match change {
                 "lower_usage" => window["used_percent"] = 98.into(),
                 "later_reset" => {
-                    let remaining = 25 * 3600;
+                    let remaining = 96 * 3600;
                     window["reset_at"] = (chrono::Utc::now().timestamp() + remaining).into();
                     window["reset_after_seconds"] = remaining.into();
                 }
@@ -921,7 +973,7 @@ async fn initial_post_rechecks_expiry_but_pending_reconciliation_keeps_its_key()
         fixture.serve(policy_usage(
             99,
             10080,
-            25 * 3600,
+            72 * 3600,
             purpose == Purpose::Preflight,
         ));
         let clock = Arc::new(AtomicI64::new(1000));

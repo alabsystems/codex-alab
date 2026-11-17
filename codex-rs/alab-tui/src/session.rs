@@ -63,6 +63,23 @@ pub fn active() -> bool {
 
 static WRITER: OnceLock<&'static Writer> = OnceLock::new();
 
+/// Register the final binary's session-record initializer before config chooses
+/// Enhanced or Vanilla. Outside aterm, an explicit no-record hook is the durable
+/// witness; inside aterm, only this Codex home's admitted writer qualifies.
+pub fn install_mode_durability() {
+    let _ = codex_alab_core::install_mode_durability_start(|home| {
+        let shared = shared();
+        let Some(launch) = shared.launch() else {
+            return false;
+        };
+        if inside_aterm(launch) {
+            return start(shared, home);
+        }
+        let _ = shared.set_flush(Box::new(|| true));
+        shared.record_flush_installed()
+    });
+}
+
 /// Start the sweep from the effective TUI configuration, before native restore needs it.
 pub fn start(current: &'static Shared, home: &Path) -> bool {
     if !active() || !std::ptr::eq(current, shared()) {
@@ -397,15 +414,29 @@ impl Writer {
         self.writes.load(Ordering::SeqCst)
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_model_goal_handoff_for_lock_order_test(&self, source: Record) {
+        codex_alab_core::with_model_source_lock(|| {
+            self.lock().model_goal_handoff = Some(source);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn state_available_for_lock_order_test(&self) -> bool {
+        self.state.try_lock().is_ok()
+    }
+
     /// A signal came: from now on the record keeps the status it has now.
     pub fn hold_status(&self) {
-        self.prepare();
-        let mut state = self.lock();
-        if state.start_failed || state.finalized || state.held_status.is_some() {
-            return;
-        }
-        let status = self.build(&mut state, now_ms()).status;
-        state.held_status = Some(status);
+        codex_alab_core::with_model_source_lock(|| {
+            self.prepare();
+            let mut state = self.lock();
+            if state.start_failed || state.finalized || state.held_status.is_some() {
+                return;
+            }
+            let status = self.build(&mut state, now_ms()).status;
+            state.held_status = Some(status);
+        });
     }
 
     /// Hand the shared state this writer's write-through ([`Shared::flush_record`]).
@@ -420,21 +451,23 @@ impl Writer {
     /// settles a handoff (it commits the concrete replacement that retires the predecessors'
     /// records this start holds): such a write is not coalesced ([`written_through`]).
     pub fn urgent(&self) -> bool {
-        let mut state = self.lock();
-        if state.finalized {
-            return false;
-        }
-        let next = self.build(&mut state, now_ms());
-        let settles = state
-            .held_sources
-            .iter()
-            .any(|source| !self.retain_native_source(&state, source))
-            && (next.resume_argv.is_some() || !record::relaunch_owed(&next));
-        settles
-            || state
-                .last
-                .as_ref()
-                .is_none_or(|last| written_through(last, &next))
+        codex_alab_core::with_model_source_lock(|| {
+            let mut state = self.lock();
+            if state.finalized {
+                return false;
+            }
+            let next = self.build(&mut state, now_ms());
+            let settles = state
+                .held_sources
+                .iter()
+                .any(|source| !self.retain_native_source(&state, source))
+                && (next.resume_argv.is_some() || !record::relaunch_owed(&next));
+            settles
+                || state
+                    .last
+                    .as_ref()
+                    .is_none_or(|last| written_through(last, &next))
+        })
     }
 
     /// Whether `source` was written in this process's own aterm session
@@ -545,6 +578,12 @@ impl Writer {
     /// Once, before the first write: the directory, the previous image's generation (a
     /// re-exec keeps the pid and the identity), and the sweep of dead identities' records.
     pub fn prepare(&self) {
+        codex_alab_core::with_model_source_lock(|| self.prepare_with_source_lock());
+    }
+
+    /// `MODEL_SOURCE_FENCE` must precede `state`: a durable source publication
+    /// enters through the opposite side and synchronously invokes this writer.
+    fn prepare_with_source_lock(&self) {
         let mut state = self.lock();
         if state.prepared {
             return;
@@ -856,7 +895,30 @@ impl Writer {
 
     /// The callback observes the completed atomic write, before source retirement.
     pub(crate) fn write_now_with(&self, after_write: impl FnOnce()) -> std::io::Result<bool> {
-        self.prepare();
+        self.write_now_with_source_probe(after_write, || {})
+    }
+
+    fn write_now_with_source_probe(
+        &self,
+        after_write: impl FnOnce(),
+        after_source_lock: impl FnOnce(),
+    ) -> std::io::Result<bool> {
+        codex_alab_core::with_model_source_lock(|| {
+            after_source_lock();
+            self.write_now_with_source_lock(after_write)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_now_with_lock_order_probe(
+        &self,
+        after_source_lock: impl FnOnce(),
+    ) -> std::io::Result<bool> {
+        self.write_now_with_source_probe(|| {}, after_source_lock)
+    }
+
+    fn write_now_with_source_lock(&self, after_write: impl FnOnce()) -> std::io::Result<bool> {
+        self.prepare_with_source_lock();
         let mut state = self.lock();
         if state.start_failed {
             return Err(std::io::Error::other("session writer did not start"));
@@ -940,7 +1002,17 @@ impl Writer {
         ending: &Ending,
         before_retire: impl FnOnce() -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        self.prepare();
+        codex_alab_core::with_model_source_lock(|| {
+            self.finalize_with_source_lock(ending, before_retire)
+        })
+    }
+
+    fn finalize_with_source_lock(
+        &self,
+        ending: &Ending,
+        before_retire: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.prepare_with_source_lock();
         let mut state = self.lock();
         if state.start_failed {
             return Err(std::io::Error::other("session writer did not start"));

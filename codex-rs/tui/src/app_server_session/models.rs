@@ -32,7 +32,7 @@ impl AppServerSession {
             self.request_handle(),
             RequestId::String(format!("model-list-{request_id}")),
         );
-        tokio::spawn(async move {
+        self.alab_spawn_original_work(async move { // ALAB(retained-ui): retain the SAME original picker task before polling.
             let result = models.await.map_err(|err| err.to_string());
             app_event_tx.send(AppEvent::ModelsLoaded { request_id, result });
         });

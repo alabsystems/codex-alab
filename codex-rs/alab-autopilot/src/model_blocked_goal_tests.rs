@@ -27,6 +27,8 @@ mod hooks;
 mod late_import;
 #[path = "model_blocked_partial_finish_tests.rs"]
 mod partial_finish;
+#[path = "goal_runtime_registry_tests.rs"]
+mod registry;
 #[path = "model_blocked_restart_tests.rs"]
 mod restart;
 #[path = "model_blocked_source_tests.rs"]
@@ -76,7 +78,7 @@ async fn goal(h: &Harness) -> codex_state::ThreadGoal {
 }
 
 async fn seed(h: &Harness, goals: &GoalService) -> codex_state::ThreadGoal {
-    goals
+    let outcome = goals
         .set_thread_goal(
             &h.test.codex.state_db().expect("native goal database"),
             GoalSetRequest {
@@ -90,6 +92,29 @@ async fn seed(h: &Harness, goals: &GoalService) -> codex_state::ThreadGoal {
         )
         .await
         .expect("persist original active goal");
+    let db = h.test.codex.state_db().expect("native goal database");
+    let setup_goal = db
+        .thread_goals()
+        .get_thread_goal(h.rt.id)
+        .await
+        .expect("read setup goal")
+        .expect("setup goal exists");
+    db.thread_goals()
+        .replace_thread_goal_snapshot(&setup_goal)
+        .await
+        .expect("persist setup-only continuation deferral");
+    outcome.apply_runtime_effects(goals).await;
+    db.thread_goals()
+        .clear_thread_goal_continuation_deferral(h.rt.id)
+        .await
+        .expect("clear setup-only continuation deferral");
+    assert!(
+        !goals
+            .alab_goal_runtime(h.rt.id)
+            .expect("setup goal runtime")
+            .alab_goal_persistence_held(),
+        "the setup-only continuation deferral must settle mutation custody"
+    );
     h.test
         .codex
         .thread_extension_data()
@@ -851,7 +876,7 @@ fn a_new_stop_replacement_or_budget_exhaustion_defeats_prepared_model_block_reco
                         .await
                         .expect("consume the original goal budget without changing it");
                 } else {
-                    goals
+                    let outcome = goals
                         .set_thread_goal(
                             &db,
                             GoalSetRequest {
@@ -873,6 +898,7 @@ fn a_new_stop_replacement_or_budget_exhaustion_defeats_prepared_model_block_reco
                         )
                         .await
                         .expect("new explicit native goal mutation");
+                    outcome.apply_runtime_effects(&goals).await;
                 }
                 let stopped = goal(&h).await;
                 release.send(()).expect("release prepared resume");

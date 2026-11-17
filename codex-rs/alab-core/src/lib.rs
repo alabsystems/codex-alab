@@ -14,18 +14,57 @@
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
-static ENHANCED: AtomicBool = AtomicBool::new(true);
+// Low bit: enhanced. Upper bits: exact live-mode generation. `u64::MAX`
+// permanently fails closed rather than repeating a generation.
+static MODE_STATE: AtomicU64 = AtomicU64::new(1);
 static LIVE_MODE: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+static MODEL_SOURCE_FENCE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static EXPERIENCE: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+type ModeDurabilityStart = Box<dyn Fn(&Path) -> bool + Send + Sync>;
+static MODE_DURABILITY_START: OnceLock<ModeDurabilityStart> = OnceLock::new();
+
+thread_local! {
+    /// A record flush rebuilds its snapshot synchronously and may rediscover the
+    /// same carried source while the outer durable publication owns the fence.
+    /// Keep that same-thread recursion inside the outer critical section.
+    static MODEL_SOURCE_FENCE_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+struct ModelSourceFenceDepth;
+
+impl ModelSourceFenceDepth {
+    fn enter() -> Self {
+        MODEL_SOURCE_FENCE_DEPTH.with(|depth| {
+            let Some(next_depth) = depth.get().checked_add(1) else {
+                panic!("model source fence recursion overflow");
+            };
+            depth.set(next_depth);
+        });
+        Self
+    }
+}
+
+impl Drop for ModelSourceFenceDepth {
+    fn drop(&mut self) {
+        MODEL_SOURCE_FENCE_DEPTH.with(|depth| {
+            let Some(next_depth) = depth.get().checked_sub(1) else {
+                panic!("model source fence recursion underflow");
+            };
+            depth.set(next_depth);
+        });
+    }
+}
 
 /// Observe the effective experience without polling or retaining a startup choice.
 pub fn experience_changes() -> tokio::sync::watch::Receiver<bool> {
@@ -43,6 +82,100 @@ fn publish_experience() {
     }
 }
 
+fn change_mode(enabled: bool) -> bool {
+    loop {
+        let current = MODE_STATE.load(Ordering::SeqCst);
+        if current == u64::MAX || current & 1 == u64::from(enabled) {
+            return false;
+        }
+        let generation = current >> 1;
+        let Some(generation) = generation.checked_add(1) else {
+            MODE_STATE.store(u64::MAX, Ordering::SeqCst);
+            return true;
+        };
+        let Some(next) = generation
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(u64::from(enabled)))
+            .filter(|next| *next != u64::MAX)
+        else {
+            MODE_STATE.store(u64::MAX, Ordering::SeqCst);
+            return true;
+        };
+        if MODE_STATE
+            .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return true;
+        }
+    }
+}
+
+/// Durably clear process-wide provenance before the atomic mode publication.
+/// No new-generation runtime can mint an old source, and a crash after either
+/// live boundary cannot recover one from the predecessor session record.
+fn change_mode_with_source_fence(enabled: bool) -> bool {
+    with_model_source_lock(|| {
+        let state = MODE_STATE.load(Ordering::SeqCst);
+        if state == u64::MAX || state & 1 == u64::from(enabled) {
+            return false;
+        }
+        let shared = session::shared();
+        shared.retire_all_model_goals_for_mode();
+        // Tests and non-final library consumers have no captured launch and can
+        // own no session record. The final binary captures its identity before
+        // config resolution, so every production transition requires the
+        // installed writer/no-record witness.
+        if (shared.launch().is_some() || shared.record_flush_installed())
+            && !shared.flush_record_required()
+        {
+            return false;
+        }
+        change_mode(enabled)
+    })
+}
+
+fn lock_model_source_fence() -> std::sync::MutexGuard<'static, ()> {
+    MODEL_SOURCE_FENCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Serialize every process-wide model-source mutation. A durable record flush
+/// rebuilds its snapshot on the same thread, so recursive discovery shares the
+/// outer fence instead of deadlocking on the non-reentrant mutex.
+pub fn with_model_source_lock<T>(callback: impl FnOnce() -> T) -> T {
+    let nested = MODEL_SOURCE_FENCE_DEPTH.with(|depth| depth.get() != 0);
+    let _sources = (!nested).then(lock_model_source_fence);
+    let _depth = ModelSourceFenceDepth::enter();
+    callback()
+}
+
+/// Whether this thread is inside the process-wide model-source critical
+/// section. This is diagnostic only; it grants no authority after the caller
+/// returns and must not be used instead of [`with_model_source_lock`].
+pub fn model_source_lock_owned_by_current_thread() -> bool {
+    MODEL_SOURCE_FENCE_DEPTH.with(|depth| depth.get() != 0)
+}
+
+/// Run a durable model-source publication only while its exact Enhanced
+/// generation remains current. Mode changes and every persisted source mutation
+/// are excluded for the whole callback.
+pub fn with_model_source_fence<T>(
+    expected_mode_epoch: u64,
+    callback: impl FnOnce() -> T,
+) -> Option<T> {
+    let _live = LIVE_MODE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    with_model_source_lock(|| (mode_epoch() == Some(expected_mode_epoch)).then(callback))
+}
+
+/// Exact enhanced-mode generation. Vanilla and exhaustion expose no recovery authority.
+pub fn mode_epoch() -> Option<u64> {
+    let state = MODE_STATE.load(Ordering::SeqCst);
+    (state != u64::MAX && state & 1 == 1).then_some(state >> 1)
+}
+
 /// Turn ALab's behavior on for this process. The `codex` binary calls it at entry.
 pub fn activate() {
     ACTIVE.store(true, Ordering::SeqCst);
@@ -51,7 +184,7 @@ pub fn activate() {
 
 /// Whether this process is the codex-alab binary (or an ALab test that said so).
 pub fn active() -> bool {
-    is_alab_binary() && ENHANCED.load(Ordering::SeqCst)
+    is_alab_binary() && mode_epoch().is_some()
 }
 
 /// Product identity remains available for the mode command in vanilla mode.
@@ -60,30 +193,61 @@ pub fn is_alab_binary() -> bool {
 }
 
 /// All behavioral hooks share the same vanilla/enhanced choice.
-pub fn set_enhanced(enabled: bool) {
+pub fn set_enhanced(enabled: bool) -> bool {
     let mut live = LIVE_MODE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *live = true;
-    let changed = ENHANCED.swap(enabled, Ordering::SeqCst) != enabled;
+    let changed = change_mode_with_source_fence(enabled);
+    let current = mode_epoch().is_some();
     drop(live);
     if changed {
         publish_experience();
         session::shared().mark_changed();
     }
+    current
+}
+
+/// Install the final binary's session-record initializer. Config resolution
+/// calls it before an initial Vanilla boundary, while it already knows the
+/// effective Codex home.
+pub fn install_mode_durability_start(
+    start: impl Fn(&Path) -> bool + Send + Sync + 'static,
+) -> bool {
+    MODE_DURABILITY_START.set(Box::new(start)).is_ok()
+}
+
+/// Establish either the session writer or an explicit no-record witness before
+/// a mode transition can retire persisted model provenance.
+pub fn prepare_mode_durability(home: &Path) -> bool {
+    MODE_DURABILITY_START.get().is_some_and(|start| start(home))
+}
+
+/// Whether a person's live choice has superseded config-layer mode selection.
+pub fn mode_choice_is_live() -> bool {
+    *LIVE_MODE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Config reloads may initialize the mode but never overwrite a person's live choice.
-pub fn configure_enhanced(enabled: bool) {
+/// Returns `false` only when a required durable transition could not commit.
+pub fn configure_enhanced(enabled: bool) -> bool {
     let live = LIVE_MODE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let changed = !*live && ENHANCED.swap(enabled, Ordering::SeqCst) != enabled;
+    if *live {
+        return true;
+    }
+    let already_selected = mode_epoch().is_some() == enabled;
+    let changed = !already_selected && change_mode_with_source_fence(enabled);
+    let committed = already_selected || changed;
     drop(live);
     if changed {
         publish_experience();
         session::shared().mark_changed();
     }
+    committed
 }
 
 pub mod account_handoff;
@@ -94,13 +258,17 @@ pub mod boxes;
 pub mod capacity;
 pub mod compaction;
 pub mod context_host;
+pub mod diagnostic_id;
 pub mod exec_wall;
 pub mod execution;
+pub mod goal_chronology_fence;
 pub mod goal_clock;
+pub mod goal_dispatch;
 pub mod goal_persistence;
 pub mod goal_recovery;
 pub mod goal_stops;
 pub mod home;
+pub mod https_fallback;
 pub mod log_health;
 pub mod mail;
 pub mod managed_auth;
@@ -108,8 +276,15 @@ pub mod manager_catalog;
 pub mod manager_source_epoch;
 pub mod model_goal_invocation;
 pub mod model_goal_stops;
+pub mod native_backend_owner;
+pub mod native_backend_startup;
+#[cfg(unix)]
+pub mod native_fd_custody;
+#[cfg(unix)]
+pub mod native_owned_control;
 pub mod native_preload;
 pub mod native_reader_retirement;
+pub mod native_root;
 pub mod native_source;
 pub mod native_source_launch;
 pub mod native_source_lifetime;
@@ -119,8 +294,9 @@ pub mod native_target;
 pub mod quota;
 pub mod recovery_clock;
 pub mod renewal;
-pub mod retained_future;
 pub mod request_error;
+pub mod retained_future;
+pub mod retained_goal_gate;
 pub mod runtime_upgrade;
 pub mod session;
 pub mod upgrade_barrier;
@@ -327,3 +503,17 @@ mod kimi_tests;
 mod session_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(unix)]
+mod native_root_io;
+
+#[cfg(unix)]
+pub mod native_root_command;
+
+#[cfg(unix)]
+pub mod native_root_child;
+
+#[cfg(unix)]
+pub mod native_incoming;
+
+pub mod connection_resource; // ALAB(owned-local): opaque accepted-resource custody, never permission.

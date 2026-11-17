@@ -354,3 +354,7 @@ impl crate::tui::Tui {
         self.event_broker.prepare_upgrade_capture()?.with_startup(self.alab_upgrade_startup_snapshot())
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "editor_upgrade_input_barrier_tests.rs"]
+mod editor_barrier_tests;

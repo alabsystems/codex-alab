@@ -119,7 +119,10 @@ impl Received {
             return Err(invalid("oversized exec custody receipt"));
         }
         bytes.push(b'\n');
-        let (receiver, mut sender) = UnixStream::pair()?;
+        let (receiver, mut sender) = {
+            let _fd_custody = codex_alab_core::native_fd_custody::receiving()?;
+            UnixStream::pair()?
+        };
         receiver.set_nonblocking(true)?;
         sender.set_nonblocking(true)?;
         let rights = [
@@ -493,10 +496,17 @@ mod tests {
             "screen":{"active":true,"mouse_active":true,"mouse_capture_disabled":false,"input_configured":true,"keyboard_active":true,"parent_reports_key_releases":true,"pointer":0},
             "focused":true,"owned_screen":true,"alt_screen_enabled":true,"mouse_capture":0
         });
-        let body = serde_json::json!({"version":1,"primary":"00000000-0000-4000-8000-000000000001","goals":null,
-            "terminal":{"input":serde_json::from_slice::<serde_json::Value>(input.snapshot()).unwrap(),"modes":modes.snapshot(),"startup":startup}});
-        let mut frame = b"codex-runtime-state-v1\n".to_vec();
-        serde_json::to_writer(&mut frame, &body).unwrap();
+        // Exercise the current terminal envelope, leaving the deliberately
+        // invalid Core/editor bodies opaque until constructor admission.
+        let frame = crate::upgrade_state::encode(
+            "00000000-0000-4000-8000-000000000001",
+            b"null",
+            input.snapshot(),
+            modes.snapshot(),
+            &serde_json::from_value(startup).unwrap(),
+            br#"{"synthetic_terminal_failure_fixture":true}"#,
+        )
+        .unwrap();
         assert!(modes.commit_if(|| input.commit_if(|| true)).unwrap());
         frame
     }
@@ -981,3 +991,6 @@ mod tests {
         released(&root.join("original.lease"));
     }
 }
+
+#[path = "retained_image_custody.rs"]
+pub mod images;

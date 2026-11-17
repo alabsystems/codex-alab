@@ -1245,3 +1245,7 @@ mod tests {
         insta::assert_snapshot!(rendered);
     }
 }
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_backtrack.rs"]
+pub(crate) mod alab_retained; // ALAB(retained-ui): preserve actual backtrack bookmark and native edit state.

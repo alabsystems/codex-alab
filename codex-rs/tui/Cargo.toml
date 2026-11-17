@@ -212,3 +212,7 @@ path = "../alab-aterm"
 [dev-dependencies.codex-alab-tui]
 path = "../alab-tui"
 features = ["test-support"]
+
+# ALAB(owned-local): actual allocated checkout resource consumed by the full initial plan.
+[dependencies.codex-alab-task-worktree]
+path = "../alab-task-worktree"

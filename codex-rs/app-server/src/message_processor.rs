@@ -152,6 +152,14 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 #[path = "../../alab-core/glue/exec_suspend.rs"]
 pub(crate) mod alab_exec_suspend; // ALAB(exec-recovery): embedded owner suspends the original turn and drains its writers.
 
+#[cfg(unix)]
+#[path = "../../alab-core/glue/retained_task_mcp_host.rs"]
+pub(crate) mod alab_task_mcp; // ALAB(upgrade): actual retained processor owns task HTTP work and bindings.
+
+#[cfg(unix)]
+#[path = "../../alab-core/glue/retained_task_create_host.rs"]
+mod alab_task_create; // ALAB(upgrade): capture the same real processors for the complete CREATE operation.
+
 pub(crate) struct MessageProcessor {
     pub(crate) turn_admission: TurnAdmission,
     user_verification: Arc<crate::user_verification::Service>,
@@ -193,6 +201,7 @@ pub(crate) struct ConnectionSessionState {
     pub(crate) origin: crate::transport::ConnectionOrigin,
     pub(crate) mcp_event_streams: McpEventStreams,
     initialized: OnceLock<InitializedConnectionSessionState>,
+    pub(crate) alab_connection_resource: Option<codex_alab_core::connection_resource::ConnectionResource>, // ALAB(owned-local): accepted custody, not a role or local permission.
 }
 
 #[derive(Debug)]
@@ -213,6 +222,7 @@ impl ConnectionSessionState {
             rpc_gate: Arc::new(ConnectionRpcGate::new()),
             mcp_event_streams: McpEventStreams::default(),
             initialized: OnceLock::new(),
+            alab_connection_resource: None, // ALAB(owned-local): only the real transport may supply its accepted resource.
         }
     }
 
@@ -391,26 +401,32 @@ impl MessageProcessor {
                 codex_core::CodexAppsToolsCache::default(),
                 session_source,
                 environment_manager,
-                crate::config_manager::alab_destination::preparer::register(thread_extensions( // ALAB(accounts): register the actual host configuration owner through existing lifecycle extensions.
+                crate::config_manager::alab_destination::preparer::register(
+                    thread_extensions(
+                        // ALAB(accounts): register the actual host configuration owner through existing lifecycle extensions.
+                        config.as_ref(),
+                        ThreadExtensionDependencies {
+                            sample_responses: Arc::clone(&sample_responses),
+                            event_sink: Arc::clone(&extension_event_sink),
+                            auth_manager: auth_manager.clone(),
+                            state_db: state_db.clone(),
+                            analytics_events_client: analytics_events_client.clone(),
+                            thread_manager: thread_manager.clone(),
+                            goal_service: Arc::clone(&goal_service),
+                            environment_manager: Arc::clone(&environment_manager_for_extensions),
+                            executor_skill_provider: Arc::clone(&executor_skill_provider),
+                            cloud_skill_provider: cloud_skill_provider.clone(),
+                            git_attribution_base_url: config.chatgpt_base_url.clone(),
+                            http_client_factory: config.http_client_factory(),
+                            queue_service: queue_service.clone(),
+                            turn_start_admission: Some(Arc::clone(&turn_start_admission)),
+                        },
+                        runtime_is_exec, // ALAB(quota): admission belongs to this host's registry, not global process state.
+                    ),
+                    &config_manager,
+                    &auth_manager,
                     config.as_ref(),
-                    ThreadExtensionDependencies {
-                        sample_responses: Arc::clone(&sample_responses),
-                        event_sink: Arc::clone(&extension_event_sink),
-                        auth_manager: auth_manager.clone(),
-                        state_db: state_db.clone(),
-                        analytics_events_client: analytics_events_client.clone(),
-                        thread_manager: thread_manager.clone(),
-                        goal_service: Arc::clone(&goal_service),
-                        environment_manager: Arc::clone(&environment_manager_for_extensions),
-                        executor_skill_provider: Arc::clone(&executor_skill_provider),
-                        cloud_skill_provider: cloud_skill_provider.clone(),
-                        git_attribution_base_url: config.chatgpt_base_url.clone(),
-                        http_client_factory: config.http_client_factory(),
-                        queue_service: queue_service.clone(),
-                        turn_start_admission: Some(Arc::clone(&turn_start_admission)),
-                    },
-                    runtime_is_exec, // ALAB(quota): admission belongs to this host's registry, not global process state.
-                ), &config_manager, &auth_manager, config.as_ref()),
+                ),
                 Arc::new(CodexHomeUserInstructionsProvider::new(
                     config.codex_home.clone(),
                 )),
@@ -546,7 +562,10 @@ impl MessageProcessor {
             Arc::clone(&thread_manager),
             outgoing.clone(),
             Arc::clone(&config),
-            thread_state_manager.clone(),
+            crate::request_processors::GoalProcessorThreadState::new(
+                thread_state_manager.clone(),
+                Arc::clone(&pending_thread_unloads),
+            ), // ALAB(goal-recovery): goal chronology observes the same terminal-unload owner as lifecycle teardown.
             state_db.clone(),
             Arc::clone(&goal_service),
             config_manager.clone(),
@@ -694,10 +713,23 @@ impl MessageProcessor {
     pub(crate) async fn process_request(
         self: &Arc<Self>,
         connection_id: ConnectionId,
-        request: JSONRPCRequest,
+        mut request: JSONRPCRequest,
         transport: &AppServerTransport,
         session: Arc<ConnectionSessionState>,
     ) {
+        #[cfg(unix)]
+        let alab_input_ingress = self.alab_original_input_ingress(&session, &request); // ALAB(retained-ui): actual read-to-dispatch lease, before any request await/parser removal.
+        let side_rollback = crate::outgoing_message::alab_side_rollback_claim::take(&mut request); // ALAB(retained-side): reject competing namespaces before removal.
+        let side_view = crate::outgoing_message::alab_side_view_claim::take(&mut request); // ALAB(retained-side): reject combined owners before namespace removal.
+        let side_injection = crate::outgoing_message::alab_side_boundary_claim::take(&mut request); // ALAB(retained-side): reject combined owners before any other namespace is removed.
+        let callback_claim = crate::outgoing_message::alab_callback_claim::take(&mut request); // ALAB(retained-ui): reject combined owned namespaces first.
+        let reader_claim = crate::outgoing_message::alab_reader_claim::take(&mut request); // ALAB(retained-readers): refuse combined namespaces before any owned parser removes them.
+        let configured_claim = crate::outgoing_message::alab_configured_claim::take(&mut request); // ALAB(retained-frontier): reject competing namespaces before any parser removes them.
+        let source_selection = crate::outgoing_message::alab_source_selection_claim::take(&mut request); // ALAB(owned-local): distinct Source S2 parser rejects combined ownership.
+        let client_preparation = crate::outgoing_message::alab_initial_claim::take_preparation(&mut request); // ALAB(owned-local): closed preparation namespace rejects combined owners before original parse.
+        let frontier_claim = crate::outgoing_message::alab_frontier_claim::take(&mut request); // ALAB(retained-frontier): owned DATA parser before original selection parsing.
+        let client_construction = crate::outgoing_message::alab_initial_claim::take_client(&mut request); // ALAB(owned-local): independent closed Source selection, before initial parser.
+        let initial_claim = crate::outgoing_message::alab_initial_claim::take(&mut request); // ALAB(owned-local): unowned metadata/parser errors remain original.
         let request_method = request.method.as_str();
         tracing::trace!(
             ?connection_id,
@@ -714,17 +746,41 @@ impl MessageProcessor {
             traceparent: trace.traceparent.clone(),
             tracestate: trace.tracestate.clone(),
         });
-        let request_context = RequestContext::new(
+        let mut request_context = RequestContext::new(
             request_id.clone(),
             request_method,
             request_span,
             request_trace,
-        );
+        ).alab_with_connection_resource(session.alab_connection_resource.clone()); // ALAB(owned-local): retain exact original accepted resource in the real request context.
+        request_context.alab_callback_claim = callback_claim.as_ref().ok().and_then(Clone::clone).map(Arc::new); // ALAB(retained-ui): retain exact original context.
+        #[cfg(unix)]
+        { request_context.alab_input_ingress = alab_input_ingress; } // ALAB(retained-ui): SAME queued context owns frame until real registry/spawn handoff.
+        request_context.alab_side_rollback = side_rollback.as_ref().ok().and_then(Clone::clone).map(Arc::new); // ALAB(retained-side): same actual registered context/origin.
+        request_context.alab_side_view = side_view.as_ref().ok().and_then(Clone::clone).map(Arc::new); // ALAB(retained-side): same original registered context/A custody.
+        request_context.alab_side_injection = side_injection.as_ref().ok().and_then(Clone::clone).map(Arc::new); // ALAB(retained-side): retain whole original registered request/resource.
+        request_context.alab_reader_claim = reader_claim.as_ref().ok().and_then(Clone::clone).map(Arc::new); // ALAB(retained-readers): actual registered context retains selection DATA.
+        request_context.alab_configured_claim = configured_claim.as_ref().ok().and_then(Clone::clone).map(Arc::new); // ALAB(retained-frontier): same original request/resource owner.
+        request_context.alab_source_selection = source_selection.as_ref().ok().and_then(Clone::clone).map(Arc::new); // ALAB(owned-local): SAME original registered context/resource.
+        request_context.alab_client_preparation = client_preparation.as_ref().ok().and_then(Clone::clone); // ALAB(owned-local): real registered Context retains the original preparation selection.
+        request_context.alab_frontier_claim = frontier_claim.as_ref().ok().and_then(Clone::clone).map(Arc::new); // ALAB(retained-frontier): same actual request/resource custody.
+        request_context.alab_initial_claim = initial_claim.as_ref().ok().and_then(Clone::clone);
+        request_context.alab_client_construction = client_construction.as_ref().ok().and_then(Clone::clone); // ALAB(owned-local): original real context retains full later-call DATA. // ALAB(owned-local): retain the same actual context and full frozen DATA.
         Self::run_request_with_context(
             Arc::clone(&self.outgoing),
             request_context.clone(),
             async {
-                let codex_request = deserialize_client_request(request);
+                let codex_request = side_rollback.map_err(|error| invalid_params(error.to_string()))
+                    .and_then(|_| side_view.map_err(|error| invalid_params(error.to_string())))
+                    .and_then(|_| side_injection.map_err(|error| invalid_params(error.to_string())))
+                    .and_then(|_| callback_claim.map_err(|error| invalid_params(error.to_string())))
+                    .and_then(|_| reader_claim.map_err(|error| invalid_params(error.to_string())))
+                    .and_then(|_| configured_claim.map_err(|error| invalid_params(error.to_string())))
+                    .and_then(|_| source_selection.map_err(|error| invalid_params(error.to_string())))
+                    .and_then(|_| client_preparation.map_err(|error| invalid_params(error.to_string())))
+                    .and_then(|_| frontier_claim.map_err(|error| invalid_params(error.to_string())))
+                    .and_then(|_| client_construction.map_err(|error| invalid_params(error.to_string())))
+                    .and_then(|_| initial_claim.map_err(|error| invalid_params(error.to_string())))
+                    .and_then(|_| deserialize_client_request(request)); // ALAB(owned-local): malformed owned extension never falls through to an unbound start.
                 let result = match codex_request {
                     Ok(codex_request) => {
                         // Websocket callers finalize outbound readiness in lib.rs after mirroring
@@ -773,7 +829,7 @@ impl MessageProcessor {
             request.method_name(),
             request_span,
             /*parent_trace*/ None,
-        );
+        ).alab_with_connection_resource(session.alab_connection_resource.clone()); // ALAB(owned-local): preserve actual context without synthesizing a request or connection.
         request_context.cancellation = cancellation;
         tracing::trace!(
             ?connection_id,
@@ -827,6 +883,7 @@ impl MessageProcessor {
         outgoing
             .register_request_context(request_context.clone())
             .await;
+        #[cfg(test)] crate::outgoing_message::alab_selection_request_capture::registered(&outgoing, &request_context).await; // ALAB(owned-local): same registered context; original registration guard has ended before the control pause.
         request_fut.instrument(request_context.span()).await;
     }
 
@@ -1213,6 +1270,33 @@ impl MessageProcessor {
                 .await;
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
+            ClientRequest::ConfigRead { params, .. } if request_context.alab_callback_claim.is_some() => { // ALAB(retained-ui): same Source owner and original typed config policy.
+                let selected = request_context.alab_callback_claim.clone().ok_or_else(|| invalid_params("callback owner disappeared"))?;
+                #[cfg(unix)]
+                { self.thread_processor.alab_retained_callbacks(request_context, params, selected.as_ref().clone(), self.config_processor.clone()).await.map(|()| None) }
+                #[cfg(not(unix))]
+                { Err(invalid_params("retained callback transport unavailable")) }
+            }
+            ClientRequest::ConfigRead { params, .. } if request_context.alab_reader_claim.is_some() => { // ALAB(retained-readers): original typed config and genuine same-backend snapshot owner.
+                let selected = request_context.alab_reader_claim.clone().ok_or_else(|| invalid_params("reader owner disappeared"))?;
+                #[cfg(unix)]
+                { self.thread_processor.alab_retained_reader(request_context, params, selected.as_ref().clone(), self.config_processor.clone()).await.map(|()| None) }
+                #[cfg(not(unix))]
+                { Err(invalid_params("retained reader physical transport unavailable")) }
+            }
+            ClientRequest::ConfigRead { params, .. } if request_context.alab_client_preparation.is_some() => { // ALAB(owned-local): original ConfigRead typed policy plus backend-owned operation DATA.
+                #[cfg(unix)]
+                { self.alab_client_preparation_read(&request_context, params).await }
+                #[cfg(not(unix))]
+                { Err(invalid_params("client preparation physical transport unavailable")) }
+            }
+            ClientRequest::ConfigRead { params, .. } if request_context.alab_configured_claim.is_some() => { // ALAB(retained-frontier): same configured owner/Empty slot, preserving typed response dispatch.
+                let claim = request_context.alab_configured_claim.clone().ok_or_else(|| invalid_params("configured owner disappeared"))?;
+                #[cfg(unix)]
+                { self.thread_processor.alab_retained_configured(request_id.clone(), request_context, params, claim.as_ref().clone(), self.config_processor.clone()).await.map(|()| None) }
+                #[cfg(not(unix))]
+                { Err(invalid_params("retained configured transport unavailable")) }
+            }
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)
@@ -1381,6 +1465,9 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ThreadUnsubscribe { params, .. } => {
+                #[cfg(unix)]
+                if request_context.alab_side_view.is_some() {return Box::pin(self.thread_processor.alab_retained_side_close(request_context,params,session.clone())).await;} // ALAB(retained-side): actual accepted original unsubscribe/lease retirement remains backend-owned.
+
                 let thread_id = params.thread_id.clone();
                 let response = self
                     .thread_processor
@@ -1392,13 +1479,28 @@ impl MessageProcessor {
                 Ok(response)
             }
             ClientRequest::ThreadResume { params, .. } => {
+                if let Some(claim) = request_context.alab_source_selection.clone() { // ALAB(owned-local): actual S2 resources share original listener policy, never generic resume/rebuild.
+                    #[cfg(unix)]
+                    return self.thread_processor.alab_source_selection_frontier(request_id.clone(), request_context, params,
+                        claim.as_ref().clone(), app_server_client_name.clone(), client_version.clone()).await;
+                    #[cfg(not(unix))]
+                    return Err(invalid_params("Source selection physical transport unavailable"));
+                }
+                if let Some(claim) = request_context.alab_frontier_claim.clone() { // ALAB(retained-frontier): actual captured Core, never generic resume/rebuild.
+                    #[cfg(unix)]
+                    return self.thread_processor.alab_retained_frontier(request_id.clone(), request_context, params, claim.as_ref().clone(),
+                        app_server_client_name.clone(), client_version.clone()).await;
+                    #[cfg(not(unix))]
+                    return Err(invalid_params("retained physical transport unavailable"));
+                }
                 self.thread_processor
-                    .thread_resume(
-                        ThreadResumeTarget::Client(request_id.clone()),
+                    .alab_thread_resume_client( // ALAB(owned-local): actual original request/resource, never a fabricated client.
+                        request_id.clone(),
                         params,
                         app_server_client_name.clone(),
                         client_version.clone(),
                         client_mcp_extensions.clone(),
+                        request_context,
                     )
                     .await
             }
@@ -1410,6 +1512,7 @@ impl MessageProcessor {
                         app_server_client_name.clone(),
                         client_version.clone(),
                         client_mcp_extensions.clone(),
+                        request_context, // ALAB(owned-local): actual original context carries native resource into fork acceptance.
                     )
                     .await
             }
@@ -1433,6 +1536,8 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ThreadDelete { params, .. } => {
+                #[cfg(unix)]
+                if request_context.alab_side_rollback.is_some(){return Box::pin(self.thread_processor.alab_retained_side_rollback(request_context,params)).await;} // ALAB(retained-side): SAME accepted original delete/result owner.
                 self.thread_processor
                     .thread_delete(request_id.clone(), params)
                     .await
@@ -1774,6 +1879,10 @@ impl MessageProcessor {
                 }
             }
             ClientRequest::ThreadInjectItems { params, .. } => {
+                #[cfg(unix)]
+                if request_context.alab_side_injection.is_some() { // ALAB(retained-side): accepted same-Scope worker owns original injection through C1 EOF.
+                    return Box::pin(self.thread_processor.alab_retained_side_inject(request_context, params, self.turn_processor.clone())).await;
+                }
                 self.turn_processor
                     .thread_inject_items(&request_id, params)
                     .await
@@ -2078,3 +2187,26 @@ mod thread_lifecycle_tests;
 #[cfg(test)]
 #[path = "message_processor_workspace_routing_tests.rs"]
 mod workspace_routing_tests;
+
+#[path = "../../alab-core/glue/retained_goal_runtime.rs"]
+mod alab_retained_goal_runtime; // ALAB(owned-local): install same inhibitor before any retained root or task host publishes.
+
+#[cfg(unix)]
+#[path = "../../alab-core/glue/initial_session_runtime.rs"]
+mod alab_initial_session_runtime; // ALAB(owned-local): weak processor association, strong runtime custody.
+
+#[cfg(test)]
+#[path = "../../alab-core/glue/initial_selection_processor_fixture.rs"]
+mod alab_selection_processor_fixture; // ALAB(owned-local): clone SAME processor/outgoing resources for lower publication controls.
+
+#[cfg(unix)]
+#[path = "../../alab-core/glue/retained_frontier_processor.rs"]
+mod alab_retained_frontier; // ALAB(retained-frontier): exact physical owner captured before dispatch.
+
+#[cfg(unix)]
+#[path = "../../alab-core/glue/client_construction_preparation_processor.rs"]
+mod alab_client_preparation; // ALAB(owned-local): preserve actual config policy and original request resource.
+
+#[cfg(unix)]
+#[path="../../alab-core/glue/retained_callback_connection.rs"]
+mod alab_callback_connection; // ALAB(retained-ui): actual session gate, no caller-ID liveness reconstruction.

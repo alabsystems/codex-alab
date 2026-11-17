@@ -588,3 +588,10 @@ mod tests {
 #[cfg(test)]
 #[path = "status_indicator_widget/effects_tests.rs"]
 mod effects_tests;
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_bottom_status_row.rs"]
+pub(crate) mod alab_retained_row; // ALAB(retained-ui): preserve exact native pane state with enclosing resource bindings.
+
+#[cfg(unix)]
+pub(crate) use timer::alab_retained_timer; // ALAB(retained-ui): expose owned clock DATA without widening native timer fields.

@@ -34,6 +34,7 @@ fn carried_model_goal() -> crate::session::WallGoal {
         goal_id: "original-goal".into(),
         objective: "finish and verify the original task".into(),
         token_budget: Some(1_000),
+        chronology_fence_generation: None,
         turn: "model-blocked-turn".into(),
         person_stops: 0,
     }
@@ -67,6 +68,18 @@ fn model_goal_custody_survives_native_acceptance_without_importing_old_pacing() 
     shared.set_pace("t1", Pace::default());
     assert_eq!(
         shared.pace("t1").and_then(|pace| pace.model_blocked_goal),
+        Some(carried_model_goal())
+    );
+}
+
+#[test]
+fn model_source_fence_allows_same_thread_record_snapshot_reentry() {
+    let shared = Shared::new();
+    crate::with_model_source_lock(|| {
+        shared.carry_model_goal("record-snapshot", Some(carried_model_goal()));
+    });
+    assert_eq!(
+        shared.carried_model_goal("record-snapshot"),
         Some(carried_model_goal())
     );
 }
@@ -1342,6 +1355,10 @@ fn the_write_through_is_the_writers_or_nothing() {
     let shared = Shared::new();
     // No record kept (outside aterm): nothing to write, so nothing holds an act back.
     assert!(shared.flush_record());
+    assert!(
+        !shared.flush_record_required(),
+        "absence cannot acknowledge a durable provenance boundary"
+    );
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let seen = std::sync::Arc::clone(&calls);
     assert!(shared.set_flush(Box::new(move || {
@@ -1353,7 +1370,8 @@ fn the_write_through_is_the_writers_or_nothing() {
         "only the first is kept"
     );
     assert!(!shared.flush_record(), "a failed write is told");
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!shared.flush_record_required(), "a failed boundary is told");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 /// The harness word is the TUI's chrome alone: a change wakes a frame, an unchanged word wakes

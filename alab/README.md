@@ -236,7 +236,7 @@ upstream change, with its commit message and PR, instead of a day's worth.
 | 3 | conflicts need a resolver | resolve in the worktree, `git add`, `alab/sync.sh --continue` |
 | 4 | `check.sh` failed, or a fix was left uncommitted | fix it in the worktree (see below), `alab/sync.sh --continue` |
 | 5 | an earlier sync still waits: for its resolver, or for a `--no-push` merge to land | `alab/sync.sh --status` says why and for how long; resolve and `--continue`, or `--abort` |
-| 6 | upstream itself does not build and run with Trust | a lane fault: fix it in Trust, then `--continue` |
+| 6 | pristine upstream certified, but its exact certified binary also failed at runtime | a lane fault: fix it in Trust, then `--continue` |
 | 1 | anything else, named on stderr (a failing git command exits with its own status, such as 128) | read it; the next unattended run resumes a sync that stopped this way (after a person's `--continue`, rerun it), and `alab/sync.sh --abort` starts over |
 
 `--continue` lands the merge in progress only; upstream commits beyond it wait for the
@@ -313,9 +313,14 @@ Its steps:
 1. **No hook went missing.** Each `ALAB(<topic>):` marker in an upstream file on
    `origin/main` (or `ALAB_CHECK_BASE`, which must exist) must still be there (markers
    inside `alab/`, `AGENTS.md` and `codex-rs/alab-*` do not count).
-2. **Codex builds from the committed lockfile and runs** (`codex --version`). On failure
-   (`check.sh` exit 2) the sync builds and runs pristine upstream in the pristine tree:
-   if that fails too, the fault is the toolchain's (exit 6), else ALab's (exit 4).
+2. **Codex certifies from the committed lockfile and runs** (`codex --version`). On an
+   authenticated failure of the candidate's exact certified binary, the same native-selected,
+   contained gate certifies pristine upstream with the fixed proof policy and derived vendor
+   configuration, then runs that exact certified binary. Pristine runtime success reports an
+   ALab fault (`check.sh` exit 2, sync exit 4); authenticated pristine runtime failure reports
+   a Trust lane fault (exit 6). Every nonzero certification status is phase-ambiguous and
+   remains unresolved (exit 1, or its resource/signal status); it never selects either verdict.
+   Selector, dependency, containment, setup and resource failures carry no source verdict.
 3. **Every `codex-rs/alab-*` crate passes its tests.**
    Capsule ownership checks run in an exact child with a bounded wait and a named
    helper result. A closed descriptor number can be reused immediately by another
@@ -378,8 +383,9 @@ Its steps:
    `test_unit_runner_native.py` additionally needs Python 3.11 or newer and real Trust
    Cargo, and checks inherited context before a native harness initializes Rust, plus
    existing Cargo runner configuration and a Python signal-change negative control.
-   For the full Python workflow, use Python 3.11 or newer in that qualified project
-   controller, with `ALAB_TEST_UNIT_RUNNER` naming the selected adapter and
+   For the full Python workflow, use Python 3.11 or newer with `os.waitid` and
+   `WNOWAIT` support for the PTY custodian, in that qualified project controller,
+   with `ALAB_TEST_UNIT_RUNNER` naming the selected adapter and
    `ALAB_NATIVE_CARGO_COMMAND` naming the admitted Cargo prefix as a JSON array:
 
    ```sh
@@ -389,7 +395,13 @@ Its steps:
    "$ALAB_PYTHON" -I -B alab/python_tests.py
    ```
 
-   This discovers every `test_*.py` case once and emits `ALAB_PYTHON_MANIFEST`.
+   This discovers `alab/tests/test_*.py` and the three unittest modules
+   `smoke/history_pagination_test.py`, `smoke/renewal_follow_test.py` and
+   `smoke/weekly_reset_test.py` once, preserving their module and case IDs,
+   and emits `ALAB_PYTHON_MANIFEST`. Each required smoke module must exist
+   and contain cases; discovery errors fail before any test body runs.
+   `smoke/prune_test.py` remains a separate standalone copied-process check,
+   documented below; it is not a unittest module or part of this manifest.
    The complete native runner class must pass first, without skips or expected
    failures, and finish its ordinary class/module cleanup. An unavailable native
    prerequisite returns failure before remaining test bodies run; discovery still
@@ -406,6 +418,9 @@ Its steps:
    The native command, profile, admission and 60-second
    fixture deadline remain unchanged. These are Python workflow results, not an
    application certificate.
+   The [merged-tree validation](reviews/merged-wide-validation-2026-11-16.md)
+   records a complete workflow run, its skip accounting and the separate copied-process
+   prune check, with exact source and qualification limits.
    Measured contained on this Mac (2026-10-21, `alab_contained` as
    `run_check` calls it): the whole gate passed, jq, `<target>/tippy` and the step's metadata
    read included (17 upstream diagnostics set aside), and with a build-script fault planted
@@ -476,9 +491,9 @@ but leaves that tree's registration behind (`git worktree list` shows it `prunab
 `git worktree remove --force --force <its path>` rather than `git worktree prune`, which would also
 drop a person's worktree on a disk that is not mounted.
 
-The sync runs `check.sh`, the pristine build that tells an ALab fault from a lane fault,
-and the lock re-resolve (`targo metadata`, which reads the `.cargo/config.toml` upstream
-just merged) **contained** (`lib.sh`, `alab_contained`): they build and run code upstream
+The sync runs `check.sh` (including its certified pristine attribution inside the same
+selected gate) and the lock re-resolve (`targo metadata`, which reads the
+`.cargo/config.toml` upstream just merged) **contained** (`lib.sh`, `alab_contained`): they build and run code upstream
 landed hours ago, build scripts of newly added crates included, as the account that holds
 `~/.codex/auth.json`, git and `gh` credentials, the SSH agent and the release key. Under
 a macOS sandbox (`sandbox-exec`) with a scrubbed environment and a scratch `TMPDIR`, that
@@ -528,7 +543,10 @@ containment, registry ownership, or test attribution.
 Resource stops and interruptions return immediately without a dependency verdict.
 
 For a cold private Cargo home, run this from the fixed checkout before the gate.
-First run `alab/setup.sh` if `upstream/main` is absent. Set `ALAB_ATPKG_PUBLISH`
+First run `alab/setup.sh` if `upstream/main` is absent; in a clone that pushes
+through `agh`, then remove the remote's config section and keep its ref
+(`git config --remove-section remote.upstream`), because `agh repo push`
+refuses a clone that carries `remote.upstream.*`. Set `ALAB_ATPKG_PUBLISH`
 to the real producer when it is not on PATH, and `ALAB_PYTHON` to the selected
 Python executable when needed. This preparation can fetch dependencies; the gate
 itself keeps its offline preflight. It uses the same native lease, target
@@ -1824,9 +1842,12 @@ the local-only packaging and future published-lane plans in Decisions 3 and 6.
    Test execution and compiler identity probes may still use the explicitly
    unverified lane; they confer no proof authority on the shipping application.
    After the live certified build, the gate executes that new Codex against
-   isolated loopback reset fixtures: eligible five-hour and weekly windows,
-   including weekly refreshes 24 and 25 hours away, and rejects usage below
-   99 percent or a missing or elapsed refresh. It also changes the
+   isolated loopback reset fixtures: eligible weekly windows at least 99 percent
+   used with refreshes strictly more than 48 hours away. Five-hour limits alone
+   and weekly refreshes 24, 25 or exactly 48 hours away preserve earned credits;
+   both preflight and reactive recovery have 48-hour refusal and 49-hour positive
+   controls. Usage below 99 percent or an elapsed refresh cannot authorize a POST.
+   The gate also changes the
    allowance, cycle or account after selecting an earned credit and requires a
    fresh usage check before any redemption POST. Restored-at-99 recovery keeps
    the credit; still-denied recovery and eligible preflight independently remain

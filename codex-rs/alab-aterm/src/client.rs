@@ -581,7 +581,13 @@ pub(crate) fn denied(status: &str) -> bool {
 #[derive(Debug, Default)]
 struct State {
     policy: Option<HarnessPolicy>,
+    /// Only a new read holding policy_gate resets this. Forgetting a policy
+    /// must survive a reply whose caller has not resumed yet.
+    policy_invalidated: bool,
     claimed: bool,
+    /// Only a new claim holding claim_gate resets this. Synchronous revocation
+    /// must survive a proof reply whose caller has not resumed yet.
+    claim_invalidated: bool,
     native: Option<crate::runtime_claim::Receipt>,
     /// Same-holder sets ([`Client::reconfirm`]) sent since the claim was last taken.
     reconfirms: u64,
@@ -593,6 +599,9 @@ struct State {
 struct SharedState {
     auth_identity: crate::conn::AuthIdentity,
     state: Mutex<State>,
+    /// Policy request, classification and cache publication form one transaction.
+    policy_gate: tokio::sync::Semaphore,
+    /// Native claim, reconfirm and release each retain one complete transaction.
     claim_gate: tokio::sync::Semaphore,
 }
 
@@ -607,6 +616,33 @@ pub struct Client {
     version: String,
     server_pid: Option<u32>,
     shared: Arc<SharedState>,
+}
+
+/// An effectful claim transaction keeps its connection only after completing.
+/// A buffered reply belongs to the caller, so the request worker cannot observe
+/// every abandonment. Close synchronously instead of racing a later claim with
+/// a detached, same-holder release. This guard never owns the state mutex.
+struct ClaimTransaction<'a> {
+    client: &'a Client,
+    armed: bool,
+}
+
+impl<'a> ClaimTransaction<'a> {
+    fn new(client: &'a Client) -> Self {
+        Self { client, armed: true }
+    }
+
+    fn complete(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ClaimTransaction<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.client.close();
+        }
+    }
 }
 
 impl Client {
@@ -646,6 +682,7 @@ impl Client {
             shared: Arc::new(SharedState {
                 auth_identity,
                 state: Mutex::new(State::default()),
+                policy_gate: tokio::sync::Semaphore::new(1),
                 claim_gate: tokio::sync::Semaphore::new(1),
             }),
         })
@@ -698,8 +735,19 @@ impl Client {
 
     /// Close the connection now: aterm then releases a claim bound to it.
     pub fn close(&self) {
-        self.lock().claimed = false;
+        // Closed transport prevents any later proof or policy publication. A
+        // transaction already publishing under the state lock is cleared below.
         self.conn.close();
+        {
+            let mut state = self.lock();
+            state.claimed = false;
+            state.claim_invalidated = true;
+            state.policy = None;
+            state.policy_invalidated = true;
+        }
+        // Semaphore close wakes caller-owned wakers, which may inspect state.
+        self.shared.policy_gate.close();
+        self.shared.claim_gate.close();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -787,17 +835,44 @@ impl Client {
     /// `@self harness policy` (CONTRACT §3). An `ERR` or an `OK` this reader cannot take
     /// is [`PolicyAnswer::Unsupported`]; a timeout or a closed connection is an error. The
     /// answer is remembered: [`Client::claim`] needs a supported, effective one, and any
-    /// other answer forgets the last.
+    /// other answer forgets the last. Concurrent callers retain request order. A policy
+    /// forgotten while its reply is pending returns [`Error::PolicyInvalidated`].
     pub async fn harness_policy(&self) -> Result<PolicyAnswer, Error> {
+        let _read = self
+            .shared
+            .policy_gate
+            .acquire()
+            .await
+            .map_err(|_| Error::Closed)?;
+        {
+            let mut state = self.lock();
+            if !self.is_open() {
+                state.policy = None;
+                state.policy_invalidated = true;
+                return Err(Error::Closed);
+            }
+            state.policy_invalidated = false;
+        }
         let reply = match self.on_self("harness policy").await {
             Ok(reply) => reply,
             Err(e) => {
-                self.lock().policy = None;
+                let mut state = self.lock();
+                state.policy = None;
+                state.policy_invalidated = true;
                 return Err(e);
             }
         };
         let answer = PolicyAnswer::parse(&reply.status);
-        self.lock().policy = match &answer {
+        let mut state = self.lock();
+        if state.policy_invalidated {
+            return Err(Error::PolicyInvalidated);
+        }
+        if !self.is_open() {
+            state.policy = None;
+            state.policy_invalidated = true;
+            return Err(Error::Closed);
+        }
+        state.policy = match &answer {
             PolicyAnswer::Supported(p) => Some(p.clone()),
             PolicyAnswer::Unsupported(_) => None,
         };
@@ -810,15 +885,19 @@ impl Client {
     }
 
     /// Forget the remembered policy (a `harness-policy` event moved it): no claim until it
-    /// is read again.
+    /// is read again. An already pending answer cannot restore it; issue a fresh read.
     pub fn forget_policy(&self) {
-        self.lock().policy = None;
+        let mut state = self.lock();
+        state.policy = None;
+        state.policy_invalidated = true;
     }
 
     /// Claim the session (CONTRACT §2): `@self meta set supervisor codex-alab@<pid>`, no
     /// `ttl=`, so the claim lasts while this connection serves requests. Sent only after
     /// `harness policy` answered `OK effective=on` on this connection; then `status` must
-    /// show the claim ours AND proven, else it is given back at once.
+    /// show the claim ours AND proven, else it is given back at once. Abandoning a
+    /// transaction after it can take ownership closes the shared connection;
+    /// cancellation while waiting for its gate leaves the active caller alone.
     pub async fn claim(&self) -> Result<ClaimOutcome, Error> {
         let _claim = self
             .shared
@@ -840,18 +919,25 @@ impl Client {
             }
             Some(_) => {}
         }
+        let mut transaction = ClaimTransaction::new(self);
+        let result = self.claim_locked(&mut transaction).await;
+        transaction.complete();
+        result
+    }
+
+    /// The caller holds claim_gate and closes the connection on abandonment.
+    async fn claim_locked(
+        &self,
+        transaction: &mut ClaimTransaction<'_>,
+    ) -> Result<ClaimOutcome, Error> {
+        self.lock().claim_invalidated = false;
         let native = self.lock().native.clone();
         if let Some(native) = native {
             if !native.check(self).await? {
-                self.lock().claimed = false;
+                self.note_claim_lost();
                 return Ok(ClaimOutcome::Unproven);
             }
-            let mut state = self.lock();
-            let changed = !state.claimed;
-            state.claimed = true;
-            state.native = None;
-            state.reconfirms = 0;
-            return Ok(ClaimOutcome::Held { changed });
+            return self.finish_claim(transaction).await;
         }
         let line = format!("@{} meta set supervisor {}", self.endpoint.sid, self.holder);
         let reply = self
@@ -861,58 +947,125 @@ impl Client {
         if reply.ok().is_none() {
             // A refusal invalidates the previous proof even if the watch has not
             // delivered the native clear or replacement yet. Every clone shares it.
-            self.lock().claimed = false;
+            self.note_claim_lost();
             return Ok(refused_claim(reply.status));
         }
         let shown = self.status().await;
         match shown {
-            Ok(status) if status.proven_holder(&self.holder) => {
-                let mut state = self.lock();
-                let changed = !state.claimed;
-                state.claimed = true;
-                state.reconfirms = 0;
-                Ok(ClaimOutcome::Held { changed })
-            }
+            Ok(status) if status.proven_holder(&self.holder) => self.finish_claim(transaction).await,
             Ok(_) => {
-                self.release().await?;
+                self.release_locked().await?;
                 Ok(ClaimOutcome::Unproven)
             }
             Err(e) => {
                 // Cannot see it proven: give it back (a closed connection already did).
                 if self.is_open() {
-                    let _ = self.release().await;
+                    let _ = self.release_locked().await;
                 }
                 Err(e)
             }
         }
     }
 
+    /// The caller holds claim_gate, so another claim cannot reset revocation
+    /// between its proof request and this atomic publication.
+    async fn finish_claim(
+        &self,
+        transaction: &mut ClaimTransaction<'_>,
+    ) -> Result<ClaimOutcome, Error> {
+        let outcome = {
+            let mut state = self.lock();
+            if state.claim_invalidated || !self.is_open() {
+                None
+            } else {
+                let changed = !state.claimed;
+                state.claimed = true;
+                state.native = None;
+                state.reconfirms = 0;
+                transaction.complete();
+                Some(ClaimOutcome::Held { changed })
+            }
+        };
+        if let Some(outcome) = outcome {
+            return Ok(outcome);
+        }
+        if self.is_open() {
+            self.release_locked().await?;
+        }
+        Ok(ClaimOutcome::Unproven)
+    }
+
     /// Re-confirm the claim in the tick of an act (CONTRACT §2): the same-holder `meta
-    /// set` answered `OK`. Any other answer marks the claim lost. Each one sent is counted
+    /// set` answered `OK` without an intervening local revocation. Any other answer marks
+    /// the claim lost. Each one sent is counted
     /// ([`Client::reconfirmed_since_claim`]): a same-holder set takes back a claim someone
-    /// cleared just before it.
+    /// cleared just before it. Abandoning an admitted reconfirmation closes the
+    /// connection, including a set whose reply was buffered before cancellation.
     pub async fn reconfirm(&self) -> Result<bool, Error> {
+        let _claim = self
+            .shared
+            .claim_gate
+            .acquire()
+            .await
+            .map_err(|_| Error::Closed)?;
         {
             let mut state = self.lock();
-            if !(state.claimed && self.is_open()) {
+            if !(state.claimed && !state.claim_invalidated && self.is_open()) {
                 return Ok(false);
             }
             state.reconfirms = state.reconfirms.saturating_add(1);
         }
+        let mut transaction = ClaimTransaction::new(self);
+        let result = self.reconfirm_locked(&mut transaction).await;
+        transaction.complete();
+        result
+    }
+
+    /// The caller holds claim_gate and closes the connection on abandonment.
+    async fn reconfirm_locked(
+        &self,
+        transaction: &mut ClaimTransaction<'_>,
+    ) -> Result<bool, Error> {
         let result = self
             .on_self(&format!("meta set supervisor {}", self.holder))
             .await;
-        let ok = matches!(&result, Ok(reply) if reply.ok().is_some());
+        let acknowledged = matches!(&result, Ok(reply) if reply.ok().is_some());
+        let ok = {
+            let state = self.lock();
+            let ok = acknowledged && state.claimed && !state.claim_invalidated && self.is_open();
+            if ok {
+                transaction.complete();
+            }
+            ok
+        };
         if !ok {
-            self.lock().claimed = false;
+            self.note_claim_lost();
+            // An admitted same-holder set can retake a claim after a clear.
+            // Its stale acknowledgement cannot leave that native claim behind.
+            if acknowledged && self.is_open() {
+                self.release_locked().await?;
+            }
         }
         result.map(|_| ok)
     }
 
     /// Give the claim back: `@self meta unset supervisor holder=codex-alab@<pid>`, which
-    /// never clears another holder's.
+    /// never clears another holder's. Local proof is revoked immediately; the native
+    /// unset joins any in-flight claim or reconfirmation before it sends.
     pub async fn release(&self) -> Result<(), Error> {
-        self.lock().claimed = false;
+        self.note_claim_lost();
+        let _claim = self
+            .shared
+            .claim_gate
+            .acquire()
+            .await
+            .map_err(|_| Error::Closed)?;
+        self.release_locked().await
+    }
+
+    /// The caller already owns claim_gate, including failed claim cleanup.
+    async fn release_locked(&self) -> Result<(), Error> {
+        self.note_claim_lost();
         let reply = self
             .on_self(&format!("meta unset supervisor holder={}", self.holder))
             .await?;
@@ -930,7 +1083,9 @@ impl Client {
 
     /// Forget the claim locally (the watch saw it go to someone else); nothing is sent.
     pub fn note_claim_lost(&self) {
-        self.lock().claimed = false;
+        let mut state = self.lock();
+        state.claimed = false;
+        state.claim_invalidated = true;
     }
 
     /// Raise codex-alab's keyed attention: `<kind>: <why>`, one line of at most 200 bytes.
@@ -1486,3 +1641,7 @@ fn refused_claim(status: String) -> ClaimOutcome {
     }
     ClaimOutcome::Refused(status)
 }
+
+#[cfg(test)]
+#[path = "client_close_tests.rs"]
+mod close_tests;

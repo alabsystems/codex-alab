@@ -9,6 +9,8 @@ use codex_goal_extension::GoalRuntimeHandle;
 use codex_protocol::ThreadId;
 use codex_state::ThreadGoal;
 use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -23,6 +25,22 @@ struct Entry {
 pub struct PreparedGoals {
     entries: Vec<Entry>,
 }
+
+impl Drop for PreparedGoals {
+    fn drop(&mut self) {
+        // A committed inventory which is abandoned before capture still owns
+        // every deferred runtime retirement. Release it at the ownership edge;
+        // uncommitted transfers retain their ordinary rollback-on-drop behavior.
+        for entry in &self.entries {
+            if entry.transfer.committed() {
+                let _ = entry
+                    .transfer
+                    .abandon_final_capture("committed goal capture was dropped before completion");
+            }
+        }
+    }
+}
+
 impl PreparedGoals {
     /// Use the exact handles retained by PreparedUpgradeForest. No missing
     /// runtime or unreadable row is interpreted as an absent goal.
@@ -60,6 +78,23 @@ impl PreparedGoals {
     pub fn valid(&self) -> bool {
         self.entries.iter().all(|entry| entry.transfer.valid())
     }
+    pub(crate) async fn invalidated(&self) {
+        let mut waits = self
+            .entries
+            .iter()
+            .map(|entry| Box::pin(entry.transfer.invalidated()))
+            .collect::<Vec<_>>();
+        std::future::poll_fn(move |context| {
+            for wait in &mut waits {
+                if std::future::Future::poll(wait.as_mut(), context).is_ready() {
+                    return std::task::Poll::Ready(());
+                }
+            }
+            std::task::Poll::Pending
+        })
+        .await;
+    }
+
     pub fn snapshots(&self) -> impl Iterator<Item = (ThreadId, Option<&ThreadGoal>)> {
         self.entries
             .iter()
@@ -123,10 +158,31 @@ impl PreparedGoals {
                 "final goal capture requires the exact committed forest and readers".into(),
             );
         }
+        let retirement = self
+            .entries
+            .first()
+            .and_then(|entry| entry.runtime.alab_upgrade_retirement_coordinator())
+            .ok_or("final goal capture has no registered retirement coordinator")?;
+        if self.entries.iter().any(|entry| {
+            entry
+                .runtime
+                .alab_upgrade_retirement_coordinator()
+                .is_none_or(|current| !retirement.same_owner(&current))
+        }) {
+            return Err("final goal capture spans different runtime registries".into());
+        }
         Ok(Arc::new(GoalForestCapture {
             goals: self,
             forest,
+            retirement,
+            owner_claimed: std::sync::atomic::AtomicBool::new(false),
             outcome: OnceLock::new(),
+            #[cfg(test)]
+            capture_task: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            capture_task_gate: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            capture_release_gate: std::sync::Mutex::new(None),
         }))
     }
 }
@@ -141,55 +197,338 @@ pub struct FinalGoalState {
     pub goal: Option<ThreadGoal>,
     pub clock: Option<codex_alab_core::goal_clock::Stamp>,
 }
-type CaptureResult = Result<Arc<FinalGoalForest>, String>;
+pub(crate) type CaptureResult = Result<Arc<FinalGoalForest>, String>;
+pub(crate) type CaptureFuture = Pin<Box<dyn Future<Output = CaptureResult> + Send + 'static>>;
 
 /// An owned source operation; losing a waiter cannot skip final native accounting.
 pub struct GoalForestCapture {
     goals: PreparedGoals,
     forest: Arc<codex_core::CommittedUpgradeForest>,
+    retirement: Arc<codex_goal_extension::UpgradeRetirementCoordinator>,
+    owner_claimed: std::sync::atomic::AtomicBool,
     outcome: OnceLock<tokio::sync::watch::Receiver<Option<CaptureResult>>>,
+    #[cfg(test)]
+    capture_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    #[cfg(test)]
+    capture_task_gate: std::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    capture_release_gate: std::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
+
+/// Armed synchronously before spawning the one source task. Tokio may discard
+/// an unpolled task during runtime teardown, so the guard owns every provisional
+/// release until the inventory-wide non-awaiting publication point.
+pub(crate) struct GoalCaptureOwner {
+    capture: Arc<GoalForestCapture>,
+    published: bool,
+}
+
+impl Drop for GoalCaptureOwner {
+    fn drop(&mut self) {
+        if !self.published {
+            self.capture.abandon_final_capture(
+                "final goal capture task ended without a transferable snapshot",
+            );
+        }
+    }
+}
+
+impl GoalCaptureOwner {
+    pub(crate) async fn prepare(&mut self) -> CaptureResult {
+        self.capture.prepare_final_capture().await.map(Arc::new)
+    }
+
+    /// Publish all prepared barriers and deliver the cached result while the
+    /// exact runtime registry and persistence-gap registry remain excluded.
+    /// There is deliberately no cancellation point in this method.
+    pub(crate) fn publish(
+        &mut self,
+        forest: Arc<FinalGoalForest>,
+        mut deliver: impl FnMut(Arc<FinalGoalForest>),
+    ) -> Result<(), String> {
+        if self.published {
+            return Err("final goal capture was already published".into());
+        }
+        if self
+            .capture
+            .goals
+            .entries
+            .iter()
+            .any(|entry| !entry.transfer.final_capture_publishable())
+        {
+            return Err("final goal cleanup is not prepared for publication".into());
+        }
+        let runtimes = self
+            .capture
+            .goals
+            .entries
+            .iter()
+            .map(|entry| Arc::clone(&entry.runtime))
+            .collect::<Vec<_>>();
+        let entries = &self.capture.goals.entries;
+        let mut delivered = false;
+        let publication = self.capture.retirement.publish(&runtimes, &mut || {
+            if entries
+                .iter()
+                .any(|entry| !entry.transfer.final_capture_publishable())
+            {
+                return Err("final goal cleanup changed before batch publication".into());
+            }
+            for entry in entries {
+                if !entry.transfer.publish_final_capture_inventory() {
+                    return Err(format!(
+                        "{} lost its prepared final-capture publication",
+                        entry.thread
+                    ));
+                }
+            }
+            deliver(Arc::clone(&forest));
+            delivered = true;
+            Ok(())
+        });
+        if let Err(error) = publication {
+            let reason = format!("final goal inventory publication failed: {error}");
+            for entry in entries {
+                let _ = entry.transfer.fail_final_capture_inventory(reason.clone());
+            }
+            return Err(error);
+        }
+        if !delivered {
+            return Err("final goal publication did not deliver its result".into());
+        }
+        self.published = true;
+        Ok(())
+    }
+}
+
 impl GoalForestCapture {
     pub async fn capture(self: &Arc<Self>) -> CaptureResult {
+        self.begin_capture().await
+    }
+
+    /// Claim the sole capture owner before its task can be discarded without a
+    /// first poll. The outer source capture uses this directly so terminal and
+    /// goal publication have one cancellation boundary.
+    pub(crate) fn claim_owner(self: &Arc<Self>) -> Result<GoalCaptureOwner, String> {
+        self.owner_claimed
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .map_err(|_| "final goal capture already has an owner".to_owned())?;
+        Ok(GoalCaptureOwner {
+            capture: Arc::clone(self),
+            published: false,
+        })
+    }
+
+    /// Start ownership synchronously and return a waiter detached from its
+    /// caller. Direct goal-capture callers retain one cached outcome; the outer
+    /// source capture instead claims this owner inside its own task boundary.
+    pub(crate) fn begin_capture(self: &Arc<Self>) -> CaptureFuture {
         let owner = self.clone();
         let mut outcome = self
             .outcome
             .get_or_init(move || {
                 let (send, receive) = tokio::sync::watch::channel(None);
-                tokio::spawn(async move {
-                    let result = owner.run().await.map(Arc::new);
-                    drop(owner);
-                    send.send_replace(Some(result));
+                #[cfg(test)]
+                let task_owner = Arc::clone(&owner);
+                let capture_owner = owner.claim_owner();
+                let task = tokio::spawn(async move {
+                    let Ok(mut capture_owner) = capture_owner else {
+                        send.send_replace(Some(Err(
+                            "final goal capture already has an owner".into()
+                        )));
+                        return;
+                    };
+                    #[cfg(test)]
+                    let gate = capture_owner
+                        .capture
+                        .capture_task_gate
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take();
+                    #[cfg(test)]
+                    if let Some((entered, release)) = gate {
+                        let _ = entered.send(());
+                        let _ = release.await;
+                    }
+                    match capture_owner.prepare().await {
+                        Ok(forest) => {
+                            if let Err(error) = capture_owner.publish(forest, |forest| {
+                                send.send_replace(Some(Ok(forest)));
+                            }) {
+                                send.send_replace(Some(Err(error)));
+                            }
+                        }
+                        Err(error) => {
+                            send.send_replace(Some(Err(error)));
+                        }
+                    }
                 });
+                #[cfg(test)]
+                {
+                    *task_owner
+                        .capture_task
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(task);
+                }
+                #[cfg(not(test))]
+                drop(task);
                 receive
             })
             .clone();
-        loop {
-            if let Some(result) = outcome.borrow_and_update().clone() {
-                return result;
+        Box::pin(async move {
+            loop {
+                if let Some(result) = outcome.borrow_and_update().clone() {
+                    return result;
+                }
+                outcome
+                    .changed()
+                    .await
+                    .map_err(|_| "final goal capture ended without a result".to_owned())?;
             }
-            outcome
-                .changed()
-                .await
-                .map_err(|_| "final goal capture ended without a result".to_owned())?;
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn alab_debug_gate_after_final_release(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *self
+            .capture_release_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((entered, release_rx));
+        (entered_rx, release)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn alab_debug_gate_capture_task(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *self
+            .capture_task_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((entered, release_rx));
+        (entered_rx, release)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn alab_debug_abort_capture_task(&self) {
+        let task = self
+            .capture_task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("final goal capture task was started");
+        task.abort();
+        assert!(
+            matches!(task.await, Err(error) if error.is_cancelled()),
+            "the gated final goal capture task is cancelled"
+        );
+    }
+
+    fn abandon_final_capture(&self, reason: &str) {
+        for entry in &self.goals.entries {
+            let _ = entry.transfer.abandon_final_capture(reason);
         }
     }
-    async fn run(&self) -> Result<FinalGoalForest, String> {
-        // This joins all source session producers AND native source reader ACKs.
-        let forest = self.forest.capture().await?;
-        let mut goals = Vec::new();
-        for entry in &self.goals.entries {
-            let (goal, clock) = entry
-                .runtime
-                .alab_final_upgrade_goal_state(entry.thread, &entry.transfer)
-                .await?;
-            goals.push(FinalGoalState {
-                thread: entry.thread,
-                goal,
-                clock,
-            });
+
+    async fn prepare_final_capture(&self) -> Result<FinalGoalForest, String> {
+        let result = async {
+            // This joins all source session producers AND native source reader ACKs.
+            let forest = self.forest.capture().await?;
+            let mut goals = Vec::new();
+            for entry in &self.goals.entries {
+                let (goal, clock) = entry
+                    .runtime
+                    .alab_final_upgrade_goal_state(entry.thread, &entry.transfer)
+                    .await?;
+                goals.push(FinalGoalState {
+                    thread: entry.thread,
+                    goal,
+                    clock,
+                });
+            }
+            Ok(FinalGoalForest { forest, goals })
         }
-        Ok(FinalGoalForest { forest, goals })
+        .await;
+
+        let forest = match result {
+            Ok(forest) => forest,
+            Err(error) => {
+                self.abandon_final_capture(&format!("final goal capture failed: {error}"));
+                return Err(error);
+            }
+        };
+
+        // Phase one lets every deferred owner finish failure-prone drains while
+        // retaining every registry key. Abandonment may still override it.
+        let mut release_errors = Vec::new();
+        for entry in &self.goals.entries {
+            if !entry.transfer.release_final_capture() {
+                release_errors.push(format!(
+                    "{} lost its committed runtime transfer during final release",
+                    entry.thread
+                ));
+            }
+        }
+        if !release_errors.is_empty() {
+            let error = release_errors.join("; ");
+            self.abandon_final_capture(&error);
+            return Err(error);
+        }
+
+        #[cfg(test)]
+        let gate = self
+            .capture_release_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        #[cfg(test)]
+        if let Some((entered, release)) = gate {
+            let _ = entered.send(());
+            let _ = release.await;
+        }
+
+        let mut cleanup_errors = Vec::new();
+        for entry in &self.goals.entries {
+            if let Err(error) = entry.transfer.wait_for_deferred_retirement_prepared().await {
+                cleanup_errors.push(format!(
+                    "{} deferred runtime retirement preparation failed: {error}",
+                    entry.thread
+                ));
+            }
+        }
+        if cleanup_errors.is_empty() {
+            Ok(forest)
+        } else {
+            let error = cleanup_errors.join("; ");
+            self.abandon_final_capture(&error);
+            Err(error)
+        }
     }
 }
 

@@ -14,6 +14,9 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::WriterLockCoordinator;
 
+#[path = "../../../alab-autopilot/glue/unloaded_goal_rollout.rs"]
+mod alab_unloaded_goal_rollout; // ALAB(goal-recovery): unloaded mutations retain durable chronology for model-stop imports.
+pub(crate) use alab_unloaded_goal_rollout::GoalProcessorThreadState; // ALAB(goal-recovery): bundle extension lifecycle state behind one thin constructor hook.
 #[path = "thread_goal_user_context.rs"]
 mod user_context;
 
@@ -28,10 +31,12 @@ pub(crate) struct ThreadGoalRequestProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     config: Arc<Config>,
     thread_state_manager: ThreadStateManager,
+    pending_thread_unloads: PendingThreadUnloads, // ALAB(goal-recovery): a terminal unload owns rollout chronology before its live runtime disappears.
     state_db: Option<StateDbHandle>,
     goal_service: Arc<GoalService>,
     config_manager: ConfigManager,
     writer_locks: Arc<WriterLockCoordinator>,
+    alab_goal_outputs: Arc<alab_unloaded_goal_rollout::GoalOutputQueue>, // ALAB(goal-recovery): response backpressure is ordered outside native mutation custody.
 }
 
 impl ThreadGoalRequestProcessor {
@@ -39,21 +44,25 @@ impl ThreadGoalRequestProcessor {
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
         config: Arc<Config>,
-        thread_state_manager: ThreadStateManager,
+        goal_thread_state: GoalProcessorThreadState, // ALAB(goal-recovery): extension lifecycle state remains an ALab-owned aggregate.
         state_db: Option<StateDbHandle>,
         goal_service: Arc<GoalService>,
         config_manager: ConfigManager,
     ) -> Self {
+        // ALAB(goal-recovery): retain upstream fields while keeping constructor arity stable.
+        let (thread_state_manager, pending_thread_unloads) = goal_thread_state.into_parts();
         let writer_locks = Arc::new(WriterLockCoordinator::new(&config.codex_home));
         Self {
             thread_manager,
             outgoing,
             config,
             thread_state_manager,
+            pending_thread_unloads, // ALAB(goal-recovery): retain that lifecycle owner in the extension processor.
             state_db,
             goal_service,
             config_manager,
             writer_locks,
+            alab_goal_outputs: Arc::default(), // ALAB(goal-recovery): one FIFO output chain per thread preserves committed notification order.
         }
     }
 
@@ -62,6 +71,12 @@ impl ThreadGoalRequestProcessor {
         request_id: ConnectionRequestId,
         params: ThreadGoalSetParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if codex_alab_core::is_alab_binary() {
+            return self
+                .alab_owned_thread_goal_set(request_id, params)
+                .await
+                .map(|()| None);
+        } // ALAB(goal-recovery): observer cancellation cannot split SQL, chronology, and runtime effects.
         self.thread_goal_set_inner(request_id, params)
             .await
             .map(|()| None)
@@ -81,6 +96,12 @@ impl ThreadGoalRequestProcessor {
         request_id: ConnectionRequestId,
         params: ThreadGoalClearParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if codex_alab_core::is_alab_binary() {
+            return self
+                .alab_owned_thread_goal_clear(request_id, params)
+                .await
+                .map(|()| None);
+        } // ALAB(goal-recovery): a committed clear finishes its exact runtime effects after RPC cancellation.
         self.thread_goal_clear_inner(request_id, params)
             .await
             .map(|()| None)
@@ -214,7 +235,12 @@ impl ThreadGoalRequestProcessor {
             .await
             .map_err(goal_service_error)?;
         let goal = ThreadGoal::from(outcome.goal.clone());
-        if params.origin == Some(ThreadGoalMutationOrigin::User) { codex_alab_core::goal_stops::person_set(&thread_id.to_string(), outcome.goal.status != codex_protocol::protocol::ThreadGoalStatus::Active); } // ALAB(autopilot): a person's goal stop is never a wall's to resume
+        if params.origin == Some(ThreadGoalMutationOrigin::User) {
+            codex_alab_core::goal_stops::person_set(
+                &thread_id.to_string(),
+                outcome.goal.status != codex_protocol::protocol::ThreadGoalStatus::Active,
+            );
+        } // ALAB(autopilot): a person's goal stop is never a wall's to resume
 
         let persist_result = match self.thread_manager.get_thread(thread_id).await {
             Ok(thread) => {
@@ -261,7 +287,9 @@ impl ThreadGoalRequestProcessor {
         }
 
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
-        if let Some(snapshot) = self.goal_service.alab_runtime_status_snapshot(thread_id) { crate::extensions::alab_goal_status::send(&self.outgoing, snapshot).await; } // ALAB(storage-status): reset resync bypasses any earlier stalled listener and precedes this request DB await.
+        if let Some(snapshot) = self.goal_service.alab_runtime_status_snapshot(thread_id) {
+            crate::extensions::alab_goal_status::send(&self.outgoing, snapshot).await;
+        } // ALAB(storage-status): reset resync bypasses any earlier stalled listener and precedes this request DB await.
         let state_db = self
             .state_db_for_materialized_thread(thread_id, GoalAccess::Read)
             .await?;
@@ -296,7 +324,7 @@ impl ThreadGoalRequestProcessor {
             let thread_state = thread_state.lock().await;
             thread_state.listener_command_tx()
         };
-        let cleared = self
+        let clear_outcome = self
             .goal_service
             .clear_thread_goal(
                 &state_db,
@@ -311,6 +339,10 @@ impl ThreadGoalRequestProcessor {
             )
             .await
             .map_err(goal_service_error)?;
+        let cleared = clear_outcome.cleared(); // ALAB(goal-recovery): preserve the upstream boolean response after deferred effect custody.
+        clear_outcome
+            .apply_runtime_effects(&self.goal_service)
+            .await; // ALAB(goal-recovery): vanilla clears retain the service's original pre-response effect order.
 
         self.outgoing
             .send_response(request_id, ThreadGoalClearResponse { cleared })
@@ -560,4 +592,6 @@ fn parse_thread_id_for_request(thread_id: &str) -> Result<ThreadId, JSONRPCError
     ThreadId::from_string(thread_id)
         .map_err(|err| invalid_request(format!("invalid thread id: {err}")))
 }
-#[cfg(test)] #[path = "../../../alab-core/glue/goal_person_stop_tests.rs"] mod alab_goal_person_stop_tests; // ALAB(autopilot): drive the person's goal-stop hook through the real request path
+#[cfg(test)]
+#[path = "../../../alab-core/glue/goal_person_stop_tests.rs"]
+mod alab_goal_person_stop_tests; // ALAB(autopilot): drive the person's goal-stop hook through the real request path

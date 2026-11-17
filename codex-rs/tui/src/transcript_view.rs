@@ -801,3 +801,7 @@ mod markdown_copy_tests;
 #[cfg(test)]
 #[path = "transcript_view/copy_on_select_tests.rs"]
 mod copy_on_select_tests;
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_transcript_view.rs"]
+pub(crate) mod alab_retained_view; // ALAB(retained-ui): bind actual transcript anchors to the same retained native cell graph.

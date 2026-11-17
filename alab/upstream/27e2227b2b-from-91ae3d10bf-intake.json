@@ -1,0 +1,408 @@
+{
+  "schema": 1,
+  "base": "91ae3d10bf4c37ba31eb6dc99d32d8cca896dbec",
+  "target": "27e2227b2b49a541eb799af8f8efb7032b1ef202",
+  "frontier": "91ae3d10bf4c37ba31eb6dc99d32d8cca896dbec",
+  "commits": [
+    {
+      "sha": "e87cd55ed96c6194189eadaff87a70076a948dbb",
+      "subject": "Expose context usage in statusline state (#61409)",
+      "paths": [
+        "codex-rs/tui/src/chatwidget/statusline_state/usage.rs",
+        "codex-rs/tui/src/chatwidget/tests/status_and_layout.rs",
+        "codex-rs/tui/src/chatwidget/tests/statusline_state_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "telemetry"
+      ],
+      "features": [
+        "native-ui",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Expose the displayed thread's latest context usage through the structured statusline using the same runtime window and percentage calculation as the built-in footer. Unknown windows omit the percentage and latest-context usage remains separate from cumulative billing or goal accounting.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: e87cd55ed96c6194189eadaff87a70076a948dbb; SHA256 bc88b8aa9dac06bdb74f54b31647646f9a9b14e7a12bf82038a2802af48b1fe8.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "Retain the existing ALab native-interface context projection and never substitute cumulative token totals for the latest context window.",
+        "Keep staged provider reads unactivated; context usage joins the provider-facing status snapshot and needs the existing explicit provider, current thread/account/source and metadata-disclosure review before delivery.",
+        "Source-declared candidates (not_run): statusline_context_uses_the_footer_window_and_percentage; context_indicator_shows_used_tokens_when_window_unknown; statusline_state_projects_the_displayed_settings."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "5ca2007abe0f514f62c14e333075fb1faf968cc4",
+      "subject": "Expose thread costs in statusline state and reject stale usage reads (#61410)",
+      "paths": [
+        "codex-rs/tui/src/app/background_requests.rs",
+        "codex-rs/tui/src/app/history_ui.rs",
+        "codex-rs/tui/src/app/tests/thread_usage.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/chatwidget/statusline_state/usage.rs",
+        "codex-rs/tui/src/chatwidget/thread_usage.rs",
+        "codex-rs/tui/src/chatwidget/thread_usage_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "feature",
+        "protocol",
+        "telemetry"
+      ],
+      "features": [
+        "native-ui",
+        "account-isolation",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Bind thread-usage reads to UUID request identities so a replacement widget cannot accept its predecessor's result, and expose supported nonnegative thread costs through structured display state. Cost fields remain observational and supply no billing, retry, quota, or account-selection authority.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: 5ca2007abe0f514f62c14e333075fb1faf968cc4; SHA256 75a6e0b5d5e43da79837810353adea7bc83e3897b1018daba9cf2a54815c99e4.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "Preserve ALab account-email recovery, quota-origin custody, service-tier and interface-refresh hooks in the touched status paths.",
+        "Keep staged provider reads unactivated; thread costs join the provider-facing status snapshot and need the existing explicit provider, current thread/account/source and metadata-disclosure review before delivery.",
+        "Source-declared candidates (not_run): replacement_widget_rejects_a_previous_widgets_read_for_the_same_thread; billing_surfaces_render_for_every_supported_enterprise_plan; account_change_discards_thread_usage_deferred_while_overlay_is_open.",
+        "Integration coverage requirement: directly assert structured state omits both cost fields for negative micros; existing upstream UI formatting coverage is not that serialization control."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "641e2e362ca781b8fe350c396441d49e34dab35e",
+      "subject": "Ignore stale workspace headline requests and archived messages (#61411)",
+      "paths": [
+        "codex-rs/tui/src/app/background_requests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/chatwidget/tests/status_and_layout.rs",
+        "codex-rs/tui/src/workspace_messages.rs",
+        "codex-rs/tui/src/workspace_messages_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "background"
+      ],
+      "features": [
+        "native-ui",
+        "account-isolation",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Bind workspace-headline reads to UUID request identities, reject stale results before backend work, and exclude archived messages from headline selection. Headline text remains account-scoped presentation content and confers no routing or execution authority.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: 641e2e362ca781b8fe350c396441d49e34dab35e; SHA256 a501f8edeec263dbdfb1229ebfb859afeb10f858681d4fc5d2e92f1d6fe5c300.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "Preserve ALab ChatWidget state, app-event variants, interface hooks and account-change invalidation in overlapping upstream files.",
+        "Source-declared candidates (not_run): replacement_widget_rejects_the_previous_widgets_workspace_headline; workspace_headline_from_response_uses_first_non_empty_headline; account_update_discards_stale_workspace_headline_results.",
+        "Integration coverage requirement: prove the new stale pre-fetch return avoids the server request, not only that a stale result is rejected."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "4495f7ce1741d80cdc356594a13c5207c1aa3649",
+      "subject": "Expose the workspace headline in structured status-line state (#61415)",
+      "paths": [
+        "codex-rs/tui/src/chatwidget/statusline_state.rs",
+        "codex-rs/tui/src/chatwidget/statusline_state/account.rs",
+        "codex-rs/tui/src/chatwidget/tests/status_and_layout.rs",
+        "codex-rs/tui/src/chatwidget/tests/statusline_state_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "native-ui",
+        "account-isolation",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Expose the cached account-scoped workspace headline in structured statusline state and serialize an empty account object consistently. Provider-facing reads remain staged; headline text is display data rather than account, routing, or execution authority.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: 4495f7ce1741d80cdc356594a13c5207c1aa3649; SHA256 c9e40e8e1824bdd21421b11eeae6e4a700324dc16f848fde8f66187cb513a380.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "Retain the staged-provider hold: activation requires explicit provider selection plus current thread, account and source ownership, including review of headline delivery as MCP-bound data.",
+        "Source-declared candidates (not_run): status_line_workspace_headline_renders_cached_value; statusline_state_projects_the_displayed_settings; the stale and archived controls from 641e2e362ca7."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "fb0715949b076011acb1b46f8c76879c459a227a",
+      "subject": "Expose Codex rate limits in statusline state (#61417)",
+      "paths": [
+        "codex-rs/tui/src/chatwidget/statusline_state/account.rs",
+        "codex-rs/tui/src/chatwidget/tests/status_and_layout.rs",
+        "codex-rs/tui/src/chatwidget/tests/statusline_state_tests.rs",
+        "codex-rs/tui/src/status/rate_limits.rs",
+        "codex-rs/tui/src/status/tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "telemetry"
+      ],
+      "features": [
+        "native-ui",
+        "account-isolation",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Expose the Codex rate-limit ID with separate primary and secondary windows in structured statusline state using raw reset timestamps, an empty array for no windows and null for an absent reset. This state remains observational and cannot drive ALab quota recovery, account assignment, or goal authority.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: fb0715949b076011acb1b46f8c76879c459a227a; SHA256 5b3a70423b8f71361be9c7a638b2a1da6b56fe7bdbd601010f6a4268a3c64086.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "No owned RateLimitWindowDisplay literal or directly touched owned path requires adaptation; retain ALab interface_status allowance and rate-limit snapshots as authoritative native state.",
+        "Keep staged provider reads unactivated; rate limits join the provider-facing status snapshot and need the existing explicit provider, current thread/account/source and metadata-disclosure review before delivery.",
+        "Source-declared candidates (not_run): rate_limit_snapshots_keep_separate_entries_per_limit_id; statusline_state_projects_the_displayed_settings."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "ad8b7f113454cb54899c12ae61624beb503d1bc7",
+      "subject": "Require a government workspace for the government backend (#61418)",
+      "paths": [
+        "codex-rs/app-server/src/request_processors/account_processor/workspace_routing.rs",
+        "codex-rs/app-server/src/request_processors/account_processor/workspace_routing_tests.rs"
+      ],
+      "classes": [
+        "security",
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Require a government workspace when a commercial NO_CONSTRAINT workspace is paired with the government backend, while adapting ALab's generic workspace-routing hook to preserve the dedicated invalid-request and relogin response. Also close the source patch's literal-hostname gap for the DNS-equivalent trailing-root-dot government hostname.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: ad8b7f113454cb54899c12ae61624beb503d1bc7; SHA256 b78480e748f89cb0a15fb79c5d23315a9604e3958028f9760b9f8b44d2adae96.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "During merge retain GovernmentWorkspaceRequired as -32600 with reason governmentWorkspaceRequired and action relogin before the ALAB(workspace-routing) generic timeout hook; alab_bootstrap_account must keep it fail-closed.",
+        "url 2.5.8 and IDNA preserve a terminal root-label dot while the patch compares host_str literally; add gov.chatgpt.com. coverage and canonicalize one terminal dot or reject such hosts consistently.",
+        "Source-declared candidates (not_run): rejects_commercial_workspace_on_government_backend required/effective cases; add ALab account/read mapping, no-retry, bootstrap fail-closed and trailing-dot controls."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "2d5bfb7931a44d1ecc2b85b18b0abce35f3a45b1",
+      "subject": "Resolve pasted Windows paths with wslpath in WSL (#61419)",
+      "paths": [
+        "codex-rs/tui/src/clipboard_paste.rs",
+        "codex-rs/tui/src/command_output.rs",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/tui/tmux.rs"
+      ],
+      "classes": [
+        "fix",
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "native-session",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Resolve pasted Windows paths in WSL with a fixed, bounded and reaped wslpath subprocess, accepting only absolute results and using a mountinfo-gated traversal-safe fallback. Path normalization grants no filesystem, trust, or execution authority.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: 2d5bfb7931a44d1ecc2b85b18b0abce35f3a45b1; SHA256 8d5d2f5a86a25290efb88f9bfbaead772b4ce4c6a07c04074daa6b5bb845055a.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "The macOS gate cannot establish cfg(target_os=linux) or live nondefault WSL mount behavior; retain that platform validation limit.",
+        "Source-declared candidates (not_run): normalize_windows_paths_with_spaces; windows_path_fallback_requires_missing_wslpath_and_default_mount; tmux completed, hanging and descendant-output helper controls."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "51f0b53d8b07d18800e28d8755a59bee60fb4ca3",
+      "subject": "Clear the user endpoint override during GCP setup (#61420)",
+      "paths": [
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/src/request_processors/account_processor/gcp_setup.rs",
+        "codex-rs/app-server/tests/suite/v2/gcp_setup_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "product-policy",
+        "model-discovery",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Clear only the active user endpoint override in the prepared GCP setup write after managed policy composition, and commit it only after token verification. Managed or higher-priority endpoint conflicts still refuse setup, while failed authentication preserves the original configuration.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: 51f0b53d8b07d18800e28d8755a59bee60fb4ca3; SHA256 f76d0e1288a158a1afcad320f5bbf1488f11a94a96e338d5a459c2701688a372.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "Preserve ALab current-account network and credential-source admission plus unrelated provider headers; clearing one user override is not authority to bypass policy.",
+        "Source-declared candidates (not_run): setup_gcp_saves_overrides_restores_adc_and_refreshes_catalog; setup_gcp_rejects_invalid_inputs_and_credentials_before_saving; setup_gcp_rejects_policy_and_endpoint_conflicts_before_saving."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "4598f3379098eb52a1d18fdb5363eb57a84fcf00",
+      "subject": "Use thread-scoped model catalogs for model lookups (#61421)",
+      "paths": [
+        "codex-rs/app-server/src/external_agent_migration/session_importer.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/src/thread_sample.rs",
+        "codex-rs/app-server/tests/suite/v2/external_agent_config.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_fork.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_sample.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/tests/suite/models_cache_auth.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/extension.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/sampler_routing_tests.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/startup.rs",
+        "codex-rs/memories/write/src/runtime.rs"
+      ],
+      "classes": [
+        "fix",
+        "model",
+        "refactor"
+      ],
+      "features": [
+        "model-discovery",
+        "account-isolation",
+        "execution-continuity",
+        "exec-handoff",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Resolve sampling, prediction, memory, import and extension model metadata through the owning thread or destination catalog instead of the mutable startup catalog. This prevents a default-provider switch from applying the wrong capabilities, instructions, compaction identity, or sampler model.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: 4598f3379098eb52a1d18fdb5363eb57a84fcf00; SHA256 eaa319ef54e3fd3fae945647706a320b41a6541925761140bf16c24ea5163610.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "Preserve ALab provider-specific catalog partitions, credential epochs, originator ownership and Guardian routing; restored or imported sessions reconstruct the destination manager rather than carrying a stale source-process manager.",
+        "Source-declared candidates (not_run): external_agent_config_import_creates_session_rollouts; sample_uses_the_parent_catalog_after_a_default_provider_switch; fork_option_disables_mcp_servers; host_model_info_uses_the_thread_catalog; idle_classifier_retains_the_owning_threads_workspace_binding.",
+        "Integration coverage requirement: add or require a Guardian-specific per-thread catalog assertion; upstream routing coverage proves workspace binding but not selected model metadata."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "68c63d72d38fd4274cdff32c1e65198c3150c666",
+      "subject": "Add keyboard table selection to the transcript (#61422)",
+      "paths": [
+        "codex-rs/config/src/tui_keymap.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/tui/src/app/input.rs",
+        "codex-rs/tui/src/app/input/select_mode.rs",
+        "codex-rs/tui/src/app/owned_transcript_input_tests.rs",
+        "codex-rs/tui/src/app/tests/transcript_selection.rs",
+        "codex-rs/tui/src/app/workspace_hud.rs",
+        "codex-rs/tui/src/keymap.rs",
+        "codex-rs/tui/src/keymap/bindings.rs",
+        "codex-rs/tui/src/keymap/chords.rs",
+        "codex-rs/tui/src/keymap/chords/leader_defaults.rs",
+        "codex-rs/tui/src/keymap_setup/actions.rs",
+        "codex-rs/tui/src/markdown_copy/table.rs",
+        "codex-rs/tui/src/pager_overlay/transcript.rs",
+        "codex-rs/tui/src/resume_picker.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_custom.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_fast_mode_enabled.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_first_actions.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_global_chord.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_narrow.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_wide.snap",
+        "codex-rs/tui/src/transcript_view/footer.rs",
+        "codex-rs/tui/src/transcript_view/input.rs",
+        "codex-rs/tui/src/transcript_view/search.rs",
+        "codex-rs/tui/src/transcript_view/select_mode.rs",
+        "codex-rs/tui/src/transcript_view/select_mode/motion.rs",
+        "codex-rs/tui/src/transcript_view/select_mode/table.rs",
+        "codex-rs/tui/src/transcript_view/select_mode_tests.rs",
+        "codex-rs/tui/src/transcript_view/selection.rs",
+        "codex-rs/tui/src/transcript_view/snapshots/codex_tui__transcript_view__select_mode__tests__keyboard_table_mark_selects_cells_and_swaps_rectangle_corners.snap",
+        "codex-rs/tui/src/transcript_view/text.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Add explicit keyboard selection of Markdown table cells and rectangles through the existing transcript selection and clipboard path. The free leader binding remains remappable or unbindable and no background work, permission, or automatic data export is introduced.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: 68c63d72d38fd4274cdff32c1e65198c3150c666; SHA256 1d4c5497c03e7af487ee4e81e67d22dff2df32aeeb2112da669e1bb193117b7a.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "Preserve ALab misalignment_review and safety_recourse schema entries when updating generated core/config.schema.json; do not replace that file wholesale.",
+        "Source-declared candidates (not_run): markdown_chord_and_remapped_find_work_in_transcript_selection; keyboard_table_mark_selects_cells_and_swaps_rectangle_corners; keyboard_table_header_rectangle_excludes_record_values; Unicode, escaped-pipe, empty-cell and wrapping controls."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "01806453b03b18388afa90920ba3778f66b02fa6",
+      "subject": "Refill the transcript viewport when collapsing tool groups (#61424)",
+      "paths": [
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/owned_transcript_follow_tests.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__owned_transcript__follow_tests__running_copy_feedback_spacing.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__transcript_view__tests__collapsing_tool_group_refills_viewport.snap",
+        "codex-rs/tui/src/transcript_view.rs",
+        "codex-rs/tui/src/transcript_view/disclosure.rs",
+        "codex-rs/tui/src/transcript_view/turn_tip.rs",
+        "codex-rs/tui/src/transcript_view_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Clamp an invalid reading anchor after disclosure collapse so the transcript refills its viewport while preserving reading mode, activity focus, selection ownership and copy-feedback geometry.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: 01806453b03b18388afa90920ba3778f66b02fa6; SHA256 508905001f6d1255cb8d575ced4ea120dbe8595e91accfc8c5a5d660273997b6.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "No touched path differs from the integrated upstream frontier in current ALab main.",
+        "Source-declared candidates (not_run): collapsing_tool_group_refills_viewport; follow_control_click_preserves_draft_caret_and_composer_geometry; retain repeated-render, active-tool, turn-tip and copy-confirmation controls."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "27e2227b2b49a541eb799af8f8efb7032b1ef202",
+      "subject": "Enable incremental tools by default for Amazon Bedrock (#61426)",
+      "paths": [
+        "codex-rs/core/tests/suite/bedrock_multi_agent_tests.rs",
+        "codex-rs/core/tests/suite/scenarios_incremental_tools.rs",
+        "codex-rs/features/src/lib.rs"
+      ],
+      "classes": [
+        "defaults",
+        "feature",
+        "model"
+      ],
+      "features": [
+        "model-discovery",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Enable incremental tool declarations by default only after the user selects Amazon Bedrock, matching the existing GCP policy while preserving explicit opt-out. This changes request encoding but does not enable a provider, model, collaboration child, or tool.",
+      "evidence": [
+        "Canonical cached upstream patch inspected: 27e2227b2b49a541eb799af8f8efb7032b1ef202; SHA256 4231c3c82a07c867015bfe8b209a250c9b65c9df809bc503d9b378def4fa85fe.",
+        "alab/reviews/upstream-intake-2026-11-16-after91ae.md; source declaration only, listed candidates not_run, no integration or qualification.",
+        "Preserve ALab MisalignmentReview and SafetyRecourse feature entries plus the bedrock_multi_agent_tests alab_epoch initializer when merging overlapping files.",
+        "Source-declared candidates (not_run): bedrock_catalog_selects_v2_by_default; incremental_tools_append_changed_catalog_without_rewriting_history mantle/runtime default and opt-out cases; retain GCP and Responses controls.",
+        "Explicit opt-out must restore full declarations, child tools stay in additional_tools, changed-catalog notices do not rewrite history and compaction starts a correct new window."
+      ],
+      "revisit": ""
+    }
+  ]
+}

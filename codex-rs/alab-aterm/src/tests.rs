@@ -25,6 +25,12 @@ use crate::status::NotReady;
 use crate::status::Status;
 use crate::wire;
 
+#[path = "claim_order_tests.rs"]
+mod claim_order_tests;
+
+#[path = "policy_order_tests.rs"]
+mod policy_order_tests;
+
 /// Short deadline for the fake: the contract's 5 s is the default, not a test budget.
 fn options() -> Options {
     Options {
@@ -497,6 +503,36 @@ async fn a_policy_move_is_announced_and_a_dead_pid_clears_the_claim() {
         claim_signal(&next_event(&mut events).await, &me()),
         Signal::Lost { by: None }
     );
+}
+
+#[tokio::test]
+async fn held_bounded_status_uses_its_deadline_and_preserves_the_default() {
+    // A fake wire peer exercises transport timing only; it supplies no native
+    // constructor, root, SDK readiness or permission.
+    let (_dir, fake) = fake(Mode::Current).await;
+    let endpoint = fake.endpoint();
+    let opened = crate::conn::open(&endpoint.sock, Duration::from_secs(2))
+        .await
+        .expect("open authenticated fake wire");
+    let conn = crate::conn::Conn::spawn(opened, Duration::from_millis(80));
+    let command = format!("@{} status", endpoint.sid);
+    fake.gate("status");
+    let (reply, ()) = tokio::join!(
+        conn.request_status_bounded_within(&command, 4096, Duration::from_secs(2)),
+        async {
+            assert!(fake.wait_for(|f| !f.gated_requests().is_empty()).await);
+            tokio::time::sleep(Duration::from_millis(160)).await;
+            fake.open_gate("status");
+        }
+    );
+    assert!(reply.expect("held response").status.starts_with("OK "));
+    assert!(conn.is_open());
+    fake.stall("status");
+    assert!(matches!(
+        conn.request(&command, crate::conn::Framing::Status).await,
+        Err(Error::Unanswered)
+    ));
+    assert!(!conn.is_open());
 }
 
 #[tokio::test]

@@ -2206,3 +2206,7 @@ mod tests {
 #[cfg(test)]
 #[path = "rendering_preferences_tests.rs"]
 mod rendering_preferences_tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_stream_controller.rs"]
+pub(crate) mod alab_retained_stream; // ALAB(retained-ui): preserve original agent and plan streaming controllers.

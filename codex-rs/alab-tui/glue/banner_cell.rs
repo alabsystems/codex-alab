@@ -583,3 +583,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(unix)]
+#[path = "retained_history_banner_cell.rs"]
+pub(in crate::history_cell) mod alab_retained_banner;

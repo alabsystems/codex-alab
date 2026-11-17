@@ -272,3 +272,7 @@ impl ExecCall {
         matches!(self.source, ExecCommandSource::UnifiedExecInteraction)
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_command_output.rs"]
+pub(super) mod alab_retained_output; // ALAB(retained-ui): preserve exact native activity state and shared graph identity.

@@ -4600,3 +4600,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_bottom_keymap.rs"]
+pub(crate) mod alab_retained; // ALAB(retained-ui): exact pure native keymap fields share one enclosing alias table.

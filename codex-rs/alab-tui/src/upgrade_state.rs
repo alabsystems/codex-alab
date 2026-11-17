@@ -13,7 +13,10 @@ use std::io;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-pub const MAGIC: &[u8] = b"codex-runtime-state-v1\n";
+/// Joined runtime format: Core/config, goals, input and terminal startup. Bump
+/// whenever a nested schema or receiver contract becomes incompatible.
+pub const VERSION: u32 = 2;
+pub const MAGIC: &[u8] = b"codex-runtime-state-v2\n";
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Frame<'a> {
@@ -30,6 +33,8 @@ pub struct Terminal<'a> {
     pub input: &'a RawValue,
     pub modes: terminal_modes::Snapshot,
     pub startup: upgrade_startup::Snapshot,
+    #[serde(borrow)]
+    pub editor: &'a RawValue,
 }
 /// Encode data supplied by a committed source owner; this grants no SDK role.
 pub fn encode(
@@ -38,16 +43,18 @@ pub fn encode(
     input: &[u8],
     modes: &terminal_modes::Snapshot,
     startup: &upgrade_startup::Snapshot,
+    editor: &[u8],
 ) -> io::Result<Vec<u8>> {
     startup.validate()?;
     let frame = Frame {
-        version: 1,
+        version: VERSION,
         primary: primary.into(),
         goals: serde_json::from_slice(goals)?,
         terminal: Terminal {
             input: serde_json::from_slice(input)?,
             modes: modes.clone(),
             startup: startup.clone(),
+            editor: serde_json::from_slice(editor)?,
         },
     };
     let mut bytes = MAGIC.to_vec();
@@ -67,7 +74,7 @@ pub fn data(bytes: &[u8]) -> io::Result<Frame<'_>> {
         .strip_prefix(MAGIC)
         .ok_or_else(|| invalid("unknown runtime state frame"))?;
     let frame: Frame<'_> = serde_json::from_slice(body)?;
-    if frame.version != 1 {
+    if frame.version != VERSION {
         return Err(invalid("incompatible runtime state version"));
     }
     frame.terminal.startup.validate()?;
@@ -134,7 +141,9 @@ impl Drop for Recovery {
 /// before a runtime or credential/config reader. Other opaque namespaces remain
 /// owned by their consumers. This does not authenticate SDK constructor grants.
 pub fn stage_before_runtime() -> io::Result<Recovery> {
-    let Some(bytes) = upgrade_exec_custody::take_state_if(|bytes| bytes.starts_with(MAGIC)) else {
+    let Some(bytes) =
+        upgrade_exec_custody::take_state_if(|bytes| bytes.starts_with(b"codex-runtime-state-"))
+    else {
         return Ok(Recovery {
             installed: false,
             cleanup: None,

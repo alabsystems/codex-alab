@@ -246,7 +246,9 @@ fn exercise_modes(case: QueueCase) {
                 codex_alab_core::set_enhanced(false);
                 assert!(codex_alab_core::is_alab_binary());
             }
-            "enhanced" => codex_alab_core::set_enhanced(true),
+            "enhanced" => {
+                codex_alab_core::set_enhanced(true);
+            }
             _ => unreachable!(),
         }
         assert_eq!(codex_alab_core::active(), expected_loss, "{mode}");

@@ -1,0 +1,465 @@
+{
+  "base": "b8cbdbfeff72869e5d715480572aad24f739aa65",
+  "commits": [
+    {
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 5704a6bc8f93407dd2e9e4abab41bdb8115b9ea1e5d4f00111d591270b1fb67a; 9715 bytes, 233 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: MentionUsage supplies its actual storage-derived home, configured and canonical plugin roots; only normal marketplace/plugin/version components ending in SKILL.md are normalized. Canonicalization is local picker construction work, not a catalog/network activation.",
+        "Integration requirement: Keep ALab disabled plugin/apps defaults, actual package identity and installation policy. Frequency is ranking data, not execution permission. No owned with_frequencies caller or literal needs adaptation at fixed comparison.",
+        "Coverage limit: Actual persisted old-version/symlink selection is tested by the composer declaration; the separate match-tier control sets frequencies directly and does not prove the new normalizer. No CPU or filesystem-latency measurement."
+      ],
+      "features": [
+        "skill-discovery",
+        "native-ui"
+      ],
+      "paths": [
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/mention_usage.rs",
+        "codex-rs/tui/src/bottom_pane/skill_popup.rs"
+      ],
+      "reason": "Aggregate confirmed plugin-skill usage by marketplace/plugin/relative skill identity across cache versions while retaining ordinary path matching and match-tier priority.",
+      "revisit": "",
+      "sha": "77873dd0d284aeba7ce849b995b28ee8f4498d73",
+      "subject": "Preserve plugin skill picker ranking across version changes (#61871)"
+    },
+    {
+      "classes": [
+        "feature"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 71986022693dbbe6d136bdcba7343fb8d76e87eb4569f62e4ba92d1e8eb3d4b4; 31245 bytes, 657 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: Reject nested groups, local direction overrides, group-ID edges, empty/duplicate/unclosed groups; retain existing graph/node/edge/label caps. Quoted titles may contain otherwise meaningful syntax.",
+        "Integration requirement: No dependency, execution, rendering-default or ALab hook removal is needed. Grouping and external lanes remain presentation only.",
+        "Coverage limit: The four directions and invalid-input list are loops within two declarations, not additional declared cases. Source bounding is not a measured renderer cost."
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "paths": [
+        "codex-rs/mermaid/README.md",
+        "codex-rs/mermaid/src/draw.rs",
+        "codex-rs/mermaid/src/lib.rs",
+        "codex-rs/mermaid/src/parse.rs",
+        "codex-rs/mermaid/src/snapshots/codex_mermaid__tests__flat_subgraphs_and_cross_group_edges.snap",
+        "codex-rs/mermaid/src/tests.rs",
+        "codex-rs/tui/src/markdown_render/mermaid_tests.rs"
+      ],
+      "reason": "Parse and render bounded flat Mermaid subgraphs in all four flow directions while preserving unsupported-source and TooWide fallback.",
+      "revisit": "",
+      "sha": "dba22f2acc3bffbd57e3ce1d9c8f7ccc666b47e8",
+      "subject": "Support flat subgraphs in native Mermaid flowcharts (#61878)"
+    },
+    {
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 54cef4c44e2cef96b04a7f11b62425e9dc995f9be52139e63d73743c5599b3f7; 36810 bytes, 842 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: Document destinations do not become terminal OSC-8 destinations by default. Preserve actual validated WorkspaceFile/TrustedFile precedence and existing web links, combining/emoji geometry and POSIX literal backslashes.",
+        "Integration requirement: Deleted width::char_width has no owned caller at fixed comparison; no owned TerminalHyperlink literal or TextLayout link_at caller was found. No existing ALab artifact or native permission hook is equivalent to this UI metadata addition.",
+        "Coverage limit: Target syntax is not a filesystem proof. Resolution and reads are introduced separately in rows 4\u20137; no containment/no-follow guarantee follows from a parsed path."
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "paths": [
+        "codex-rs/tui/src/history_cell/messages_tests.rs",
+        "codex-rs/tui/src/history_cell/spoken_artifacts.rs",
+        "codex-rs/tui/src/markdown_render.rs",
+        "codex-rs/tui/src/markdown_render/local_links.rs",
+        "codex-rs/tui/src/markdown_render/table_key_value.rs",
+        "codex-rs/tui/src/markdown_render_tests.rs",
+        "codex-rs/tui/src/terminal_hyperlinks.rs",
+        "codex-rs/tui/src/transcript_view.rs",
+        "codex-rs/tui/src/transcript_view/input.rs",
+        "codex-rs/tui/src/transcript_view/text.rs",
+        "codex-rs/tui/src/transcript_view/text_tabs_tests.rs",
+        "codex-rs/tui/src/transcript_view/text_tests.rs",
+        "codex-rs/tui/src/width.rs"
+      ],
+      "reason": "Preserve inert local Markdown document targets and copy/link geometry through transcript and narrow-table rendering, enabling interaction only for workspace readers.",
+      "revisit": "",
+      "sha": "d5a478e31c3296e544d53424a7a6c995e7dfb0f5",
+      "subject": "Preserve local Markdown document targets in transcript rendering (#61880)"
+    },
+    {
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 c99c69d0cb66e5121fa6410b6596eb62024558c316b037fa29f7da9363b0a51f; 10346 bytes, 259 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: Use metadata-only thread/read and the app-server environment host/cwd. Refuse unsupported Windows workspace reads, invalid UTF8/control bytes and a changed source workspace; do not guess a frontend local path.",
+        "Integration requirement: Absolute and parent-relative paths remain subject to existing server filesystem authority. The helper explicitly follows symlinks; only a server-side open could enforce no-follow. No new root/receiver route or backend credential is granted.",
+        "Coverage limit: The mock WebSocket test checks actual RPC parameters and 1.2 MB text plus workspace/content failures. It is not a live remote permissions, symlink race or no-follow oracle."
+      ],
+      "features": [
+        "native-ui",
+        "account-isolation",
+        "product-policy"
+      ],
+      "paths": [
+        "codex-rs/tui/src/app_server_session/fs.rs",
+        "codex-rs/tui/src/app_server_session/fs_preview_tests.rs"
+      ],
+      "reason": "Resolve and read preview files through the original source-thread app-server request view, rechecking workspace identity around the read and validating textual content.",
+      "revisit": "",
+      "sha": "59d8c797896c422afe8bff56bcc6207d2114fd7e",
+      "subject": "Add app-server file preview read helpers (#61887)"
+    },
+    {
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 bcb7a65ee5e5bc632ef3a9c5fef4b8ae160b59662dfb5fcde81bc80d117fe7c2; 93745 bytes, 2103 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: Keep the existing owned-screen/workspace/sidebar availability gates and Cloud exclusion. Resolved replies require the current backend/parent; loaded data is accepted only for its exact retained document request/backend, even when that backend is parked.",
+        "Integration requirement: Existing document snapshots can remain readable; new interaction still checks the document backend. Closed request IDs are not resurrected. Preserve ALab human-input grace, overlay/modal authority, account owner, startup boxing, backend bookkeeping and event FIFO hooks.",
+        "Integration requirement: The new SidebarTab and tab geometry helpers have no owned caller/literal at fixed comparison. Preserve pending chat fork/close/native-thread behavior and saved divider width. No ALab hook is made obsolete.",
+        "Coverage limit: One real embedded-app-server/UI declaration covers open/read/tab/focus/overlay/close and is expanded by rows 6/7. Preview text is data, not native ownership or execution authority."
+      ],
+      "features": [
+        "native-ui",
+        "native-session",
+        "product-policy"
+      ],
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/input.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/side_pane.rs",
+        "codex-rs/tui/src/app/sidebar.rs",
+        "codex-rs/tui/src/app/sidebar_close.rs",
+        "codex-rs/tui/src/app/sidebar_document.rs",
+        "codex-rs/tui/src/app/sidebar_document_tests.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__tests__side_chat_tab_overflow.snap",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session/fs.rs",
+        "codex-rs/tui/src/line_truncation.rs",
+        "codex-rs/tui/src/sidebar_chooser.rs",
+        "codex-rs/tui/src/sidebar_tab_strip.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__hide_and_reopen_side_conversation.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__keyboard_pane_widths.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__side_chat_tab_hover.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__side_chat_tabs.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__sidebar_existing_chat.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__single_side_chat.snap"
+      ],
+      "reason": "Add asynchronous read-only document tabs to the existing workspace sidebar, retaining per-backend/source request identity, user focus and chat-tab lifecycle.",
+      "revisit": "",
+      "sha": "be5db96264e2f4b68cf01488fc984c3c024eb48e",
+      "subject": "Add read-only document previews to the TUI sidebar (#61888)"
+    },
+    {
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 188107f817c05d8a6034aa39c36afff0070c4668d5d9ffaec0f1ab76508a7c97; 90706 bytes, 2088 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: Copy feedback and PRIMARY publication retain actual visible document ownership through focus/overlay/reconnect changes; composer-validated clipboard reads bypass the sidebar rather than being retargeted.",
+        "Integration requirement: Local reader links resolve relative to the current document through the original app-server source. Distinct explicit Markdown occurrences retain source offsets across wrapping; cache equality includes provenance while rendering equality intentionally excludes it.",
+        "Integration requirement: The upstream preview test explicitly spawns a 16 MiB stack thread. Preserve that declared upstream fixture scope; it is not normal-depth ALab application/Send/stack qualification and changes no build/profile limits.",
+        "Coverage limit: The same UI declaration exercises offline copy, hidden PRIMARY, search/navigation and duplicate truncated titles. Row6 does not bound all Markdown preview allocation; source limits arrive in row7 and apply to source previews."
+      ],
+      "features": [
+        "native-ui",
+        "native-session",
+        "product-policy"
+      ],
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/clipboard.rs",
+        "codex-rs/tui/src/app/cloud_switch_wait.rs",
+        "codex-rs/tui/src/app/input.rs",
+        "codex-rs/tui/src/app/input/select_mode.rs",
+        "codex-rs/tui/src/app/link_hover.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/sidebar.rs",
+        "codex-rs/tui/src/app/sidebar_close.rs",
+        "codex-rs/tui/src/app/sidebar_document.rs",
+        "codex-rs/tui/src/app/sidebar_document_tests.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/line_truncation.rs",
+        "codex-rs/tui/src/markdown_render.rs",
+        "codex-rs/tui/src/markdown_render/web_links_tests.rs",
+        "codex-rs/tui/src/sidebar_chooser.rs",
+        "codex-rs/tui/src/terminal_hyperlinks.rs",
+        "codex-rs/tui/src/transcript_view.rs",
+        "codex-rs/tui/src/transcript_view/follow_control.rs",
+        "codex-rs/tui/src/transcript_view/input.rs",
+        "codex-rs/tui/src/transcript_view/select_mode.rs",
+        "codex-rs/tui/src/transcript_view/select_mode_tests.rs",
+        "codex-rs/tui/src/transcript_view/snapshots/codex_tui__transcript_view__select_mode__tests__select_mode_renders_cursor_and_scannable_footer_hints.snap",
+        "codex-rs/tui/src/transcript_view/text.rs",
+        "codex-rs/tui/src/transcript_view/text_tests.rs"
+      ],
+      "reason": "Reuse transcript search, selection, Markdown copy and typed document navigation in sidebar previews while canceling hidden PRIMARY publication and preserving composer paste targets.",
+      "revisit": "",
+      "sha": "7c3f5e2cc2904c7a41742f337a65d606e1da8fe9",
+      "subject": "Add search, selection, and link navigation to document previews (#61889)"
+    },
+    {
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 a5c784d7ffdaa752d8b8dae88d5986b474327df2c788ac1be78f1f24b7080374; 79032 bytes, 1911 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: Workspace previews remain unavailable for Cloud and Windows workspaces. Source/location previews cap retained source at 1 MiB and 10,000 lines; plain Markdown remains rendered Markdown and is not covered by those source-only caps. Server read happens before this display cap.",
+        "Integration requirement: Keep explicit FileLink/ReaderLink separation from web/browser links; normalize nonzero line/column, preserve CRLF/grapheme positioning and exact streamed citation metadata. Parked transcript rendering temporarily exposes local paths and restores preference synchronously.",
+        "Integration requirement: Document-link preference participates in render/layout caches and refreshes on backend/config/session changes. No owned ViewAction match, TerminalHyperlink literal or removed layout helper needs adaptation at fixed comparison; preserve ALab validated artifact hooks.",
+        "Coverage limit: Existing actual UI and typed link tests cover CRLF target/highlight/tab reuse/Escape and streaming metadata. There is no new dedicated runtime declaration for both source-limit boundaries or Windows exclusion; do not claim these predicates executed from source alone."
+      ],
+      "features": [
+        "native-ui",
+        "product-policy",
+        "history-pagination"
+      ],
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/backend_selection.rs",
+        "codex-rs/tui/src/app/config_persistence.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/side_pane.rs",
+        "codex-rs/tui/src/app/sidebar_document.rs",
+        "codex-rs/tui/src/app/sidebar_document_tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/history_cell/markdown_render_cache.rs",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/markdown.rs",
+        "codex-rs/tui/src/markdown_render.rs",
+        "codex-rs/tui/src/markdown_render/local_links.rs",
+        "codex-rs/tui/src/markdown_render/local_links_tests.rs",
+        "codex-rs/tui/src/markdown_render/preferences.rs",
+        "codex-rs/tui/src/markdown_render/web_links_tests.rs",
+        "codex-rs/tui/src/streaming/render_tests.rs",
+        "codex-rs/tui/src/streaming/snapshots/codex_tui__streaming__render__tests__incremental_file_citations.snap",
+        "codex-rs/tui/src/terminal_hyperlinks.rs",
+        "codex-rs/tui/src/transcript_view.rs",
+        "codex-rs/tui/src/transcript_view/document.rs",
+        "codex-rs/tui/src/transcript_view/input.rs",
+        "codex-rs/tui/src/transcript_view/input_tests.rs",
+        "codex-rs/tui/src/transcript_view/layout.rs",
+        "codex-rs/tui/src/transcript_view/selection.rs",
+        "codex-rs/tui/src/transcript_view/text.rs",
+        "codex-rs/tui/src/transcript_view/text_tabs_tests.rs",
+        "codex-rs/tui/src/transcript_view/text_tests.rs"
+      ],
+      "reason": "Open typed source-file targets with line/column metadata, bounded source rendering, syntax highlighting and matching hover/click geometry without changing trusted terminal file links.",
+      "revisit": "",
+      "sha": "3a51865c8cca4409dbdc77a22839a52a6bb1f8f9",
+      "subject": "Open source file links at line and column targets in the TUI (#61890)"
+    },
+    {
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 1db787c5ca80502c0601206e500d39fdd4af3e1c8905b436d903e39166312c9e; 4026 bytes, 83 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: The accepted result follows the actual manager send result and activity event. It reports queue acceptance, not recipient consumption, turn completion or durable client acknowledgement.",
+        "Integration requirement: No implicit wake, extra recipient permission, background authority or ALab mailbox/handoff receipt change is introduced. Preserve owned accepted-input/queued-mail/compaction custody.",
+        "Coverage limit: The unit retains the actual manager operation oracle; guidance/snapshot text alone is not delivery evidence."
+      ],
+      "features": [
+        "native-session",
+        "execution-continuity"
+      ],
+      "paths": [
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__agent_eviction__idle_eviction_followup.snap"
+      ],
+      "reason": "Return a visible acceptance message for an actual queue-only message to the root agent, preserving existing non-root wake guidance and TriggerTurn behavior.",
+      "revisit": "",
+      "sha": "c0d47262f33fdb866e2012baad52cf6584e37c03",
+      "subject": "Acknowledge agent messages and clarify how to wake idle recipients (#61894)"
+    },
+    {
+      "classes": [
+        "feature",
+        "refactor",
+        "telemetry"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 29506defb055c1e98abcd2c84ffacb2088af361947b4c6cdadbf51c84ff51564; 64790 bytes, 1507 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: Recording remains opt-in through the existing trace-root environment mechanism. Defaults are 64 MiB per new body/separated value and 256 MiB per shared root/child bundle; they are trace-storage limits, not upstream rollout budget or native Goal budget.",
+        "Integration requirement: Preserve complete raw JSON bytes/identity, partial references, surviving content/tool links, compressed-size accounting and reserved event space. Event exhaustion ends at the preceding full event and stays Unclosed; closed partial captures are explicitly ClosedWithPartialPayloads.",
+        "Integration requirement: Trace data never becomes a certified receipt, source admission or Goal/accounting authority. Preserve ALab cancellation/write/input custody independently. ExecConfiguration captures/restores raw config layers through the actual constructor, not a fixed field clone; no owned Config/TraceCaptureLimits/start_root literal needs adaptation at fixed comparison.",
+        "Integration requirement: No manual lock edit, recording default activation or credentials/provider change. Reduced state cache is generated separately and is outside the stated captured bundle budget.",
+        "Coverage limit: Existing tests cover compressed omission/later events, byte-exact reconstruction, event-space prefix, client cancellation and CLI startup failure. There is no newly added focused root+child combined-budget or cap-plus-cancellation race declaration; the shared writer is source-proven, not a runtime observation. Dedup index/memory and CPU cost remain unmeasured."
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff",
+        "qualification-fixtures",
+        "product-policy"
+      ],
+      "paths": [
+        "codex-rs/cli/tests/rollout_trace.rs",
+        "codex-rs/config/src/config_toml.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/rollout-trace/Cargo.toml",
+        "codex-rs/rollout-trace/README.md",
+        "codex-rs/rollout-trace/src/capture_tests.rs",
+        "codex-rs/rollout-trace/src/inference.rs",
+        "codex-rs/rollout-trace/src/lib.rs",
+        "codex-rs/rollout-trace/src/payload.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation/normalize.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/mod.rs",
+        "codex-rs/rollout-trace/src/reducer/thread.rs",
+        "codex-rs/rollout-trace/src/reducer/tool/agents.rs",
+        "codex-rs/rollout-trace/src/reducer/tool/terminal.rs",
+        "codex-rs/rollout-trace/src/shard.rs",
+        "codex-rs/rollout-trace/src/thread.rs",
+        "codex-rs/rollout-trace/src/writer.rs",
+        "codex-rs/thread-manager-sample/src/main.rs"
+      ],
+      "reason": "Bound enabled rollout-trace payload and bundle storage, reuse exact prepared items and retain explicit partial-capture lifecycle information instead of fabricating complete evidence.",
+      "revisit": "",
+      "sha": "ef6ce8100a910d107c41bb03bef93e8e0b4b043a",
+      "subject": "Bound rollout trace capture with configurable storage limits (#61896)"
+    },
+    {
+      "classes": [
+        "feature",
+        "protocol",
+        "defaults"
+      ],
+      "decision": "keep-opt-in",
+      "evidence": [
+        "Canonical patch SHA256 5e15de83de4f3f05f6fdcd1ae0daa83a4bdc85d990bebd2d6652c7628647c151; 23471 bytes, 507 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: Do not enable utc_environment_date in ALab packaged/aterm defaults or infer timezone authority from context text. Enabled snapshots render current_date_utc and an unavailable clock uses the matching basis tag.",
+        "Integration requirement: A basis-only change emits a context update even for the same calendar date; legacy local snapshots and actual local/remote compaction prefixes remain supported. Native Goal clocks, accounting timers and deadline policy remain independent.",
+        "Coverage limit: Actual configured UTC request-prefix tests cover midnight rollover and same-day stability, plus two local/UTC removal/recovery cases. No ALab default or shipped prompt behavior is activated by this metadata review."
+      ],
+      "features": [
+        "product-policy",
+        "native-session",
+        "exec-handoff"
+      ],
+      "paths": [
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/context/world_state/environment.rs",
+        "codex-rs/core/src/context/world_state/environment_render_tests.rs",
+        "codex-rs/core/src/context/world_state/environment_tests.rs",
+        "codex-rs/core/src/session/world_state.rs",
+        "codex-rs/core/tests/common/context_snapshot/normalize.rs",
+        "codex-rs/core/tests/suite/current_time_reminder.rs",
+        "codex-rs/core/tests/suite/scenarios_world_state_prefix_tests.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__world_state_prefix__extension_window_prefix_local.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__world_state_prefix__extension_window_prefix_remote.snap",
+        "codex-rs/features/src/lib.rs"
+      ],
+      "reason": "Keep disabled-by-default UTC environment dates opt-in, preserving local-date behavior when absent and tracking the date basis in persisted context snapshots.",
+      "revisit": "Remain disabled unless explicitly selected and separately qualified under native ALab policy; this review enables no new default.",
+      "sha": "ce7079b5063742d2dde9bb12b3c6077de6e298a4",
+      "subject": "Add opt-in UTC dates to environment context (#61897)"
+    },
+    {
+      "classes": [
+        "fix",
+        "security",
+        "refactor"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 71bc0549bd9a7ef4fcc3b3519af968cc785978b76bc16ad5e4e1cc16a9f948fd; 49441 bytes, 1250 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: Keep existing explicit managed-network/transparent-TCP gates and endpoint allowlists; do not activate the prior opt-in capture/attribution features. Transparent mode still requires supported system bwrap and refuses unsupported capability.",
+        "Integration requirement: Fork before starting bridge threads; host bridge descriptors/token remain in the hardened supervisor, command child receives only sandbox controls. Transparent setup re-execs before namespace creation to clear inherited credential memory, while route validation and guest token stripping stay intact.",
+        "Integration requirement: Preserve process-group cancellation, parent-thread death, SIGCHLD status recovery, independent synthetic mount cleanup and private descriptor table fallback. No ALab source/account/Goal/native permission hook is equivalent or removable.",
+        "Coverage limit: The live Linux tests may skip for unavailable bwrap/namespaces; Mac source review supplies no Linux execution evidence. They cover normal/group/launcher/caller death and FD pressure, not a certified all-kernel guarantee."
+      ],
+      "features": [
+        "execution-continuity",
+        "account-isolation",
+        "product-policy"
+      ],
+      "paths": [
+        "codex-rs/linux-sandbox/src/launcher.rs",
+        "codex-rs/linux-sandbox/src/linux_run_main.rs",
+        "codex-rs/linux-sandbox/src/proxy_lifecycle.rs",
+        "codex-rs/linux-sandbox/src/proxy_routing.rs",
+        "codex-rs/linux-sandbox/src/tcp_net_setup.rs",
+        "codex-rs/linux-sandbox/tests/suite/managed_proxy.rs",
+        "codex-rs/linux-sandbox/tests/suite/managed_proxy_bridge_lifecycle_tests.rs"
+      ],
+      "reason": "Bind Linux host proxy bridge lifetime to outer sandbox supervisors, preserve exit status/signal forwarding and isolate proxy descriptor pressure from mount cleanup.",
+      "revisit": "",
+      "sha": "641b4cac88d08e03d3d72ed91ea7e0dfd8b12299",
+      "subject": "Tie Linux sandbox proxy bridges to the launcher lifetime (#61898)"
+    },
+    {
+      "classes": [
+        "fix"
+      ],
+      "decision": "adopt",
+      "evidence": [
+        "Canonical patch SHA256 59ee7d9378c8d2fa6a23cabede7e80868e08857be195ded1d108b809f63b623b; 6189 bytes, 139 lines; all production/test/snapshot hunks independently read.",
+        "alab/reviews/upstream-intake-2026-11-17-afterb8cb.md; comparison main 38ecb45641fd91023dd07628dc645a130b6456e0, final cohort a11d2403a5c8f346527379ccd061c2aa95e7edc4. Source-only, all test candidates not_run/UNRUN, final_binding null; no import, Rust, native admission or qualification.",
+        "Integration requirement: Do not broaden fallback to other paths, errnos or separate lines. Transparent TCP continues to require proc and does not enter the proc-less fallback; namespace/permissions remain native launch policy.",
+        "Integration requirement: Keep the actual bwrap wrapper destination variants and command/PID assertions. No ALab hook removal, sandbox-default change or held route activation.",
+        "Coverage limit: Two positive and four negative macro variants are source declarations; the positive errno loop is not six generated cases. The integration has two actual destination variants and Linux prerequisites."
+      ],
+      "features": [
+        "execution-continuity",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "paths": [
+        "codex-rs/linux-sandbox/src/linux_run_main.rs",
+        "codex-rs/linux-sandbox/src/linux_run_main_tests.rs",
+        "codex-rs/linux-sandbox/tests/suite/managed_proxy.rs"
+      ],
+      "reason": "Recognize only supported same-line /proc or /newroot/proc mount failures for the existing proc-less fallback, retaining explicit PID inheritance and fail-closed unrelated errors.",
+      "revisit": "",
+      "sha": "a11d2403a5c8f346527379ccd061c2aa95e7edc4",
+      "subject": "Fix proc mount fallback detection for Bubblewrap 0.12 (#61900)"
+    }
+  ],
+  "frontier": "b8cbdbfeff72869e5d715480572aad24f739aa65",
+  "schema": 1,
+  "target": "a11d2403a5c8f346527379ccd061c2aa95e7edc4"
+}

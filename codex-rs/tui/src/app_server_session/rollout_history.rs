@@ -100,6 +100,7 @@ impl AppServerSession {
         self.freeze_viewed_receipt(thread_id);
         Ok((
             AppServerStartedThread {
+                #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
                 session,
                 turns: thread.turns,
                 blocks_direct_input: false,
@@ -157,6 +158,8 @@ impl AppServerSession {
         model_settings: ResumeModelSettings,
         permission_overrides: crate::resume_permissions::ResumePermissions,
     ) -> Result<AppServerStartedThread> {
+        let construction_scope = self.alab_original_construction(codex_app_server_client::InitialAction::Resume(thread_id.to_string()), &config, codex_app_server_client::ClientPresentation::Primary)?; // ALAB(source-selection): actual owner precedes the unchanged original future.
+        construction_scope.run(async move { // ALAB(source-selection): retain original policy, hydration, conversion and errors in the same scope.
         if let Some(restored) = super::alab_upgrade_receiver::resume(self, local_settings, thread_id).await? { return Ok(restored); } // ALAB(exec-recovery): attach the complete retained runtime before ordinary resume can recreate it.
         if self.thread_params_mode().settings_owner() == ThreadSettingsOwner::Client {
             self.thread_tool_transport()
@@ -219,6 +222,8 @@ impl AppServerSession {
             rollout_maintenance_guard = None;
         }
         let request_id = self.next_request_id();
+        #[cfg(unix)]
+        if let Some(original) = super::alab_retained_ui::original_resume::existing::original::before_original_send(self, request_id.clone(), params.clone(), &config, local_settings).await? { return Ok(original); } // ALAB(source-selection): continue the same original Started before any ordinary send/conversion; the real maintenance guard stays owned here.
         let resume_response = self
             .request_handle
             .request_typed(ClientRequest::ThreadResume {
@@ -276,6 +281,8 @@ impl AppServerSession {
             started.task_tools_available = true;
         }
         Ok(started)
+        }).await // ALAB(source-selection): no new request, result or default is reconstructed.
+
     }
 }
 

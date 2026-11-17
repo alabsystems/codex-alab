@@ -15,17 +15,22 @@ impl GoalRuntimeHandle {
     /// Pace that deferral through the existing single owner; failed persistence
     /// authorizes no new request or automatic additive replay.
     pub(super) fn alab_defer_for_goal_persistence(&self) -> bool {
-        if !codex_alab_core::active() {
+        if !codex_alab_core::is_alab_binary() {
             return false;
         }
+        let enhanced = codex_alab_core::active();
         match self.inner.accounting_state.alab_persistence.admission() {
             codex_alab_core::goal_persistence::Admission::Ready => false,
             codex_alab_core::goal_persistence::Admission::Writing => {
-                self.alab_recheck_goal_admission();
+                if enhanced {
+                    self.alab_recheck_goal_admission();
+                }
                 true
             }
             codex_alab_core::goal_persistence::Admission::Held => {
-                self.alab_cancel_goal_admission_recovery();
+                if enhanced {
+                    self.alab_cancel_goal_admission_recovery();
+                }
                 true
             }
         }

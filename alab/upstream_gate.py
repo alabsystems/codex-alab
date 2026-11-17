@@ -10,12 +10,15 @@ import argparse
 import json
 from pathlib import Path
 import re
+import runpy
 import subprocess
 import sys
 import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from upstream_intake import git, snapshot, validate
+from upstream_intake import catalog_feature_ids, git, snapshot, validate
+
+CLI = runpy.run_path(str(Path(__file__).resolve().with_name('cli_status.py')))
 
 
 RECORD = re.compile(r'alab/upstream/[A-Za-z0-9][A-Za-z0-9._-]*-intake\.json')
@@ -39,9 +42,7 @@ def admission(repo, base, source='HEAD', upstream='upstream/main'):
     if not wanted:
         return result
     catalog = tomllib.loads(git(repo, 'show', source + ':alab/features.toml'))
-    if type(catalog.get('schema')) is not int or catalog.get('schema') != 1:
-        raise ValueError('unsupported feature inventory schema')
-    feature_ids = {feature['id'] for feature in catalog['features']}
+    feature_ids = catalog_feature_ids(catalog)
     names = git(repo, 'ls-tree', '-r', '--name-only', '-z', source, '--', 'alab/upstream')
     records = {}
     for name in names.rstrip('\0').split('\0'):
@@ -110,13 +111,21 @@ def admission(repo, base, source='HEAD', upstream='upstream/main'):
     return result
 
 
-def main():
+def _arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--base', required=True)
     parser.add_argument('--source', default='HEAD')
     parser.add_argument('--upstream', default='upstream/main')
     args = parser.parse_args()
+    return args
+
+
+def main():
+    return _run(_arguments())
+
+
+def _run(args):
     try:
         result = admission(args.repo, args.base, args.source, args.upstream)
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
@@ -126,5 +135,10 @@ def main():
     return 1 if result['errors'] or result['missing'] else 0
 
 
+def cli():
+    args = _arguments()
+    return CLI['run_operation'](lambda: _run(args), 'upstream review admission: ')
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(cli())

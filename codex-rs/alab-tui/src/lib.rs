@@ -23,17 +23,12 @@ pub mod daemon_packages;
 pub mod enrollment_ui;
 pub mod execution;
 pub mod fixture_clock;
+#[cfg(unix)]
+pub mod frontend_control;
 pub mod goal_interrupt;
 pub mod identity;
 #[cfg(unix)]
 pub mod input;
-pub mod terminal_modes;
-#[cfg(unix)]
-pub mod upgrade_terminal;
-#[cfg(unix)]
-pub mod upgrade_startup;
-#[cfg(unix)]
-pub mod upgrade_state;
 pub mod interface;
 pub mod life;
 pub mod login;
@@ -53,6 +48,7 @@ pub mod service_tier;
 pub mod session;
 #[cfg(feature = "test-support")]
 mod snapshot_fixtures;
+pub mod terminal_modes;
 #[cfg(feature = "test-support")]
 pub mod test_diagnostics;
 #[cfg(feature = "test-support")]
@@ -65,9 +61,26 @@ pub mod trust;
 pub mod turns;
 pub mod upgrade;
 pub mod upgrade_admission;
+pub mod upgrade_capture;
+#[cfg(unix)]
+pub mod upgrade_editor_clock;
+pub mod upgrade_editor_graph;
+pub mod upgrade_editor_graph_scope;
+#[cfg(unix)]
+pub mod upgrade_editor_startup;
 pub mod upgrade_exec_custody;
 mod upgrade_host;
+#[cfg(unix)]
+mod upgrade_native_command;
+#[cfg(unix)]
+pub mod upgrade_runtime_data;
+#[cfg(unix)]
+pub mod upgrade_startup;
+#[cfg(unix)]
+pub mod upgrade_state;
 pub mod upgrade_target;
+#[cfg(unix)]
+pub mod upgrade_terminal;
 pub mod waiting;
 
 /// Whether the TUI fetches OpenAI's announcement feed (`tui/src/tooltips.rs`): a GET to
@@ -193,3 +206,6 @@ pub fn cursor_position(
         fallback()
     }
 }
+
+pub mod retained_arc_graph;
+pub mod retained_tip_template;

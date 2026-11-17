@@ -15,6 +15,12 @@ The login screen then uses the normal account login API. All model sessions stil
 use the strict routing resolver, and configuration errors, policy conflicts,
 account changes, and non-authentication discovery failures retain their errors.
 
+Focused app-server table coverage requires `DiscoveryUnauthorized` plus
+`RefreshTokenRejected` with each of the `Expired`, `Exhausted`, `Revoked`, and
+`Other` reasons to return the same signed-out state: the account, `user_id`,
+`workspace_routing`, and `workspace_name` are absent, and `requires_openai_auth`
+is true. Non-authentication routing failures stay fatal.
+
 The auth audit covered TUI login/bootstrap, background routing, model routing,
 login completion, workspace switching, and provider auth status. Login completion
 already reports failed discovery inline; model routing and workspace switching

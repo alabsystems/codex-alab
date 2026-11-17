@@ -547,3 +547,7 @@ fn open_desktop_thread_url(_url: &str) -> Result<(), String> {
 #[cfg(test)]
 #[path = "history_ui_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_tails.rs"]
+pub(in crate::app) mod alab_retained; // ALAB(retained-ui): preserve original history tail weak identity and native cached lines.

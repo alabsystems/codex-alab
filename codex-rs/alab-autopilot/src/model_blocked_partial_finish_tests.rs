@@ -7,7 +7,6 @@ use super::*;
 use codex_alab_core::goal_persistence::MutationEpoch;
 use codex_alab_core::model_goal_invocation;
 use codex_alab_core::model_goal_invocation::Invocation;
-use codex_alab_core::model_goal_stops::Binding;
 use codex_extension_api::ToolName;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_thread_store::ThreadStoreError;
@@ -16,6 +15,7 @@ use std::sync::atomic::AtomicUsize;
 
 const CALL: &str = "partial-finish-model-block";
 const HELD_ITEM: &str = "The original model stopped at a temporary compiler obstacle.";
+type Binding = model_blocked_goal::ModelGoalBinding;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
@@ -1001,7 +1001,10 @@ async fn verify_suspended_import(
         .current_model_goal(&h.rt)
         .await
         .expect("validate the genuine recorded source");
-    assert_eq!(imported, (!pause).then_some(saved));
+    assert_eq!(
+        imported.map(|binding| binding.goal),
+        (!pause).then_some(saved)
+    );
     if pause {
         assert!(lock(&h.rt.model_blocked_goal).is_none());
     } else {

@@ -124,9 +124,29 @@ pub(crate) async fn open(sock: &Path, deadline: Duration) -> Result<Opened, Erro
         .map_err(|_| Error::Unanswered)?
 }
 
+async fn connect_close_on_exec(sock: &Path) -> Result<UnixStream, Error> {
+    use std::future::Future as _;
+    use std::task::Poll;
+    let mut connect = std::pin::pin!(UnixStream::connect(sock));
+    std::future::poll_fn(|context| {
+        // Darwin creates the socket and sets CLOEXEC in separate system calls.
+        // Each synchronous poll is excluded from raw exec; Pending never keeps
+        // this guard, and a completed stream is checked before exclusion ends.
+        let _fd_custody = match codex_alab_core::native_fd_custody::receiving() {
+            Ok(guard) => guard,
+            Err(error) => return Poll::Ready(Err(error.into())),
+        };
+        match connect.as_mut().poll(context) {
+            Poll::Ready(Ok(stream)) => Poll::Ready(set_cloexec(&stream).map(|()| stream)),
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error.into())),
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
+}
+
 async fn open_inner(sock: &Path) -> Result<Opened, Error> {
-    let stream = UnixStream::connect(sock).await?;
-    set_cloexec(&stream)?;
+    let stream = connect_close_on_exec(sock).await?;
     let server_pid = stream
         .peer_cred()
         .ok()
@@ -402,16 +422,18 @@ impl Conn {
             .await
     }
 
-    /// Private protocols can impose a smaller status bound before allocating the reply.
-    pub(crate) async fn request_status_bounded(
+    /// Bounded status framing for a native operation that retains a request
+    /// while constructing a backend. Queueing remains part of this deadline.
+    pub(crate) async fn request_status_bounded_within(
         &self,
         line: &str,
         maximum: usize,
+        deadline: Duration,
     ) -> Result<Reply, Error> {
         if maximum == 0 || maximum > MAX_LINE_BYTES {
             return Err(Error::BadRequest("invalid status bound".into()));
         }
-        self.exchange(line, Vec::new(), Framing::Status, self.deadline, maximum)
+        self.exchange(line, Vec::new(), Framing::Status, deadline, maximum)
             .await
     }
 
@@ -500,3 +522,7 @@ async fn serve(
         let _ = job.reply.send(Err(Error::Closed));
     }
 }
+
+#[cfg(test)]
+#[path = "conn_creation_tests.rs"]
+mod creation_tests;

@@ -115,7 +115,7 @@ async fn working_deadline_rearms_and_hidden_rows_do_not_spend_exposure() {
     }
     let current = app.turn_tips.current.as_mut().unwrap();
     // Use a catalog-independent key-free fixture for width and visibility.
-    current.template = Some("Try /help.");
+    current.template = Some(codex_alab_tui::retained_tip_template::literal("Try /help.")); // ALAB(retained-ui): native fixture uses the same chosen literal storage.
     assert!(
         app.turn_tip(/*width*/ 8, now + WORKING_DELAY, &frames)
             .is_none()
@@ -222,7 +222,7 @@ async fn turn_tip_placements_and_completion_barrier() -> Result<()> {
             notification("turn/started", thread, /*turn*/ 3, "inProgress"),
         );
         app.turn_tips.current.as_mut().unwrap().started_at = Instant::now() - WORKING_DELAY;
-        app.turn_tips.current.as_mut().unwrap().template = Some("Try /help.");
+        app.turn_tips.current.as_mut().unwrap().template = Some(codex_alab_tui::retained_tip_template::literal("Try /help.")); // ALAB(retained-ui): native fixture uses the same chosen literal storage.
         if !working {
             deliver(&mut app, answer(thread, /*turn*/ 3));
             deliver(
@@ -420,7 +420,7 @@ async fn working_tip_stays_put_through_mouse_selection() -> Result<()> {
         &mut app,
         notification("turn/started", thread, /*turn*/ 1, "inProgress"),
     );
-    app.turn_tips.current.as_mut().unwrap().template = Some("Try /help.");
+    app.turn_tips.current.as_mut().unwrap().template = Some(codex_alab_tui::retained_tip_template::literal("Try /help.")); // ALAB(retained-ui): native fixture uses the same chosen literal storage.
     let initial_area = app.render_owned_transcript(&mut tui, size)?;
     let initial = buffer_text(crate::custom_terminal::test_support::last_rendered_buffer(
         &tui.terminal,

@@ -679,3 +679,7 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 #[path = "markdown_copy_tests.rs"]
 mod tests;
+
+// ALAB(retained-ui): preserve native copy annotations and semantic source identity.
+#[path = "../../alab-tui/glue/retained_text_copy.rs"]
+pub(crate) mod alab_retained_copy;

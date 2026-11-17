@@ -1877,7 +1877,8 @@ impl Supervisor {
             let receipt = match &waits {
                 Some((held, row)) if *held <= turn.id && self.receipt_owed(turn.id) => format!(
                     "its receipt waits behind the unhandled {} {}",
-                    row.kind, row.reference()
+                    row.kind,
+                    row.reference()
                 ),
                 _ if self.receipt_owed(turn.id) => "its receipt is still owed".to_string(),
                 _ => "receipt sent".to_string(),
@@ -1979,13 +1980,14 @@ impl Supervisor {
             }
         }
         let text = waits.as_ref().map(|(held, row)| {
-            let off = rows
-                .iter()
-                .find(|r| r.id == *held)
-                .map_or_else(|| format!("row {held}"), |r| r.reference());
+            let off = rows.iter().find(|r| r.id == *held).map_or_else(
+                || format!("row {held}"),
+                codex_alab_aterm::mail::Row::reference,
+            );
             format!(
                 "mail: the receipt for {off} waits behind the unhandled {} {}",
-                row.kind, row.reference()
+                row.kind,
+                row.reference()
             )
         });
         if let Some(text) = &text {

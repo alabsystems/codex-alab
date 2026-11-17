@@ -6,6 +6,10 @@
 # still overrides each one. An owner-only build, installed and updated by atpkg, run inside
 # aterm: nothing goes to OpenAI but the model, login and usage traffic the product needs.
 
+# Start new sessions on Sol 6.2 with ultra reasoning unless an explicit selection overrides it.
+model = "gpt-6.2-sol"
+model_reasoning_effort = "ultra"
+
 # atpkg updates codex-alab; the update check polls GitHub and Homebrew every 20 h.
 check_for_update_on_startup = false
 
@@ -81,14 +85,17 @@ wire_api = "responses"
 
 # K3 within 256K is the conservative default. The bundled picker also includes 1M and HighSpeed
 # models for eligible plans; no model catalog file or Kimi CLI installation is required.
+# Keep K3's supported High default when these profiles replace the primary model.
 [profiles.kimi]
 model = "k3-256k"
 model_provider = "kimi"
+model_reasoning_effort = "high"
 web_search = "live"
 tools = { update_plan = { enabled = true } }
 
 [profiles.kimi-cn]
 model = "k3-256k"
 model_provider = "kimi-cn"
+model_reasoning_effort = "high"
 web_search = "live"
 tools = { update_plan = { enabled = true } }

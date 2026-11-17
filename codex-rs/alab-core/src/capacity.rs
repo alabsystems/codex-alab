@@ -170,6 +170,10 @@ pub fn permanent_client_status(code: u16) -> bool {
 #[derive(Debug, Default)]
 pub struct CapacityBackoff {
     attempts: u64,
+    /// Opaque rejections this request received over HTTPS, where a request carries the
+    /// turn's routing token. It is kept here because this is the one per-request state
+    /// ALab carries through core's retry loop.
+    opaque_https_rejections: u32,
 }
 
 impl CapacityBackoff {
@@ -189,6 +193,12 @@ impl CapacityBackoff {
     /// How many waits have been selected, saturating rather than wrapping.
     pub fn attempts(&self) -> u64 {
         self.attempts
+    }
+
+    /// Count an opaque rejection this request received over HTTPS; the first is one.
+    pub fn note_opaque_https_rejection(&mut self) -> u32 {
+        self.opaque_https_rejections = self.opaque_https_rejections.saturating_add(1);
+        self.opaque_https_rejections
     }
 }
 
@@ -379,6 +389,7 @@ mod tests {
     fn a_saturated_attempt_count_keeps_the_same_bounded_wait() {
         let mut backoff = CapacityBackoff {
             attempts: u64::MAX - 1,
+            ..Default::default()
         };
         assert_eq!(backoff.next_delay(0), Duration::from_secs(30));
         assert_eq!(backoff.attempts(), u64::MAX);

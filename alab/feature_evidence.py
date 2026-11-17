@@ -4,10 +4,11 @@
 """Check declared feature/scenario evidence; does not run tests or prove semantics."""
 import argparse
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
-import shutil
+import runpy
 import subprocess
 import sys
 import tomllib
@@ -17,6 +18,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from focused_results import PASSED, RESULT, START, completed_names, confirm, libtest_output
 from upstream_intake import git
 from python_test_results import passed_tests as python_passed_tests
+
+FILE_HASH = runpy.run_path(str(Path(__file__).resolve().with_name('file_hash.py')))
+CLI = runpy.run_path(str(Path(__file__).resolve().with_name('cli_status.py')))
+
+
+def read_record(path):
+    _metadata, raw = FILE_HASH['file_bytes_snapshot'](path)
+    with io.TextIOWrapper(io.BytesIO(raw)) as text:
+        return json.loads(text.read())
 
 
 def snapshot(repo, source, upstream, base=None):
@@ -36,12 +46,21 @@ def snapshot(repo, source, upstream, base=None):
         raise ValueError('unsupported feature inventory schema')
     features, ids = [], set()
     for feature in catalog['features']:
-        if feature['lifecycle'] == 'retired':
+        lifecycle = feature.get('lifecycle')
+        if not isinstance(lifecycle, str) or lifecycle not in {'active', 'retiring', 'retired'}:
+            raise ValueError('invalid feature lifecycle')
+        if lifecycle == 'retired':
             continue
-        identity = feature['id']
-        scenarios = feature['scenarios']
-        if identity in ids or not scenarios or len(set(scenarios)) != len(scenarios):
-            raise ValueError('duplicate feature or missing/duplicate scenario')
+        identity = feature.get('id')
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError('feature ID required')
+        scenarios = feature.get('scenarios')
+        if (not isinstance(scenarios, list) or not scenarios
+                or any(not isinstance(description, str) or not description.strip()
+                       for description in scenarios)):
+            raise ValueError('nonempty scenario descriptions required')
+        if identity in ids or len(set(scenarios)) != len(scenarios):
+            raise ValueError('duplicate feature or scenario')
         ids.add(identity)
         features.append({'id': identity, 'scenarios': [
             {'description': scenario, 'checks': []} for scenario in scenarios]})
@@ -68,7 +87,10 @@ def log_bytes(observation, log_root=None):
     if log_root is None:
         if not isinstance(log, str) or not Path(log).is_absolute():
             raise ValueError('absolute captured log path required')
-        path = Path(log)
+        try:
+            path = Path(log).resolve(strict=True)
+        except RuntimeError as error:
+            raise ValueError('captured log path cannot be resolved') from error
     else:
         digest = observation.get('log_sha256')
         if (not isinstance(digest, str) or not re.fullmatch(r'[a-f0-9]{64}', digest)
@@ -79,7 +101,7 @@ def log_bytes(observation, log_root=None):
         if (path.is_symlink() or path.parent.is_symlink()
                 or not path.resolve(strict=True).is_relative_to(root)):
             raise ValueError('bundle log must remain inside the bundle without symlinks')
-    raw = path.read_bytes()
+    _metadata, raw = FILE_HASH['file_bytes_snapshot'](path)
     if hashlib.sha256(raw).hexdigest() != observation.get('log_sha256'):
         raise ValueError('captured log hash changed')
     return raw
@@ -163,31 +185,29 @@ def bundle(record, expected, destination):
     # Create exclusively; a resumed export must never overwrite an earlier record.
     destination = Path(destination)
     destination.mkdir()
-    try:
-        (destination / 'logs').mkdir()
-        # JSON round-tripping copies only the record's serializable values.
-        exported = json.loads(json.dumps(record))
-        for feature in exported['features']:
-            for scenario in feature['scenarios']:
-                for observation in scenario['checks']:
-                    raw = log_bytes(observation)
-                    observation['log'] = 'logs/' + observation['log_sha256'] + '.log'
-                    target = destination / observation['log']
-                    if not target.exists():
-                        with target.open('xb') as stream:
-                            stream.write(raw)
-        errors = validate(exported, expected, destination)
-        if errors:
-            raise ValueError('\n'.join(errors))
-        with (destination / 'record.json').open('x') as stream:
-            json.dump(exported, stream, indent=2)
-            stream.write('\n')
-    except BaseException:
-        shutil.rmtree(destination)
-        raise
+    # Failed exports retain their material. The pathname can have been replaced
+    # since creation, so recursive rollback cannot establish deletion custody.
+    (destination / 'logs').mkdir()
+    # JSON round-tripping copies only the record's serializable values.
+    exported = json.loads(json.dumps(record))
+    for feature in exported['features']:
+        for scenario in feature['scenarios']:
+            for observation in scenario['checks']:
+                raw = log_bytes(observation)
+                observation['log'] = 'logs/' + observation['log_sha256'] + '.log'
+                target = destination / observation['log']
+                if not target.exists():
+                    with target.open('xb') as stream:
+                        stream.write(raw)
+    errors = validate(exported, expected, destination)
+    if errors:
+        raise ValueError('\n'.join(errors))
+    with (destination / 'record.json').open('x') as stream:
+        json.dump(exported, stream, indent=2)
+        stream.write('\n')
 
 
-def main():
+def _arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['snapshot', 'validate', 'bundle'])
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
@@ -202,6 +222,14 @@ def main():
     if (args.log_root is not None and args.operation != 'validate'
             or (args.destination is not None) != (args.operation == 'bundle')):
         parser.error('--log-root requires validate; --destination is required only for bundle')
+    return args
+
+
+def main():
+    return _run(_arguments())
+
+
+def _run(args):
     try:
         expected = snapshot(args.repo, args.source, args.upstream, args.base)
         if args.operation == 'snapshot':
@@ -210,7 +238,11 @@ def main():
                 stream.write('\n')
             print('Created pending feature coverage record; no scenarios qualified')
             return 0
-        record = json.loads(args.record.read_text())
+        try:
+            record_path = args.record.resolve(strict=True)
+        except RuntimeError as error:
+            raise ValueError('feature record path cannot be resolved') from error
+        record = read_record(record_path)
         if args.operation == 'bundle':
             bundle(record, expected, args.destination)
             print('Exported declared scenario evidence and hashed logs; no tests were run')
@@ -226,5 +258,10 @@ def main():
         return 1
 
 
+def cli():
+    args = _arguments()
+    return CLI['run_operation'](lambda: _run(args), 'feature evidence: ')
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(cli())

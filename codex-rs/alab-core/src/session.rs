@@ -685,6 +685,10 @@ pub struct WallGoal {
     pub goal_id: String,
     pub objective: String,
     pub token_budget: Option<i64>,
+    /// Durable host chronology generation observed with this exact goal source. The initial
+    /// generation is `None`; every later host mutation permanently rotates it, even after
+    /// settlement, so an identical cross-process round trip cannot revive older proof.
+    pub chronology_fence_generation: Option<crate::goal_chronology_fence::FenceGeneration>,
     /// The native turn whose turn error blocked it: the image after a re-exec or a relaunch reads
     /// the thread's history from that turn's start for a person's goal set, which upstream
     /// records there, and binds no goal a person stopped (review of the forever-persist lane,
@@ -1166,6 +1170,8 @@ pub struct Shared {
     /// Model-stop provenance selected by the record writer, independent of old turn
     /// pacing. An explicit empty entry retires that source for this process.
     carried_model_goals: Mutex<BTreeMap<String, Option<WallGoal>>>,
+    /// After any live mode boundary, late record imports cannot reintroduce old provenance.
+    model_goal_imports_retired_for_mode: AtomicBool,
     model_goal_custody: Mutex<BTreeMap<String, crate::model_goal_stops::Custody>>,
     /// Accepted callback facts are passive until an exact native receipt chain
     /// reaches the current epoch. They never enter a saved session record.
@@ -1454,6 +1460,7 @@ impl Shared {
             }),
             paces: Mutex::new(BTreeMap::new()),
             carried_model_goals: Mutex::new(BTreeMap::new()),
+            model_goal_imports_retired_for_mode: AtomicBool::new(false),
             model_goal_custody: Mutex::new(BTreeMap::new()),
             model_goal_stops: Mutex::new(BTreeMap::new()),
             model_goal_imports: OnceLock::new(),
@@ -2810,31 +2817,54 @@ impl Shared {
     /// image after a re-exec, or a relaunch after a crash, takes it up. A pace at rest is
     /// none. A wall's goal bound before a person's stop this process saw is no wall's
     /// ([`Self::person_goal_set`]): the pace keeps none, so the record never carries it.
-    pub fn set_pace(&self, thread: &str, mut pace: Pace) {
-        let mut paces = lock(&self.paces);
-        if pace
-            .wall_goal
-            .as_ref()
-            .is_some_and(|goal| goal.person_stops != self.person_goal_stops(thread))
-        {
-            pace.wall_goal = None;
-        }
-        if pace
-            .model_blocked_goal
-            .as_ref()
-            .is_some_and(|goal| goal.person_stops != self.person_goal_stops(thread))
-        {
-            pace.model_blocked_goal = None;
-        }
-        let changed = if pace.at_rest() {
-            paces.remove(thread).is_some()
-        } else if paces.get(thread) != Some(&pace) {
-            paces.insert(thread.to_owned(), pace);
-            true
-        } else {
-            false
-        };
-        drop(paces);
+    pub fn set_pace(&self, thread: &str, pace: Pace) {
+        self.set_pace_at_mode(thread, pace, None);
+    }
+
+    /// Publish live model provenance only for the exact current mode generation.
+    /// The comparison occurs under the pace lock so a mode clear linearizes
+    /// before or after this write and can never be bypassed by an old publisher.
+    pub fn set_pace_at_mode(
+        &self,
+        thread: &str,
+        mut pace: Pace,
+        model_goal_mode_epoch: Option<u64>,
+    ) {
+        let changed = crate::with_model_source_lock(|| {
+            let mut paces = lock(&self.paces);
+            if pace
+                .wall_goal
+                .as_ref()
+                .is_some_and(|goal| goal.person_stops != self.person_goal_stops(thread))
+            {
+                pace.wall_goal = None;
+            }
+            if pace
+                .model_blocked_goal
+                .as_ref()
+                .is_some_and(|goal| goal.person_stops != self.person_goal_stops(thread))
+            {
+                pace.model_blocked_goal = None;
+            }
+            if pace.model_blocked_goal.is_some()
+                && match model_goal_mode_epoch {
+                    Some(epoch) => crate::mode_epoch() != Some(epoch),
+                    None => self
+                        .model_goal_imports_retired_for_mode
+                        .load(Ordering::SeqCst),
+                }
+            {
+                pace.model_blocked_goal = None;
+            }
+            if pace.at_rest() {
+                paces.remove(thread).is_some()
+            } else if paces.get(thread) != Some(&pace) {
+                paces.insert(thread.to_owned(), pace);
+                true
+            } else {
+                false
+            }
+        });
         if changed {
             self.mark_changed();
         }
@@ -2847,8 +2877,12 @@ impl Shared {
         let mut pace = paces.get(thread).cloned().unwrap_or_default();
         let model_current = match self.model_goal_custody(thread) {
             None => true,
-            Some(crate::model_goal_stops::Custody::Known(binding)) => binding.epoch.is_current(),
-            Some(crate::model_goal_stops::Custody::Import(epoch)) => epoch.is_current(),
+            Some(crate::model_goal_stops::Custody::Known(binding)) => {
+                binding.epoch.is_current() && crate::mode_epoch() == Some(binding.mode_epoch)
+            }
+            Some(crate::model_goal_stops::Custody::Import { epoch, mode_epoch }) => {
+                epoch.is_current() && crate::mode_epoch() == Some(mode_epoch)
+            }
             Some(crate::model_goal_stops::Custody::Closed) => false,
         };
         if !model_current {
@@ -2867,16 +2901,21 @@ impl Shared {
         if thread.is_empty() {
             return;
         }
-        let changed = {
+        let changed = crate::with_model_source_lock(|| {
             let mut carried = lock(&self.carried_model_goals);
             if carried.contains_key(thread) {
-                return;
+                return false;
             }
-            let goal = goal.filter(|goal| goal.person_stops == self.person_goal_stops(thread));
+            let goal = goal.filter(|goal| {
+                !self
+                    .model_goal_imports_retired_for_mode
+                    .load(Ordering::SeqCst)
+                    && goal.person_stops == self.person_goal_stops(thread)
+            });
             let changed = goal.is_some();
             carried.insert(thread.to_owned(), goal);
             changed
-        };
+        });
         if changed {
             self.mark_changed();
             self.model_goal_imports()
@@ -2929,9 +2968,45 @@ impl Shared {
     /// Consume or reject this process's inherited model-stop provenance permanently.
     /// Closing an absent slot also fences a record writer that has not discovered it yet.
     pub fn retire_carried_model_goal(&self, thread: &str) {
-        let changed = lock(&self.carried_model_goals)
+        let changed =
+            crate::with_model_source_lock(|| self.retire_carried_model_goal_inner(thread));
+        if changed {
+            self.mark_changed();
+        }
+    }
+
+    fn retire_carried_model_goal_inner(&self, thread: &str) -> bool {
+        lock(&self.carried_model_goals)
             .insert(thread.to_owned(), None)
-            .is_some_and(|goal| goal.is_some());
+            .is_some_and(|goal| goal.is_some())
+    }
+
+    /// A live Enhanced/Vanilla transition is a process-wide provenance boundary.
+    /// Clear sources even for threads with no loaded runtime, then let the record
+    /// writer durably remove them from this process's pace snapshot.
+    pub fn retire_all_model_goals_for_mode(&self) {
+        let changed = crate::with_model_source_lock(|| {
+            self.model_goal_imports_retired_for_mode
+                .store(true, Ordering::SeqCst);
+            let carried_changed = {
+                let mut carried = lock(&self.carried_model_goals);
+                let changed = carried.values().any(Option::is_some);
+                for goal in carried.values_mut() {
+                    *goal = None;
+                }
+                changed
+            };
+            let pace_changed = {
+                let mut paces = lock(&self.paces);
+                let changed = paces.values().any(|pace| pace.model_blocked_goal.is_some());
+                for pace in paces.values_mut() {
+                    pace.model_blocked_goal = None;
+                }
+                paces.retain(|_, pace| !pace.at_rest());
+                changed
+            };
+            carried_changed || pace_changed
+        });
         if changed {
             self.mark_changed();
         }
@@ -2948,30 +3023,33 @@ impl Shared {
         if thread.is_empty() {
             return;
         }
-        // Any explicit user goal set supersedes an inherited source, including an
-        // active replacement. Only a stop increments the existing stop counter.
-        self.retire_carried_model_goal(thread);
-        if !stopped {
-            return;
-        }
-        let changed = {
-            let mut paces = lock(&self.paces);
-            let mut stops = lock(&self.person_goal_stops);
-            let count = stops.entry(thread.to_owned()).or_default();
-            *count = count.saturating_add(1);
-            drop(stops);
-            match paces.get_mut(thread) {
-                Some(pace) if pace.wall_goal.is_some() || pace.model_blocked_goal.is_some() => {
-                    pace.wall_goal = None;
-                    pace.model_blocked_goal = None;
-                    if pace.at_rest() {
-                        paces.remove(thread);
-                    }
-                    true
-                }
-                _ => false,
+        let changed = crate::with_model_source_lock(|| {
+            // Any explicit user goal set supersedes an inherited source, including an
+            // active replacement. Only a stop increments the existing stop counter.
+            let carried_changed = self.retire_carried_model_goal_inner(thread);
+            if !stopped {
+                return carried_changed;
             }
-        };
+            let pace_changed = {
+                let mut paces = lock(&self.paces);
+                let mut stops = lock(&self.person_goal_stops);
+                let count = stops.entry(thread.to_owned()).or_default();
+                *count = count.saturating_add(1);
+                drop(stops);
+                match paces.get_mut(thread) {
+                    Some(pace) if pace.wall_goal.is_some() || pace.model_blocked_goal.is_some() => {
+                        pace.wall_goal = None;
+                        pace.model_blocked_goal = None;
+                        if pace.at_rest() {
+                            paces.remove(thread);
+                        }
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            carried_changed || pace_changed
+        });
         if changed {
             self.mark_changed();
         }
@@ -3485,6 +3563,12 @@ impl Shared {
         self.flush.set(flush).is_ok()
     }
 
+    /// Whether the process has explicitly installed either its record writer or
+    /// a no-record durability witness.
+    pub fn record_flush_installed(&self) -> bool {
+        self.flush.get().is_some()
+    }
+
     /// Write the session record now, not coalesced (blocking file I/O: call it off the
     /// render and input paths). `true` once the record says what this state says, or when no
     /// record is kept (outside aterm).
@@ -3493,6 +3577,12 @@ impl Shared {
             Some(flush) => flush(),
             None => true,
         }
+    }
+
+    /// Write a provenance boundary only when the process has explicitly
+    /// established where session records live (or that none are kept).
+    pub fn flush_record_required(&self) -> bool {
+        self.flush.get().is_some_and(|flush| flush())
     }
 
     /// How many times the record's resume line changed ([`Self::note_resume_line`]).

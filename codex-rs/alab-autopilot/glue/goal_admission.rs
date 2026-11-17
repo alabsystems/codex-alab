@@ -5,16 +5,77 @@
 //! same mutation boundary as the goal runtime's own idle continuation and upgrade checkpoints.
 
 impl super::GoalRuntimeHandle {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub async fn alab_debug_progress_accounting_permit(
+        &self,
+    ) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
+        self.inner
+            .accounting_state
+            .progress_accounting_permit()
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn alab_debug_retain_upgrade_goal_usage(
+        &self,
+        turn: &str,
+        goal: &str,
+        tokens: i64,
+    ) -> Result<(), String> {
+        let accounting = &self.inner.accounting_state;
+        accounting.start_turn(
+            turn,
+            codex_protocol::config_types::ModeKind::Default,
+            &codex_protocol::protocol::TokenUsage::default(),
+        );
+        if !accounting.mark_turn_goal_active(turn, goal) {
+            return Err("debug retained turn could not bind its goal".into());
+        }
+        let usage = codex_protocol::protocol::TokenUsage {
+            input_tokens: tokens,
+            total_tokens: tokens,
+            ..Default::default()
+        };
+        if accounting.record_token_usage(turn, &usage).is_none() {
+            return Err("debug retained turn produced no positive usage".into());
+        }
+        accounting.finish_turn(turn);
+        if accounting.alab_retained_goal_id(turn).as_deref() != Some(goal) {
+            return Err("debug retained turn did not preserve its goal boundary".into());
+        }
+        Ok(())
+    }
+
+    /// Serialize a committed model-tool observer with native goal mutation.
+    /// Persistence admission is checked later when automatic work tries to use
+    /// the binding; unrelated accounting must not erase exact source proof.
+    pub async fn alab_model_goal_epoch_permit(
+        &self,
+    ) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
+        self.goal_state_permit().await
+    }
+
     /// Keep the last goal read and automatic native admission ordered with external
     /// set/clear. Native turn-start accounting uses its separate accounting permit.
     pub async fn alab_automatic_input_permit(
         &self,
-    ) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
+    ) -> Result<codex_alab_core::retained_goal_gate::AutomaticPermit<'_>, String> {
+        let retained = self
+            .alab_retained_goal_admission()
+            .await
+            .map_err(|()| "retained frontend continuation remains held".to_owned())?;
         let permit = self.goal_state_permit().await?;
         if self.alab_defer_for_goal_persistence() {
-            return Err("automatic input is held after failed or unfinished goal persistence".to_owned());
+            return Err(
+                "automatic input is held after failed or unfinished goal persistence".to_owned(),
+            );
         }
-        Ok(permit)
+        Ok(codex_alab_core::retained_goal_gate::AutomaticPermit::new(
+            permit, retained,
+        ))
     }
 
     /// Flush idle progress and read the active goal under the native mutation
@@ -110,7 +171,7 @@ impl super::GoalRuntimeHandle {
         self.account_idle_goal_progress(
             &format!("{}:alab-upgrade-checkpoint", self.thread_id()),
             codex_state::GoalAccountingMode::ActiveOnly,
-            crate::accounting::BudgetLimitedGoalDisposition::ClearActive,
+            crate::accounting::BudgetLimitedGoalDisposition::KeepActive,
         )
         .await?;
         let goal = goals
@@ -139,6 +200,16 @@ impl super::GoalRuntimeHandle {
     }
     fn alab_upgrade_goal_state_ready(&self) -> bool {
         !self.alab_goal_persistence_held()
+            && self.inner.accounting_state.current_turn_id().is_none()
+            && self.inner.accounting_state.interrupted_turn_id().is_none()
+            && !self.alab_auth_recovery_deferred()
+            && !self.inner.alab_recovery.pending()
+    }
+    fn alab_final_upgrade_goal_state_ready(&self) -> bool {
+        self.inner
+            .accounting_state
+            .alab_persistence
+            .permits_final_reconciliation()
             && self.inner.accounting_state.current_turn_id().is_none()
             && self.inner.accounting_state.interrupted_turn_id().is_none()
             && !self.alab_auth_recovery_deferred()
@@ -184,16 +255,11 @@ impl super::GoalRuntimeHandle {
         if self.thread_id() != expected_thread
             || !transfer.belongs_to(&self.inner.alab_upgrade)
             || !transfer.committed()
-            || !self.alab_upgrade_goal_state_ready()
+            || !self.alab_final_upgrade_goal_state_ready()
         {
             return Err("final goal accounting requires its exact committed native runtime".into());
         }
-        self.account_idle_goal_progress(
-            &format!("{}:alab-upgrade-final", self.thread_id()),
-            codex_state::GoalAccountingMode::ActiveOnly,
-            crate::accounting::BudgetLimitedGoalDisposition::ClearActive,
-        )
-        .await?;
+        self.alab_drain_retained_progress_for_upgrade().await?;
         let goal = self
             .inner
             .state_dbs
@@ -264,11 +330,53 @@ impl super::GoalRuntimeHandle {
             .acquire()
             .await
             .map_err(|error| error.to_string())?;
-        if !self.alab_model_resume_allowed() {
-            return Err("the model goal stop changed before native resume".into());
-        }
         drop(admission);
+        if !self.alab_registered_current() {
+            return Err("the native goal runtime is no longer registered".into());
+        }
         Ok(permit)
+    }
+
+    /// Retirement first excludes mutations, then performs its final accounting
+    /// drain. It takes the accounting permit only after that drain so the drain's
+    /// own additive owner can settle without self-deadlocking.
+    pub(crate) async fn alab_goal_runtime_retirement_permit(
+        &self,
+    ) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
+        self.inner
+            .goal_state_lock
+            .acquire()
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// A committed process transfer owns final goal accounting after Core and
+    /// its source readers quiesce. Runtime stop registers that deferred owner
+    /// instead of retiring persistence ahead of the exact transfer.
+    pub(crate) fn alab_defer_committed_goal_runtime_retirement(
+        &self,
+    ) -> Option<codex_alab_core::upgrade_barrier::RetirementRegistration> {
+        self.inner.alab_upgrade.defer_retirement()
+    }
+
+    pub(crate) async fn alab_goal_runtime_retirement_accounting_permit(
+        &self,
+    ) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
+        self.inner
+            .accounting_state
+            .progress_accounting_permit()
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) async fn alab_goal_runtime_retirement_callback_permit(
+        &self,
+    ) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
+        self.inner
+            .accounting_state
+            .callback_permit()
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn alab_goal_configuration_changed(&self) {
@@ -286,3 +394,6 @@ impl super::GoalRuntimeHandle {
 
 #[path = "goal_startup.rs"]
 mod startup;
+
+#[path = "retained_goal_admission.rs"]
+mod retained;

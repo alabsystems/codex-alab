@@ -227,6 +227,61 @@ impl std::fmt::Debug for Retirement {
 /// One native-issued member on a retained authenticated connection. Storage, auth-derived
 /// HTTP bodies and WebSockets share its lifetime. EOF is Unknown, never implicit retirement.
 pub trait Member: Send + Sync {
+    fn prepare_owned_listener<'a>(
+        &'a self,
+        _operation: &'a str,
+    ) -> crate::native_root::KeyFuture<'a> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+
+    fn root_tool_execution<'a>(
+        &'a self,
+        _operation: &'a str,
+        _tool: &'a str,
+    ) -> crate::native_root::ExecutionFuture<'a> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+
+    fn root_prepare_tool<'a>(
+        &'a self,
+        _operation: &'a str,
+        _tool: &'a str,
+        _payload: &'a [u8],
+    ) -> crate::native_root::IoFuture<'a> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+    /// Query only through this member's original constructor connection.
+    /// Protocol data is not a root, Source or frontend attachment grant.
+    fn root_protocol<'a>(&'a self, _operation: &'a str) -> UnitFuture<'a> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+    fn root_tool_key<'a>(
+        &'a self,
+        _operation: &'a str,
+        _tool: &'a str,
+    ) -> crate::native_root::KeyFuture<'a> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+    fn root_tool_state<'a>(
+        &'a self,
+        _operation: &'a str,
+        _tool: &'a str,
+        _action: crate::native_root::ToolAction,
+    ) -> crate::native_root::StateFuture<'a> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+    /// Bind an actual native-owned bootstrap channel to this constructor's
+    /// original SDK connection. Neither step grants Source readiness or use.
+    fn begin_owned_control<'a>(&'a self, _operation: &'a str) -> UnitFuture<'a> {
+        Box::pin(async { Err(io::Error::from(io::ErrorKind::Unsupported)) })
+    }
+    fn acknowledge_owned_control<'a>(
+        &'a self,
+        _operation: &'a str,
+        _nonce: &'a str,
+    ) -> UnitFuture<'a> {
+        Box::pin(async { Err(io::Error::from(io::ErrorKind::Unsupported)) })
+    }
     /// The original authenticated constructor connection, never selected by
     /// runtime data, a supplied socket path or a matching process number.
     fn runtime_upgrade(&self) -> Option<Arc<dyn crate::runtime_upgrade::Host>> {

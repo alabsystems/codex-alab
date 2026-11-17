@@ -51,3 +51,7 @@ impl MarkdownRenderCache {
         lines
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_markdown_render_cache.rs"]
+pub(in crate::history_cell) mod alab_retained_cache; // ALAB(retained-ui): native cached rows share the whole layout source graph.

@@ -1,0 +1,440 @@
+{
+  "schema": 1,
+  "base": "a46c5be77eac0dc856f677a099a6a7702edd578b",
+  "target": "347143f140109e2736f788a2f70e6ef1216c498e",
+  "frontier": "a46c5be77eac0dc856f677a099a6a7702edd578b",
+  "commits": [
+    {
+      "sha": "f579388d521334532811bcb30fe1046b429dfac9",
+      "subject": "Remove unused workspace entries and simplify Rust code (#61379)",
+      "paths": [
+        "codex-rs/Cargo.toml",
+        "codex-rs/config/src/mcp_types_tests.rs",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/protocol/src/protocol.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "build-and-adoption",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the unused workspace alias removals and redundant clone cleanup. WritableRoot still returns the negation of the same protected-metadata predicate, so its result is unchanged. No ALab-owned dependency on codex-v8-poc, sentry or syntect workspace aliases was found. Retain the final alab-* workspace member glob and owned dependency pins; do not hand-edit upstream lock entries. Source review, not a build result.",
+      "evidence": [
+        "Exact upstream patch f579388d521334532811bcb30fe1046b429dfac9 reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 d591bafd8e53583addb428d6fb0df9fb99461ea248c9db628c78b21d41876ffc.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Source-declared candidate only (not_run): codex-config --lib serialize_round_trips_server_config_with_omitted_tool_exposure_surfaces",
+        "Source-declared candidate only (not_run): codex-protocol --lib roundtrips_web_search_call_actions",
+        "Keep the final alab-* workspace member glob and ALab dependency pins; do not hand-edit upstream lock entries.",
+        "No replacement of native protected-metadata policy: negating the exact existing predicate is behavior-equivalent."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "9d11b38fe77f2f981eb4aa1db2556105ed3f557a",
+      "subject": "Add cell-aware mouse selection to transcript tables (#61380)",
+      "paths": [
+        "codex-rs/tui/src/inline_visualization_tests.rs",
+        "codex-rs/tui/src/markdown_copy.rs",
+        "codex-rs/tui/src/markdown_copy/table.rs",
+        "codex-rs/tui/src/markdown_render.rs",
+        "codex-rs/tui/src/markdown_render/table_key_value.rs",
+        "codex-rs/tui/src/transcript_view/input.rs",
+        "codex-rs/tui/src/transcript_view/markdown_copy_tests.rs",
+        "codex-rs/tui/src/transcript_view/selection.rs",
+        "codex-rs/tui/src/transcript_view/snapshots/codex_tui__transcript_view__markdown_copy_tests__tables__mouse_drag_selects_only_the_wrapped_table_cell.snap",
+        "codex-rs/tui/src/transcript_view/snapshots/codex_tui__transcript_view__markdown_copy_tests__tables__mouse_selects_wrapped_cell_text_and_rectangles.snap",
+        "codex-rs/tui/src/transcript_view/table_copy_tests.rs",
+        "codex-rs/tui/src/transcript_view/text.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "history-pagination",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt cell-aware table selection and copy serialization. Grid column boundaries and record-row identity keep drags in the intended logical cells; Arc table identity separates independent tables, keyboard/outside-table continuation clears cell scope, and changed selections invalidate pending clipboard identity. Added controls cover wrapped/empty/stacked cells, reverse drag, escaped pipes, formatting and resize. Preserve ALab turn-scoped history projection and confirmed clipboard delivery; this presentation feature does not replace pagination identity custody.",
+      "evidence": [
+        "Exact upstream patch 9d11b38fe77f2f981eb4aa1db2556105ed3f557a reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 b4a6d0a8507c184f2a4be398547d3ab70565d4702e8d4c4d4583b95bc319c456.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Source-declared candidate only (not_run): codex-tui --lib mouse_selects_wrapped_cell_text_and_rectangles",
+        "Source-declared candidate only (not_run): codex-tui --lib diagonal_cell_drag_in_stacked_records_copies_both_complete_rows",
+        "Source-declared candidate only (not_run): codex-tui --lib table_drag_falls_back_to_text_and_keeps_the_release_endpoint",
+        "Source-declared candidate only (not_run): codex-tui --lib rectangular_clipboard_text_escapes_literal_pipes",
+        "No owned calls to markdown_copy selection/literal_selection or TextLayout.copy_lines were found that need the new arguments.",
+        "ALab history-page projection still owns turn-scoped item identity; table-selection identity is presentation-local and does not replace that contract."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "e40b0e62e259b6c155ea60f8daf484ee2d1b0428",
+      "subject": "Update the harness provenance comment in context history (#61381)",
+      "paths": [
+        "codex-rs/core/src/context_manager/history.rs"
+      ],
+      "classes": [
+        "other"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Adopt the corrected provenance comment. The commit changes no implementation, schema, runtime authority or metadata retention behavior. Preserve ALab replay metadata compatibility markers on later merge; this wording is not equivalent implementation or a reason to retire owned behavior.",
+      "evidence": [
+        "Exact upstream patch e40b0e62e259b6c155ea60f8daf484ee2d1b0428 reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 52893c8c704c1aff8e5cac0e1fba7c60cf9ccdc5c63f44023512f35f4fcae15a.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Retain ALab replay metadata and required feature discriminator on future merge; this comment provides no equivalent compatibility behavior."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "4aac2eacc5ae2ac5af80abb383c7fabbaa7c6190",
+      "subject": "Make clock reads synchronous and remove client clock requests (#61382)",
+      "paths": [
+        "codex-rs/agent-message-board-host/src/lib.rs",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/src/export.rs",
+        "codex-rs/app-server-protocol/src/protocol/common.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/current_time.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/mod.rs",
+        "codex-rs/app-server/src/current_time.rs",
+        "codex-rs/app-server/src/lib.rs",
+        "codex-rs/app-server/src/message_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/current_time.rs",
+        "codex-rs/app-server/tests/suite/v2/sleep.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/current_time.rs",
+        "codex-rs/core/src/current_time_tests.rs",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/core/src/session/time_reminder.rs",
+        "codex-rs/core/src/tools/handlers/current_time.rs",
+        "codex-rs/core/tests/suite/current_time_reminder.rs",
+        "codex-rs/core/tests/suite/guardian_review.rs",
+        "codex-rs/core/tests/suite/scenarios_agent_message_board.rs",
+        "codex-rs/core/tests/suite/subagent_notifications.rs",
+        "codex-rs/exec/src/lib.rs",
+        "codex-rs/tui/src/app/agents_overview_tests.rs",
+        "codex-rs/tui/src/app/app_server_event_targets.rs",
+        "codex-rs/tui/src/app/app_server_events.rs",
+        "codex-rs/tui/src/app/app_server_requests.rs",
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/chatwidget/protocol_requests.rs"
+      ],
+      "classes": [
+        "protocol",
+        "refactor"
+      ],
+      "features": [
+        "native-session",
+        "exec-handoff",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt synchronous clock reads and removal of the experimental currentTime/read client protocol. TimeProvider reads must not yield or call back into the session; external-clock configuration without a host provider fails closed, while host-injected providers and asynchronous sleep remain. No owned TimeProvider/TimeFuture/CurrentTimeRead or current_time().await callsite was found. ALab goal accounting/recovery clocks remain separate contracts. Carry upstream generated protocol removal through the maintained generation route and execute the updated failure/provider controls before qualification.",
+      "evidence": [
+        "Exact upstream patch 4aac2eacc5ae2ac5af80abb383c7fabbaa7c6190 reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 8be2fff58c031da85919363eb6fd1d2b38a1fefa8519025b3111501e8b484bfd.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Source-declared candidate only (not_run): codex-core --lib explicit_external_time_requires_a_provider",
+        "Source-declared candidate only (not_run): codex-app-server --test all external_time_without_native_provider_fails_thread_start",
+        "Source-declared candidate only (not_run): codex-core --test all current_time_reminder::",
+        "Source-declared candidate only (not_run): codex-app-server --test all clock_tools_emit_control_tool_analytics",
+        "No ALab-owned TimeProvider implementation, TimeFuture reference, CurrentTimeRead match or current_time().await call was found.",
+        "ALab goal accounting/recovery clocks remain separate native monotonic contracts; removal of the client wall-clock protocol is not equivalence or retirement evidence for them."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "c5b6bf1f212c42f88971f2797c49359fd0932758",
+      "subject": "Keep the composer responsive while opening new conversations (#61383)",
+      "paths": [
+        "codex-rs/tui/src/app/agents_overview_new.rs",
+        "codex-rs/tui/src/app/backend_selection.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests/background_task_defaults_tests.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app/tests/projectless_tests.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/tests/unavailable_commands_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/paste_input.rs",
+        "codex-rs/tui/src/bottom_pane/startup.rs",
+        "codex-rs/tui/src/startup_draft.rs",
+        "codex-rs/tui/src/startup_draft_input.rs",
+        "codex-rs/tui/src/startup_draft_layout.rs",
+        "codex-rs/tui/src/startup_draft_layout_tests.rs",
+        "codex-rs/tui/src/startup_draft_submission_tests.rs",
+        "codex-rs/tui/src/startup_draft_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "native-session",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the editable NewWhileRunning composer while fresh-session bootstrap/config/trust/start waits, retaining disabled submission until the destination owns input. Navigation errors continue awaiting the real operation, and failure handoff retains the draft while draining queued Enter/paste input. Preserve ALab folder-trust native grants, backend/goal rebinding, old-event-tail drain, selected-widget and prepared-target acceptance hooks when merging the busy lifecycle files. Responsive presentation grants no new trust or accepted-input authority; native trust/hold, prompt-stash and input-custody controls remain required.",
+      "evidence": [
+        "Exact upstream patch c5b6bf1f212c42f88971f2797c49359fd0932758 reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 ebbdf17f3f1cfd79ddd6bd045bdd86834022ad5d4c7429f9a080133704b17f21.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Source-declared candidate only (not_run): codex-tui --lib new_session_composer_renders_edits_before_thread_start_finishes",
+        "Source-declared candidate only (not_run): codex-tui --lib failed_new_session_drains_queued_enter_before_returning_the_draft",
+        "Source-declared candidate only (not_run): codex-tui --lib new_session_handoff_keeps_delayed_raw_paste_newline",
+        "Source-declared candidate only (not_run): codex-tui --lib startup_enter_confirms_one_visible_draft_and_escape_cancels",
+        "Preserve folder_trust.rs answered() native grant checks; it already accepts a StartupDraftPump and waits only when its composer draws. Passing the new draft through that existing route adds presentation, not trust authority.",
+        "Preserve ALab backend bookkeeping, goal-runtime backend rebinding, exact old-event tail drain, selected-widget replacement and prepared-target accepted-plan hooks when merging busy session lifecycle/backend files."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "52ff3d1a353953ccc08a39bdfc66a5fda9b08d0e",
+      "subject": "Support Orbit originators in model catalog partitioning (#61384)",
+      "paths": [
+        "codex-rs/model-provider/src/models_originator_tests.rs",
+        "codex-rs/models-manager/src/originator.rs"
+      ],
+      "classes": [
+        "model",
+        "feature"
+      ],
+      "features": [
+        "model-discovery",
+        "account-isolation",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the four exact Orbit originator variants and roundtrip mapping into existing manager/disk-cache partitioning. No default originator or transport authority is changed. ALab originator-specific cache naming and account-bound discovery/polling must remain; no owned exhaustive enum match requiring adaptation was found. The extended source tests cover independent catalog/cache reuse and unchanged ETags; no discovery execution or cache performance is claimed.",
+      "evidence": [
+        "Exact upstream patch 52ff3d1a353953ccc08a39bdfc66a5fda9b08d0e reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 2aa2540ba3ccd10cf6e8a6c6138edeafa74af90c3a81fe752c7378ed271c8897.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Source-declared candidate only (not_run): codex-model-provider --lib originator_catalogs_are_isolated_and_reused_from_disk",
+        "Source-declared candidate only (not_run): codex-model-provider --lib originator_managers_share_api_key_discovery_policy",
+        "Source-declared candidate only (not_run): codex-app-server --lib cache_aware_polls_refresh_retained_originators_without_refetching_default",
+        "Adds four exact Orbit originator names and roundtrip mapping, reusing manager and per-originator disk-cache partitioning. No new default originator or transport authority selected. ALab models_cache_file already supplies models_cache.alab.<originator>.json; no owned exhaustive enum match found."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "14813d36167e5148e51830624d0e76241049d5e1",
+      "subject": "Add configurable idle heartbeats to Code Mode gRPC streams (#61385)",
+      "paths": [
+        "codex-rs/code-mode-host/src/grpc/mod.rs",
+        "codex-rs/code-mode-host/src/grpc/robustness_tests.rs",
+        "codex-rs/code-mode-host/src/grpc/routing.rs",
+        "codex-rs/code-mode-host/src/grpc/service_tests.rs",
+        "codex-rs/code-mode-host/src/lib.rs",
+        "codex-rs/code-mode-host/tests/grpc.rs",
+        "codex-rs/code-mode-host/tests/grpc_tcp.rs",
+        "codex-rs/code-mode-host/tests/grpc_timing.rs",
+        "codex-rs/code-mode-protocol/src/grpc/codex.code_mode.v1.proto",
+        "codex-rs/code-mode-protocol/src/session.rs",
+        "codex-rs/code-mode/src/grpc_session/callbacks.rs",
+        "codex-rs/code-mode/src/grpc_session/callbacks_tests.rs",
+        "codex-rs/code-mode/src/grpc_session/conversion_tests.rs",
+        "codex-rs/code-mode/src/grpc_session/mod.rs",
+        "codex-rs/code-mode/src/grpc_session/state_tests.rs",
+        "codex-rs/config/src/config_toml.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/code_mode_host.rs",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/tools/code_mode/mod.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "background"
+      ],
+      "features": [
+        "native-session",
+        "execution-continuity",
+        "qualification-fixtures"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Keep configurable Code Mode idle heartbeats opt-in with heartbeat_interval_s default 0; do not enable a new timer or background behavior in ALab defaults. Preserve provider.default_session_options, including output truncation, for nonzero overrides. Client heartbeat handling must verify the session and reject invocation-bearing heartbeat frames before tool callback admission. No current owned direct options/protobuf struct literal requiring a field adaptation was found. Native idle/traffic/reset/callback/lease-drop tests are candidates, not executed evidence.",
+      "evidence": [
+        "Exact upstream patch 14813d36167e5148e51830624d0e76241049d5e1 reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 197de920035fdd3b3c465678ecac7db96d3be5aa62a2cf2fa9077759b69c4fed.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Source-declared candidate only (not_run): codex-code-mode-host --lib zero_interval_keeps_both_rpc_streams_quiet",
+        "Source-declared candidate only (not_run): codex-code-mode-host --lib idle_heartbeats_repeat_and_reset_after_traffic",
+        "Source-declared candidate only (not_run): codex-code-mode --lib tool_call_heartbeats_do_not_enter_callback_admission",
+        "Source-declared candidate only (not_run): codex-code-mode-host --test grpc tcp_session_persists_values_and_forwards_tools_notifications_and_closure",
+        "Adds additive protobuf heartbeat fields while reserving earlier preview tags. code_mode.heartbeat_interval_s defaults to 0. Stream adapter uses a repeating idle timeout and Delay missed-tick behavior; no heartbeat worker task.",
+        "Tool-call heartbeat verifies session ID, removes marker, rejects any remaining invocation data before callback admission. Session-event heartbeat is ignored. Nonzero override preserves provider.default_session_options, including LocalServerOutputProvider server output truncation; default0 retains create_session."
+      ],
+      "revisit": "Retain default0; any explicit opt-in must preserve existing provider options and pass native heartbeat/no-admission/session-retirement controls on final source."
+    },
+    {
+      "sha": "826b6e8199e6cb91d1edc4d04f70e56bf8d75539",
+      "subject": "Reuse cloud plugin catalogs across turns until invalidated (#61386)",
+      "paths": [
+        "codex-rs/core/tests/suite/executor_discovery_v2.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__executor_discovery_v2__plugin_acceptance_auth_refresh.snap",
+        "codex-rs/ext/mcp/src/cloud_plugin.rs",
+        "codex-rs/ext/mcp/src/cloud_plugin_tests.rs",
+        "codex-rs/ext/mcp/src/plugin_contributor_state.rs",
+        "codex-rs/ext/mcp/src/plugin_contributor_state_tests.rs"
+      ],
+      "classes": [
+        "background",
+        "fix"
+      ],
+      "features": [
+        "account-isolation",
+        "native-session",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt complete warning-free cloud catalog reuse across turns only while auth and Apps resource keys match, including empty results. Partial/warning outcomes continue retrying under existing backoff, and publication must reject in-flight auth/resource replacement. Retain ALab actual account retirement/cache invalidation and packaged apps/plugins/tool_suggest defaults off. The pre-existing same-turn LatestCloudPluginAuth fast path is not a new guarantee of same-turn resource invalidation; hosts still must invalidate Apps resources when catalogs change.",
+      "evidence": [
+        "Exact upstream patch 826b6e8199e6cb91d1edc4d04f70e56bf8d75539 reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 2f45d6df336d4c28cc7a72ec2a0f6bd5c46ac3f6816c62283b5ddd6f0e27c961.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Source-declared candidate only (not_run): codex-mcp-extension --lib cloud_catalog_reuses_cache_and_invalidates_on_resource_or_auth_change",
+        "Source-declared candidate only (not_run): codex-core --test all auth_rotation_refreshes_plugin_acceptance_before_merged_skills",
+        "Source-declared candidate only (not_run): codex-mcp --lib assignment_retirement_replaces_closed_router_without_inheriting_form_permission",
+        "Reuses complete warning-free populated and empty cloud catalogs across turns only for matching auth and Apps resource key. Partial/warning results retry; publication rechecks auth and resource identity; existing backoff remains.",
+        "LatestCloudPluginAuth still suppresses same-turn refresh without checking resource key in that fast path. This pre-existing turn-local behavior is not a new same-turn invalidation guarantee; host resource invalidation is explicitly required."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "42f950cd112ab385aa34bb79ef377da8dca85dd6",
+      "subject": "Refresh plugin recommendations when tooling state changes (#61387)",
+      "paths": [
+        "codex-rs/core-plugins/src/manager.rs",
+        "codex-rs/core-plugins/src/manager_tests.rs",
+        "codex-rs/core-plugins/src/remote.rs",
+        "codex-rs/core-plugins/src/remote_runtime_auth_tests.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/tests/suite/request_plugin_install.rs"
+      ],
+      "classes": [
+        "feature",
+        "background"
+      ],
+      "features": [
+        "account-isolation",
+        "product-policy",
+        "native-session",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt tooling-state recommendation refresh with scoped product/backend/account/user/workspace cache keys, shared in-flight initialization, one-second reuse and 250ms marker deadline including authentication. Clear/cancellation must not republish an obsolete initializer; failed refresh retains the prior marker so later polls retry. Each step retains one exact candidate snapshot for prompt and install handling. Preserve ALab disabled-worker defaults, actual source/auth admission and explicit install authority; cached recommendations confer no grant. Run the cancellation/cache-clear and step-snapshot controls before qualification.",
+      "evidence": [
+        "Exact upstream patch 42f950cd112ab385aa34bb79ef377da8dca85dd6 reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 a840f384be2e8470f48283074af0b788fdb20bc7417ce213863895011fc574a1.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Source-declared candidate only (not_run): codex-core-plugins --lib recommended_plugins_stay_cached_until_a_changed_marker_refresh_succeeds",
+        "Source-declared candidate only (not_run): codex-core-plugins --lib tooling_state_deadline_includes_pending_runtime_registration",
+        "Source-declared candidate only (not_run): codex-core-plugins --lib disabled_plugins_and_recommendations_schedule_no_background_work",
+        "Source-declared candidate only (not_run): codex-core-plugins --lib disabled_recommendations_preserve_only_the_installed_plugin_worker",
+        "Recommendation/featured caches now scope product SKU, backend URL, account ID, user ID and workspace flag. One short Mutex guards recommendation state and in-flight OnceCell identity; clear prevents stale initializer cache publication, cancellation leaves retryable initialization.",
+        "One-second reuse window; 250ms tooling marker deadline includes authenticated_request and decode. Missing/failed markers preserve old recommendations; changed-marker fetch failure retains old marker so next poll retries. Cached data confers no install authority."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "0276c8143d4e55a93a15456ed3af961b22891fe5",
+      "subject": "Include the Windows sandbox service in release builds (#61388)",
+      "paths": [
+        ".github/actions/build-codex-packages/action.yml",
+        "codex-rs/BUILD.bazel"
+      ],
+      "classes": [
+        "packaging",
+        "removed-path"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the Windows sandbox-service release intent while retaining ALab whole-path removal policy: both changed upstream release/Bazel paths are removed by alab/removed-paths and must remain removed after sync. This commit does not add payload to the current ALab macOS package. An actual future authorized Windows shipping lane must independently include and qualify its service; removed upstream recipes provide no shipping or installation evidence.",
+      "evidence": [
+        "Exact upstream patch 0276c8143d4e55a93a15456ed3af961b22891fe5 reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 2b3b83d235baaafea44fa656fa96ff96c7ea9706c3172ccc9e43872289238661.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Adds codex-windows-sandbox-service to upstream Windows release binaries and Bazel archive. Both changed paths are wholly removed by alab/removed-paths, so this introduces no carried runtime or current macOS package behavior.",
+        "Record release intent and preserve removed-path reapplication. A future actual ALab Windows package must independently include and qualify needed service payload; removed upstream recipes supply no shipping evidence."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "1c76c0bc088f96fd62506d920783973a4b76e36f",
+      "subject": "Reduce session submission channel memory with boxed payloads (#61389)",
+      "paths": [
+        "codex-rs/core/src/codex_delegate.rs",
+        "codex-rs/core/src/codex_delegate_tests.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/guardian/review_session_tests.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/step_activation_tests.rs",
+        "codex-rs/core/src/session/tests.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff",
+        "account-isolation",
+        "native-session",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Adapt owned submission transport to upstream Box<Submission> channels before integrating this change. Update upgrade_submission.rs channel/new/redirect/test conversion and send boundaries while retaining the full original Submission admission vector, residency guard, MessageDelivery/reply and trace through enqueue, forwarding, cancellation and drop. Dequeue alone must retain custody; redirect must preserve original owners; cancelled blocked sends must not invent acceptance; channel/drop must release each owner once. Keep assignment_lifecycle logical deferred values unboxed where upstream unwraps at the existing receiver dispatch boundary. This is a source-demonstrated signature adaptation; no adaptation implementation or runtime result is claimed.",
+      "evidence": [
+        "Exact upstream patch 1c76c0bc088f96fd62506d920783973a4b76e36f reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 8d6c7c2ddf24054c6e50496bda740ecafcb7652bc807e53a588fa2da4cceec61.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Source-declared candidate only (not_run): codex-core --lib queue_and_forwarding_hold_admission_until_dispatch_or_discard",
+        "Source-declared candidate only (not_run): codex-core --lib assignment_dispatch_defers_original_input_but_services_interrupt",
+        "Source-declared candidate only (not_run): codex-core --lib deferred_original_input_reselects_actual_published_source_domain",
+        "Source-declared candidate only (not_run): codex-core --lib committed_transfer_drains_the_live_bridge_after_parent_cancellation",
+        "Upstream bounded submission channels switch to Box<Submission>, producers box and submission_loop unwraps after receive. Reserved slots become pointer-sized, with one allocation per submitted operation; no measurement here.",
+        "Concrete owned adaptation: upgrade_submission.rs channel field/new/redirect/cfg(test) From still use Sender<Submission>; send accepts unboxed Submission. Update boxed transport and send/calls without losing Submission.alab_upgrade admission, replies, residency or MessageDelivery across forwarding/cancel/drop.",
+        "Current owned codex-rs/alab-core/glue/upgrade_submission.rs stores Sender<Submission> and retains manager admission in Submission.alab_upgrade; upstream session/mod.rs now queues Box<Submission>.",
+        "Existing queue_and_forwarding_hold_admission_until_dispatch_or_discard and cancellation_and_closed_queues_release_only_their_own_admission must retain their actual custody oracles after adaptation."
+      ],
+      "revisit": "Before integration qualification: implement boxed transport adaptation and run actual queue/forward/cancel/drop ownership controls on the final merged source."
+    },
+    {
+      "sha": "347143f140109e2736f788a2f70e6ef1216c498e",
+      "subject": "Preserve active additional context across compaction (#61390)",
+      "paths": [
+        "codex-rs/core/src/compact_remote_v2_installation.rs",
+        "codex-rs/core/src/session/compaction_replacement.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/turn_input.rs",
+        "codex-rs/core/src/state/additional_context.rs",
+        "codex-rs/core/tests/suite/compact.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff",
+        "execution-continuity",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Adapt ALab supported execution capture/restore to preserve or rigorously reconstruct active AdditionalContextStore value-to-ResponseItemId correspondence before enabling the new compaction behavior across handoff. Upstream now retains active values by real IDs and repairs/reinserts them under the SessionState lock; owned model-context capture currently has no explicit AdditionalContextStore serialization. Accept context A, capture/restore without client replacement, then compact is a source-derived continuity risk to test, not a reproduced production loss. Preserve prefix generation/length/auth-owner validation, suffix/world-state checkpoints, queued-update custody and nearby goal/owner hooks. Any held full-capsule/all-root SourceV1 receiver route remains held; this decision authorizes no activation or grant.",
+      "evidence": [
+        "Exact upstream patch 347143f140109e2736f788a2f70e6ef1216c498e reviewed; immutable subject/paths validated with maintained upstream_intake.snapshot. Canonical git show bytes (command in review): SHA256 124a0da0f638f578c94d244f80337730e284594a37a5275d6e3f5658646c0e63.",
+        "alab/reviews/upstream-intake-2026-11-16-next12.md; source review and candidate controls only, with no Rust/native execution or qualification.",
+        "Source-declared candidate only (not_run): codex-core --test all additional_context_survives_compaction::local_messages",
+        "Source-declared candidate only (not_run): codex-core --test all additional_context_survives_compaction::remote_tool_outputs",
+        "AdditionalContextStore now retains bounded current values plus ResponseItemId. New items receive real generator IDs. restore_compacted_items repairs retained IDs or reinserts missing active items in history order; queued updates arrive with their input.",
+        "Complete/prefix restoration runs under SessionState mutex. Extracted PrefixCompactionInstallation retains immediate generation/length/auth-owner validation before split, suffix/world-state checkpoint handling, volatile reset and atomic window advancement. Preserve nearby ALab goal-edit and owner hooks.",
+        "Upstream state/additional_context.rs stores bounded current values and ResponseItemId, and restore_compacted_items uses those IDs; owned exec_model_context.rs captures history/flags but no explicit active AdditionalContextStore.",
+        "Required new control: actual supported capture/restore then local and prefix/remote compaction preserve active A exactly once, omit stale/removed values, and retain queued updates. Source-derived question remains unexecuted.",
+        "The full-capsule/all-root SourceV1 receiver hold and existing source/native permission boundaries are unchanged."
+      ],
+      "revisit": "Before integration qualification: resolve active-context snapshot custody and execute actual supported handoff followed by compaction; no held route may be enabled to obtain evidence."
+    }
+  ]
+}

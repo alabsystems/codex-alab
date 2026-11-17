@@ -98,6 +98,7 @@ pub fn capture_launch() {
         identity,
         started_at_ms,
     });
+    session::install_mode_durability();
 }
 
 const MANAGED_PID: &str = "ATPKG_MANAGED_LAUNCH_PID";

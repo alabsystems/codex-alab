@@ -71,6 +71,9 @@ const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 128 << 20;
 // the bytes travel over the Unix socket, not TCP.
 const UDS_WEBSOCKET_HANDSHAKE_URL: &str = "ws://localhost/rpc";
 
+#[cfg(unix)]
+#[path = "../../alab-core/glue/native_incoming_client.rs"] mod alab_native_stream; // ALAB(upgrade): initialize the existing remote client over the actual native-delivered descriptor.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteAppServerEndpoint {
     WebSocket {
@@ -175,6 +178,9 @@ pub struct RemoteAppServerClient {
 pub struct RemoteAppServerRequestHandle {
     command_tx: mpsc::Sender<RemoteClientCommand>,
 }
+
+#[path = "../../alab-core/glue/remote_request_identity.rs"]
+mod alab_request_identity; // ALAB(retained-frontier): resource-only same-channel check for the original scoped request.
 
 enum SocketPeerPolicy {
     ExplicitEndpoint,

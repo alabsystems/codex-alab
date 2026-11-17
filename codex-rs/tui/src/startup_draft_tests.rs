@@ -32,6 +32,8 @@ where
     blossom.start_fresh();
     let header = startup_session_header(/*cwd*/ None);
     StartupDraftPump {
+        #[cfg(unix)] alab_constructor: None, // ALAB(retained-ui): ordinary fixture has no entered E1 constructor.
+        #[cfg(unix)] alab_configured: None, // ALAB(owned-local): ordinary fixture owns no retained configured session.
         header,
         blossom: std::cell::RefCell::new(blossom),
         motion: crate::motion::MotionMode::Animated,

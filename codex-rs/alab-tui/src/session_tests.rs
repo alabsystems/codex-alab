@@ -19,6 +19,9 @@ mod record_sweep_tests;
 #[path = "model_goal_custody_tests.rs"]
 mod model_goal_custody_tests;
 
+#[path = "../../alab-core/glue/test_child_process.rs"]
+mod test_child_process;
+
 use crate::identity;
 use crate::record;
 use crate::record::Record;
@@ -46,6 +49,22 @@ use std::time::Duration;
 use std::time::Instant;
 
 const THREAD: &str = "019a0000-0000-7000-8000-000000000001";
+
+/// Keep nested libtest rows in owned pipes instead of Cargo's outer result stream.
+fn run_exact_session_test_child(name: &str, child_env: &str) {
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+    child.args(["--exact", name]).env(child_env, "1");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("session test child runtime")
+        .block_on(async {
+            test_child_process::run(child, Duration::from_secs(10))
+                .await
+                .unwrap_or_else(|error| panic!("{name}: {error}"))
+                .assert_test_success(name);
+        });
+}
 
 /// Absence in an older record is not proof of an idle opening. New records carry both cases.
 #[test]
@@ -1376,6 +1395,7 @@ fn the_record_carries_the_pace_to_a_re_exec_and_a_relaunch() {
             goal_id: "goal-1".to_string(),
             objective: "finish the original task".to_string(),
             token_budget: Some(1_000),
+            chronology_fence_generation: None,
             turn: "turn-7".to_string(),
             person_stops: 0,
         }),
@@ -1502,6 +1522,7 @@ fn a_persons_esc_and_a_walls_goal_ride_the_records_pace() {
             goal_id: "goal-1".to_string(),
             objective: "ship it".to_string(),
             token_budget: None,
+            chronology_fence_generation: None,
             turn: "turn-2".to_string(),
             person_stops: 4,
         }),
@@ -2787,6 +2808,110 @@ fn the_write_through_writes_before_it_returns() {
     );
 }
 
+#[test]
+fn model_source_publication_and_record_writer_share_one_lock_order() {
+    const CHILD: &str = "ALAB_MODEL_SOURCE_LOCK_ORDER_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = format!(
+            "{}::model_source_publication_and_record_writer_share_one_lock_order",
+            module_path!().split_once("::").unwrap().1
+        );
+        run_exact_session_test_child(&name, CHILD);
+        return;
+    }
+
+    codex_alab_core::activate();
+    let home = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let shared = shared_with(launch(4254, true));
+    shared.observe(&frame(None, ProgramState::Idle, home.path()), 1);
+    let writer: &'static Writer = Box::leak(Box::new(Writer::new(
+        shared,
+        record::sessions_dir(home.path()),
+        Duration::ZERO,
+        None,
+    )));
+    writer.write_now().unwrap_or_else(|error| panic!("{error}"));
+    let mut source = record::read(&writer.path()).unwrap_or_else(|| panic!("source record"));
+    source.pace = Some(record::Pace::from(codex_alab_core::session::Pace {
+        model_blocked_goal: Some(codex_alab_core::session::WallGoal {
+            goal_id: "lock-order-goal".into(),
+            objective: "prove the source and writer lock order".into(),
+            token_budget: Some(100),
+            chronology_fence_generation: None,
+            turn: "lock-order-turn".into(),
+            person_stops: 0,
+        }),
+        ..Default::default()
+    }));
+    writer.set_model_goal_handoff_for_lock_order_test(source);
+    writer.install_write_through();
+
+    let (source_held_tx, source_held_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+    let (writer_done_tx, writer_done_rx) = std::sync::mpsc::sync_channel(0);
+    let background = std::thread::spawn(move || {
+        writer_done_tx
+            .send(
+                writer
+                    .write_now_with_lock_order_probe(|| {
+                        assert!(
+                            codex_alab_core::model_source_lock_owned_by_current_thread(),
+                            "the probe runs inside exact source-fence ownership"
+                        );
+                        source_held_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                    })
+                    .is_ok(),
+            )
+            .unwrap();
+    });
+    source_held_rx.recv().unwrap();
+    assert!(
+        writer.state_available_for_lock_order_test(),
+        "the writer must own the source fence before its serialization state"
+    );
+
+    let (published_tx, published_rx) = std::sync::mpsc::sync_channel(0);
+    let publisher = std::thread::spawn(move || {
+        published_tx.send(shared.flush_record()).unwrap();
+    });
+    release_tx.send(()).unwrap();
+    assert!(writer_done_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+    assert!(published_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+    publisher.join().unwrap();
+    background.join().unwrap();
+}
+
+#[test]
+fn vanilla_mode_starts_and_flushes_the_identity_owned_session_writer() {
+    const CHILD: &str = "ALAB_VANILLA_SESSION_WRITER_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = format!(
+            "{}::vanilla_mode_starts_and_flushes_the_identity_owned_session_writer",
+            module_path!().split_once("::").unwrap().1
+        );
+        run_exact_session_test_child(&name, CHILD);
+        return;
+    }
+
+    codex_alab_core::activate();
+    let home = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let shared = session::shared();
+    assert!(shared.set_launch(launch(std::process::id(), true)));
+    session::install_mode_durability();
+    assert!(codex_alab_core::prepare_mode_durability(home.path()));
+    assert!(!codex_alab_core::set_enhanced(false));
+    assert!(session::active(), "record ownership survives Vanilla mode");
+    assert!(shared.flush_record_required());
+    assert!(
+        record::read(&record::path_for(
+            &record::sessions_dir(home.path()),
+            std::process::id(),
+        ))
+        .is_some()
+    );
+}
+
 /// A dead record whose `resumeArgv` is `line`, for `session`, last written at `updated_at`.
 fn dead_record(dir: &Path, pid: u32, session: &str, line: &[&str], updated_at: u64) {
     stale_record(dir, pid, None, updated_at);
@@ -3769,6 +3894,7 @@ fn a_model_blocked_goal_survives_the_record_without_becoming_a_wall() {
             goal_id: "model-goal-1".into(),
             objective: "complete the original objective".into(),
             token_budget: Some(1200),
+            chronology_fence_generation: None,
             turn: "model-turn-1".into(),
             person_stops: 7,
         }),

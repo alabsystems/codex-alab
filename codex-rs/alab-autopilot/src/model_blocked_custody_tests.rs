@@ -4,28 +4,32 @@
 //! Retiring a stale reader's model stop cannot publish over its replacement.
 
 use super::*;
-use codex_alab_core::model_goal_stops::Binding;
 use codex_alab_core::model_goal_stops::Custody;
 use codex_alab_core::session::Shared;
 use codex_alab_core::session::WallGoal;
 
-fn metadata_binding(
-    goal: &str,
-    turn: &str,
-    owner: &Arc<codex_alab_core::goal_persistence::State>,
-) -> Binding {
-    // These pure fixtures check registration/publication only. Their States
-    // keep passive pace metadata current, but no native GoalService owns them.
-    Binding {
-        goal: WallGoal {
-            goal_id: goal.into(),
-            objective: OBJECTIVE.into(),
-            token_budget: Some(1_000),
-            turn: turn.into(),
-            person_stops: 0,
-        },
-        epoch: owner.mutation_epoch(),
+fn synthetic_binding(goal: WallGoal) -> model_blocked_goal::ModelGoalBinding {
+    // Keep this passive fixture's owner alive for the duration of the test
+    // process; MutationEpoch deliberately holds only a weak owner reference.
+    let state: &'static Arc<codex_alab_core::goal_persistence::State> = Box::leak(Box::new(
+        Arc::new(codex_alab_core::goal_persistence::State::default()),
+    ));
+    model_blocked_goal::ModelGoalBinding {
+        goal,
+        epoch: state.mutation_epoch().expect("fresh synthetic epoch"),
+        mode_epoch: codex_alab_core::mode_epoch().expect("live mode epoch"),
     }
+}
+
+fn binding(goal: &str, turn: &str) -> model_blocked_goal::ModelGoalBinding {
+    synthetic_binding(WallGoal {
+        goal_id: goal.into(),
+        objective: OBJECTIVE.into(),
+        token_budget: Some(1_000),
+        chronology_fence_generation: None,
+        turn: turn.into(),
+        person_stops: 0,
+    })
 }
 
 /// This is the actual rejected native-resume path, suspended after its last
@@ -103,22 +107,23 @@ async fn rejected_resume_custody(replacement: bool) {
         } else {
             Arc::clone(&h.rt)
         };
-        let newer = WallGoal {
-            goal_id: changed.goal_id,
-            objective: changed.objective,
-            token_budget: changed.token_budget,
-            turn: "the-newer-native-model-stop".to_owned(),
-            person_stops: h.shared.person_goal_stops(current.key()),
-        };
-        let newer_binding = Binding {
-            goal: newer.clone(),
+        let newer = model_blocked_goal::ModelGoalBinding {
+            goal: WallGoal {
+                goal_id: changed.goal_id,
+                objective: changed.objective,
+                token_budget: changed.token_budget,
+                chronology_fence_generation: None,
+                turn: "the-newer-native-model-stop".to_owned(),
+                person_stops: h.shared.person_goal_stops(current.key()),
+            },
             epoch: goals
-                .alab_model_goal_epoch(h.rt.id)
-                .expect("the current native mutation owner"),
+                .alab_model_goal_epoch(current.id)
+                .expect("the newer stop belongs to the registered native owner"),
+            mode_epoch: codex_alab_core::mode_epoch().expect("live mode epoch"),
         };
-        *lock(&current.model_blocked_goal) = Some(newer_binding.clone());
+        *lock(&current.model_blocked_goal) = Some(newer.clone());
         h.shared
-            .set_model_goal_custody(current.key(), Custody::Known(newer_binding.clone()));
+            .set_model_goal_custody(current.key(), Custody::Known(newer.passive()));
         current.with_state(|state| state.short_streak = 7);
         h.autopilot.sync_pace(&current);
         let kept = h
@@ -152,7 +157,7 @@ async fn rejected_resume_custody(replacement: bool) {
         evaluating.await.expect("the old evaluator settles");
         assert_eq!(
             lock(&current.model_blocked_goal).clone(),
-            Some(newer_binding),
+            Some(newer.clone()),
             "replacement={replacement}: an older rejection erased the current binding"
         );
         let after = h
@@ -161,7 +166,7 @@ async fn rejected_resume_custody(replacement: bool) {
             .expect("current custody remains");
         assert_eq!(
             after.model_blocked_goal,
-            Some(newer),
+            Some(newer.goal.clone()),
             "replacement={replacement}: an older rejection erased durable custody"
         );
         if replacement {
@@ -193,17 +198,11 @@ async fn a_replaced_runtime_cannot_retire_the_current_runtimes_durable_model_sto
         let id = ThreadId::new();
         let old = Arc::new(ThreadRt::new(id, None, false, Duration::ZERO));
         let current = Arc::new(ThreadRt::new(id, None, false, Duration::ZERO));
-        let old_owner = Arc::new(codex_alab_core::goal_persistence::State::default());
-        let current_owner = Arc::new(codex_alab_core::goal_persistence::State::default());
-        let old_bound = metadata_binding("old-goal", "old-model-block", &old_owner);
-        let current_bound = metadata_binding(
-            "replacement-goal",
-            "replacement-model-block",
-            &current_owner,
-        );
+        let old_bound = binding("old-goal", "old-model-block");
+        let current_bound = binding("replacement-goal", "replacement-model-block");
         *lock(&old.model_blocked_goal) = Some(old_bound.clone());
         *lock(&current.model_blocked_goal) = Some(current_bound.clone());
-        shared.set_model_goal_custody(current.key(), Custody::Known(current_bound.clone()));
+        shared.set_model_goal_custody(current.key(), Custody::Known(current_bound.passive()));
         old.with_state(|state| state.short_streak = 3);
         current.with_state(|state| state.short_streak = 7);
         autopilot.keep_thread(&old);
@@ -219,10 +218,7 @@ async fn a_replaced_runtime_cannot_retire_the_current_runtimes_durable_model_sto
         let kept = shared
             .pace(current.key())
             .expect("replacement already published its own durable binding");
-        assert!(
-            kept.model_blocked_goal.is_none(),
-            "pure publication metadata has no registered native GoalService authority"
-        );
+        assert_eq!(kept.model_blocked_goal, Some(current_bound.goal.clone()));
 
         // Every pace writer, including an older evaluator's hour or act
         // bookkeeping, must retain the registration through publication.
@@ -272,17 +268,11 @@ async fn a_replaced_runtimes_late_tool_completion_cannot_publish_over_its_replac
     let id = ThreadId::new();
     let old = Arc::new(ThreadRt::new(id, None, false, Duration::ZERO));
     let current = Arc::new(ThreadRt::new(id, None, false, Duration::ZERO));
-    let old_owner = Arc::new(codex_alab_core::goal_persistence::State::default());
-    let current_owner = Arc::new(codex_alab_core::goal_persistence::State::default());
-    let old_bound = metadata_binding("old-goal", "late-tool-turn", &old_owner);
-    let current_bound = metadata_binding(
-        "replacement-goal",
-        "replacement-model-block",
-        &current_owner,
-    );
+    let old_bound = binding("old-goal", "late-tool-turn");
+    let current_bound = binding("replacement-goal", "replacement-model-block");
     *lock(&old.model_blocked_goal) = Some(old_bound.clone());
     *lock(&current.model_blocked_goal) = Some(current_bound.clone());
-    shared.set_model_goal_custody(current.key(), Custody::Known(current_bound.clone()));
+    shared.set_model_goal_custody(current.key(), Custody::Known(current_bound.passive()));
     old.with_state(|state| state.short_streak = 3);
     current.with_state(|state| state.short_streak = 7);
     autopilot.keep_thread(&old);
@@ -300,20 +290,22 @@ async fn a_replaced_runtimes_late_tool_completion_cannot_publish_over_its_replac
     let call = "late-tool-call";
     let name = codex_extension_api::ToolName::plain(codex_goal_extension::UPDATE_GOAL_TOOL_NAME)
         .with_default_namespace();
-    let receipt = old_owner
-        .begin_mutation()
-        .commit_mutation_with_receipt()
-        .expect("an acknowledged native State mutation receipt");
     codex_alab_core::model_goal_invocation::Invocation::new()
         .scope(async {
             codex_alab_core::model_goal_stops::committed(
                 thread.level_id(),
                 turn.level_id(),
                 call,
-                codex_alab_core::model_goal_stops::CommittedStop {
-                    goal: old_bound.goal,
-                    previous_status: codex_alab_core::model_goal_stops::PreviousStatus::Active,
-                    receipt,
+                codex_alab_core::model_goal_stops::CommittedMutation {
+                    transition: Arc::new(codex_alab_core::goal_persistence::State::default())
+                        .begin_mutation()
+                        .commit_mutation()
+                        .expect("synthetic committed transition"),
+                    stop: Some(codex_alab_core::model_goal_stops::CommittedStop {
+                        goal: old_bound.goal,
+                        previous_status: codex_alab_core::model_goal_stops::PreviousStatus::Active,
+                    }),
+                    mode_epoch: codex_alab_core::mode_epoch().expect("enhanced mode epoch"),
                 },
             );
 

@@ -10,6 +10,9 @@
 #[path = "autopilot/late_goal.rs"]
 mod late_goal;
 
+#[path = "goal_admission/retained_goal_gate.rs"]
+mod retained_goal_gate;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,6 +64,13 @@ struct Fixture {
 
 impl Fixture {
     async fn new(server: &wiremock::MockServer) -> Self {
+        Self::new_with_gate(server, None).await
+    }
+
+    async fn new_with_gate(
+        server: &wiremock::MockServer,
+        gate: Option<codex_alab_core::retained_goal_gate::Gate>,
+    ) -> Self {
         codex_alab_core::activate();
         let late = Arc::new(late_goal::LateGoal::with_event_sink(None));
         let mut registry = ExtensionRegistryBuilder::<Config>::new();
@@ -68,6 +78,16 @@ impl Fixture {
         let test = test_codex()
             .with_model("gpt-5.5")
             .with_extensions(Arc::new(registry.build()))
+            .with_thread_manager(move |manager| {
+                if let Some(gate) = gate {
+                    manager
+                        .alab_bind_retained_goal_gate(gate)
+                        .unwrap_or_else(|error| {
+                            panic!("bind actual manager before Core start: {error}")
+                        });
+                }
+                manager
+            })
             .build(server)
             .await
             .unwrap_or_else(|error| panic!("real core fixture: {error}"));
@@ -85,11 +105,16 @@ impl Fixture {
         };
         // Persist the goal without its ordinary immediate continuation. This is the
         // state left when an automatic admission failed before creating a turn.
-        fixture.set_status(ThreadGoalStatus::Active, false).await;
+        fixture.set_status(ThreadGoalStatus::Active, true).await;
+        assert!(
+            !fixture.runtime.alab_goal_persistence_held(),
+            "the setup-only continuation deferral must settle mutation custody"
+        );
         fixture
     }
 
-    async fn set_status(&self, status: ThreadGoalStatus, apply: bool) {
+    async fn set_status(&self, status: ThreadGoalStatus, defer_continuation: bool) {
+        let thread_id = self.test.session_configured.thread_id;
         let db = self
             .test
             .codex
@@ -100,7 +125,7 @@ impl Fixture {
             .set_thread_goal(
                 &db,
                 GoalSetRequest {
-                    thread_id: self.test.session_configured.thread_id,
+                    thread_id,
                     objective: GoalObjectiveUpdate::Set("Finish the standing goal once."),
                     status: Some(status),
                     token_budget: GoalTokenBudgetUpdate::Keep,
@@ -110,8 +135,24 @@ impl Fixture {
             )
             .await
             .unwrap_or_else(|error| panic!("set goal under its mutation permit: {error}"));
-        if apply {
-            outcome.apply_runtime_effects(&self.goals).await;
+        if defer_continuation {
+            let goal = db
+                .thread_goals()
+                .get_thread_goal(thread_id)
+                .await
+                .unwrap_or_else(|error| panic!("read setup goal: {error}"))
+                .unwrap_or_else(|| panic!("setup goal exists"));
+            db.thread_goals()
+                .replace_thread_goal_snapshot(&goal)
+                .await
+                .unwrap_or_else(|error| panic!("defer setup-only continuation: {error}"));
+        }
+        outcome.apply_runtime_effects(&self.goals).await;
+        if defer_continuation {
+            db.thread_goals()
+                .clear_thread_goal_continuation_deferral(thread_id)
+                .await
+                .unwrap_or_else(|error| panic!("clear setup-only continuation deferral: {error}"));
         }
     }
 
@@ -168,7 +209,7 @@ fn transient_failure_coalesces_into_one_real_goal_continuation() {
         assert!(input.contains("Finish the standing goal once."), "{input}");
         // Stop before the delayed response completes: ordinary goal turn-stop may
         // otherwise correctly admit another continuation of the still-active goal.
-        fixture.set_status(ThreadGoalStatus::Paused, true).await;
+        fixture.set_status(ThreadGoalStatus::Paused, false).await;
         fixture.shutdown().await;
         assert_eq!(
             mock.requests().len(),
@@ -185,7 +226,7 @@ fn a_goal_mutation_retires_the_pending_recheck() {
         let fixture = Fixture::new(&server).await;
         fixture.fail_admission();
         assert!(fixture.runtime.alab_goal_admission_recovery_pending());
-        fixture.set_status(ThreadGoalStatus::Paused, true).await;
+        fixture.set_status(ThreadGoalStatus::Paused, false).await;
         assert!(!fixture.runtime.alab_goal_admission_recovery_pending());
         tokio::time::sleep(Duration::from_millis(1100)).await;
         assert!(

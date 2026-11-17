@@ -31,7 +31,8 @@ use crate::spec::create_get_goal_tool;
 use crate::spec::create_update_goal_tool;
 use crate::steering::GOAL_OBJECTIVE_CONTEXT;
 
-#[path = "../../../alab-autopilot/glue/goal_persistence_tool.rs"] mod alab_persistence; // ALAB(storage): dispatched usage owns its commit bookkeeping independently of tool cancellation.
+#[path = "../../../alab-autopilot/glue/goal_persistence_tool.rs"]
+mod alab_persistence; // ALAB(storage): dispatched usage owns its commit bookkeeping independently of tool cancellation.
 
 #[derive(Clone)]
 pub(crate) struct GoalToolExecutor {
@@ -227,6 +228,7 @@ impl GoalToolExecutor {
             .map_err(FunctionCallError::RespondToModel)?;
 
         let mut alab_mutation = self.alab_prepare_create().await?; // ALAB(storage): preserve retained usage before creating a new goal.
+        alab_mutation.begin_dispatched_mutation(&self.accounting_state)?; // ALAB(storage): final freeze, mutation creation, and dispatch admission exclude callbacks as one operation.
         let goal = self
             .state_db
             .thread_goals()
@@ -237,18 +239,32 @@ impl GoalToolExecutor {
                 request.token_budget,
             )
             .await
-            .map_err(|err| FunctionCallError::RespondToModel(format!("failed to create goal: {err}")))?
+            .map_err(|err| {
+                alab_mutation.settle_storage_error(&self.accounting_state, &err); // ALAB(storage): returned SQL errors settle recoverably; only cancellation leaves an abandoned command.
+                FunctionCallError::RespondToModel(format!("failed to create goal: {err}"))
+            })?
             .ok_or_else(|| {
+                alab_mutation.settle_noop(&self.accounting_state); // ALAB(storage): a uniqueness refusal changed no row and cannot leave an abandoned mutation owner.
                 FunctionCallError::RespondToModel(
                     "cannot create a new goal because this thread has an unfinished goal; complete the existing goal first"
                         .to_string(),
                 )
             })?;
-        alab_mutation.commit(); // ALAB(storage): acknowledge only this persisted fresh-goal intent.
+        alab_mutation
+            .make_write_durable(self.state_db.as_ref())
+            .await?; // ALAB(goal-recovery): a model-visible commit is durable before its exact runtime/source witness can advance.
+        let alab_effect =
+            alab_mutation.commit(self.thread_id, &invocation.turn_id, &invocation.call_id); // ALAB(storage): acknowledge and identify only this persisted fresh-goal intent.
+        let turn_id = if !codex_alab_core::is_alab_binary() {
+            self.accounting_state
+                .mark_current_turn_goal_active(goal.goal_id.clone())
+        } else if let Some(effect) = alab_effect {
+            self.alab_apply_created_goal_effect(effect, goal.goal_id.clone())
+                .await
+        } else {
+            self.accounting_state.current_turn_id()
+        }; // ALAB(storage): only the exact committed effect can replace retained predecessor attribution.
         fill_empty_thread_preview_if_possible(self.state_db.as_ref(), self.thread_id, &goal).await;
-        let turn_id = self
-            .accounting_state
-            .mark_current_turn_goal_active(goal.goal_id.clone());
         if let Some(manager) = thread_manager.upgrade()
             && let Ok(thread) = manager.get_thread(self.thread_id).await
         {
@@ -266,6 +282,12 @@ impl GoalToolExecutor {
             GoalEventAttribution::Turn(invocation.turn_id.as_str()),
         );
         let goal = protocol_goal_from_state(goal);
+        if codex_alab_core::is_alab_binary()
+            && turn_id.as_deref() == Some(invocation.turn_id.as_str())
+        {
+            self.alab_install_created_goal_turn_options(thread_manager, &invocation)
+                .await;
+        } // ALAB(storage): publish create-goal continuation ancestry while its exact mutation permit still excludes later external effects.
         self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
         goal_response(Some(goal), CompletionBudgetReport::Omit)
     }
@@ -286,23 +308,31 @@ impl GoalToolExecutor {
         }
 
         let mut alab_stop = self.alab_prepare_stop().await?; // ALAB(storage): failed stop intent holds continuation; explicit mutations cannot interleave accounting and status.
-        self.account_active_goal_progress(
-            match args.status {
-                ThreadGoalStatus::Complete => codex_state::GoalAccountingMode::ActiveOrComplete,
-                ThreadGoalStatus::Blocked | ThreadGoalStatus::Paused => {
-                    codex_state::GoalAccountingMode::ActiveOrStopped
-                }
-                ThreadGoalStatus::Active
-                | ThreadGoalStatus::UsageLimited
-                | ThreadGoalStatus::BudgetLimited => unreachable!("status validated above"),
-            },
-            invocation.call_id.as_str(),
-            BudgetLimitedGoalDisposition::ClearActive,
-        )
-        .await?;
+        if !self
+            .accounting_state
+            .alab_persistence
+            .settled_mutation_unknown()
+        {
+            // ALAB(storage): supersede a returned command without replaying its deliberately frozen boundary.
+            self.account_active_goal_progress(
+                match args.status {
+                    ThreadGoalStatus::Complete => codex_state::GoalAccountingMode::ActiveOrComplete,
+                    ThreadGoalStatus::Blocked | ThreadGoalStatus::Paused => {
+                        codex_state::GoalAccountingMode::ActiveOrStopped
+                    }
+                    ThreadGoalStatus::Active
+                    | ThreadGoalStatus::UsageLimited
+                    | ThreadGoalStatus::BudgetLimited => unreachable!("status validated above"),
+                },
+                invocation.call_id.as_str(),
+                BudgetLimitedGoalDisposition::KeepActive,
+            )
+            .await?;
+        }
         let previous_status = self
             .current_goal_status_for_metrics(/*expected_goal_id*/ None)
             .await?;
+        alab_stop.begin_dispatched_mutation(&self.accounting_state)?; // ALAB(storage): current-turn accounting and the exact frozen dispatch boundary cannot be split by a callback.
         let goal = self
             .state_db
             .thread_goals()
@@ -317,13 +347,20 @@ impl GoalToolExecutor {
             )
             .await
             .map_err(|err| {
+                alab_stop.settle_storage_error(&self.accounting_state, &err); // ALAB(storage): preserve post-commit read ambiguity while reopening only proven rollbacks.
                 FunctionCallError::RespondToModel(format!("failed to update goal: {err}"))
             })?
             .ok_or_else(|| {
+                alab_stop.settle_noop(&self.accounting_state); // ALAB(storage): a conditional no-row update is a proven rollback, not ambiguous custody.
                 FunctionCallError::RespondToModel(
                     "cannot update goal because this thread has no goal".to_string(),
                 )
             })?;
+        alab_stop.make_write_durable(self.state_db.as_ref()).await?; // ALAB(goal-recovery): a durable model stop cannot be lost after its source record settles the chronology fence.
+        let alab_goal_id = goal.goal_id.clone(); // ALAB(storage): a late same-goal callback may retain the exact committed stop's accounting boundary.
+        let protocol_goal = protocol_goal_from_state(goal.clone()); // ALAB(storage): settle the exact mutation before any accounting clear can erase its predecessor.
+        let alab_effect =
+            alab_stop.commit_stop(&protocol_goal, &invocation.turn_id, &invocation.call_id); // ALAB(storage): acknowledge the persisted stop while its native witness is still exact.
         self.metrics
             .record_terminal_if_status_changed(previous_status, &goal);
         self.analytics.status_changed(
@@ -331,10 +368,16 @@ impl GoalToolExecutor {
             previous_status,
             GoalEventAttribution::Turn(invocation.turn_id.as_str()),
         );
-        let goal = protocol_goal_from_state(goal);
-        let turn_id = self.accounting_state.clear_current_turn_goal();
+        let goal = protocol_goal;
+        let turn_id = if !codex_alab_core::is_alab_binary() {
+            self.accounting_state.clear_current_turn_goal()
+        } else if let Some(effect) = alab_effect {
+            self.alab_apply_stopped_goal_effect(effect, &alab_goal_id)
+                .await
+        } else {
+            self.accounting_state.current_turn_id()
+        }; // ALAB(storage): callbacks after commit cannot be erased by an unscoped clear.
         self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
-        alab_stop.commit_stop(&goal, &invocation.turn_id, &invocation.call_id); // ALAB(storage): acknowledge the persisted stop and retain exact model-block provenance.
         goal_response(
             Some(goal),
             if args.status == ThreadGoalStatus::Complete {
@@ -361,7 +404,13 @@ impl GoalToolExecutor {
         event_id: &str,
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) -> Result<Option<ThreadGoal>, FunctionCallError> {
-        if codex_alab_core::active() && !codex_alab_core::goal_persistence::owns_current_write() { return self.alab_owned_active_progress(mode, event_id, budget_limited_goal_disposition).await; } // ALAB(storage): the dispatched write owns native baseline finalization.
+        if codex_alab_core::is_alab_binary()
+            && !codex_alab_core::goal_persistence::owns_current_write()
+        {
+            return self
+                .alab_owned_active_progress(mode, event_id, budget_limited_goal_disposition)
+                .await;
+        } // ALAB(storage): the dispatched write owns native baseline finalization in either experience.
         let Some(turn_id) = self.accounting_state.current_turn_id() else {
             return Ok(None);
         };
@@ -374,13 +423,22 @@ impl GoalToolExecutor {
                     "goal progress accounting semaphore closed: {err}"
                 ))
             })?;
-        if codex_alab_core::active() && !self.accounting_state.alab_persistence.permits_write() { return Err(FunctionCallError::RespondToModel("goal usage remains held after an ambiguous write".to_owned())); } // ALAB(storage): a queued writer rechecks after the previous outcome is published.
+        if codex_alab_core::is_alab_binary()
+            && !self.accounting_state.alab_persistence.permits_write()
+        {
+            return Err(FunctionCallError::RespondToModel(
+                "goal usage remains held after an ambiguous write".to_owned(),
+            ));
+        } // ALAB(storage): a queued writer rechecks after the previous outcome is published.
         let Some(snapshot) = self.accounting_state.progress_snapshot(turn_id.as_str()) else {
             return Ok(None);
         };
         let previous_status = self
             .current_goal_status_for_metrics(Some(snapshot.expected_goal_id.as_str()))
-            .await.inspect_err(|_| { codex_alab_core::goal_persistence::definitely_rolled_back(); })?; // ALAB(storage): metrics-read failure precedes the additive write.
+            .await
+            .inspect_err(|_| {
+                codex_alab_core::goal_persistence::definitely_rolled_back();
+            })?; // ALAB(storage): metrics-read failure precedes the additive write.
         let outcome = self
             .state_db
             .thread_goals()
@@ -393,9 +451,26 @@ impl GoalToolExecutor {
             )
             .await
             .map_err(|err| {
-                if codex_state::alab_goal_read_recovery::write_definitely_uncommitted(&err) { codex_alab_core::goal_persistence::definitely_rolled_back(); } else if codex_alab_core::active() { self.accounting_state.alab_persistence.block_ambiguous(); } // ALAB(storage): preserve typed rollback knowledge before the model-visible error.
+                if codex_state::alab_goal_read_recovery::write_definitely_uncommitted(&err) {
+                    codex_alab_core::goal_persistence::definitely_rolled_back();
+                } else if codex_alab_core::is_alab_binary() {
+                    self.accounting_state.alab_persistence.block_ambiguous();
+                } // ALAB(storage): preserve typed rollback knowledge before the model-visible error.
                 FunctionCallError::RespondToModel(format!("failed to account goal progress: {err}"))
             })?;
+        if codex_alab_core::is_alab_binary()
+            && matches!(&outcome, codex_state::GoalAccountingOutcome::Updated(_))
+            && let Err(error) = self
+                .state_db
+                .thread_goals()
+                .alab_durable_goal_barrier()
+                .await
+        {
+            self.accounting_state.alab_persistence.block_ambiguous();
+            return Err(FunctionCallError::RespondToModel(format!(
+                "goal usage committed but its durability could not be proven: {error}"
+            )));
+        } // ALAB(goal-recovery): acknowledged usage cannot disappear across power loss and reopen spent budget.
         Ok(match outcome {
             codex_state::GoalAccountingOutcome::Updated(goal) => {
                 self.metrics
@@ -421,7 +496,12 @@ impl GoalToolExecutor {
                 );
                 Some(goal)
             }
-            codex_state::GoalAccountingOutcome::Unchanged(goal) => { self.accounting_state.alab_retain_rejected_progress(&snapshot.expected_goal_id, goal.as_ref()).map_err(FunctionCallError::RespondToModel)?; None }, // ALAB(storage): retain positive usage if the original goal refuses this accounting mode or identity.
+            codex_state::GoalAccountingOutcome::Unchanged(goal) => {
+                self.accounting_state
+                    .alab_retain_rejected_progress(&snapshot.expected_goal_id, goal.as_ref())
+                    .map_err(FunctionCallError::RespondToModel)?;
+                None
+            } // ALAB(storage): retain positive usage if the original goal refuses this accounting mode or identity.
         })
     }
 

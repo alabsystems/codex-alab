@@ -78,6 +78,8 @@ impl ChatWidget {
                 }
             }
             ServerNotification::AlabGoalRuntimeUpdated(_) => {} // ALAB(storage-status): only authenticated ALab App routing applies live metadata; transcript replay grants no fresh status.
+            ServerNotification::AlabRetainedConfigured(_) => {} // ALAB(retained-frontier): only actual startup-view installation/input owner may acknowledge this outcome.
+            ServerNotification::AlabRetainedFrontier(_) => {} // ALAB(owned-local): only the actual App replay consumer handles this barrier; transcript replay cannot acknowledge it.
             ServerNotification::ThreadGoalUpdated(notification) => {
                 self.on_thread_goal_updated(notification.goal, notification.turn_id);
             }
@@ -587,6 +589,9 @@ impl ChatWidget {
         notification: ItemStartedNotification,
         replay_kind: Option<ReplayKind>,
     ) {
+        #[cfg(unix)]
+        let _alab_source=self.alab_history_source.enter(self.side_conversation_active(),self.thread_id(),&notification.turn_id,&notification.item.payload); // ALAB(retained-ui): actual direct item handler preserves original source context, including commands.
+
         self.restore_realtime_transcripts_before_turn(&notification.turn_id);
         match notification.item.payload {
             ThreadItemPayload::UserMessage { content, .. } if replay_kind.is_none() => {
@@ -709,6 +714,9 @@ impl ChatWidget {
         notification: ItemCompletedNotification,
         replay_kind: Option<ReplayKind>,
     ) {
+        #[cfg(unix)]
+        let _alab_source=self.alab_history_source.enter(self.side_conversation_active(),self.thread_id(),&notification.turn_id,&notification.item.payload); // ALAB(retained-ui): actual direct item handler preserves original source context, including commands.
+
         self.restore_realtime_transcripts_before_turn(&notification.turn_id);
         if replay_kind.is_none()
             && self.is_realtime_delegated_reasoning_turn(&notification.turn_id)

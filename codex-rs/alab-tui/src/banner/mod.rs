@@ -12,9 +12,10 @@
 //! and stripes styles and composer tinting retain their own renderers.
 
 pub mod claims;
-pub mod palette;
 mod codex;
+pub mod palette;
 mod render;
+pub mod retained;
 pub(crate) mod sprite;
 
 use ratatui::layout::Rect;
@@ -95,7 +96,7 @@ pub struct Banner {
     theme: Theme,
     version: Option<String>,
     upstream: Option<String>,
-    claims: &'static [claims::Claim],
+    claims: Vec<retained::HistoricalClaim>,
 }
 
 impl Banner {
@@ -114,7 +115,7 @@ impl Banner {
             theme,
             version,
             upstream: None,
-            claims: &[],
+            claims: Vec::new(),
         }
     }
 
@@ -128,7 +129,10 @@ impl Banner {
 
     /// The same banner advertising `claims` ([`claims::CLAIMS`]), as many as fit.
     pub fn with_claims(mut self, claims: &'static [claims::Claim]) -> Self {
-        self.claims = claims;
+        self.claims = claims
+            .iter()
+            .map(retained::HistoricalClaim::borrowed)
+            .collect();
         self
     }
 

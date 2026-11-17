@@ -26,6 +26,7 @@ impl App {
         let thread_id = self.chat_widget.thread_id().or(self.primary_thread_id);
         let disconnect_info = thread_id.and_then(|_| {
             let command = match &self.app_server_target {
+                #[cfg(unix)] AppServerTarget::OwnedLocal { .. } => return None, // ALAB(owned-local): do not invent an endpoint command for a controller-bound service.
                 AppServerTarget::Embedded | AppServerTarget::Cloud => return None,
                 AppServerTarget::LocalDaemon { .. } => vec!["codex".to_string()],
                 AppServerTarget::Remote { endpoint } => {

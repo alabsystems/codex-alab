@@ -267,3 +267,7 @@ impl AsyncQuestions {
 #[cfg(test)]
 #[path = "state_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../../alab-tui/glue/retained_backend_question_state.rs"]
+mod alab_retained_backend_questions; // ALAB(retained-ui): retain all parked async question drafts in the outer scene.

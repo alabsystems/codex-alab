@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use codex_core::StartIfIdleSubmission;
@@ -22,13 +23,23 @@ use crate::tool::protocol_goal_from_state;
 use tokio::sync::Semaphore;
 use tokio::sync::SemaphorePermit;
 
-#[path = "../../../alab-autopilot/glue/goal_admission.rs"] mod alab_admission; // ALAB(autopilot): automatic native input shares the goal mutation permit
-#[path = "../../../alab-autopilot/glue/goal_admission_recovery.rs"] mod alab_recovery; // ALAB(goal-recovery): failed automatic admissions get one cancellable paced recheck
-#[path = "../../../alab-autopilot/glue/auth_goal_runtime.rs"] mod alab_auth_goal; // ALAB(renewal): restore only the unchanged goal stopped at the verified auth wall.
+#[path = "../../../alab-autopilot/glue/goal_admission.rs"]
+mod alab_admission; // ALAB(autopilot): automatic native input shares the goal mutation permit
+#[path = "../../../alab-autopilot/glue/auth_goal_runtime.rs"]
+mod alab_auth_goal;
+#[path = "../../../alab-autopilot/glue/goal_admission_recovery.rs"]
+mod alab_recovery; // ALAB(goal-recovery): failed automatic admissions get one cancellable paced recheck // ALAB(renewal): restore only the unchanged goal stopped at the verified auth wall.
 
-#[path = "../../../alab-autopilot/glue/goal_persistence_runtime.rs"] mod alab_persistence; // ALAB(storage): owned accounting and stop finalization hold automatic admission on failed persistence.
+#[path = "../../../alab-autopilot/glue/goal_persistence_runtime.rs"]
+mod alab_persistence; // ALAB(storage): owned accounting and stop finalization hold automatic admission on failed persistence.
+pub(crate) use alab_persistence::GoalMutationBoundary;
+pub(crate) use alab_persistence::alab_host_goal_mutation_permit_held;
+pub(crate) use alab_persistence::alab_scope_host_goal_mutation; // ALAB(storage): outcome custody and host chronology share one native permit owner.
 
-#[path = "../../../alab-autopilot/glue/goal_runtime_status.rs"] mod alab_runtime_status; // ALAB(storage-status): passive per-runtime lifecycle observation.
+#[path = "../../../alab-autopilot/glue/goal_runtime_status.rs"]
+mod alab_runtime_status; // ALAB(storage-status): passive per-runtime lifecycle observation.
+#[doc(hidden)]
+pub use alab_runtime_status::UpgradeRetirementCoordinator; // ALAB(goal-recovery): one exact registry owner publishes a complete upgrade inventory.
 
 #[derive(Clone)]
 pub struct GoalRuntimeHandle {
@@ -45,21 +56,33 @@ pub(crate) struct GoalRuntimeConfig {
 
 pub(crate) enum ActiveGoalStopReason {
     TurnError,
-    AuthError { standalone: bool, original_goal: Option<String> }, // ALAB(renewal): preserve original goal association through later goal changes.
-    AccountQuotaError { standalone: bool, original_goal: Option<String> }, // ALAB(accounts): a subscription quota wall retains its original goal, independently of token budgets.
-    BoundTurnError { original_goal: Option<String> }, // ALAB(renewal): typed auth failures retain stop ownership without granting login recovery.
+    AuthError {
+        standalone: bool,
+        original_goal: Option<String>,
+    }, // ALAB(renewal): preserve original goal association through later goal changes.
+    AccountQuotaError {
+        standalone: bool,
+        original_goal: Option<String>,
+    }, // ALAB(accounts): a subscription quota wall retains its original goal, independently of token budgets.
+    BoundTurnError {
+        original_goal: Option<String>,
+    }, // ALAB(renewal): typed auth failures retain stop ownership without granting login recovery.
     UsageLimit,
-    ExecutionUnavailable { expected_goal_id: String },
+    ExecutionUnavailable {
+        expected_goal_id: String,
+    },
     EmptyResponse,
 }
 
 struct GoalRuntimeInner {
     alab_status: alab_runtime_status::Owner, // ALAB(storage-status): cancels its passive watcher when the native owner drops.
+    alab_retained: std::sync::Mutex<Option<codex_alab_core::retained_goal_gate::Gate>>, // ALAB(retained-frontier): retained automatic admission shares its actual host owner.
     alab_startup: std::sync::Mutex<Option<codex_alab_core::upgrade_startup_hold::Fence>>, // ALAB(upgrade): restored goals remain held through native forest activation.
     alab_auth_deferred: AtomicBool, // ALAB(renewal): pending original-turn recovery owns idle continuation.
     alab_auth_transient: std::sync::Mutex<(u64, bool)>, // ALAB(renewal): token-owned live-only recovery latch.
     alab_recovery: Arc<codex_alab_core::goal_recovery::GoalAdmissionRecovery>, // ALAB(goal-recovery): one recovery owner per runtime
     alab_policy_continuation: std::sync::Mutex<Option<String>>, // ALAB(policy-resume): admission retries retain the refusal exclusion.
+    alab_turn_options_invalidations: AtomicU64, // ALAB(storage): each dispatched external owner retains its own predecessor launch-context fence.
     alab_upgrade: Arc<codex_alab_core::upgrade_barrier::State>, // ALAB(upgrade): goal writers revoke preparation before they mutate state.
     thread_id: ThreadId,
     state_dbs: Arc<codex_state::StateRuntime>,
@@ -116,11 +139,13 @@ impl GoalRuntimeHandle {
         Self {
             inner: Arc::new(GoalRuntimeInner {
                 alab_status: Default::default(), // ALAB(storage-status): fresh runtime incarnation.
+                alab_retained: Default::default(), // ALAB(retained-frontier): ordinary goal runtimes have no retained inhibitor.
                 alab_startup: std::sync::Mutex::new(None), // ALAB(upgrade): only the actual bootstrap installs a startup hold.
                 alab_auth_deferred: AtomicBool::new(false), // ALAB(renewal): only an explicit pending receipt defers continuation.
                 alab_auth_transient: std::sync::Mutex::new((0, false)), // ALAB(renewal): no transient latch survives process recreation.
                 alab_recovery: Arc::default(), // ALAB(goal-recovery): initially no admission failure is owed
                 alab_policy_continuation: std::sync::Mutex::new(None), // ALAB(policy-resume): no exclusion is pending before recovery.
+                alab_turn_options_invalidations: AtomicU64::new(0), // ALAB(storage): the fresh runtime has no predecessor mutation.
                 alab_upgrade: Arc::default(), // ALAB(upgrade): no process transfer is initially prepared.
                 thread_id,
                 state_dbs,
@@ -179,6 +204,7 @@ impl GoalRuntimeHandle {
             return;
         };
         thread.thread_extension_data().remove::<TurnStartOptions>();
+        self.alab_validate_future_turn_start_options(); // ALAB(storage): exact effect application consumed every predecessor option.
     }
 
     pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
@@ -189,19 +215,28 @@ impl GoalRuntimeHandle {
         self.alab_cancel_auth_recovery().await?; // ALAB(renewal): explicit goal changes supersede the deferred original turn.
         self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): an external mutation retires the prior goal's recheck
         self.alab_clear_policy_continuation(); // ALAB(policy-resume): a new goal mutation revokes the old refusal's recovery custody.
-        self.alab_drain_retained_progress().await?; // ALAB(storage): explicit mutation cannot strand usage, including while goal execution is disabled.
+        if self
+            .inner
+            .accounting_state
+            .alab_persistence
+            .settled_mutation_unknown()
+        {
+            return Ok(());
+        } // ALAB(storage): a returned command has no late writer; preserve its frozen empty boundary for one exact superseding mutation.
+        self.alab_drain_retained_progress_for_mutation().await?; // ALAB(storage): drain while retaining old-goal custody through final dispatch authorization.
         if !self.is_enabled() {
             return Ok(());
         }
         // Invalidate the old turn before the persisted objective/status changes.
         self.inner.accounting_state.reset_empty_responses();
 
+        // ALAB(goal-recovery): mutation capture preserves the clock until authoritative retirement.
         if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {
             self.account_active_goal_progress(
                 turn_id.as_str(),
                 &format!("{turn_id}:external-goal-mutation"),
                 codex_state::GoalAccountingMode::ActiveOnly,
-                BudgetLimitedGoalDisposition::ClearActive,
+                BudgetLimitedGoalDisposition::KeepActive, // ALAB(goal-recovery): preserve the native clock through capture.
             )
             .await?;
             return Ok(());
@@ -210,7 +245,7 @@ impl GoalRuntimeHandle {
         self.account_idle_goal_progress(
             &format!("{}:external-goal-mutation", self.inner.thread_id),
             codex_state::GoalAccountingMode::ActiveOnly,
-            BudgetLimitedGoalDisposition::ClearActive,
+            BudgetLimitedGoalDisposition::KeepActive, // ALAB(goal-recovery): preserve the native clock through capture.
         )
         .await?;
         Ok(())
@@ -232,33 +267,41 @@ impl GoalRuntimeHandle {
         previous_goal: Option<PreviousGoalSnapshot>,
         policy: Option<String>,
     ) -> Result<(), String> {
+        let alab_goal_permit = if codex_alab_core::is_alab_binary()
+            && !alab_host_goal_mutation_permit_held(self.thread_id())
+        {
+            Some(self.goal_state_permit().await?)
+        } else {
+            None
+        }; // ALAB(storage): the exact effect owner also owns stale turn-option invalidation, including under host chronology custody.
+        let accounting = &self.inner.accounting_state;
+        if accounting.alab_preserves_pending_progress() {
+            accounting.alab_acknowledge_pending_same_goal_effect(&goal.goal_id);
+            return Ok(());
+        } // ALAB(storage): late same-goal callbacks retain their baseline; only their non-destructive exact effect is acknowledged.
+        if !accounting.alab_mutation_effect_authorized() {
+            return Ok(());
+        } // ALAB(storage): revalidate after awaiting the permit and before any exact runtime effect.
         if !self.is_enabled() {
+            if codex_alab_core::is_alab_binary() {
+                self.inner.accounting_state.clear_active_goal();
+                if !codex_alab_core::goal_persistence::mutation_effect_rejected() {
+                    self.clear_pending_turn_start_options().await;
+                    codex_alab_core::goal_persistence::mutation_effect_applied();
+                }
+            } // ALAB(storage): disabled execution still settles the exact committed association boundary without launching work.
             return Ok(());
         }
-        if self.inner.accounting_state.alab_preserves_pending_progress() { self.inner.accounting_state.alab_goal_association_allowed(Some(&goal.goal_id)); return Ok(()); } // ALAB(storage): delayed runtime effects cannot reset newer unacknowledged usage.
-
+        if codex_alab_core::is_alab_binary() {
+            self.clear_pending_turn_start_options().await;
+        } // ALAB(storage): clear only on the exact effect-target runtime while its native permit is held.
         self.inner.accounting_state.reset_empty_responses();
         let replaced_existing_goal = previous_goal
             .as_ref()
             .is_some_and(|previous_goal| previous_goal.goal_id != goal.goal_id);
-        if previous_goal.is_none() || replaced_existing_goal {
-            self.inner.metrics.record_created();
-            self.inner
-                .analytics
-                .created(&goal, GoalEventAttribution::NoTurn);
-        }
         let previous_status = previous_goal
             .as_ref()
             .and_then(|previous_goal| (!replaced_existing_goal).then_some(previous_goal.status));
-        self.inner
-            .metrics
-            .record_resumed_if_status_changed(previous_status, goal.status);
-        self.inner
-            .metrics
-            .record_terminal_if_status_changed(previous_status, &goal);
-        self.inner
-            .analytics
-            .status_changed(&goal, previous_status, GoalEventAttribution::NoTurn);
         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
             !replaced_existing_goal && previous_goal.objective != goal.objective
         });
@@ -274,14 +317,14 @@ impl GoalRuntimeHandle {
                         .accounting_state
                         .mark_idle_goal_active(goal.goal_id.clone());
                 }
-                if objective_changed {
-                    let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
-                    self.inject_active_turn_steering(item).await;
-                }
-                self.continue_if_idle_with_policy(policy).await?; // ALAB(policy-resume): status and policy context enter the same native continuation.
             }
             codex_state::ThreadGoalStatus::BudgetLimited => {
-                if self.inner.accounting_state.current_turn_id().is_none() {
+                if self.inner.accounting_state.current_turn_id().is_some() {
+                    let _ = self
+                        .inner
+                        .accounting_state
+                        .mark_current_turn_goal_active(goal.goal_id.clone()); // ALAB(storage): a frozen retained turn reopens only inside this exact committed effect.
+                } else {
                     self.inner.accounting_state.clear_active_goal();
                 }
             }
@@ -292,21 +335,87 @@ impl GoalRuntimeHandle {
                 self.inner.accounting_state.clear_active_goal();
             }
         }
+        if codex_alab_core::goal_persistence::mutation_effect_rejected() {
+            return Ok(());
+        } // ALAB(storage): no metric, policy, steering, or continuation survives an atomically rejected association.
+        codex_alab_core::goal_persistence::mutation_effect_applied(); // ALAB(storage): boundary custody releases only after the exact native association (including an already-satisfied no-op) is settled.
+        if previous_goal.is_none() || replaced_existing_goal {
+            self.inner.metrics.record_created();
+            self.inner
+                .analytics
+                .created(&goal, GoalEventAttribution::NoTurn);
+        }
+        self.inner
+            .metrics
+            .record_resumed_if_status_changed(previous_status, goal.status);
+        self.inner
+            .metrics
+            .record_terminal_if_status_changed(previous_status, &goal);
+        self.inner
+            .analytics
+            .status_changed(&goal, previous_status, GoalEventAttribution::NoTurn);
+        if goal.status == codex_state::ThreadGoalStatus::Active {
+            if objective_changed {
+                let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
+                self.inject_active_turn_steering(item).await;
+            }
+            drop(alab_goal_permit);
+            self.continue_if_idle_with_policy(policy).await?; // ALAB(policy-resume): status and policy context enter the same native continuation.
+        }
         Ok(())
     }
 
     pub async fn apply_external_goal_clear(
         &self,
-        goal: codex_state::ThreadGoal,
+        goal: Option<codex_state::ThreadGoal>,
     ) -> Result<(), String> {
-        self.alab_clear_policy_continuation(); // ALAB(policy-resume): clearing the goal retires its recovery exclusion.
+        let _alab_goal_permit = if codex_alab_core::is_alab_binary()
+            && !alab_host_goal_mutation_permit_held(self.thread_id())
+        {
+            Some(self.goal_state_permit().await?)
+        } else {
+            None
+        }; // ALAB(storage): exact clear effects and stale turn-option invalidation share the attached owner's permit.
+        if !self
+            .inner
+            .accounting_state
+            .alab_mutation_effect_authorized()
+        {
+            return Ok(());
+        } // ALAB(storage): a newer mutation or callback rejects every delayed clear side effect.
         if !self.is_enabled() {
+            if codex_alab_core::is_alab_binary() {
+                self.inner.accounting_state.clear_active_goal();
+                if !codex_alab_core::goal_persistence::mutation_effect_rejected() {
+                    self.clear_pending_turn_start_options().await;
+                    codex_alab_core::goal_persistence::mutation_effect_applied();
+                }
+            } // ALAB(storage): a disabled runtime still consumes the exact committed clear boundary.
             return Ok(());
         }
-        if self.inner.accounting_state.alab_preserves_pending_progress() { self.inner.accounting_state.alab_quarantine_pending_boundaries(); return Ok(()); } // ALAB(storage): a delayed clear cannot discard newer failed accounting.
+        if codex_alab_core::is_alab_binary() {
+            self.clear_pending_turn_start_options().await;
+        } // ALAB(storage): an attached successor never inherits predecessor launch options.
+        if self
+            .inner
+            .accounting_state
+            .alab_preserves_pending_progress()
+        {
+            self.inner
+                .accounting_state
+                .alab_quarantine_pending_boundaries();
+            return Ok(());
+        } // ALAB(storage): a delayed clear cannot discard newer failed accounting.
 
-        self.inner.analytics.cleared(&goal);
         self.inner.accounting_state.clear_active_goal();
+        if codex_alab_core::goal_persistence::mutation_effect_rejected() {
+            return Ok(());
+        } // ALAB(storage): stale clear cannot erase newer policy or analytics custody.
+        codex_alab_core::goal_persistence::mutation_effect_applied(); // ALAB(storage): acknowledge the exact runtime clear before releasing committed effect custody.
+        self.alab_clear_policy_continuation(); // ALAB(policy-resume): the exact committed clear retires its recovery exclusion.
+        if let Some(goal) = goal {
+            self.inner.analytics.cleared(&goal);
+        }
         Ok(())
     }
 
@@ -321,18 +430,40 @@ impl GoalRuntimeHandle {
         turn_id: &str,
         reason: ActiveGoalStopReason,
     ) -> Result<(), String> {
-        if codex_alab_core::active() && !Self::alab_owns_stop() { return self.alab_owned_stop(turn_id, reason).await; } // ALAB(storage): dispatched stop policy and finalization outlive observer cancellation.
-        self.alab_clear_policy_continuation(); // ALAB(policy-resume): a terminal turn owns the next goal sequence.
+        if codex_alab_core::is_alab_binary() && !Self::alab_owns_stop() {
+            return self.alab_owned_stop(turn_id, reason).await;
+        } // ALAB(storage): dispatched stop policy and finalization outlive observer cancellation in either experience.
         if !self.is_enabled() {
             return Ok(());
         }
 
         // Hold this through accounting and the status update so external goal
         // mutations and idle continuation cannot interleave between them.
-        let _goal_state_permit = self.goal_state_permit().await?;
-        if codex_alab_core::active() && !Self::alab_stop_still_current() { return Ok(()); } // ALAB(storage): a queued old stop cannot alter a successful same-goal resume or replacement.
-        if codex_alab_core::active() && !self.inner.accounting_state.alab_persistence.quarantined_usage().is_empty() { return Err("original goal usage remains quarantined after an uncoordinated replacement".to_owned()); } // ALAB(storage): an unbound manual turn cannot erase or silently accept unresolved original attribution.
-        let auth_wall = matches!(&reason, ActiveGoalStopReason::AuthError { .. } | ActiveGoalStopReason::AccountQuotaError { .. }); // ALAB(renewal): retain account-recovery provenance at the native failure.
+        let _goal_state_permit = if alab_host_goal_mutation_permit_held(self.thread_id()) {
+            None
+        } else {
+            Some(self.goal_state_permit().await?)
+        }; // ALAB(goal-recovery): a host mutation retains this same permit through durable chronology and launch.
+        if codex_alab_core::is_alab_binary() && !Self::alab_stop_still_current() {
+            return Ok(());
+        } // ALAB(storage): a queued old stop cannot alter a successful same-goal resume or replacement.
+        if codex_alab_core::is_alab_binary()
+            && !self
+                .inner
+                .accounting_state
+                .alab_persistence
+                .quarantined_usage()
+                .is_empty()
+        {
+            return Err(
+                "original goal usage remains quarantined after an uncoordinated replacement"
+                    .to_owned(),
+            );
+        } // ALAB(storage): an unbound manual turn cannot erase or silently accept unresolved original attribution.
+        let auth_wall = matches!(
+            &reason,
+            ActiveGoalStopReason::AuthError { .. } | ActiveGoalStopReason::AccountQuotaError { .. }
+        ); // ALAB(renewal): retain account-recovery provenance at the native failure.
         let accounting = &self.inner.accounting_state;
         let _turn_start_permit = if matches!(reason, ActiveGoalStopReason::EmptyResponse)
             && accounting.interrupted_turn_id().as_deref() == Some(turn_id)
@@ -351,10 +482,28 @@ impl GoalRuntimeHandle {
             .accounting_state
             .current_active_goal_id_for_turn(turn_id)
         else {
-            if matches!(&reason, ActiveGoalStopReason::AuthError { standalone: true, .. } | ActiveGoalStopReason::AccountQuotaError { standalone: true, .. }) { self.inner.state_dbs.thread_goals().alab_record_auth_standalone(self.thread_id(), turn_id).await.map_err(|error| error.to_string())?; } // ALAB(renewal): only turn-start evidence can prove this was standalone.
+            if matches!(
+                &reason,
+                ActiveGoalStopReason::AuthError {
+                    standalone: true,
+                    ..
+                } | ActiveGoalStopReason::AccountQuotaError {
+                    standalone: true,
+                    ..
+                }
+            ) {
+                self.inner
+                    .state_dbs
+                    .thread_goals()
+                    .alab_record_auth_standalone(self.thread_id(), turn_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            } // ALAB(renewal): only turn-start evidence can prove this was standalone.
             return Ok(());
         };
-        if Self::alab_auth_goal_replaced(&reason, &accounting_goal_id) { return Ok(()); } // ALAB(renewal): an old goal's auth failure cannot block its replacement; native idle continues the new goal's own request.
+        if Self::alab_auth_goal_replaced(&reason, &accounting_goal_id) {
+            return Ok(());
+        } // ALAB(renewal): an old goal's auth failure cannot block its replacement; native idle continues the new goal's own request.
         if let ActiveGoalStopReason::ExecutionUnavailable { expected_goal_id } = &reason
             && accounting_goal_id != *expected_goal_id
         {
@@ -366,8 +515,17 @@ impl GoalRuntimeHandle {
             ActiveGoalStopReason::TurnError => {
                 ("turn-error", codex_state::ThreadGoalStatus::Blocked, None)
             }
-            ActiveGoalStopReason::AuthError { original_goal, .. } | ActiveGoalStopReason::BoundTurnError { original_goal } => ("turn-error", codex_state::ThreadGoalStatus::Blocked, original_goal), // ALAB(renewal): compare the original goal again at the final database stop boundary.
-            ActiveGoalStopReason::AccountQuotaError { original_goal, .. } => ("usage-limit", codex_state::ThreadGoalStatus::UsageLimited, original_goal), // ALAB(accounts): compare the original goal before retaining quota recovery custody.
+            ActiveGoalStopReason::AuthError { original_goal, .. }
+            | ActiveGoalStopReason::BoundTurnError { original_goal } => (
+                "turn-error",
+                codex_state::ThreadGoalStatus::Blocked,
+                original_goal,
+            ), // ALAB(renewal): compare the original goal again at the final database stop boundary.
+            ActiveGoalStopReason::AccountQuotaError { original_goal, .. } => (
+                "usage-limit",
+                codex_state::ThreadGoalStatus::UsageLimited,
+                original_goal,
+            ), // ALAB(accounts): compare the original goal before retaining quota recovery custody.
             ActiveGoalStopReason::UsageLimit => (
                 "usage-limit",
                 codex_state::ThreadGoalStatus::UsageLimited,
@@ -392,14 +550,6 @@ impl GoalRuntimeHandle {
                 Some(expected_goal_id),
             ),
         };
-        self.account_active_goal_progress(
-            turn_id,
-            &format!("{turn_id}:{event_name}-progress"),
-            codex_state::GoalAccountingMode::ActiveOnly,
-            BudgetLimitedGoalDisposition::ClearActive,
-        )
-        .await?;
-
         let Some(active_goal) = self
             .inner
             .state_dbs
@@ -424,12 +574,46 @@ impl GoalRuntimeHandle {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }
+        let mut alab_mutation = loop {
+            // ALAB(storage): include raced callbacks, then atomically freeze and admit dispatch with no check-use gap.
+            if !self
+                .inner
+                .accounting_state
+                .alab_persistence
+                .settled_mutation_unknown()
+            {
+                // ALAB(storage): the next exact stop may supersede a settled command while retaining its frozen cutoff.
+                self.account_active_goal_progress(
+                    turn_id,
+                    &format!("{turn_id}:{event_name}-progress"),
+                    codex_state::GoalAccountingMode::ActiveOnly,
+                    BudgetLimitedGoalDisposition::KeepActive,
+                )
+                .await?;
+            }
+            match self.alab_begin_stop_mutation() {
+                Ok(mutation) => break mutation,
+                Err(codex_alab_core::goal_persistence::DispatchedMutationError::Progress) => {
+                    if self
+                        .inner
+                        .accounting_state
+                        .alab_persistence
+                        .settled_mutation_unknown()
+                    {
+                        return Err("goal accounting changed after a settled mutation with an unknown outcome".to_owned());
+                    } // ALAB(storage): unknown durable ownership makes newly arrived attribution non-replayable.
+                    continue;
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        };
         let previous_status = Some(active_goal.status);
-        let Some(goal) = self
+        let goal = self
             .inner
             .state_dbs
             .thread_goals()
-            .alab_update_for_auth_wall( // ALAB(renewal): block and prove the auth cause in one transaction.
+            .alab_update_for_auth_wall(
+                // ALAB(renewal): block and prove the auth cause in one transaction.
                 self.thread_id(),
                 codex_state::GoalUpdate {
                     objective: None,
@@ -440,10 +624,22 @@ impl GoalRuntimeHandle {
                 auth_wall.then_some(turn_id), // ALAB(renewal): other stop causes keep native goal updates.
             )
             .await
-            .map_err(|err| err.to_string())?
-        else {
+            .map_err(|err| {
+                self.alab_settle_mutation_error(&mut alab_mutation, &err); // ALAB(storage): a returned storage error is settled; task cancellation alone is permanently unknown.
+                err.to_string()
+            })?;
+        let Some(goal) = goal else {
+            if codex_alab_core::is_alab_binary() {
+                let _ = self.alab_commit_stop_mutation(alab_mutation); // ALAB(storage): a raw concurrent row change still advances and permanently fences the frozen mutation epoch.
+                self.inner
+                    .accounting_state
+                    .alab_persistence
+                    .hold_permanently();
+            } // ALAB(storage): a raw concurrent row change leaves the frozen original boundary non-replayable.
             return Ok(());
         };
+        self.alab_make_stop_durable(&mut alab_mutation).await?; // ALAB(goal-recovery): terminal runtime effects require a power-loss-durable native status.
+        let alab_effect = self.alab_commit_stop_mutation(alab_mutation); // ALAB(storage): acknowledge only the durable status transaction and retain its exact runtime-effect witness.
         self.inner
             .metrics
             .record_terminal_if_status_changed(previous_status, &goal);
@@ -452,7 +648,17 @@ impl GoalRuntimeHandle {
             previous_status,
             GoalEventAttribution::Turn(turn_id),
         );
-        self.inner.accounting_state.clear_active_goal();
+        let alab_effect_applied = if !codex_alab_core::is_alab_binary() {
+            self.inner.accounting_state.clear_active_goal();
+            true
+        } else if let Some(effect) = alab_effect {
+            self.alab_apply_stop_mutation_effect(effect).await
+        } else {
+            false
+        }; // ALAB(storage): clear only inside the exact committed effect; callbacks after COMMIT remain retained.
+        if alab_effect_applied {
+            self.alab_clear_policy_continuation();
+        } // ALAB(policy-resume): only a successfully applied exact terminal mutation retires recovery policy custody.
         let goal = protocol_goal_from_state(goal);
         self.inner.event_emitter.thread_goal_updated(
             format!("{turn_id}:{event_name}"),
@@ -463,8 +669,28 @@ impl GoalRuntimeHandle {
     }
 
     pub async fn restore_after_resume(&self) -> Result<(), String> {
-        if self.alab_startup_pending() { return Ok(()); } // ALAB(upgrade): source clock adoption precedes native accounting startup.
-        if self.inner.accounting_state.alab_preserves_pending_progress() { return Ok(()); } // ALAB(storage): restoration cannot reset a live held runtime's original usage boundary.
+        if self.alab_startup_pending() {
+            return Ok(());
+        } // ALAB(upgrade): source clock adoption precedes native accounting startup.
+        if self
+            .inner
+            .accounting_state
+            .alab_preserves_pending_progress()
+        {
+            return Ok(());
+        } // ALAB(storage): restoration cannot reset a live held runtime's original usage boundary.
+        let _alab_goal_permit = if codex_alab_core::is_alab_binary() {
+            Some(self.goal_state_permit().await?)
+        } else {
+            None
+        }; // ALAB(storage): replacement restoration reconciles carried turn-option invalidation against one exact durable row.
+        if self
+            .inner
+            .accounting_state
+            .alab_preserves_pending_progress()
+        {
+            return Ok(());
+        } // ALAB(storage): a mutation queued ahead of this permit may have settled unknown while restoration waited.
         if !self.is_enabled() {
             return Ok(());
         }
@@ -485,6 +711,9 @@ impl GoalRuntimeHandle {
             }
             Some(_) | None => self.inner.accounting_state.clear_active_goal(),
         }
+        if codex_alab_core::is_alab_binary() && self.alab_turn_start_options_invalidated() {
+            self.clear_pending_turn_start_options().await;
+        } // ALAB(storage): only a successor carrying an unapplied mutation consumes predecessor options after durable restoration.
         Ok(())
     }
 
@@ -497,20 +726,42 @@ impl GoalRuntimeHandle {
         &self,
         policy: Option<String>,
     ) -> Result<(), String> {
+        // Hold this through policy publication, the current-row read and turn
+        // launch so a newer mutation cannot interleave with delayed effects.
+        let _goal_state_permit = if alab_host_goal_mutation_permit_held(self.thread_id()) {
+            None
+        } else {
+            Some(self.goal_state_permit().await?)
+        }; // ALAB(goal-recovery): a host mutation retains this same permit through durable chronology and launch.
+        if !self.alab_mutation_effect_epoch_authorized() {
+            return Ok(());
+        } // ALAB(storage): an old outcome cannot restore policy after a newer mutation.
         self.alab_hold_policy_continuation(policy); // ALAB(policy-resume): deferrals and generic admission rechecks retain the same exclusion.
-        if self.alab_idle_continuation_deferred() { return Ok(()); } // ALAB(renewal): receipt recovery and committed upgrades must not race a new goal turn.
+        let _retained_admission = match self.alab_retained_goal_admission().await { Ok(guard) => guard, Err(()) => return Ok(()) }; // ALAB(retained-frontier): hold the real shared lease through the complete automatic read/start window.
+        if self.alab_idle_continuation_deferred() {
+            return Ok(());
+        } // ALAB(renewal): receipt recovery and committed upgrades must not race a new goal turn.
         if !self.tools_available() {
             self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): disabled goal execution retires admission recovery
-            if self.inner.accounting_state.alab_preserves_pending_progress() { return Ok(()); } // ALAB(storage): disabling execution cannot erase pending original usage before recovery.
+            if self
+                .inner
+                .accounting_state
+                .alab_preserves_pending_progress()
+            {
+                return Ok(());
+            } // ALAB(storage): disabling execution cannot erase pending original usage before recovery.
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }
-        // Hold this through the read/start window so external set/clear cannot
-        // change the goal after we read it but before the continuation launches.
-        let _goal_state_permit = self.goal_state_permit().await?;
-        if self.alab_idle_continuation_deferred() { return Ok(()); } // ALAB(renewal): a queued continuation must recheck admission custody under the permit.
-        if self.alab_defer_for_goal_persistence() { return Ok(()); } // ALAB(storage): pending owned writes recheck at a pace; failed persistence authorizes no new turn.
-        if !self.inner.alab_recovery.permits_current_attempt() { return Ok(()); } // ALAB(goal-recovery): revalidate a recovery ticket under the existing goal mutation permit
+        if self.alab_idle_continuation_deferred() {
+            return Ok(());
+        } // ALAB(renewal): a queued continuation must recheck admission custody under the permit.
+        if self.alab_defer_for_goal_persistence() {
+            return Ok(());
+        } // ALAB(storage): pending owned writes recheck at a pace; failed persistence authorizes no new turn.
+        if !self.inner.alab_recovery.permits_current_attempt() {
+            return Ok(());
+        } // ALAB(goal-recovery): revalidate a recovery ticket under the existing goal mutation permit
 
         if self
             .inner
@@ -518,7 +769,13 @@ impl GoalRuntimeHandle {
             .thread_goals()
             .has_thread_goal_continuation_deferral(self.thread_id())
             .await
-            .map_err(|err| { self.alab_recheck_failed_read(codex_state::alab_goal_read_recovery::retryable(&err)); err.to_string() })? // ALAB(goal-recovery): only typed transient read failure re-arms admission
+            .map_err(|err| {
+                self.alab_recheck_failed_read(codex_state::alab_goal_read_recovery::retryable(
+                    &err,
+                ));
+                err.to_string()
+            })?
+        // ALAB(goal-recovery): only typed transient read failure re-arms admission
         {
             self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): intentional continuation deferral is not a failed admission
             return Ok(());
@@ -541,7 +798,13 @@ impl GoalRuntimeHandle {
             .thread_goals()
             .get_thread_goal(self.thread_id())
             .await
-            .map_err(|err| { self.alab_recheck_failed_read(codex_state::alab_goal_read_recovery::retryable(&err)); err.to_string() })? // ALAB(goal-recovery): failed read keeps the active goal's recovery live
+            .map_err(|err| {
+                self.alab_recheck_failed_read(codex_state::alab_goal_read_recovery::retryable(
+                    &err,
+                ));
+                err.to_string()
+            })?
+        // ALAB(goal-recovery): failed read keeps the active goal's recovery live
         else {
             self.alab_cancel_goal_admission_recovery(); // ALAB(goal-recovery): no standing goal remains
             self.inner.accounting_state.clear_active_goal();
@@ -552,11 +815,15 @@ impl GoalRuntimeHandle {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }
-        let start_options = thread
-            .thread_extension_data()
-            .get::<TurnStartOptions>()
-            .map(|options| options.as_ref().clone())
-            .unwrap_or_default();
+        let start_options = if self.alab_turn_start_options_invalidated() {
+            TurnStartOptions::default()
+        } else {
+            thread
+                .thread_extension_data()
+                .get::<TurnStartOptions>()
+                .map(|options| options.as_ref().clone())
+                .unwrap_or_default()
+        }; // ALAB(storage): dispatched goal changes cannot launch with predecessor parent/turn custody.
         let request = alab_policy_resume::continuation_request_with_policy(
             &protocol_goal_from_state(goal),
             thread.config().await.update_plan_enabled,
@@ -633,35 +900,60 @@ impl GoalRuntimeHandle {
         mode: codex_state::GoalAccountingMode,
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) -> Result<Option<AccountedGoalProgress>, String> {
-        if codex_alab_core::active() && !codex_alab_core::goal_persistence::owns_current_write() { return self.alab_owned_active_progress(turn_id, event_id, mode, budget_limited_goal_disposition).await; } // ALAB(storage): the write owner also finalizes its native baseline.
+        if codex_alab_core::is_alab_binary()
+            && !codex_alab_core::goal_persistence::owns_current_write()
+        {
+            return self
+                .alab_owned_active_progress(
+                    turn_id,
+                    event_id,
+                    mode,
+                    budget_limited_goal_disposition,
+                )
+                .await;
+        } // ALAB(storage): the write owner also finalizes its native baseline in either experience.
         let accounting = self.accounting_state();
         let _accounting_permit = accounting
             .progress_accounting_permit()
             .await
             .map_err(|err| err.to_string())?;
-        if codex_alab_core::active() && !accounting.alab_persistence.permits_write() { return Err("goal usage remains held after an ambiguous write".to_owned()); } // ALAB(storage): recheck under the accounting permit before any additive replay.
+        if codex_alab_core::is_alab_binary() && !accounting.alab_persistence.permits_write() {
+            return Err("goal usage remains held after an ambiguous write".to_owned());
+        } // ALAB(storage): recheck under the accounting permit before any additive replay.
         let Some(snapshot) = accounting.progress_snapshot(turn_id) else {
             return Ok(None);
         };
         let previous_status = self
             .current_goal_status_for_metrics(Some(snapshot.expected_goal_id.as_str()))
-            .await.inspect_err(|_| { codex_alab_core::goal_persistence::definitely_rolled_back(); })?; // ALAB(storage): a failed pre-write metrics read has committed no usage.
+            .await
+            .inspect_err(|_| {
+                codex_alab_core::goal_persistence::definitely_rolled_back();
+            })?; // ALAB(storage): a failed pre-write metrics read has committed no usage.
         let outcome = self
             .inner
             .state_dbs
             .thread_goals()
-            .alab_account_auth_goal_usage( // ALAB(renewal): only this native turn can advance its accepted recovery witness.
+            .alab_account_auth_goal_usage(
+                // ALAB(renewal): only this native turn can advance its accepted recovery witness.
                 self.thread_id(),
                 snapshot.time_delta_seconds,
                 snapshot.token_delta,
                 mode,
                 Some(snapshot.expected_goal_id.as_str()),
-                codex_alab_core::active().then_some(turn_id), // ALAB(renewal): generic/idle accounting keeps ordinary proof invalidation.
+                codex_alab_core::is_alab_binary().then_some(turn_id), // ALAB(renewal): generic/idle accounting keeps ordinary proof invalidation in either experience.
             )
             .await
-            .map_err(|err| { if codex_state::alab_goal_read_recovery::write_definitely_uncommitted(&err) { codex_alab_core::goal_persistence::definitely_rolled_back(); } else if codex_alab_core::active() { accounting.alab_persistence.block_ambiguous(); } err.to_string() })?; // ALAB(storage): ambiguous commits remain held and are never replayed automatically.
+            .map_err(|err| {
+                if codex_state::alab_goal_read_recovery::write_definitely_uncommitted(&err) {
+                    codex_alab_core::goal_persistence::definitely_rolled_back();
+                } else if codex_alab_core::is_alab_binary() {
+                    accounting.alab_persistence.block_ambiguous();
+                }
+                err.to_string()
+            })?; // ALAB(storage): ambiguous commits remain held and are never replayed automatically.
         Ok(match outcome {
             codex_state::GoalAccountingOutcome::Updated(goal) => {
+                self.alab_make_accounting_durable().await?; // ALAB(goal-recovery): settle the exact snapshot only after its native usage is power-loss durable.
                 let goal_id = goal.goal_id.clone();
                 self.inner
                     .metrics
@@ -688,7 +980,11 @@ impl GoalRuntimeHandle {
                 );
                 Some(AccountedGoalProgress { goal, goal_id })
             }
-            codex_state::GoalAccountingOutcome::Unchanged(goal) => { accounting.alab_retain_rejected_progress(&snapshot.expected_goal_id, goal.as_ref())?; None }, // ALAB(storage): refusal of positive usage never permits terminal retirement of its snapshot.
+            codex_state::GoalAccountingOutcome::Unchanged(goal) => {
+                accounting
+                    .alab_retain_rejected_progress(&snapshot.expected_goal_id, goal.as_ref())?;
+                None
+            } // ALAB(storage): refusal of positive usage never permits terminal retirement of its snapshot.
         })
     }
 
@@ -698,19 +994,30 @@ impl GoalRuntimeHandle {
         mode: codex_state::GoalAccountingMode,
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) -> Result<Option<AccountedGoalProgress>, String> {
-        if codex_alab_core::active() && !codex_alab_core::goal_persistence::owns_current_write() { return self.alab_owned_idle_progress(event_id, mode, budget_limited_goal_disposition).await; } // ALAB(storage): idle write and baseline update have one cancellation-independent owner.
+        if codex_alab_core::is_alab_binary()
+            && !codex_alab_core::goal_persistence::owns_current_write()
+        {
+            return self
+                .alab_owned_idle_progress(event_id, mode, budget_limited_goal_disposition)
+                .await;
+        } // ALAB(storage): idle write and baseline update have one cancellation-independent owner in either experience.
         let accounting = self.accounting_state();
         let _accounting_permit = accounting
             .progress_accounting_permit()
             .await
             .map_err(|err| err.to_string())?;
-        if codex_alab_core::active() && !accounting.alab_persistence.permits_write() { return Err("goal usage remains held after an ambiguous write".to_owned()); } // ALAB(storage): recheck under the accounting permit before any additive replay.
+        if codex_alab_core::is_alab_binary() && !accounting.alab_persistence.permits_write() {
+            return Err("goal usage remains held after an ambiguous write".to_owned());
+        } // ALAB(storage): recheck under the accounting permit before any additive replay.
         let Some(snapshot) = accounting.idle_progress_snapshot() else {
             return Ok(None);
         };
         let previous_status = self
             .current_goal_status_for_metrics(Some(snapshot.expected_goal_id.as_str()))
-            .await.inspect_err(|_| { codex_alab_core::goal_persistence::definitely_rolled_back(); })?; // ALAB(storage): a failed pre-write metrics read has committed no usage.
+            .await
+            .inspect_err(|_| {
+                codex_alab_core::goal_persistence::definitely_rolled_back();
+            })?; // ALAB(storage): a failed pre-write metrics read has committed no usage.
         let outcome = self
             .inner
             .state_dbs
@@ -723,9 +1030,17 @@ impl GoalRuntimeHandle {
                 Some(snapshot.expected_goal_id.as_str()),
             )
             .await
-            .map_err(|err| { if codex_state::alab_goal_read_recovery::write_definitely_uncommitted(&err) { codex_alab_core::goal_persistence::definitely_rolled_back(); } else if codex_alab_core::active() { accounting.alab_persistence.block_ambiguous(); } err.to_string() })?; // ALAB(storage): ambiguous commits remain held and are never replayed automatically.
+            .map_err(|err| {
+                if codex_state::alab_goal_read_recovery::write_definitely_uncommitted(&err) {
+                    codex_alab_core::goal_persistence::definitely_rolled_back();
+                } else if codex_alab_core::is_alab_binary() {
+                    accounting.alab_persistence.block_ambiguous();
+                }
+                err.to_string()
+            })?; // ALAB(storage): ambiguous commits remain held and are never replayed automatically.
         Ok(match outcome {
             codex_state::GoalAccountingOutcome::Updated(goal) => {
+                self.alab_make_accounting_durable().await?; // ALAB(goal-recovery): idle baseline settlement follows the same durable usage boundary.
                 let goal_id = goal.goal_id.clone();
                 self.inner
                     .metrics
@@ -746,13 +1061,17 @@ impl GoalRuntimeHandle {
                 let goal = protocol_goal_from_state(goal);
                 self.inner.event_emitter.thread_goal_updated(
                     event_id.to_string(),
-                    /*turn_id*/ None,
+                    /*turn_id*/
+                    codex_alab_core::is_alab_binary().then(|| {
+                        codex_alab_core::goal_persistence::IDLE_ACCOUNTING_TURN_ID.to_owned()
+                    }), // ALAB(goal-recovery): distinguish idle accounting from ambiguous legacy host writes.
                     goal.clone(),
                 );
                 Some(AccountedGoalProgress { goal, goal_id })
             }
             codex_state::GoalAccountingOutcome::Unchanged(goal) => {
-                accounting.alab_retain_rejected_progress(&snapshot.expected_goal_id, goal.as_ref())?; // ALAB(storage): preserve the original idle boundary when a row refuses positive usage.
+                accounting
+                    .alab_retain_rejected_progress(&snapshot.expected_goal_id, goal.as_ref())?; // ALAB(storage): preserve the original idle boundary when a row refuses positive usage.
                 accounting.reset_idle_progress_baseline_and_clear_active_goal();
                 None
             }

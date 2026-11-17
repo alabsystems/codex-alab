@@ -1514,6 +1514,6 @@
       "revisit": "Before integration, run native recipe and Linux network policy tests and the certified application gate; retain whole-path removal policy."
     }
   ],
-  "superseded_by": "alab/upstream/d87330d91e-from-0593016153-intake.json",
-  "supersession_reason": "Preserve all historical decisions unchanged in the active 66-commit prefix through d87330d91e; point directly to its current replacement rather than a superseded intermediate batch."
+  "superseded_by": "alab/upstream/a46c5be77e-from-0593016153-intake.json",
+  "supersession_reason": "Extend all 76 unchanged decisions by six commits through MCP page scope, native permission diagnostics/projection, removed build/signing paths, explicit Linux transparent TCP and endpoint-filtered plugin recommendations; retain pending native tests and sharpen prior Cloud status/header requirements without changing that decision."
 }

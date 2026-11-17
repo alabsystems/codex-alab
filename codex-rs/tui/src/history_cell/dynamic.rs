@@ -279,3 +279,7 @@ impl HistoryCell for DynamicToolCallCell {
 #[cfg(test)]
 #[path = "dynamic_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_dynamic_cells.rs"]
+pub(in crate::history_cell) mod alab_retained_dynamic; // ALAB(retained-ui): preserve exact native activity state and shared graph identity.

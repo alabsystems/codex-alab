@@ -365,3 +365,7 @@ impl CloudRequestHandle {
 #[cfg(test)]
 #[path = "cloud_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../alab-core/glue/retained_backend_cloud_identity.rs"]
+mod alab_retained_backend_identity; // ALAB(retained-ui): observe original Cloud command resource without rebuilding a client.

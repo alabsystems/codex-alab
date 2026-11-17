@@ -4546,6 +4546,43 @@ class ResponsesApiWebSearchAction(
     )
 
 
+class RetainedFrontierFailure(RootModel[Literal["unavailable"]]):
+    root: Annotated[
+        Literal["unavailable"],
+        Field(
+            description="Closed classification only. It identifies no underlying private payload, physical cause, absent child, Native effect settlement or permission."
+        ),
+    ]
+
+
+class ReadyRetainedFrontierOutcome(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    state: Annotated[Literal["ready"], Field(title="ReadyRetainedFrontierOutcomeState")]
+
+
+class FailedRetainedFrontierOutcome(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    reason: RetainedFrontierFailure
+    state: Annotated[Literal["failed"], Field(title="FailedRetainedFrontierOutcomeState")]
+
+
+class RetainedFrontierOutcome(
+    RootModel[ReadyRetainedFrontierOutcome | FailedRetainedFrontierOutcome]
+):
+    root: Annotated[
+        ReadyRetainedFrontierOutcome | FailedRetainedFrontierOutcome,
+        Field(
+            description="A terminal failure after the real projection response cannot become a second RPC response or be silently mistaken for an applied UI tail."
+        ),
+    ]
+
+
 class ReviewDelivery(Enum):
     inline = "inline"
 
@@ -10058,6 +10095,17 @@ class ConfigurationUpdateResponseItem(BaseModel):
     ]
 
 
+class RetainedFrontierNotification(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    frontier: str
+    outcome: RetainedFrontierOutcome
+    snapshot: str
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class ReviewStartParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10275,6 +10323,23 @@ class ThreadAttachmentUpdatedServerNotification(BaseModel):
         Field(title="Thread/attachment/updatedNotificationMethod"),
     ]
     params: ThreadAttachmentUpdatedNotification
+
+
+class AlabRetainedFrontierServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["alab/retainedFrontier"], Field(title="Alab/retainedFrontierNotificationMethod")
+    ]
+    params: RetainedFrontierNotification
 
 
 class ThreadPredictionUpdatedServerNotification(BaseModel):
@@ -14294,6 +14359,7 @@ class ServerNotification(
         | ThreadAttachmentUpdatedServerNotification
         | ThreadGoalUpdatedServerNotification
         | AlabThreadGoalRuntimeUpdatedServerNotification
+        | AlabRetainedFrontierServerNotification
         | ThreadPredictionUpdatedServerNotification
         | ThreadGoalClearedServerNotification
         | ThreadQueueChangedServerNotification
@@ -14384,6 +14450,7 @@ class ServerNotification(
         | ThreadAttachmentUpdatedServerNotification
         | ThreadGoalUpdatedServerNotification
         | AlabThreadGoalRuntimeUpdatedServerNotification
+        | AlabRetainedFrontierServerNotification
         | ThreadPredictionUpdatedServerNotification
         | ThreadGoalClearedServerNotification
         | ThreadQueueChangedServerNotification

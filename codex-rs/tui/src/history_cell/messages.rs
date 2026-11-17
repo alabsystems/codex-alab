@@ -934,3 +934,11 @@ pub(crate) fn split_reasoning_summary_parts(reasoning_parts: &[String]) -> (Stri
 
     (leading_empty_part_header.unwrap_or_default(), content)
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_user_cell.rs"]
+pub(super) mod alab_retained_user; // ALAB(retained-ui): exact original user-cell DATA.
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_message_cells.rs"]
+pub(super) mod alab_retained_messages; // ALAB(retained-ui): preserve native assistant, reasoning, tail and cached Markdown state.

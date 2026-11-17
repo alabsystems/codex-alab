@@ -1,3 +1,4 @@
+use codex_alab_core::goal_clock::Instant; // ALAB(goal-clock): preserve the exact native baseline through an admitted exec.
 use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolName;
 use codex_protocol::config_types::ModeKind;
@@ -12,7 +13,6 @@ use std::sync::PoisonError;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use codex_alab_core::goal_clock::Instant; // ALAB(goal-clock): preserve the exact native baseline through an admitted exec.
 use tokio::sync::Semaphore;
 use tokio::sync::SemaphorePermit;
 
@@ -21,6 +21,7 @@ pub(crate) struct GoalAccountingState {
     pub(crate) alab_persistence: std::sync::Arc<codex_alab_core::goal_persistence::State>, // ALAB(storage): failed writes hold automatic continuation without dropping usage.
     inner: Mutex<GoalAccountingInner>,
     progress_accounting_lock: Semaphore,
+    callback_lock: Semaphore, // ALAB(storage): retirement fences late token callbacks before its final drain/carry snapshot.
     // Serialize turn-start accounting with stopping a deferred interrupted turn.
     // Never hold this lock while submitting a turn or awaiting the goal-state permit.
     turn_start_lock: Semaphore,
@@ -57,6 +58,7 @@ struct GoalTurnAccounting {
 struct GoalWallClockAccounting {
     last_accounted_at: Instant,
     active_goal_id: Option<String>,
+    frozen_at: Option<Instant>, // ALAB(storage): an explicit mutation pauses elapsed time without discarding old-goal attribution.
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +68,7 @@ pub(crate) struct GoalProgressSnapshot {
     pub(crate) expected_goal_id: String,
     pub(crate) time_delta_seconds: i64,
     pub(crate) token_delta: i64,
+    frozen_clock: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +77,7 @@ pub(crate) struct IdleGoalProgressSnapshot {
     pub(crate) expected_goal_id: String,
     pub(crate) time_delta_seconds: i64,
     pub(crate) token_delta: i64,
+    frozen_clock: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,9 +100,26 @@ impl GoalAccountingState {
         token_usage_at_turn_start: &TokenUsage,
     ) {
         let turn_id = turn_id.into();
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): serialize removal of an attributed retained record with mutation dispatch.
         let mut inner = self.inner();
         if let Some(interrupted) = inner.interrupted_turn_id.take() {
-            if !codex_alab_core::active() || self.alab_persistence.permits_admission() { inner.turns.remove(&interrupted); } // ALAB(storage): a new person turn cannot discard unflushed interrupted usage.
+            let attributed = inner
+                .turns
+                .get(&interrupted)
+                .is_some_and(|turn| turn.active_goal_id.is_some());
+            let discard = !attributed
+                || alab_snapshot_change
+                    .as_ref()
+                    .is_none_or(|change| change.destructive_change_authorized());
+            if discard
+                && inner
+                    .turns
+                    .remove(&interrupted)
+                    .is_some_and(|turn| turn.active_goal_id.is_some())
+                && let Some(change) = &mut alab_snapshot_change
+            {
+                change.publish_change();
+            } // ALAB(storage): deletion and its clean-generation authorization share the State guard.
             inner.consecutive_empty_turns = 0;
         }
         inner.current_turn_id = Some(turn_id.clone());
@@ -111,7 +132,9 @@ impl GoalAccountingState {
         );
     }
 
-    pub(crate) fn alab_retained_turn_ids(&self) -> Vec<String> { self.inner().turns.keys().cloned().collect() } // ALAB(storage): explicit mutation drains every retained turn before replacing the goal.
+    pub(crate) fn alab_retained_turn_ids(&self) -> Vec<String> {
+        self.inner().turns.keys().cloned().collect()
+    } // ALAB(storage): explicit mutation drains every retained turn before replacing the goal.
 
     pub(crate) fn current_turn_id(&self) -> Option<String> {
         self.inner().current_turn_id.clone()
@@ -259,6 +282,13 @@ impl GoalAccountingState {
         self.progress_accounting_lock.acquire().await
     }
 
+    // ALAB(storage): callbacks and retirement share the exact accounting-owner fence.
+    pub(crate) async fn callback_permit(
+        &self,
+    ) -> Result<SemaphorePermit<'_>, tokio::sync::AcquireError> {
+        self.callback_lock.acquire().await
+    }
+
     pub(crate) async fn turn_start_permit(
         &self,
     ) -> Result<SemaphorePermit<'_>, tokio::sync::AcquireError> {
@@ -287,6 +317,7 @@ impl GoalAccountingState {
         turn_id: impl Into<String>,
         total_usage: &TokenUsage,
     ) -> Option<RecordedTokenDelta> {
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): attributable token callbacks cannot cross a certified mutation boundary.
         let turn_id = turn_id.into();
         let mut inner = self.inner();
         let turn = inner.turns.get_mut(&turn_id)?;
@@ -299,6 +330,11 @@ impl GoalAccountingState {
         if delta <= 0 {
             return None;
         }
+        if turn.active_goal_id.is_some()
+            && let Some(change) = &mut alab_snapshot_change
+        {
+            change.publish_change();
+        } // ALAB(storage): only unflushed goal-attributed input advances the snapshot generation.
         Some(RecordedTokenDelta {
             turn_delta: delta,
             thread_unflushed_delta: inner.thread_unflushed_token_delta(),
@@ -306,16 +342,59 @@ impl GoalAccountingState {
     }
 
     pub(crate) fn record_descendant_token_usage(&self, usage: &TokenUsage) {
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): attributable descendant callbacks cannot cross a certified mutation boundary.
         let delta = goal_token_delta_for_usage(usage);
         if delta > 0 {
+            let attributable = self.inner().wall_clock.active_goal_id.is_some(); // ALAB(storage): future associations reset their descendant baseline.
             self.descendant_token_usage
                 .fetch_add(delta, Ordering::Relaxed);
+            if attributable && let Some(change) = &mut alab_snapshot_change {
+                change.publish_change();
+            } // ALAB(storage): publish only input owned by a live goal boundary.
         }
     }
 
-    pub(crate) fn mark_turn_goal_active(&self, turn_id: &str, goal_id: impl Into<String>) {
+    pub(crate) fn mark_turn_goal_active(&self, turn_id: &str, goal_id: impl Into<String>) -> bool {
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): publish the clock only after a real association succeeds.
+        if alab_snapshot_change
+            .as_ref()
+            .is_some_and(|change| !change.mutation_effect_authorized())
+        {
+            return false;
+        } // ALAB(storage): effect authorization and baseline mutation share one State critical section.
         let mut inner = self.inner();
         let goal_id = goal_id.into();
+        let retains_mutation_freeze = inner.current_turn_id.as_deref() == Some(turn_id)
+            && inner.wall_clock.active_goal_id.as_deref() == Some(goal_id.as_str())
+            && inner.wall_clock.frozen_at.is_some()
+            && alab_snapshot_change.as_ref().is_some_and(
+                codex_alab_core::goal_persistence::AccountingDataChange::mutation_in_flight,
+            ); // ALAB(storage): a same-goal turn start retains attribution but cannot consume an in-flight mutation's clock freeze.
+        let association_changed = inner
+            .turns
+            .get(turn_id)
+            .is_some_and(|turn| turn.active_goal_id.as_deref() != Some(goal_id.as_str()))
+            || (inner.current_turn_id.as_deref() == Some(turn_id)
+                && (inner.wall_clock.active_goal_id.as_deref() != Some(goal_id.as_str())
+                    || inner.wall_clock.frozen_at.is_some())); // ALAB(storage): thawing is a real fresh clock boundary; other no-op association is not.
+        let replaces_attribution = inner
+            .turns
+            .get(turn_id)
+            .and_then(|turn| turn.active_goal_id.as_deref())
+            .is_some_and(|goal| goal != goal_id)
+            || (inner.current_turn_id.as_deref() == Some(turn_id)
+                && inner
+                    .wall_clock
+                    .active_goal_id
+                    .as_deref()
+                    .is_some_and(|goal| goal != goal_id)); // ALAB(storage): same-goal attachment/thaw preserves dirty predecessor deltas.
+        if replaces_attribution
+            && alab_snapshot_change
+                .as_ref()
+                .is_some_and(|change| !change.destructive_change_authorized())
+        {
+            return false;
+        } // ALAB(storage): a late old-goal callback cannot be erased between turn-start validation and replacement.
         if inner.budget_limit_reported_goal_id.as_deref() != Some(goal_id.as_str()) {
             inner.budget_limit_reported_goal_id = None;
         }
@@ -327,22 +406,61 @@ impl GoalAccountingState {
                     inner.last_accounted_descendant_token_usage =
                         self.descendant_token_usage.load(Ordering::Relaxed);
                 }
-                inner.wall_clock.mark_active_goal(goal_id);
+                if !retains_mutation_freeze {
+                    inner.wall_clock.mark_active_goal(goal_id);
+                }
             }
+            if association_changed && let Some(change) = &mut alab_snapshot_change {
+                if retains_mutation_freeze {
+                    change.publish_change();
+                } else {
+                    change.publish_fresh_clock();
+                }
+            } // ALAB(storage): an in-flight same-goal attachment invalidates the mutation without thawing its cutoff.
         }
+        true
     }
 
     pub(crate) fn mark_current_turn_goal_active(
         &self,
         goal_id: impl Into<String>,
     ) -> Option<String> {
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): failed/no-op association leaves the native clock unchanged.
+        if alab_snapshot_change
+            .as_ref()
+            .is_some_and(|change| !change.mutation_effect_authorized())
+        {
+            return None;
+        } // ALAB(storage): a callback/newer mutation cannot enter between authorization and association.
         let mut inner = self.inner();
         let turn_id = inner.current_turn_id.clone()?;
         let goal_id = goal_id.into();
+        let goal_changed = inner.wall_clock.active_goal_id.as_deref() != Some(goal_id.as_str());
+        let thawing = inner.wall_clock.frozen_at.is_some(); // ALAB(storage): read before borrowing the turn record.
+        let turn_goal_changed =
+            inner.turns.get(turn_id.as_str())?.active_goal_id.as_deref() != Some(goal_id.as_str());
+        let association_changed = goal_changed || thawing || turn_goal_changed; // ALAB(storage): publish a same-goal thaw as a fresh boundary.
+        let replaces_attribution = inner
+            .turns
+            .get(turn_id.as_str())?
+            .active_goal_id
+            .as_deref()
+            .is_some_and(|goal| goal != goal_id)
+            || inner
+                .wall_clock
+                .active_goal_id
+                .as_deref()
+                .is_some_and(|goal| goal != goal_id);
+        if replaces_attribution
+            && alab_snapshot_change
+                .as_ref()
+                .is_some_and(|change| !change.destructive_change_authorized())
+        {
+            return None;
+        } // ALAB(storage): unscoped replacement requires the exact clean generation; same-goal thaw retains dirty input.
         if inner.budget_limit_reported_goal_id.as_deref() != Some(goal_id.as_str()) {
             inner.budget_limit_reported_goal_id = None;
         }
-        let goal_changed = inner.wall_clock.active_goal_id.as_deref() != Some(goal_id.as_str());
         let turn = inner.turns.get_mut(turn_id.as_str())?;
         if turn.active_goal_id.as_deref() != Some(goal_id.as_str()) {
             turn.failed_execution = false;
@@ -357,26 +475,73 @@ impl GoalAccountingState {
                 self.descendant_token_usage.load(Ordering::Relaxed);
         }
         inner.wall_clock.mark_active_goal(goal_id);
+        if association_changed && let Some(change) = &mut alab_snapshot_change {
+            change.publish_fresh_clock();
+        } // ALAB(storage): a fresh baseline cannot erase an earlier dirty generation.
         Some(turn_id)
     }
 
     pub(crate) fn mark_idle_goal_active(&self, goal_id: impl Into<String>) {
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): no-op idle association must not advance snapshot state.
+        if alab_snapshot_change
+            .as_ref()
+            .is_some_and(|change| !change.mutation_effect_authorized())
+        {
+            return;
+        } // ALAB(storage): stale effects cannot reset a newer callback's baseline.
         let mut inner = self.inner();
         let goal_id = goal_id.into();
+        let goal_changed = inner.wall_clock.active_goal_id.as_deref() != Some(goal_id.as_str()); // ALAB(storage): a same-goal thaw must retain descendant callbacks received while frozen.
+        let association_changed = goal_changed || inner.wall_clock.frozen_at.is_some(); // ALAB(storage): thawing the same goal reopens the State clock latch.
+        let replaces_attribution = inner
+            .wall_clock
+            .active_goal_id
+            .as_deref()
+            .is_some_and(|goal| goal != goal_id);
+        if replaces_attribution
+            && alab_snapshot_change
+                .as_ref()
+                .is_some_and(|change| !change.destructive_change_authorized())
+        {
+            return;
+        } // ALAB(storage): do not reset a dirty predecessor's shared descendant baseline.
         if inner.budget_limit_reported_goal_id.as_deref() != Some(goal_id.as_str()) {
             inner.budget_limit_reported_goal_id = None;
         }
-        if inner.wall_clock.active_goal_id.as_deref() != Some(goal_id.as_str()) {
+        if goal_changed {
             inner.consecutive_empty_turns = 0;
             inner.last_accounted_descendant_token_usage =
                 self.descendant_token_usage.load(Ordering::Relaxed);
         }
         inner.wall_clock.mark_active_goal(goal_id);
+        if association_changed && let Some(change) = &mut alab_snapshot_change {
+            change.publish_fresh_clock();
+        } // ALAB(storage): reconcile only from an already-clean boundary.
     }
 
     pub(crate) fn clear_current_turn_goal(&self) -> Option<String> {
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): serialize a real clear with mutation dispatch.
+        if alab_snapshot_change
+            .as_ref()
+            .is_some_and(|change| !change.mutation_effect_authorized())
+        {
+            return None;
+        } // ALAB(storage): clear authorization is atomic with retained attribution.
         let mut inner = self.inner();
         let turn_id = inner.current_turn_id.clone()?;
+        let alab_was_frozen = inner.wall_clock.frozen_at.is_some(); // ALAB(storage): exact committed mutations may safely consume their frozen predecessor.
+        let association_changed = inner.wall_clock.active_goal_id.is_some()
+            || inner
+                .turns
+                .get(turn_id.as_str())
+                .is_some_and(|turn| turn.active_goal_id.is_some()); // ALAB(storage): repeated clear is not new retained input.
+        if association_changed
+            && alab_snapshot_change
+                .as_ref()
+                .is_some_and(|change| !change.destructive_change_authorized())
+        {
+            return None;
+        } // ALAB(storage): an unscoped clear cannot erase data that arrived after its earlier check.
         if let Some(turn) = inner.turns.get_mut(turn_id.as_str()) {
             turn.active_goal_id = None;
         }
@@ -386,11 +551,39 @@ impl GoalAccountingState {
         inner.consecutive_execution_failure_turns = 0;
         inner.automatic_goal_turn_id = None;
         inner.consecutive_empty_turns = 0;
+        if association_changed && let Some(change) = &mut alab_snapshot_change {
+            if alab_was_frozen {
+                change.publish_fresh_closed_clock();
+            } else {
+                change.publish_clock_change(false);
+            }
+        } // ALAB(storage): only an exact frozen predecessor is a safely reconciled clear.
         Some(turn_id)
     }
 
     pub(crate) fn clear_active_goal(&self) {
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): serialize a real clear with mutation dispatch.
+        if alab_snapshot_change
+            .as_ref()
+            .is_some_and(|change| !change.mutation_effect_authorized())
+        {
+            return;
+        } // ALAB(storage): stale effects cannot erase newer retained data.
         let mut inner = self.inner();
+        let alab_was_frozen = inner.wall_clock.frozen_at.is_some(); // ALAB(storage): runtime effects after an exact commit own this boundary.
+        let association_changed = inner.wall_clock.active_goal_id.is_some()
+            || inner
+                .current_turn_id
+                .as_deref()
+                .and_then(|turn_id| inner.turns.get(turn_id))
+                .is_some_and(|turn| turn.active_goal_id.is_some()); // ALAB(storage): repeated clear is a no-op.
+        if association_changed
+            && alab_snapshot_change
+                .as_ref()
+                .is_some_and(|change| !change.destructive_change_authorized())
+        {
+            return;
+        } // ALAB(storage): a stale clear retains the exact original association and baseline.
         if let Some(turn_id) = inner.current_turn_id.clone()
             && let Some(turn) = inner.turns.get_mut(turn_id.as_str())
         {
@@ -402,42 +595,78 @@ impl GoalAccountingState {
         inner.consecutive_execution_failure_turns = 0;
         inner.automatic_goal_turn_id = None;
         inner.consecutive_empty_turns = 0;
+        if association_changed && let Some(change) = &mut alab_snapshot_change {
+            if alab_was_frozen {
+                change.publish_fresh_closed_clock();
+            } else {
+                change.publish_clock_change(false);
+            }
+        } // ALAB(storage): preserve unexpected clears; reconcile an exact committed frozen clear.
     }
 
     pub(crate) fn progress_snapshot(&self, turn_id: &str) -> Option<GoalProgressSnapshot> {
-        let inner = self.inner();
-        let turn = inner.turns.get(turn_id)?;
-        if !turn.account_tokens {
-            return None;
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): bind additive settlement to these exact snapshot inputs.
+        let mut inner = self.inner();
+        let (expected_goal_id, current_token_usage, turn_token_delta) = {
+            let turn = inner.turns.get(turn_id)?;
+            if !turn.account_tokens {
+                return None;
+            }
+            (
+                turn.active_goal_id()?,
+                turn.current_token_usage.clone(),
+                turn.token_delta_since_last_accounting(),
+            )
+        };
+        let owns_clock =
+            inner.wall_clock.active_goal_id.as_deref() == Some(expected_goal_id.as_str());
+        let frozen_clock = owns_clock
+            && alab_snapshot_change
+                .as_mut()
+                .is_some_and(
+                    codex_alab_core::goal_persistence::AccountingDataChange::publish_frozen_additive_snapshot,
+                ); // ALAB(storage): elapsed time is cut off before SQL and belongs to the captured generation.
+        if frozen_clock {
+            inner.wall_clock.freeze();
+        } else if let Some(change) = &mut alab_snapshot_change {
+            change.capture_additive_snapshot();
         }
-        let expected_goal_id = turn.active_goal_id()?;
         let current_descendant_token_usage = self.descendant_token_usage.load(Ordering::Relaxed);
         let descendant_token_delta = current_descendant_token_usage
             .saturating_sub(inner.last_accounted_descendant_token_usage);
-        let token_delta = turn
-            .token_delta_since_last_accounting()
-            .saturating_add(descendant_token_delta);
-        let time_delta_seconds =
-            if inner.wall_clock.active_goal_id.as_deref() == Some(expected_goal_id.as_str()) {
-                inner.wall_clock.time_delta_since_last_accounting()
-            } else {
-                0
-            };
+        let token_delta = turn_token_delta.saturating_add(descendant_token_delta);
+        let time_delta_seconds = if owns_clock {
+            inner.wall_clock.time_delta_since_last_accounting()
+        } else {
+            0
+        };
         if time_delta_seconds == 0 && token_delta <= 0 {
             return None;
         }
         Some(GoalProgressSnapshot {
-            current_token_usage: turn.current_token_usage.clone(),
+            current_token_usage,
             current_descendant_token_usage,
             expected_goal_id,
             time_delta_seconds,
             token_delta,
+            frozen_clock,
         })
     }
 
     pub(crate) fn idle_progress_snapshot(&self) -> Option<IdleGoalProgressSnapshot> {
-        let inner = self.inner();
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): bind additive settlement to these exact snapshot inputs.
+        let mut inner = self.inner();
         let expected_goal_id = inner.wall_clock.active_goal_id.clone()?;
+        let frozen_clock = alab_snapshot_change
+            .as_mut()
+            .is_some_and(
+                codex_alab_core::goal_persistence::AccountingDataChange::publish_frozen_additive_snapshot,
+            ); // ALAB(storage): the SQL write owns a fixed elapsed-time cutoff.
+        if frozen_clock {
+            inner.wall_clock.freeze();
+        } else if let Some(change) = &mut alab_snapshot_change {
+            change.capture_additive_snapshot();
+        }
         let time_delta_seconds = inner.wall_clock.time_delta_since_last_accounting();
         let current_descendant_token_usage = self.descendant_token_usage.load(Ordering::Relaxed);
         let token_delta = current_descendant_token_usage
@@ -450,6 +679,7 @@ impl GoalAccountingState {
             expected_goal_id,
             time_delta_seconds,
             token_delta,
+            frozen_clock,
         })
     }
 
@@ -460,7 +690,14 @@ impl GoalAccountingState {
         status: ThreadGoalStatus,
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) {
-        let clear_active_goal = should_clear_active_goal(status, budget_limited_goal_disposition);
+        let requested_clear = should_clear_active_goal(status, budget_limited_goal_disposition);
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): settlement must match the exact snapshot captured by this additive owner.
+        let clear_active_goal = requested_clear
+            && alab_snapshot_change
+                .as_ref()
+                .is_none_or(
+                    codex_alab_core::goal_persistence::AccountingDataChange::additive_snapshot_is_current,
+                ); // ALAB(storage): a callback after snapshot keeps the old goal association for its late delta.
         let mut inner = self.inner();
         if let Some(turn) = inner.turns.get_mut(turn_id) {
             turn.last_accounted_token_usage = snapshot.current_token_usage.clone();
@@ -472,27 +709,72 @@ impl GoalAccountingState {
         inner.wall_clock.mark_accounted(snapshot.time_delta_seconds);
         if clear_active_goal {
             inner.wall_clock.clear_active_goal();
+        } else if snapshot.frozen_clock {
+            inner
+                .wall_clock
+                .mark_active_goal(snapshot.expected_goal_id.clone());
         }
         if status != ThreadGoalStatus::BudgetLimited {
             inner.budget_limit_reported_goal_id = None;
         }
+        if let Some(change) = &mut alab_snapshot_change {
+            if snapshot.frozen_clock && !clear_active_goal {
+                change.publish_additive_settlement_and_reopen();
+            } else {
+                change.publish_additive_settlement(clear_active_goal);
+            }
+        } // ALAB(storage): callbacks around settlement remain dirty; a retained goal resumes only after its fixed cutoff settles.
     }
 
     pub(crate) fn interrupt_turn(&self, turn_id: &str) {
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): serialize removal of an attributed record with mutation dispatch.
         let mut inner = self.inner();
         if inner.current_turn_id.as_deref() == Some(turn_id) {
             // Abort can run on the submission loop: defer evaluation until idle so
             // it never waits for the goal-state permit held by automatic admission.
             inner.current_turn_id = None;
             inner.interrupted_turn_id = Some(turn_id.to_string());
-        } else if !codex_alab_core::active() || self.alab_persistence.permits_admission() { // ALAB(storage): retain failed older turns until explicitly accounted.
-            inner.turns.remove(turn_id);
+        } else {
+            let attributed = inner
+                .turns
+                .get(turn_id)
+                .is_some_and(|turn| turn.active_goal_id.is_some());
+            let discard = !attributed
+                || alab_snapshot_change
+                    .as_ref()
+                    .is_none_or(|change| change.destructive_change_authorized());
+            if discard
+                && inner
+                    .turns
+                    .remove(turn_id)
+                    .is_some_and(|turn| turn.active_goal_id.is_some())
+                && let Some(change) = &mut alab_snapshot_change
+            {
+                change.publish_change();
+            } // ALAB(storage): deleting attributed input requires the exact clean generation.
         }
     }
 
     pub(crate) fn finish_turn(&self, turn_id: &str) {
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): a normally-accounted record is already unassociated and therefore a no-op here.
         let mut inner = self.inner();
-        inner.turns.remove(turn_id);
+        let attributed = inner
+            .turns
+            .get(turn_id)
+            .is_some_and(|turn| turn.active_goal_id.is_some());
+        let discard = !attributed
+            || alab_snapshot_change
+                .as_ref()
+                .is_none_or(|change| change.destructive_change_authorized());
+        if discard
+            && inner
+                .turns
+                .remove(turn_id)
+                .is_some_and(|turn| turn.active_goal_id.is_some())
+            && let Some(change) = &mut alab_snapshot_change
+        {
+            change.publish_change();
+        } // ALAB(storage): only an authorized deletion of attributed input advances the generation.
         if inner.current_turn_id.as_deref() == Some(turn_id) {
             inner.current_turn_id = None;
         }
@@ -507,23 +789,64 @@ impl GoalAccountingState {
         status: ThreadGoalStatus,
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) {
-        let clear_active_goal = should_clear_active_goal(status, budget_limited_goal_disposition);
+        let requested_clear = should_clear_active_goal(status, budget_limited_goal_disposition);
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): settlement must match the exact captured idle snapshot.
+        let clear_active_goal = requested_clear
+            && alab_snapshot_change
+                .as_ref()
+                .is_none_or(
+                    codex_alab_core::goal_persistence::AccountingDataChange::additive_snapshot_is_current,
+                ); // ALAB(storage): stale settlement cannot erase late descendant/time attribution.
         let mut inner = self.inner();
         inner.last_accounted_descendant_token_usage = snapshot.current_descendant_token_usage;
         inner.wall_clock.mark_accounted(snapshot.time_delta_seconds);
         if clear_active_goal {
             inner.wall_clock.clear_active_goal();
+        } else if snapshot.frozen_clock {
+            inner
+                .wall_clock
+                .mark_active_goal(snapshot.expected_goal_id.clone());
         }
         if status != ThreadGoalStatus::BudgetLimited {
             inner.budget_limit_reported_goal_id = None;
         }
+        if let Some(change) = &mut alab_snapshot_change {
+            if snapshot.frozen_clock && !clear_active_goal {
+                change.publish_additive_settlement_and_reopen();
+            } else {
+                change.publish_additive_settlement(clear_active_goal);
+            }
+        } // ALAB(storage): a later callback remains unreconciled; successful retained accounting reopens after its cutoff.
     }
 
     pub(crate) fn reset_idle_progress_baseline_and_clear_active_goal(&self) {
+        let mut alab_snapshot_change = self.alab_snapshot_data_change(); // ALAB(storage): serialize a real destructive reset with mutation dispatch.
+        if alab_snapshot_change
+            .as_ref()
+            .is_some_and(|change| !change.mutation_effect_authorized())
+        {
+            return;
+        } // ALAB(storage): reset authorization is atomic with its accounting mutation.
         let mut inner = self.inner();
+        let alab_was_frozen = inner.wall_clock.frozen_at.is_some(); // ALAB(storage): exact mutation effects may consume a frozen clock.
+        let association_changed = inner.wall_clock.active_goal_id.is_some(); // ALAB(storage): resetting an unowned clock is not attributable input.
+        if association_changed
+            && alab_snapshot_change
+                .as_ref()
+                .is_some_and(|change| !change.destructive_change_authorized())
+        {
+            return;
+        } // ALAB(storage): unscoped reset cannot erase a late callback generation.
         inner.wall_clock.reset_baseline();
         inner.wall_clock.clear_active_goal();
         inner.budget_limit_reported_goal_id = None;
+        if association_changed && let Some(change) = &mut alab_snapshot_change {
+            if alab_was_frozen {
+                change.publish_fresh_closed_clock();
+            } else {
+                change.publish_clock_change(false);
+            }
+        } // ALAB(storage): reconcile only the exact frozen predecessor.
     }
 
     pub(crate) fn mark_budget_limit_reported_if_new(&self, goal_id: &str) -> bool {
@@ -546,6 +869,7 @@ impl Default for GoalAccountingState {
             alab_persistence: std::sync::Arc::default(), // ALAB(storage): runtime and goal tools share one persistence barrier.
             inner: Mutex::new(GoalAccountingInner::default()),
             progress_accounting_lock: Semaphore::new(/*permits*/ 1),
+            callback_lock: Semaphore::new(/*permits*/ 1), // ALAB(storage): every accounting owner has an exact retirement callback fence.
             turn_start_lock: Semaphore::new(/*permits*/ 1),
             descendant_token_usage: AtomicI64::new(0),
         }
@@ -641,11 +965,20 @@ impl GoalWallClockAccounting {
         Self {
             last_accounted_at: Instant::now(),
             active_goal_id: None,
+            frozen_at: None,
         }
     }
 
     fn time_delta_since_last_accounting(&self) -> i64 {
-        i64::try_from(self.last_accounted_at.elapsed().as_secs()).unwrap_or(i64::MAX)
+        let elapsed = self.frozen_at.map_or_else(
+            || self.last_accounted_at.elapsed(),
+            |frozen| {
+                self.last_accounted_at
+                    .elapsed()
+                    .saturating_sub(frozen.elapsed())
+            },
+        ); // ALAB(storage): frozen mutation preparation accrues no unattributed wall time.
+        i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
     }
 
     fn mark_accounted(&mut self, accounted_seconds: i64) {
@@ -661,6 +994,7 @@ impl GoalWallClockAccounting {
 
     fn reset_baseline(&mut self) {
         self.last_accounted_at = Instant::now();
+        self.frozen_at = None;
     }
 
     fn mark_active_goal(&mut self, goal_id: impl Into<String>) {
@@ -668,6 +1002,22 @@ impl GoalWallClockAccounting {
         if self.active_goal_id.as_deref() != Some(goal_id.as_str()) {
             self.reset_baseline();
             self.active_goal_id = Some(goal_id);
+        } else if let Some(frozen) = self.frozen_at.take() {
+            // ALAB(storage): same-goal reactivation resumes the exact fractional baseline.
+            self.last_accounted_at = self
+                .last_accounted_at
+                .checked_add(frozen.elapsed())
+                .unwrap_or_else(Instant::now);
+        }
+    }
+
+    fn freeze(&mut self) -> bool {
+        // ALAB(storage): retain association for callbacks while pausing elapsed time across SQLite.
+        if self.frozen_at.is_some() {
+            false
+        } else {
+            self.frozen_at = Some(Instant::now());
+            true
         }
     }
 
@@ -697,4 +1047,5 @@ fn should_clear_active_goal(
 #[path = "../../../alab-autopilot/glue/goal_accounting_clock.rs"]
 mod alab_clock; // ALAB(goal-clock): capture and adopt idle data without exporting accounting internals.
 
-#[path = "../../../alab-autopilot/glue/goal_accounting_persistence.rs"] mod alab_storage; // ALAB(storage): terminal native liveness retires independently of retained failed usage.
+#[path = "../../../alab-autopilot/glue/goal_accounting_persistence.rs"]
+mod alab_storage; // ALAB(storage): terminal native liveness retires independently of retained failed usage.

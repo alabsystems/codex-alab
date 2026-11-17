@@ -263,3 +263,7 @@ fn format_duration_ms(duration_ms: u64) -> String {
 fn pluralize(count: u64, singular: &'static str, plural: &'static str) -> &'static str {
     if count == 1 { singular } else { plural }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_separator_cells.rs"]
+pub(in crate::history_cell) mod alab_retained; // ALAB(retained-ui): retain original completion dates, clock presentation and metric bits.

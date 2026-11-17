@@ -21,6 +21,7 @@ impl GoalAccountingState {
         goal: &str,
         stamp: goal_clock::Stamp,
     ) -> Result<(), String> {
+        let _alab_snapshot_change = self.alab_snapshot_data_change();
         let mut inner = self.inner();
         if inner.current_turn_id.is_some()
             || inner.interrupted_turn_id.is_some()

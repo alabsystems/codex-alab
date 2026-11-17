@@ -1457,3 +1457,7 @@ mod tests {
         }
     }
 }
+
+// ALAB(retained-ui): share native logical-source aliases across the whole view.
+#[path = "../../alab-tui/glue/retained_text_graph.rs"]
+pub(crate) mod alab_retained_text;

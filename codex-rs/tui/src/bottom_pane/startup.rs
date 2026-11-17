@@ -90,6 +90,7 @@ impl BottomPane {
     pub(crate) fn composer_draft_snapshot(&self) -> ComposerDraftSnapshot {
         let mut draft = self.composer.draft_snapshot();
         draft.last_composer_activity_at = self.last_composer_activity_at;
+        #[cfg(unix)] { draft.last_composer_activity_at = self.alab_delay_activity.activity(draft.last_composer_activity_at); } // ALAB(retained-ui): capture the actual shared pump/widget clock, not a stale native field.
         draft
     }
 
@@ -112,6 +113,7 @@ impl BottomPane {
     ) {
         self.composer
             .restore_startup_local_history(startup_local_history);
+        #[cfg(unix)] self.alab_refresh_shared_activity(); // ALAB(retained-ui): merge the original draft against the current actual shared typing time.
         if let Some(last_composer_activity_at) = last_composer_activity_at {
             let last_composer_activity_at = self
                 .last_composer_activity_at

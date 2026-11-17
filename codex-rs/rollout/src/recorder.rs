@@ -124,7 +124,22 @@ pub enum RolloutRecorderParams {
     },
 }
 
+// ALAB(retained-history): read the same live writer without materializing deferred history.
+#[path = "../../alab-core/glue/retained_deferred_rollout.rs"]
+mod alab_retained_deferred;
+pub use alab_retained_deferred::DeferredRolloutHistory;
+
+#[path = "../../alab-core/glue/retained_local_rollout.rs"]
+mod alab_retained_local; // ALAB(retained-side): ordered actual local writer records, never a path-selected substitute.
+pub use alab_retained_local::RetainedLocalRollout;
+
 enum RolloutCmd {
+    #[cfg(unix)]
+    ReadRetainedLocalRollout { ack: oneshot::Sender<std::io::Result<RetainedLocalRollout>>, stop: oneshot::Sender<()>, max_bytes: usize }, // ALAB(retained-side): same writer queue/read owner and actual cancellation observation.
+    // ALAB(retained-history): ordered with the original writer's add/persist/shutdown commands.
+    ReadRetainedDeferredHistory {
+        ack: oneshot::Sender<std::io::Result<Option<DeferredRolloutHistory>>>,
+    },
     AddItems(Vec<RolloutItem>),
     ReadUnpersistedSessionMeta {
         ack: oneshot::Sender<Option<SessionMeta>>,
@@ -1911,6 +1926,12 @@ async fn rollout_writer(
     // Process rollout commands
     while let Some(cmd) = rx.recv().await {
         match cmd {
+            #[cfg(unix)]
+            RolloutCmd::ReadRetainedLocalRollout { ack, stop, max_bytes } => { let _ = ack.send(alab_retained_local::snapshot(&mut state, max_bytes, stop).await); } // ALAB(retained-side): join actual positional reader before later original writer commands.
+            // ALAB(retained-history): observe actual deferred state, including buffered records/errors.
+            RolloutCmd::ReadRetainedDeferredHistory { ack } => {
+                let _ = ack.send(alab_retained_deferred::snapshot(&state));
+            }
             RolloutCmd::ReadUnpersistedSessionMeta { ack } => {
                 let metadata = if state.is_deferred() {
                     state.meta.clone()

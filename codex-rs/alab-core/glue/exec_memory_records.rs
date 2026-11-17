@@ -84,6 +84,11 @@ impl MemoryEvent {
         Ok(match event {
             EventMsg::RawResponseItem(event) => Self::Raw(item(&event.item)?),
             EventMsg::PrivateSessionEvent(event) => match &event.event {
+                PrivateSessionEventPayload::AlabSideBoundary(_) => {
+                    return Err(
+                        "unconsumed local Side delivery cannot be serialized as a receipt".into(),
+                    );
+                }
                 PrivateSessionEventPayload::RecordedItem(recorded) => Self::PrivateRecorded {
                     thread: event.thread_id,
                     item: item(&recorded.item)?,

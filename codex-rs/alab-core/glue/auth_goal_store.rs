@@ -94,6 +94,7 @@ impl GoalStore {
         anyhow::ensure!(current, "auth recovery witness was replaced");
         defer_auth(&mut tx, thread, wall).await?;
         tx.commit().await?;
+        self.alab_durable_goal_barrier().await?; // ALAB(goal-recovery): restart cannot lose the hold after native recovery observes it.
         Ok(())
     }
 
@@ -119,6 +120,9 @@ impl GoalStore {
         let released = sqlx::query("DELETE FROM thread_goal_continuation_deferrals WHERE thread_id=? AND EXISTS(SELECT 1 FROM alab_goal_auth_deferrals a WHERE a.thread_id=thread_goal_continuation_deferrals.thread_id AND a.turn_id=? AND a.goal_id=?)")
             .bind(thread.to_string()).bind(wall).bind(expected_goal.unwrap_or("")).execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
+        // Checkpoint even an idempotent retry: a prior returned checkpoint
+        // failure may already have made this DELETE visible in the live WAL.
+        self.alab_durable_goal_barrier().await?;
         Ok(removed != 0 || released != 0)
     }
     /// Capture passive standalone provenance once for this actual native wall.
@@ -355,6 +359,9 @@ impl GoalStore {
         let changed = sqlx::query("UPDATE alab_goal_auth_walls SET phase='accepted',accepted_turn=? WHERE thread_id=? AND turn_id=? AND phase IN ('restored','accepted') AND (accepted_turn IS NULL OR accepted_turn=?) AND EXISTS(SELECT 1 FROM thread_goals g WHERE g.thread_id=alab_goal_auth_walls.thread_id AND g.goal_id=alab_goal_auth_walls.goal_id AND g.status='active' AND (g.token_budget IS NULL OR g.tokens_used<g.token_budget))")
             .bind(turn).bind(thread.to_string()).bind(wall).bind(turn).execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
+        // This checkpoint includes the preceding restore transaction as well as
+        // acceptance. The caller may publish Active only after both are durable.
+        self.alab_durable_goal_barrier().await?;
         Ok(changed == 1)
     }
 

@@ -235,6 +235,11 @@ fn known_model_failure_cannot_be_hidden_by_completion() -> std::io::Result<()> {
 }
 
 async fn buffered_failure_keeps_upstream_reading(error: Value, later_completion: bool) {
+    let advised = error
+        .get("headers")
+        .and_then(|headers| headers.get("retry-after"))
+        .and_then(Value::as_str)
+        == Some("900");
     let before = Instant::now();
     let frame = json!({"type": "response.failed", "response": {"error": error}});
     let mut data = format!("data: {frame}\n\n");
@@ -261,8 +266,22 @@ async fn buffered_failure_keeps_upstream_reading(error: Value, later_completion:
                 assert_eq!(Instant::now(), before);
                 break;
             }
-            Some(Err(ApiError::Stream(message))) if !later_completion => {
-                assert_eq!(message, "idle timeout waiting for SSE");
+            Some(Err(error)) if !later_completion => {
+                if advised && codex_alab_core::active() {
+                    let ApiError::Retryable {
+                        message,
+                        retry_after: Some(advice),
+                    } = error
+                    else {
+                        panic!("buffering cannot erase validated provider advice: {error:?}");
+                    };
+                    assert_eq!(message, "idle timeout waiting for SSE");
+                    assert_eq!(advice.deadline(), before + Duration::from_secs(900));
+                } else {
+                    assert!(
+                        matches!(error, ApiError::Stream(message) if message == "idle timeout waiting for SSE")
+                    );
+                }
                 assert!(Instant::now() >= before + Duration::from_secs(60));
                 break;
             }

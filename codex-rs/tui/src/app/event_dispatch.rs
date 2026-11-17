@@ -58,7 +58,10 @@ impl App {
         if self.reconnect.offline && matches!(event, AppEvent::Exit(ExitMode::ShutdownFirst)) {
             return Ok(AppRunControl::Exit(ExitReason::UserRequested));
         }
+        #[cfg(unix)] let retained_replay_end = matches!(&event, AppEvent::AlabRetainedReplayEnd(_) | AppEvent::AlabRetainedCallback(_)); // ALAB(retained-frontier): preserve the actual typed replay FIFO while disconnected.
+        #[cfg(not(unix))] let retained_replay_end = false;
         if self.reconnect.offline
+            && !retained_replay_end
             && !matches!(
                 &event,
                 AppEvent::OpenDaemonMenu
@@ -91,6 +94,7 @@ impl App {
                     | AppEvent::ConfirmDaemonUpdate(_)
                     | AppEvent::RunDaemonUpdate(_)
                     | AppEvent::InsertHistoryCell(_)
+                    | AppEvent::AlabInsertSideHistory { .. } // ALAB(retained-ui): same original cell remains deliverable during local inspection.
                     | AppEvent::CommitRealtimeTranscriptHistory
                     | AppEvent::ParkSideCompanion { .. }
                     | AppEvent::SideCreated { .. }
@@ -729,6 +733,7 @@ impl App {
                             match self
                                 .replace_chat_widget_with_app_server_thread(
                                     tui,
+                                    Some(app_server), // ALAB(source-selection): retain actual session context for a retained construction.
                                     forked,
                                     ThreadAttachPresentation::SessionLineage,
                                     /*initial_user_message*/ None,
@@ -999,12 +1004,21 @@ impl App {
                         cells.splice(range, [replacement]);
                     }
                     self.side_companions.insert(thread_id, SideCompanion {
+                        #[cfg(unix)]
+                        alab_identity: Arc::new(()), // ALAB(retained-ui): original moved display now has a new real owner.
+                        #[cfg(unix)] alab_command_delivery: super::alab_side_delivery::Applied::default(), // ALAB(retained-side): original moved command binds actual store on its next delivery.
+                        #[cfg(unix)]
+                        alab_retained: None, // ALAB(retained-ui): the exact side-state owner is rebound after this original move.
                         display,
                         parked_tail: self.transcript_cells.len(),
                         cells: std::mem::take(&mut self.transcript_cells),
                         view: std::mem::take(&mut self.transcript_view),
                         answer,
                     });
+                    #[cfg(unix)] // ALAB(retained-ui): preserve the same accepted side/store while original display ownership moves.
+                    if super::alab_retained_passive::rebind_parked(self, thread_id).is_err() {
+                        self.app_event_tx.send(AppEvent::FatalExitRequest("retained side display transfer unavailable".into()));
+                    }
                 }
             }
             AppEvent::ResetTranscriptForThreadSwitch => {
@@ -1081,11 +1095,29 @@ impl App {
                 self.transcript_view.jump_to_latest();
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::AlabInsertSideHistory { source, cell } => {
+                #[cfg(unix)]
+                self.alab_insert_sourced_side_history(tui, source, cell); // ALAB(retained-ui): original insertion then real Arc/source binding.
+                #[cfg(not(unix))]
+                { let _source = source; self.insert_history_cell(tui, cell); }
+            }
             AppEvent::InsertHistoryCell(cell) => {
                 self.insert_history_cell(tui, cell);
             }
             AppEvent::TurnTipReady { thread_id, turn_id } => {
                 self.turn_tips.ready(thread_id, &turn_id, self.transcript_cells.last());
+                tui.frame_requester().schedule_frame();
+            }
+            #[cfg(unix)] // ALAB(retained-frontier): queued after every original replay App event, never queue-empty inference.
+            AppEvent::AlabRetainedReplayEnd(end) => {
+                end.apply(app_server)?;
+                tui.frame_requester().schedule_frame();
+            }
+            #[cfg(unix)] // ALAB(retained-ui): only private actual Source observer results reconcile the original UI.
+            AppEvent::AlabRetainedCallback(update) => {
+                if let Err(error) = crate::boxed_future!(self.alab_callback_observed(app_server,update)).await {
+                    self.alab_callback_restore_blocked(app_server,&error);
+                }
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::EndInitialHistoryReplayBuffer => {
@@ -1099,6 +1131,8 @@ impl App {
                 self.finish_initial_history_replay_buffer(tui);
             }
             AppEvent::ConsolidateAgentMessage {
+                #[cfg(unix)]
+                alab_source,
                 phase,
                 interrupted_item,
                 source,
@@ -1111,16 +1145,25 @@ impl App {
                 let mut cell = history_cell::AgentMarkdownCell::new_with_inline_visualizations(source, &cwd, inline_visualization_context).with_copy_source(copy_source);
                 cell.interrupted_item = interrupted_item;
                 cell.phase = phase;
+                #[cfg(unix)]
+                let alab_before=self.transcript_cells.clone(); // ALAB(retained-ui): original mutation defines the exact resulting range.
                 self.handle_consolidate_agent_message(
                     tui,
                     cell,
                     scrollback_reflow,
                     deferred_history_cell,
                 )?;
+                #[cfg(unix)]
+                self.alab_record_side_cell_change(alab_source,&alab_before); // ALAB(retained-ui): bind actual replaced Arcs to original item context.
                 self.chat_widget.note_stream_consolidation_completed();
                 self.insert_pending_usage_output_after_stream_shutdown(tui);
             }
-            AppEvent::CorrectFlushedAgentMessage { item, cell } => {
+            AppEvent::CorrectFlushedAgentMessage {
+                #[cfg(unix)]
+                alab_source,
+                item,cell } => {
+                #[cfg(unix)]
+                let alab_before=self.transcript_cells.clone(); // ALAB(retained-ui): record original correction after it completes.
                 let belongs_to_item = |cell: &Arc<dyn HistoryCell>| {
                     cell.as_any().downcast_ref::<history_cell::AgentMarkdownCell>().is_some_and(|cell| cell.interrupted_item.as_ref() == Some(&item))
                 };
@@ -1138,6 +1181,8 @@ impl App {
                 } else {
                     self.insert_history_cell(tui, Box::new(cell));
                 }
+                #[cfg(unix)]
+                self.alab_record_side_cell_change(alab_source,&alab_before); // ALAB(retained-ui): retain actual item/range through original correction.
             }
             AppEvent::ConsolidateProposedPlan(source) => {
                 let end = self.transcript_cells.len();
@@ -1552,6 +1597,12 @@ impl App {
             AppEvent::ApproveRecentAutoReviewDenial { thread_id, id } => {
                 self.chat_widget
                     .approve_recent_auto_review_denial(thread_id, id);
+            }
+            #[cfg(unix)] // ALAB(retained-ui): publish SAME operation; never pop the next turn-FIFO callback.
+            AppEvent::AlabOriginalInput(event) => {
+                if let Err(error) = self.alab_publish_original_input(app_server, event).await {
+                    tracing::warn!(%error, "original answer remains owned for same-operation continuation");
+                }
             }
             AppEvent::SubmitThreadOp { thread_id, op } => {
                 self.submit_thread_op(app_server, thread_id, op).await?;
@@ -2615,7 +2666,7 @@ impl App {
                     models,
                 );
                 let tx = self.app_event_tx.clone();
-                tokio::spawn(async move {
+                app_server.alab_spawn_original_work(async move { // ALAB(retained-ui): original compatibility read/result stays in the actual Session task domain.
                     tx.send(AppEvent::ApiKeyCompatModelsLoaded { request_id, result: Ok(checked.await) });
                 });
             }
@@ -2770,7 +2821,11 @@ impl App {
             }
             AppEvent::LaunchExternalEditor => {
                 if self.chat_widget.external_editor_state() == ExternalEditorState::Active {
-                    self.launch_external_editor(tui).await;
+                    #[cfg(unix)]
+                    let retained = self.alab_begin_original_editor(tui)?; // ALAB(retained-editor): same processed Launch publishes its real pre-child owners.
+                    #[cfg(not(unix))]
+                    let retained = false;
+                    if !retained { self.launch_external_editor(tui).await; }
                 }
             }
             AppEvent::RefreshWindowsSandbox { thread_id } => {
@@ -3482,6 +3537,7 @@ impl App {
                             self.add_agents_overview_error(message);
                         }
                     }
+                    if action==sidebar_close::Action::CloseTab && let Err(error)=app_server.alab_observe_side_close(target).await {tracing::warn!(%error,"Side close result observation retained");} // ALAB(side-boundary): observer ACK follows actual original matching callback application.
                     tui.frame_requester().schedule_frame();
                 }
             }

@@ -854,3 +854,6 @@ pub(crate) fn apply_runtime_feature_enablement(
         }
     }
 }
+
+#[path = "../../alab-core/glue/retained_reader_config_snapshot.rs"]
+mod alab_retained_reader_snapshot; // ALAB(retained-readers): snapshot the actual backend loader, no frontend credential reader.

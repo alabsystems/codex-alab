@@ -23,6 +23,8 @@ struct Prepared {
 }
 static REQUEST: OnceCell<Prepared> = OnceCell::const_new();
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+static ATTACHED: std::sync::OnceLock<ThreadId> = std::sync::OnceLock::new();
+static ACTIVATING: AtomicBool = AtomicBool::new(false);
 
 pub(crate) async fn before_lookup(
     session: &AppServerSession,
@@ -145,6 +147,8 @@ pub(crate) async fn resume(
         *subscribed = true;
     }
     Ok(Some(super::AppServerStartedThread {
+        #[cfg(unix)]
+        alab_construction: None,
         session: state,
         turns: thread.turns,
         blocks_direct_input: false,
@@ -166,30 +170,60 @@ pub(crate) async fn attached(primary: ThreadId, displayed: Option<ThreadId>) -> 
             "runtime restoration did not attach its original primary"
         ));
     }
-    let prepared = REQUEST
-        .get()
-        .ok_or_else(|| eyre!("runtime attachment has no prepared forest"))?;
-    prepared.handle.activate_upgrade_forest(primary).await?;
-    ACTIVE.store(true, Ordering::Release);
-    // This owned cleanup retains the constructor's exact stream. Neither a
-    // timeout nor a lost reply is permission to synthesize another claim.
-    let continuation = prepared.continuation.clone();
+    if REQUEST.get().is_none() {
+        return Err(eyre!("runtime attachment has no prepared forest"));
+    }
+    match ATTACHED.set(primary) {
+        Ok(()) => Ok(()),
+        Err(_) if ATTACHED.get() == Some(&primary) => Ok(()),
+        Err(_) => Err(eyre!("runtime attachment changed primary identity")),
+    }
+}
+
+pub(crate) fn needs_editor_restore() -> bool {
+    codex_alab_tui::upgrade_state::pending().is_some() && ATTACHED.get().is_none()
+}
+
+/// Only the actual restored editor's completed layout calls this. Native SDK
+/// admission still comes from the retained request handle, never the UI witness.
+pub(crate) fn activate_after_layout(done: impl FnOnce(Result<(), String>) + Send + 'static) {
+    let Some(primary) = ATTACHED.get().copied() else {
+        return;
+    };
+    let Some(prepared) = REQUEST.get() else {
+        return;
+    };
+    if ACTIVATING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
     tokio::spawn(async move {
-        let mut delay = Duration::from_millis(100);
-        loop {
-            match continuation.settle().await {
-                Ok(()) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
-                    tracing::debug!(
-                        "native settlement connection ended; recovery custody remains retained"
-                    );
-                    break;
-                }
-                Err(_) => {}
-            }
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(Duration::from_secs(30));
+        if let Err(error) = prepared.handle.activate_upgrade_forest(primary).await {
+            done(Err(error.to_string()));
+            return;
         }
+        ACTIVE.store(true, Ordering::Release);
+        done(Ok(()));
+        settle(prepared.continuation.clone()).await;
     });
-    Ok(())
+}
+
+async fn settle(continuation: std::sync::Arc<dyn codex_alab_core::runtime_upgrade::Continuation>) {
+    let mut delay = Duration::from_millis(100);
+    loop {
+        match continuation.settle().await {
+            Ok(()) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                tracing::debug!(
+                    "native settlement connection ended; recovery custody remains retained"
+                );
+                break;
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(30));
+    }
 }

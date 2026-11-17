@@ -329,3 +329,7 @@ mod tests {
         assert!(!state.take_stream_finish_reflow_needed());
     }
 }
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_transcript_reflow.rs"]
+pub(crate) mod alab_retained; // ALAB(retained-ui): preserve actual pending resize and stream reflow state.

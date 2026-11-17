@@ -269,3 +269,7 @@ pub(super) fn table_holdback_state(source: &str) -> TableHoldbackState {
     }
     TableHoldbackState::None
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_stream_holdback.rs"]
+pub(crate) mod alab_retained_holdback; // ALAB(retained-ui): preserve actual table lookbehind and partial rows.

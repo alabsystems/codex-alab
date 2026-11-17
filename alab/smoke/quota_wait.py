@@ -11,12 +11,15 @@ import json
 import math
 import os
 from pathlib import Path
+import runpy
 import select
 import signal
 import sys
 import time
 
 import capacity_exec as probe
+
+CLI = runpy.run_path(str(Path(__file__).resolve().parents[1] / "cli_status.py"))
 
 
 class Quota(probe.Mock):
@@ -47,6 +50,8 @@ def case(codex, output, cancel):
     mock = Quota(cancel)
     server, thread = probe.serve(mock)
     cancellation = {}
+    result = {"case": root.name, "passed": False}
+    primary = None
     try:
         probe.configure(root, server.server_port)
         args = ["exec", "--json", "--color", "never", "--skip-git-repo-check",
@@ -113,8 +118,16 @@ def case(codex, output, cancel):
                 cancellation["nativeExitConfirmedAt"] - cancellation["sentAt"])
         else:
             probe.require(code == 0 and len(mock.requests) == 5, "stale resets did not recover")
-            probe.require(types.count("turn.completed") == 1 and "turn.failed" not in types,
+            probe.require(types.count("turn.started") == types.count("turn.completed") == 1
+                          and "turn.failed" not in types,
                           "stale reset recovery did not retain one successful turn")
+            answers = [(index, event["item"].get("text")) for index, event in enumerate(events)
+                       if event.get("type") == "item.completed"
+                       and event.get("item", {}).get("type") == "agent_message"]
+            probe.require(len(answers) == 1 and answers[0][1] == probe.ANSWER,
+                          "stale reset recovery lost, changed or repeated the fixture answer")
+            probe.require(types.index("turn.started") < answers[0][0] < types.index("turn.completed"),
+                          "stale reset recovery answer is outside its original turn")
             original = mock.requests[0]["body"]["input"]
             for index, (prior, retry) in enumerate(zip(mock.requests, mock.requests[1:])):
                 probe.require(retry["body"]["input"] == original, "quota retry changed input")
@@ -122,19 +135,20 @@ def case(codex, output, cancel):
                 # Header start is the earliest possible client receipt time.
                 probe.require(retry["requestStartedAt"] >= prior["headerStartedAt"] + lower,
                               "repeated stale reset bypassed growing backoff")
-        result = {"case": root.name, "passed": True, "requestCount": len(mock.requests),
-                  "rawReturncode": guardian["returncode"], "guardianTimedOut": guardian["timed_out"],
-                  "cancellation": cancellation}
-        probe.write_json(root / "result.json", result)
-        return result
+        result.update(passed=True, requestCount=len(mock.requests),
+                      rawReturncode=guardian["returncode"], guardianTimedOut=guardian["timed_out"],
+                      cancellation=cancellation)
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        server.shutdown()
-        thread.join()
-        server.server_close()
-        probe.write_json(root / "requests.json", mock.requests)
+        probe.cleanup_case(
+            server, thread, lambda: probe.write_json(root / "requests.json", mock.requests), result, primary)
+    probe.write_json(root / "result.json", result)
+    return result
 
 
-def main():
+def _arguments():
     if len(sys.argv) > 1 and sys.argv[1] == "--exec-wrapper":
         Path(sys.argv[2]).write_text(str(os.getpid()))
         # The harness needs a pipe for observing stdout; exec must still see EOF
@@ -146,20 +160,48 @@ def main():
     parser.add_argument("--codex", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    return args
+
+
+def main(args=None):
+    if args is None:
+        args = _arguments()
     codex = args.codex.resolve(strict=True)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     report = {"passed": False, "cases": []}
+    interrupted = None
     try:
         for cancel in (False, True):
-            report["cases"].append(case(codex, output, cancel))
-        report["passed"] = True
+            report["activeCase"] = "cancel-distant-reset" if cancel else "repeated-stale-reset"
+            result = case(codex, output, cancel)
+            report["cases"].append(result)
+            if not result["passed"]:
+                break
+            del report["activeCase"]
+        else:
+            report["passed"] = True
     except Exception as error:
-        report["error"] = f"{type(error).__name__}: {error}"
-    probe.write_json(output / "result.json", report)
-    print(json.dumps(report, indent=2))
+        report.update(probe.case_error_fields(error))
+    except (KeyboardInterrupt, SystemExit) as error:
+        interrupted = error
+        report.update(interrupted=True, **probe.case_error_fields(error))
+    try:
+        probe.write_json(output / "result.json", report)
+        print(json.dumps(report, indent=2))
+    finally:
+        # Saving incomplete evidence must preserve the original cancellation,
+        # even when the filesystem or output pipe also fails.
+        if interrupted is not None:
+            raise interrupted
     return 0 if report["passed"] else 1
 
 
+def cli():
+    # Exec-wrapper, help and parser exits precede observation accounting.
+    args = _arguments()
+    return CLI["run_operation"](lambda: main(args), "quota wait: ")
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

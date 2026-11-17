@@ -95,7 +95,7 @@ pub(super) async fn load_exec_server_remote_auth_provider(
         })?;
         let auth = AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false)
             .await?
-            .auth()
+            .alab_auth() // ALAB(accounts): keep auth future expansion behind the owned interface.
             .await
             .ok_or_else(|| anyhow::anyhow!("Agent Identity authentication is unavailable"))?;
         if !matches!(auth, CodexAuth::AgentIdentity(_)) {
@@ -257,12 +257,12 @@ async fn load_exec_server_remote_auth(
     )
     .await?;
 
-    let auth = match auth_manager.auth().await {
+    let auth = match auth_manager.alab_auth().await { // ALAB(accounts): keep auth future expansion behind the owned interface.
         Some(auth) => auth,
         None => {
             auth_manager.reload().await;
             auth_manager
-                .auth()
+                .alab_auth() // ALAB(accounts): keep auth future expansion behind the owned interface.
                 .await
                 .ok_or_else(|| anyhow::anyhow!(missing_auth_error))?
         }

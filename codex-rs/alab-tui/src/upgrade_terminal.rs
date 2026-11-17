@@ -12,6 +12,7 @@ pub struct Prepared {
     modes: terminal_modes::Prepared,
     committed: bool,
     startup: Option<crate::upgrade_startup::Snapshot>,
+    editor: Option<Vec<u8>>,
 }
 impl Prepared {
     /// The TUI must first check its reply filter under the real event-broker
@@ -28,12 +29,38 @@ impl Prepared {
             modes,
             committed: false,
             startup: None,
+            editor: None,
         })
     }
     pub fn with_startup(mut self, startup: crate::upgrade_startup::Snapshot) -> io::Result<Self> {
         startup.validate()?;
         self.startup = Some(startup);
         Ok(self)
+    }
+    /// Refresh only the terminal DATA after the caller's last real draw. The
+    /// original input fence and mode owner remain here on success and failure.
+    /// This must precede the final input/command decision and supplies no grant.
+    pub fn refresh_startup(&mut self, startup: crate::upgrade_startup::Snapshot) -> io::Result<()> {
+        startup.validate()?;
+        if self.committed || !self.valid() {
+            return Err(io::Error::other(
+                "terminal capture is no longer refreshable",
+            ));
+        }
+        self.startup = Some(startup);
+        Ok(())
+    }
+    pub fn with_editor(mut self, bytes: Vec<u8>) -> io::Result<Self> {
+        if bytes.len() > crate::upgrade_exec_custody::MAX_STATE_BYTES {
+            return Err(io::Error::other("oversized native editor checkpoint"));
+        }
+        serde_json::from_slice::<Box<serde_json::value::RawValue>>(&bytes)
+            .map_err(io::Error::other)?;
+        self.editor = Some(bytes);
+        Ok(self)
+    }
+    pub fn editor_snapshot(&self) -> Option<&[u8]> {
+        self.editor.as_deref()
     }
     pub fn startup_snapshot(&self) -> Option<&crate::upgrade_startup::Snapshot> {
         self.startup.as_ref()

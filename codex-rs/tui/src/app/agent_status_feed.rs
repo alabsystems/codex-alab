@@ -227,3 +227,7 @@ fn indent_preview_line(mut line: Line<'static>) -> Line<'static> {
 #[cfg(test)]
 #[path = "agent_status_feed_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_agent_status_cell.rs"]
+pub(crate) mod alab_retained_status; // ALAB(retained-ui): exact native agent-status fields without a store or agent constructor.

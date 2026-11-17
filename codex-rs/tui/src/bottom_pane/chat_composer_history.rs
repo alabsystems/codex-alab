@@ -1626,3 +1626,7 @@ mod tests {
         assert!(!history.should_handle_navigation("other", /*cursor*/ 0));
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_composer_history.rs"]
+mod alab_retained_history; // ALAB(retained-ui): retain original recall/search traversal DATA.

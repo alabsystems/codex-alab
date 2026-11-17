@@ -4,6 +4,7 @@
 //! One source commitment for actual terminal/input, Core forest and goal owners.
 //! Target admission and the host's final policy decision remain independent.
 use crate::upgrade_goals::FinalGoalForest;
+use crate::upgrade_goals::GoalCaptureOwner;
 use crate::upgrade_goals::GoalForestCapture;
 use crate::upgrade_goals::PreparedGoals;
 use codex_alab_tui::upgrade_terminal;
@@ -63,6 +64,13 @@ impl Prepared {
     pub fn valid(&self) -> bool {
         self.forest.valid() && self.goals.valid()
     }
+    pub async fn invalidated(&self) {
+        tokio::select! {
+            () = self.forest.invalidated() => {},
+            () = self.goals.invalidated() => {},
+        }
+    }
+
     /// All native boundaries remain held through the host's one final decision.
     /// A refusal drops preparation and leaves ordinary work admitted.
     pub fn commit(
@@ -88,7 +96,21 @@ impl Prepared {
         if !accepted {
             return Ok(None);
         }
-        let goals = self.goals.into_capture(self.forest.into_committed()?)?;
+        let goals = match self
+            .forest
+            .into_committed()
+            .and_then(|forest| self.goals.into_capture(forest))
+        {
+            Ok(goals) => goals,
+            Err(why) => {
+                // The final host decision already committed. This is fatal
+                // source cleanup, never a revocable refusal.
+                if let Err(error) = terminal.restore_after_failure() {
+                    return Err(format!("{why}; terminal recovery failed: {error}"));
+                }
+                return Err(why);
+            }
+        };
         Ok(Some(Arc::new(Capture {
             primary: self.primary,
             goals,
@@ -105,6 +127,67 @@ pub struct Capture {
     terminal: Mutex<Option<upgrade_terminal::Prepared>>,
     outcome: OnceLock<tokio::sync::watch::Receiver<Option<Outcome>>>,
 }
+
+/// Armed before spawning the sole source task. Any loss before final delivery
+/// restores the committed terminal modes; successful delivery consumes the
+/// terminal from `Capture`, making this drop a no-op.
+struct TerminalCaptureRelease {
+    capture: Arc<Capture>,
+    send: tokio::sync::watch::Sender<Option<Outcome>>,
+    restored: bool,
+}
+
+impl TerminalCaptureRelease {
+    fn new(capture: Arc<Capture>, send: tokio::sync::watch::Sender<Option<Outcome>>) -> Self {
+        Self {
+            capture,
+            send,
+            restored: false,
+        }
+    }
+
+    fn sender(&self) -> &tokio::sync::watch::Sender<Option<Outcome>> {
+        &self.send
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        if self.restored {
+            return Ok(());
+        }
+        let result = self
+            .capture
+            .terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|terminal| terminal.committed())
+            .map(upgrade_terminal::Prepared::restore_after_failure)
+            .transpose()
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        if result.is_ok() {
+            self.restored = true;
+        }
+        result
+    }
+
+    fn publish_error(&mut self, error: String) {
+        let error = match self.restore() {
+            Ok(()) => error,
+            Err(restore) => format!("{error}; terminal restore failed: {restore}"),
+        };
+        self.send.send_replace(Some(Err(error)));
+    }
+}
+
+impl Drop for TerminalCaptureRelease {
+    fn drop(&mut self) {
+        if let Err(error) = self.restore() {
+            tracing::warn!(%error, "failed to restore terminal after source capture ended");
+        }
+    }
+}
+
 impl Capture {
     /// Source cleanup and final accounting are owned independently of waiters.
     pub async fn capture(self: &Arc<Self>) -> Outcome {
@@ -113,10 +196,24 @@ impl Capture {
             .outcome
             .get_or_init(move || {
                 let (send, receive) = tokio::sync::watch::channel(None);
+                // Arm the one goal/terminal owner before this task can be
+                // discarded without a first poll. Publication and the outer
+                // watch delivery then share one synchronous commit point.
+                let goal_capture = owner.goals.claim_owner();
+                let mut terminal_release = TerminalCaptureRelease::new(Arc::clone(&owner), send);
                 tokio::spawn(async move {
-                    let result = owner.run().await.map(Arc::new);
+                    let result = match goal_capture {
+                        Ok(mut goal_capture) => {
+                            owner
+                                .run(&mut goal_capture, terminal_release.sender())
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = result {
+                        terminal_release.publish_error(error);
+                    }
                     drop(owner);
-                    send.send_replace(Some(result));
                 });
                 receive
             })
@@ -131,24 +228,51 @@ impl Capture {
                 .map_err(|_| "source capture ended without a result".to_owned())?;
         }
     }
-    async fn run(&self) -> Result<Captured, String> {
-        // This joins Core producers and actual SDK reader ACKs before flushing
-        // the final native goal rows/clocks. Kernel input remains untouched.
-        let goals = self.goals.capture().await?;
-        let terminal = self
-            .terminal
+    /// Fatal cleanup when final Core/goal capture failed before handing the
+    /// terminal to Captured. This restores terminal modes, never old producers.
+    pub fn restore_after_failure(&self) -> Result<(), String> {
+        self.terminal
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .ok_or("source terminal ownership was already consumed")?;
-        if !terminal.committed() {
+            .as_ref()
+            .ok_or("terminal recovery belongs to the final captured owner")?
+            .restore_after_failure()
+            .map_err(|error| error.to_string())
+    }
+
+    async fn run(
+        &self,
+        goal_capture: &mut GoalCaptureOwner,
+        send: &tokio::sync::watch::Sender<Option<Outcome>>,
+    ) -> Result<(), String> {
+        // This joins Core producers and actual SDK reader ACKs before flushing
+        // the final native goal rows/clocks. Kernel input remains untouched.
+        let goals = goal_capture.prepare().await?;
+        let mut terminal = self
+            .terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !terminal
+            .as_ref()
+            .is_some_and(upgrade_terminal::Prepared::committed)
+        {
             return Err("source terminal ownership was not committed".into());
         }
-        Ok(Captured {
-            primary: self.primary,
-            goals,
-            terminal,
-        })
+        let mut delivered = false;
+        goal_capture.publish(goals, |goals| {
+            if let Some(terminal) = terminal.take() {
+                send.send_replace(Some(Ok(Arc::new(Captured {
+                    primary: self.primary,
+                    goals,
+                    terminal,
+                }))));
+                delivered = true;
+            }
+        })?;
+        if !delivered {
+            return Err("validated source publication lost its terminal".into());
+        }
+        Ok(())
     }
 }
 
@@ -165,6 +289,9 @@ impl Captured {
     }
     pub fn mode_snapshot(&self) -> &codex_alab_tui::terminal_modes::Snapshot {
         self.terminal.mode_snapshot()
+    }
+    pub fn editor_snapshot(&self) -> Option<&[u8]> {
+        self.terminal.editor_snapshot()
     }
     pub fn startup_snapshot(&self) -> Option<&codex_alab_tui::upgrade_startup::Snapshot> {
         self.terminal.startup_snapshot()

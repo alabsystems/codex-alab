@@ -40,6 +40,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
+#[path = "upgrade_watch.rs"]
+mod watch;
+pub use watch::directories as watch_directories;
+
 #[cfg(test)]
 #[path = "upgrade_prepared_tests.rs"]
 mod prepared_tests;
@@ -828,6 +832,7 @@ mod status_tests {
 /// How long children (MCP servers, mostly) get to leave after the teardown.
 pub const CHILDREN_GRACE: Duration = Duration::from_secs(2);
 /// A stopped event loop must not retain an unacknowledged handoff indefinitely.
+#[cfg(test)]
 const HANDOFF_ACK_BUDGET: Duration = Duration::from_secs(60);
 
 /// A build: the file a path finally names, by identity.
@@ -960,6 +965,19 @@ pub struct PreparedExec {
     _preparation: Option<tokio::sync::SemaphorePermit<'static>>,
 }
 
+// A committed source cannot resume after an error. Its terminal still needs
+// restoration if state preparation, installation, teardown or exec fails.
+struct CapturedRecovery<F: FnOnce() -> Result<(), String>>(Option<F>);
+impl<F: FnOnce() -> Result<(), String>> Drop for CapturedRecovery<F> {
+    fn drop(&mut self) {
+        if let Some(restore) = self.0.take()
+            && let Err(error) = restore()
+        {
+            tracing::error!(%error, "committed upgrade terminal recovery failed");
+        }
+    }
+}
+
 static PREPARATION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 impl PreparedExec {
@@ -1003,8 +1021,80 @@ impl PreparedExec {
         Ok(self)
     }
 
+    pub fn native_builds(&self) -> Result<(u64, u64), String> {
+        let current = std::env::current_exe()
+            .map_err(|error| error.to_string())?
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let source = current
+            .parent()
+            .filter(|bin| bin.file_name() == Some(std::ffi::OsStr::new("bin")))
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(|name| name.parse::<u64>().ok())
+            .filter(|build| *build > 0)
+            .ok_or("the running image has no exact native published build")?;
+        Ok((source, self.admitted.receipt().build))
+    }
+
+    /// Bind the host's fresh constructor command to this exact admitted image
+    /// and source frame before installing state custody. The execution receipt
+    /// is owned by its original authenticated operation, not deserialized here.
+    pub fn install_native_captured(
+        mut self,
+        shared: &'static Shared,
+        state: &[u8],
+        execution: crate::upgrade_runtime_data::Execution,
+        restore_after_failure: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) -> Result<(), String> {
+        let recovery = CapturedRecovery(Some(restore_after_failure));
+        self.plan = execution.plan(state, &self.plan, self.admitted.receipt())?;
+        self.install_captured(shared, state, move || {
+            drop(recovery);
+            Ok(())
+        })
+    }
+
+    /// Install final state only after the source's native commitment and owned
+    /// capture complete. Keep recovery owners until exec, including failure.
+    fn install_captured(
+        self,
+        shared: &'static Shared,
+        state: &[u8],
+        restore_after_failure: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) -> Result<(), String> {
+        let recovery = CapturedRecovery(Some(restore_after_failure));
+        let prepared = self.with_state(state)?;
+        if !shared.commit_upgrade_execution(
+            Box::new(move || {
+                let _recovery = recovery;
+                prepared.execute()
+            }),
+            || shared.exec_pending(),
+        ) {
+            return Err("captured execution has no exclusive committed source".into());
+        }
+        Ok(())
+    }
+
     pub fn plan(&self) -> &ExecPlan {
         &self.plan
+    }
+
+    /// Recheck selection at the final source boundary. The launch shim must
+    /// still select this exact admitted image rather than a newer replacement.
+    pub fn validate_launch(&self, shared: &Shared) -> Result<(), String> {
+        self.validate()?;
+        let selected = shared
+            .launch()
+            .and_then(Launch::upgrade_path)
+            .and_then(named_build)
+            .and_then(|path| path.canonicalize().ok());
+        if selected.as_ref() != Some(&self.plan.path) {
+            return Err("the selected upgrade image changed during preparation".into());
+        }
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -1031,7 +1121,7 @@ impl PreparedExec {
         if let Err(why) = self.validate() {
             return why;
         }
-        exec(&self.plan, Some(&self.custody))
+        exec(&self.plan, Some(self.custody))
     }
 }
 
@@ -1170,6 +1260,7 @@ pub fn request(shared: &Shared) -> bool {
 /// Queue the upgrade's conditional event and wait for the TUI to accept it using its
 /// current native state. A cancelled waiter withdraws the queued request; its caller
 /// also invalidates the native generation before restoring any suspended act.
+#[cfg(test)]
 pub(crate) async fn request_checked(
     shared: &Shared,
     commit: impl FnOnce() -> bool + Send + 'static,
@@ -1194,25 +1285,14 @@ pub(crate) async fn request_checked(
 
 /// Install the exact owned plan only at the TUI's successful native commit.
 /// Cancellation or refusal drops custody and leaves the running session intact.
+#[cfg(test)]
 pub async fn request_admitted(
     shared: &'static Shared,
     prepared: PreparedExec,
     commit: impl FnOnce() -> bool + Send + 'static,
 ) -> bool {
-    let Some(launch) = shared
-        .launch()
-        .and_then(Launch::upgrade_path)
-        .map(Path::to_path_buf)
-    else {
-        return false;
-    };
     request_checked(shared, move || {
-        if prepared.validate().is_err()
-            || named_build(&launch)
-                .and_then(|path| path.canonicalize().ok())
-                .as_ref()
-                != Some(&prepared.plan.path)
-        {
+        if prepared.validate_launch(shared).is_err() {
             return false;
         }
         shared.commit_upgrade_execution(Box::new(move || prepared.execute()), commit)
@@ -1285,7 +1365,7 @@ fn cstring(bytes: &[u8]) -> Result<CString, String> {
 }
 
 /// `execve` the plan; returns only why it failed.
-fn exec(plan: &ExecPlan, custody: Option<&ExecCustody>) -> String {
+fn exec(plan: &ExecPlan, custody: Option<ExecCustody>) -> String {
     let path = match cstring(plan.path.as_os_str().as_bytes()) {
         Ok(path) => path,
         Err(why) => return why,
@@ -1318,8 +1398,15 @@ fn exec(plan: &ExecPlan, custody: Option<&ExecCustody>) -> String {
     {
         return format!("chdir {}: {err}", cwd.display());
     }
+    let _fd_custody = match codex_alab_core::native_fd_custody::executing() {
+        Ok(guard) => guard,
+        Err(error) => return format!("exclude descriptor receipt before exec: {error}"),
+    };
+    // The actual channel owner drops before FD exclusion ends on every failed
+    // exec, so no inheritable custody survives into another exec attempt.
+    let held_custody = custody;
     reset_signals();
-    if let Some(custody) = custody
+    if let Some(custody) = &held_custody
         && let Err(error) = custody.inherit()
     {
         return format!("inherit original executable custody: {error}");

@@ -15,6 +15,7 @@ use futures::StreamExt;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -98,6 +99,9 @@ enum Tail {
     Pending,
     Completed,
     Eof,
+    Network,
+    Policy,
+    UnadvisedFailure,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -110,6 +114,10 @@ enum Expected {
     Quota,
     Overloaded,
     ProviderMarker(&'static str),
+    AdvisedTail(&'static str, u64),
+    Policy,
+    StreamTail(&'static str),
+    BufferedKind(&'static str, u64),
 }
 
 #[derive(Default)]
@@ -127,11 +135,14 @@ impl Drop for TailProbe {
     }
 }
 
+type TailGate = (oneshot::Sender<()>, oneshot::Receiver<()>);
+
 struct GatedTransport {
     envelope: Envelope,
     detail: Value,
     tail: Tail,
     gate: Mutex<Option<oneshot::Receiver<()>>>,
+    tail_gate: Mutex<Option<TailGate>>,
     observed: Arc<Observed>,
 }
 
@@ -170,11 +181,35 @@ impl HttpTransport for GatedTransport {
         let probe = TailProbe(self.observed.clone());
         let tail = self.tail;
         let mut emitted = false;
-        let tail: ByteStream = futures::stream::poll_fn(move |_| {
+        let mut delay = None;
+        let tail: ByteStream = futures::stream::poll_fn(move |cx| {
             probe.0.tail_polls.fetch_add(1, Ordering::SeqCst);
             match tail {
                 Tail::Pending => Poll::Pending,
                 Tail::Eof => Poll::Ready(None),
+                Tail::Network | Tail::Policy if emitted => Poll::Ready(None),
+                Tail::Network | Tail::Policy => {
+                    let delay = delay.get_or_insert_with(|| {
+                        Box::pin(tokio::time::sleep(Duration::from_millis(250)))
+                    });
+                    if delay.as_mut().poll(cx).is_pending() {
+                        return Poll::Pending;
+                    }
+                    emitted = true;
+                    Poll::Ready(Some(Err(if matches!(tail, Tail::Policy) {
+                        TransportError::Policy(codex_http_client::NetworkPolicyDenied::Revoked)
+                    } else {
+                        TransportError::Network("never-log-private-tail".into())
+                    })))
+                }
+                Tail::UnadvisedFailure if emitted => Poll::Pending,
+                Tail::UnadvisedFailure => {
+                    emitted = true;
+                    Poll::Ready(Some(Ok(sse(json!({"type":"response.failed",
+                        "response":{"error":{"code":"unknown_failure", "message":PRIVATE}}
+                    }))
+                    .into())))
+                }
                 Tail::Completed if emitted => Poll::Ready(None),
                 Tail::Completed => {
                     emitted = true;
@@ -186,6 +221,20 @@ impl HttpTransport for GatedTransport {
             }
         })
         .boxed();
+        let tail = if let Some((entered, release)) = self.tail_gate.lock().unwrap().take() {
+            // eventsource has already returned the complete first SSE frame.
+            // Its consumer stored the failure before asking for this next chunk.
+            let barrier = futures::stream::once(async move {
+                entered.send(()).expect("test awaits buffered tail entry");
+                release
+                    .await
+                    .expect("test changes mode before tail release");
+                Ok(Vec::<u8>::new().into())
+            });
+            barrier.chain(tail).boxed()
+        } else {
+            tail
+        };
         Ok(StreamResponse {
             status: http::StatusCode::OK,
             headers: [
@@ -216,7 +265,20 @@ async fn run_case(detail: Value, tail: Tail, expected: Expected) {
 }
 
 async fn run_envelope_case(envelope: Envelope, detail: Value, tail: Tail, expected: Expected) {
+    run_buffered_case(envelope, detail, tail, expected, None).await;
+}
+
+async fn run_buffered_case(
+    envelope: Envelope,
+    detail: Value,
+    tail: Tail,
+    expected: Expected,
+    enhanced_at_tail: Option<bool>,
+) {
+    let diagnostic_active = codex_alab_core::active();
     let (release, gate) = oneshot::channel();
+    let (tail_entered, entered) = oneshot::channel();
+    let (tail_release, tail_wait) = oneshot::channel();
     let observed = Arc::new(Observed::default());
     let client = codex_api::ResponsesClient::new(
         GatedTransport {
@@ -224,6 +286,7 @@ async fn run_envelope_case(envelope: Envelope, detail: Value, tail: Tail, expect
             detail,
             tail,
             gate: Mutex::new(Some(gate)),
+            tail_gate: Mutex::new(enhanced_at_tail.map(|_| (tail_entered, tail_wait))),
             observed: observed.clone(),
         },
         codex_api::Provider {
@@ -277,7 +340,7 @@ async fn run_envelope_case(envelope: Envelope, detail: Value, tail: Tail, expect
     };
     assert_eq!(
         capture.0.lock().unwrap().len(),
-        usize::from(codex_alab_core::active())
+        usize::from(diagnostic_active)
     );
     assert_eq!(*observed.sent.lock().unwrap(), [encoded]);
     assert_eq!(observed.tail_polls.load(Ordering::SeqCst), 0);
@@ -290,6 +353,29 @@ async fn run_envelope_case(envelope: Envelope, detail: Value, tail: Tail, expect
     }
     let started = Instant::now();
     release.send(()).unwrap();
+    if let Some(enabled) = enhanced_at_tail {
+        tokio::time::timeout(WAIT, entered)
+            .await
+            .expect("buffered tail entry deadline")
+            .expect("the complete failed frame was consumed");
+        loop {
+            match stream.rx_event.try_recv() {
+                Ok(Ok(codex_api::ResponseEvent::RateLimits(_))) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                other => {
+                    panic!("vanilla failure remains buffered before the mode change: {other:?}")
+                }
+            }
+        }
+        assert!(!codex_alab_core::active());
+        assert_eq!(
+            Instant::now(),
+            started,
+            "mode changes before any tail timer"
+        );
+        codex_alab_core::set_enhanced(enabled);
+        tail_release.send(()).expect("consumer awaits tail release");
+    }
     let event = tokio::time::timeout(WAIT, async {
         loop {
             match stream.rx_event.recv().await {
@@ -301,6 +387,7 @@ async fn run_envelope_case(envelope: Envelope, detail: Value, tail: Tail, expect
     .await
     .expect("selected semantic outcome deadline");
     let mut provider_display = None;
+    let mut terminal_advice = None;
     match expected {
         Expected::InvalidRequest(message) | Expected::InvalidPrompt(message) => {
             let error = match (expected, event) {
@@ -403,6 +490,74 @@ async fn run_envelope_case(envelope: Envelope, detail: Value, tail: Tail, expect
             );
             provider_display = Some(mapped.to_string());
         }
+        Expected::AdvisedTail(message, _) => {
+            let Some(Err(error)) = event else {
+                panic!("expected ordinary tail failure: {event:?}");
+            };
+            let (actual, advice) = match &error {
+                ApiError::Stream(message) => (message.as_str(), None),
+                ApiError::Retryable {
+                    message,
+                    retry_after,
+                } => (message.as_str(), *retry_after),
+                other => panic!("the actual tail failure must remain selected: {other:?}"),
+            };
+            assert_eq!(actual, message, "do not replace the selected tail message");
+            let selected_after = if matches!(tail, Tail::Pending) {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_millis(250)
+            };
+            let elapsed = Instant::now() - started;
+            assert!(elapsed >= selected_after);
+            assert!(
+                elapsed <= selected_after + Duration::from_millis(10),
+                "allow timer tick rounding without selecting the failure early: {elapsed:?}"
+            );
+            let mapped = codex_api::map_api_error(error);
+            assert!(mapped.retry_delay(1).is_some());
+            assert_eq!(mapped.http_status_code_value(), None);
+            assert_eq!(
+                serde_json::to_value(mapped.to_codex_protocol_error()).unwrap(),
+                json!("other")
+            );
+            terminal_advice = Some((advice, mapped.retry_after()));
+        }
+        Expected::Policy => {
+            let Some(Err(
+                error @ ApiError::Transport(TransportError::Policy(
+                    codex_http_client::NetworkPolicyDenied::Revoked,
+                )),
+            )) = event
+            else {
+                panic!("policy denial retains its authority: {event:?}");
+            };
+            let mapped = codex_api::map_api_error(error);
+            assert!(mapped.retry_delay(1).is_none());
+            assert!(mapped.retry_after().is_none());
+        }
+        Expected::StreamTail(message) => {
+            assert!(matches!(event, Some(Err(ApiError::Stream(actual))) if actual == message));
+        }
+        Expected::BufferedKind(code, seconds) => {
+            let Some(Err(error)) = event else {
+                panic!("EOF selects the buffered typed error: {event:?}");
+            };
+            let advice = match (&error, code) {
+                (ApiError::Retryable { retry_after, .. }, "unknown_failure")
+                | (ApiError::RateLimitExceeded { retry_after, .. }, "rate_limit_exceeded")
+                | (ApiError::ServerOverloaded { retry_after }, "server_is_overloaded")
+                | (
+                    ApiError::PolicyCapacityUnavailable { retry_after },
+                    "policy_capacity_unavailable",
+                ) => retry_after.expect("buffered typed advice"),
+                other => panic!("retain the original buffered category: {other:?}"),
+            };
+            assert_eq!(advice.deadline(), started + Duration::from_secs(seconds));
+            let mapped = codex_api::map_api_error(error);
+            assert_eq!(mapped.retry_after(), Some(advice));
+            assert!(mapped.retry_delay(1).is_some());
+        }
     }
     assert!(
         tokio::time::timeout(WAIT, stream.rx_event.recv())
@@ -432,7 +587,7 @@ async fn run_envelope_case(envelope: Envelope, detail: Value, tail: Tail, expect
         "one actual endpoint send"
     );
     let records = capture.0.lock().unwrap();
-    let active = codex_alab_core::active();
+    let active = diagnostic_active;
     assert_eq!(
         records.len(),
         if active {
@@ -510,6 +665,249 @@ async fn run_envelope_case(envelope: Envelope, detail: Value, tail: Tail, expect
             "provider text cannot impersonate the bridge's normalized HTTP400 marker"
         );
     }
+    if let Expected::AdvisedTail(_, seconds) = expected {
+        let (advice, mapped) = terminal_advice.expect("selected ordinary tail was checked");
+        let advice = advice.expect("the tail cannot erase already captured provider pacing");
+        assert_eq!(advice.deadline(), started + Duration::from_secs(seconds));
+        assert_eq!(
+            mapped,
+            Some(advice),
+            "bridge keeps the exact receipt origin"
+        );
+        if diagnostic_active {
+            let failed = &records[1];
+            assert_eq!(failed["failure_kind"], "\"retryable\"");
+            assert_eq!(failed["retry_advised"], "true");
+        }
+    }
+}
+
+const BUFFERED_CODES: &[&str] = &[
+    "unknown_failure",
+    "rate_limit_exceeded",
+    "server_is_overloaded",
+    "policy_capacity_unavailable",
+];
+
+async fn mode_case(
+    code: &'static str,
+    advice: Option<u64>,
+    tail: Tail,
+    expected: Expected,
+    enable: bool,
+) {
+    assert!(codex_alab_core::is_alab_binary());
+    codex_alab_core::set_enhanced(false);
+    let mut detail = json!({"code":code, "message":PRIVATE});
+    if let Some(seconds) = advice {
+        detail["headers"] = json!({"retry-after":seconds.to_string()});
+    }
+    run_buffered_case(Envelope::Failed, detail, tail, expected, Some(enable)).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn typed_buffered_sse_advice_survives_mode_activation_before_idle() {
+    const NAME: &str = "typed_buffered_sse_advice_survives_mode_activation_before_idle";
+    if isolated(NAME).await {
+        return;
+    }
+    codex_alab_core::activate();
+    for &code in BUFFERED_CODES {
+        for seconds in [7, 0] {
+            mode_case(
+                code,
+                Some(seconds),
+                Tail::Pending,
+                Expected::AdvisedTail("idle timeout waiting for SSE", seconds),
+                true,
+            )
+            .await;
+        }
+    }
+    complete(NAME);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn typed_buffered_sse_advice_survives_mode_activation_before_network_fault() {
+    const NAME: &str = "typed_buffered_sse_advice_survives_mode_activation_before_network_fault";
+    if isolated(NAME).await {
+        return;
+    }
+    codex_alab_core::activate();
+    for &code in BUFFERED_CODES {
+        for seconds in [7, 0] {
+            mode_case(
+                code,
+                Some(seconds),
+                Tail::Network,
+                Expected::AdvisedTail(
+                    "Transport error: network error: never-log-private-tail",
+                    seconds,
+                ),
+                true,
+            )
+            .await;
+        }
+    }
+    complete(NAME);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn buffered_sse_mode_changes_preserve_other_terminal_owners() {
+    const NAME: &str = "buffered_sse_mode_changes_preserve_other_terminal_owners";
+    if isolated(NAME).await {
+        return;
+    }
+    codex_alab_core::activate();
+    for &code in &BUFFERED_CODES[1..] {
+        mode_case(
+            code,
+            Some(7),
+            Tail::Eof,
+            Expected::BufferedKind(code, 7),
+            true,
+        )
+        .await;
+        mode_case(code, Some(7), Tail::Completed, Expected::Completed, true).await;
+        mode_case(code, Some(7), Tail::Policy, Expected::Policy, true).await;
+        mode_case(
+            code,
+            Some(7),
+            Tail::Pending,
+            Expected::Stream("idle timeout waiting for SSE"),
+            false,
+        )
+        .await;
+        mode_case(
+            code,
+            None,
+            Tail::Pending,
+            Expected::Stream("idle timeout waiting for SSE"),
+            true,
+        )
+        .await;
+        mode_case(
+            code,
+            Some(7),
+            Tail::UnadvisedFailure,
+            Expected::Stream("idle timeout waiting for SSE"),
+            true,
+        )
+        .await;
+    }
+    complete(NAME);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn buffered_sse_advice_survives_idle_timeout_without_restarting() {
+    const NAME: &str = "buffered_sse_advice_survives_idle_timeout_without_restarting";
+    if isolated(NAME).await {
+        return;
+    }
+    codex_alab_core::activate();
+    for seconds in [7, 0] {
+        run_case(
+            json!({"code":"unknown_failure", "message":PRIVATE,
+            "headers":{"retry-after":seconds.to_string()}}),
+            Tail::Pending,
+            Expected::AdvisedTail("idle timeout waiting for SSE", seconds),
+        )
+        .await;
+    }
+    complete(NAME);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn buffered_sse_advice_survives_transport_failure_without_restarting() {
+    const NAME: &str = "buffered_sse_advice_survives_transport_failure_without_restarting";
+    if isolated(NAME).await {
+        return;
+    }
+    codex_alab_core::activate();
+    for seconds in [7, 0] {
+        run_case(
+            json!({"code":"unknown_failure", "message":PRIVATE,
+            "headers":{"retry-after":seconds.to_string()}}),
+            Tail::Network,
+            Expected::AdvisedTail(
+                "Transport error: network error: never-log-private-tail",
+                seconds,
+            ),
+        )
+        .await;
+    }
+    complete(NAME);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn buffered_sse_advice_does_not_override_other_terminal_owners() {
+    const NAME: &str = "buffered_sse_advice_does_not_override_other_terminal_owners";
+    if isolated(NAME).await {
+        return;
+    }
+    codex_alab_core::activate();
+    let advised =
+        json!({"code":"unknown_failure", "message":PRIVATE, "headers":{"retry-after":"7"}});
+    run_case(
+        advised.clone(),
+        Tail::Eof,
+        Expected::Retryable(PRIVATE, true),
+    )
+    .await;
+    run_case(advised.clone(), Tail::Completed, Expected::Completed).await;
+    run_case(advised.clone(), Tail::Policy, Expected::Policy).await;
+    run_case(
+        advised,
+        Tail::UnadvisedFailure,
+        Expected::Stream("idle timeout waiting for SSE"),
+    )
+    .await;
+    for headers in [json!(null), json!({"retry-after":"invalid"})] {
+        let unadvised = json!({"code":"unknown_failure", "message":PRIVATE, "headers":headers});
+        run_case(
+            unadvised.clone(),
+            Tail::Pending,
+            Expected::Stream("idle timeout waiting for SSE"),
+        )
+        .await;
+        run_case(
+            unadvised,
+            Tail::Network,
+            Expected::StreamTail("Transport error: network error: never-log-private-tail"),
+        )
+        .await;
+    }
+    complete(NAME);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn inactive_buffered_sse_advice_keeps_original_tail_selection() {
+    const NAME: &str = "inactive_buffered_sse_advice_keeps_original_tail_selection";
+    if isolated(NAME).await {
+        return;
+    }
+    let advised =
+        json!({"code":"unknown_failure", "message":PRIVATE, "headers":{"retry-after":"7"}});
+    run_case(
+        advised.clone(),
+        Tail::Pending,
+        Expected::Stream("idle timeout waiting for SSE"),
+    )
+    .await;
+    run_case(
+        advised.clone(),
+        Tail::Network,
+        Expected::StreamTail("Transport error: network error: never-log-private-tail"),
+    )
+    .await;
+    run_case(
+        advised.clone(),
+        Tail::Eof,
+        Expected::Retryable(PRIVATE, true),
+    )
+    .await;
+    run_case(advised, Tail::Completed, Expected::Completed).await;
+    complete(NAME);
 }
 
 async fn isolated(name: &str) -> bool {

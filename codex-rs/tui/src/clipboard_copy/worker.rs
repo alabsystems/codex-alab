@@ -97,6 +97,8 @@ pub(crate) enum PasteSource {
 }
 
 enum Request {
+    #[cfg(unix)]
+    AlabRetained(alab_retained_clipboard::Control), // ALAB(retained-ui): FIFO ownership probe on the original worker.
     WarmTextReader,
     Copy {
         text: Arc<str>,
@@ -127,6 +129,8 @@ struct Response {
 
 #[derive(Default)]
 pub(crate) struct ClipboardWorker {
+    #[cfg(unix)]
+    alab_retained: alab_retained_clipboard::Custody, // ALAB(retained-ui): retain the actual thread and preparation resource.
     requests: Option<mpsc::Sender<Request>>,
     responses: Option<mpsc::Receiver<Response>>,
     pending: Option<(u64, Arc<CopySetup>)>,
@@ -139,6 +143,8 @@ pub(crate) struct ClipboardWorker {
 
 impl ClipboardWorker {
     pub(crate) fn is_busy(&self) -> bool {
+        #[cfg(unix)]
+        if self.alab_retained.fenced() { return true; } // ALAB(retained-ui): keep deferred original jobs while handoff owns admission.
         self.pending.is_some()
             || self
                 .pending_read
@@ -170,6 +176,8 @@ impl ClipboardWorker {
         frames: FrameRequester,
     ) -> (CopyResult, Arc<()>) {
         let owner = Arc::new(());
+        #[cfg(unix)]
+        if let Err(error) = self.alab_retained.accepting() { return (Err(error), owner); } // ALAB(retained-ui): reject before altering original deferred publication.
         let primary = match &destination {
             CopyDestination::Clipboard => None,
             CopyDestination::Primary => Some(Arc::clone(&text)),
@@ -200,6 +208,8 @@ impl ClipboardWorker {
         }
         self.ensure_started(frames.clone())?;
         self.next_id += 1;
+        #[cfg(unix)]
+        self.alab_retained.advance(self.next_id); // ALAB(retained-ui): preserve actual logical worker request domain for historical selection IDs.
         let id = self.next_id;
         let setup = Arc::new(CopySetup {
             phase: Mutex::new(Setup::Pending(Instant::now() + SETUP_TIMEOUT)),
@@ -233,6 +243,8 @@ impl ClipboardWorker {
     }
 
     fn ensure_started(&mut self, frames: FrameRequester) -> Result<(), String> {
+        #[cfg(unix)]
+        self.alab_retained.accepting()?; // ALAB(retained-ui): no new accepted clipboard jobs cross the actual preparation.
         if self.requests.is_none() {
             self.start(
                 frames,
@@ -386,10 +398,14 @@ impl ClipboardWorker {
     where
         R: FnMut(Instant) -> Result<String, String>,
     {
+        #[cfg(unix)]
+        self.alab_retained.before_start()?; // ALAB(retained-ui): deny a second spawn before accepting its thread.
+        #[cfg(unix)]
+        let retained_frames = frames.clone(); // ALAB(retained-ui): preserve the actual original scheduler incarnation.
         let (requests, incoming) = mpsc::channel::<Request>();
         let (outgoing, responses) = mpsc::channel();
         // Native calls can wait indefinitely; shutdown waits only for a bounded handoff.
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new() // ALAB(retained-ui): retain the genuine original JoinHandle.
             .name("clipboard-copy".into())
             .spawn(move || {
                 let mut read = LazyCell::new(make_reader);
@@ -398,6 +414,8 @@ impl ClipboardWorker {
                 let mut primary_lease: Option<ClipboardLease> = None;
                 while let Ok(request) = incoming.recv() {
                     let (outcome, terminal_sequence) = match request {
+                        #[cfg(unix)]
+                        Request::AlabRetained(control) => match control.at_worker(&lease, &primary_lease) { alab_retained_clipboard::Directive::Continue => continue, alab_retained_clipboard::Directive::ExitNoLease => break }, // ALAB(retained-ui): inspect the real lease slots on this same worker.
                         Request::WarmTextReader => {
                             LazyCell::force(&read);
                             continue;
@@ -459,6 +477,10 @@ impl ClipboardWorker {
                 drop(outgoing);
             })
             .map_err(|error| format!("could not start clipboard worker: {error}"))?;
+        #[cfg(unix)]
+        self.alab_retained.started(worker, retained_frames); // ALAB(retained-ui): store original worker custody before returning acceptance.
+        #[cfg(not(unix))]
+        let _ = worker; // ALAB(retained-ui): retain original non-Unix detach behavior.
         self.requests = Some(requests);
         self.responses = Some(responses);
         Ok(())
@@ -466,6 +488,8 @@ impl ClipboardWorker {
 
     /// Poll only while the UI owns the terminal. Retain one result for its original consumer.
     pub(crate) fn poll(&mut self) -> Option<&(u64, CopyResult)> {
+        #[cfg(unix)]
+        if self.alab_retained.install_held() { return None; } // ALAB(retained-ui): staged deferred fields stay dormant until the whole actual App graph installs.
         if let Some(read) = &mut self.pending_read {
             if read.owner.strong_count() == 0 {
                 read.expired = true;
@@ -545,6 +569,8 @@ impl ClipboardWorker {
 
 impl Drop for ClipboardWorker {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        self.alab_retained.owner_dropped(); // ALAB(retained-ui): observer loss resumes original teardown without certifying join.
         self.requests.take();
         // A confirmed Linux copy needs time to hand ownership to the clipboard manager.
         // Keep this bounded: even dropping a native clipboard can stall on an X11 server.
@@ -563,3 +589,7 @@ impl Drop for ClipboardWorker {
 #[cfg(test)]
 #[path = "worker_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_clipboard_worker.rs"]
+pub(crate) mod alab_retained_clipboard; // ALAB(retained-ui): original worker join custody and shared UI scopes.

@@ -43,6 +43,10 @@ pub(crate) async fn make_test_app() -> Box<App> {
     let session_telemetry = test_session_telemetry(&config, model.as_str());
 
     Box::new(App {
+        #[cfg(unix)] alab_external_editor: Default::default(), // ALAB(retained-editor): native fixture has no accepted original editor job.
+        #[cfg(unix)] _alab_configured: None, // ALAB(owned-local): ordinary fixture owns no retained configured session.
+        #[cfg(unix)] _alab_startup_editor: None, // ALAB(retained-ui): no pending native provisional editor before final original handoff.
+        #[cfg(unix)] alab_side_history_projection: Default::default(), // ALAB(retained-history): ordinary fixture owns no projection capture.
         provider_writes: HashMap::new(),
         feature_write_lock: Arc::default(),
         config_notification_test_generation: 0,

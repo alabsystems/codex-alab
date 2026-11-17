@@ -126,7 +126,7 @@ impl App {
         };
 
         let event_sender = self.app_event_tx.clone();
-        tokio::spawn(async move {
+        app_server.alab_spawn_original_work(async move { // ALAB(retained-ui): retain this SAME original title/cleanup task before polling.
             let result = start_temporary_thread(&request_handle, options)
                 .await
                 .map(|thread| thread.thread.id)
@@ -160,7 +160,7 @@ impl App {
         if cancellation.is_cancelled() {
             if let Ok(temporary_thread_id) = result {
                 let request_handle = app_server.request_handle();
-                tokio::spawn(async move {
+                app_server.alab_spawn_original_work(async move { // ALAB(retained-ui): retain this SAME original title/cleanup task before polling.
                     unsubscribe_temporary_thread(&request_handle, temporary_thread_id).await;
                 });
             }
@@ -176,7 +176,7 @@ impl App {
                 tracing::debug!(%error, "failed to start title-generation thread");
                 self.finish_thread_title_generation(thread_id, destination);
                 if let (Some(writer), Some(title)) = (save_name, fallback_title) {
-                    tokio::spawn(async move { writer.save(title, &cancellation).await });
+                    app_server.alab_spawn_original_work(async move { writer.save(title, &cancellation).await }); // ALAB(retained-ui): retain this SAME original fallback-save task before polling.
                 }
                 if let ThreadTitleDestination::RenameSuggestion { request_id } = destination {
                     self.chat_widget.apply_thread_name_suggestion(
@@ -193,7 +193,7 @@ impl App {
 
         let request_handle = app_server.request_handle();
         let event_sender = self.app_event_tx.clone();
-        tokio::spawn(async move {
+        app_server.alab_spawn_original_work(async move { // ALAB(retained-ui): retain this SAME original title/cleanup task before polling.
             let result = run_temporary_structured_turn(
                 request_handle,
                 TemporaryThreadKind::Title.turn_params(

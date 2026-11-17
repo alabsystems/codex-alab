@@ -863,3 +863,7 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> Line<'_> {
     ];
     invocation_spans.into()
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_mcp_cells.rs"]
+pub(in crate::history_cell) mod alab_retained_mcp; // ALAB(retained-ui): preserve exact native activity state and shared graph identity.

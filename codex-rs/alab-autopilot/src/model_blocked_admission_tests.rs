@@ -9,6 +9,78 @@ use crate::repo_tests::scratch_git;
 
 const CLEAN: &str = "Nothing left: all merged and pushed to origin/main.";
 
+#[test]
+fn compact_admission_requires_the_current_model_stop_epoch() {
+    native_test(|| async {
+        for stale in [false, true] {
+            tokio::time::timeout(HANG, async {
+                let (h, goals) = harness().await;
+                let evaluation = h.rt.hold_eval_when_free().await;
+                h.fake.set_policy_key("compact_on_context_wall", "true");
+                wait_for_supervisor(|| {
+                    h.autopilot
+                        .sup
+                        .policy()
+                        .is_some_and(|policy| policy.compact_on_context_wall)
+                })
+                .await;
+                seed(&h, &goals).await;
+                model_stop(&h, "blocked").await;
+                h.immediate_point().await;
+                h.rt.with_state(|state| {
+                    state.point.as_mut().expect("native decision point").wall =
+                        Some(Wall::Context { auto_compact: true });
+                });
+                let decision = decide::decide(
+                    &h.rt.state(),
+                    &h.autopilot.sup.policy().expect("compaction policy"),
+                    &h.autopilot.timing,
+                    clock(),
+                    Duration::ZERO,
+                );
+                assert_eq!(decision.act, Act::Compact);
+
+                let (entered, entry) = tokio::sync::oneshot::channel();
+                let (release, blocked) = tokio::sync::oneshot::channel();
+                *lock(&h.rt.before_submit) = Some((entered, blocked));
+                let pilot = Arc::clone(&h.autopilot);
+                let rt = Arc::clone(&h.rt);
+                drop(evaluation);
+                let evaluating = tokio::spawn(async move { pilot.evaluate(rt).await });
+                entry.await.expect("compaction reached final admission");
+                if stale {
+                    super::source::host_set(
+                        &h,
+                        &goals,
+                        GoalObjectiveUpdate::Keep,
+                        codex_protocol::protocol::ThreadGoalStatus::Paused,
+                    )
+                    .await;
+                    super::source::host_set(
+                        &h,
+                        &goals,
+                        GoalObjectiveUpdate::Keep,
+                        codex_protocol::protocol::ThreadGoalStatus::Blocked,
+                    )
+                    .await;
+                }
+                release.send(()).expect("release compact admission");
+                evaluating.await.expect("compaction evaluator settles");
+                assert_eq!(
+                    h.fake.acts().iter().any(|act| act == words::RULE_COMPACT),
+                    !stale,
+                    "stale={stale}: only the exact live model epoch admits compaction"
+                );
+                finish(&h).await;
+            })
+            .await
+            .unwrap_or_else(|error| {
+                panic!("stale={stale}: model-stop compact admission hung: {error}")
+            });
+        }
+    });
+}
+
 async fn land_policy(h: &Harness) {
     h.fake.set_status("autopilot", "land");
     h.fake.set_policy_key("autopilot", "land");

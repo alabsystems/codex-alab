@@ -128,7 +128,8 @@ fn an_unrelated_native_reply_before_the_resume_scan_preserves_model_stop_custody
                 h.autopilot
                     .current_model_goal(&h.rt)
                     .await
-                    .expect("read native custody"),
+                    .expect("read native custody")
+                    .map(|bound| bound.goal),
                 Some(binding),
                 "readable history still validates the original model stop after a newer reply"
             );

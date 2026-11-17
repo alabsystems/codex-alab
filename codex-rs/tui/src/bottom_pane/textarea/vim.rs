@@ -1,3 +1,6 @@
+#[path = "../../../../alab-tui/glue/editor_upgrade_vim.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): pending Vim operators retain their native meaning in runtime data.
+
 use super::TextArea;
 use super::split_word_pieces;
 use crate::key_hint::KeyBindingListExt;

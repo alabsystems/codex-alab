@@ -56,22 +56,6 @@ struct Hooks {
 impl Hooks {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("owned hook gate");
-        // B waits before handler execution. A uses the independent nested gate
-        // and must commit before its actual PostToolUse command opens B's gate.
-        std::fs::write(
-            root.path().join("pre.sh"),
-            format!(
-                r#"#!/bin/sh
-input=$(/bin/cat)
-case "$input" in
-  *{DIRECT_CALL}*)
-    while [ ! -f "$1/entered" ] || [ ! -f "$1/allow-duplicate" ]; do /bin/sleep 0.01; done
-    ;;
-esac
-"#
-            ),
-        )
-        .expect("write native pre-hook gate");
         std::fs::write(
             root.path().join("post.sh"),
             r#"#!/bin/sh
@@ -106,9 +90,6 @@ fi
 
     fn configuration(&self) -> serde_json::Value {
         serde_json::json!({"hooks": {
-            "PreToolUse": [{"matcher": "^update_goal$", "hooks": [{
-                "type": "command", "command": self.command("pre.sh")
-            }]}],
             "PostToolUse": [{"matcher": "^update_goal$", "hooks": [{
                 "type": "command", "command": self.command("post.sh")
             }]}]
@@ -120,7 +101,7 @@ fi
     }
 
     fn release(&self) {
-        self.mark("allow-duplicate");
+        self.mark("allow-direct");
         self.mark("release");
         self.mark("release-third");
     }
@@ -129,6 +110,17 @@ fi
 impl Drop for Hooks {
     fn drop(&mut self) {
         self.release();
+    }
+}
+
+fn wait_for_direct_release(root: &Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !root.join("entered").is_file() || !root.join("allow-direct").is_file() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nested PostToolUse or direct release marker never arrived"
+        );
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -218,7 +210,7 @@ async fn scenario(
 ) {
     let rt = Arc::clone(&h.rt);
     let evaluation = rt.hold_eval_when_free().await;
-    goals
+    let outcome = goals
         .set_thread_goal(
             &h.test.codex.state_db().expect("native database"),
             GoalSetRequest {
@@ -232,11 +224,33 @@ async fn scenario(
         )
         .await
         .expect("seed the actual native goal");
-    h.test
+    let db = h.test.codex.state_db().expect("native database");
+    let setup_goal = db
+        .thread_goals()
+        .get_thread_goal(h.rt.id)
+        .await
+        .expect("read setup goal")
+        .expect("setup goal exists");
+    db.thread_goals()
+        .replace_thread_goal_snapshot(&setup_goal)
+        .await
+        .expect("persist setup-only continuation deferral");
+    outcome.apply_runtime_effects(goals).await;
+    db.thread_goals()
+        .clear_thread_goal_continuation_deferral(h.rt.id)
+        .await
+        .expect("clear setup-only continuation deferral");
+    let runtime = h
+        .test
         .codex
         .thread_extension_data()
         .get::<codex_goal_extension::GoalRuntimeHandle>()
-        .expect("native goal runtime")
+        .expect("native goal runtime");
+    assert!(
+        !runtime.alab_goal_persistence_held(),
+        "the setup-only continuation deferral must settle mutation custody"
+    );
+    runtime
         .restore_after_resume()
         .await
         .expect("restore original goal accounting");
@@ -318,7 +332,19 @@ async fn scenario(
         responses::ev_completed("overlap-final"),
     ]));
     let overlap_requests = overlap.len();
-    responses::mount_sse_sequence(&h._server, overlap).await;
+    let response_count = AtomicUsize::new(0);
+    let response_gate = hooks.root.path().to_path_buf();
+    responses::mount_response_handler(&h._server, move |_| {
+        let call = response_count.fetch_add(1, Ordering::SeqCst);
+        if call == 1 {
+            wait_for_direct_release(&response_gate);
+        }
+        overlap.get(call).map_or_else(
+            || wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(60)),
+            |body| responses::sse_response(body.clone()),
+        )
+    })
+    .await;
     start(h).await;
 
     wait_for_supervisor(|| hooks.root.path().join("entered").is_file()).await;
@@ -379,16 +405,32 @@ async fn scenario(
         }
         Case::Fresh | Case::ExistingKnown | Case::ThirdUnaccepted => {}
     }
-    hooks.mark("allow-duplicate");
+    hooks.mark("allow-direct");
     wait_for_supervisor(|| !lock(&outcomes.finished).is_empty()).await;
-    {
+    let direct_outcome = {
         let finished = lock(&outcomes.finished);
         assert_eq!(finished.len(), 1);
         assert!(!finished[0].nested, "direct B finishes before nested A");
         assert_eq!(finished[0].call, DIRECT_CALL);
-        assert_eq!(
-            finished[0].outcome,
-            ToolCallOutcome::Completed { success: true }
+        finished[0].outcome
+    };
+    if direct_outcome != (ToolCallOutcome::Completed { success: true }) {
+        // Let the failed output reach the mock provider so the assertion names
+        // the model-visible native error instead of only its lifecycle class.
+        outcomes.provider_gate.notify_one();
+        while responses::received_responses_requests(&h._server)
+            .await
+            .len()
+            < requests_before + 3
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let requests = responses::received_responses_requests(&h._server).await;
+        panic!(
+            "direct B finished as {direct_outcome:?}; provider output: {:?}",
+            requests
+                .last()
+                .and_then(|request| request.function_call_output_text(DIRECT_CALL))
         );
     }
     // The real exec returned Yielded: the provider reached the direct call while
@@ -400,13 +442,6 @@ async fn scenario(
         hooks.mark("release");
         wait_for_supervisor(|| lock(&outcomes.finished).len() == 2).await;
         let source_turn = lock(&outcomes.finished)[1].turn.clone();
-        let expected = codex_alab_core::session::WallGoal {
-            goal_id: original.goal_id.clone(),
-            objective: original.objective.clone(),
-            token_budget: original.token_budget,
-            turn: source_turn,
-            person_stops: h.shared.person_goal_stops(h.rt.key()),
-        };
         assert!(
             h.autopilot
                 .current_model_binding(&h.rt)
@@ -417,8 +452,19 @@ async fn scenario(
         let retained = h
             .shared
             .model_goal_stops(h.rt.key())
-            .source(&a_epoch)
+            .source(
+                &a_epoch,
+                codex_alab_core::mode_epoch().expect("live enhanced-mode generation"),
+            )
             .expect("A's accepted callback evidence remains in the native receipt ledger");
+        let expected = codex_alab_core::session::WallGoal {
+            goal_id: original.goal_id.clone(),
+            objective: original.objective.clone(),
+            token_budget: original.token_budget,
+            chronology_fence_generation: retained.origin.goal.chronology_fence_generation,
+            turn: source_turn,
+            person_stops: h.shared.person_goal_stops(h.rt.key()),
+        };
         assert_eq!(retained.origin.goal, expected);
         assert_eq!(retained.origin.epoch, a_epoch);
         assert!(
@@ -436,7 +482,8 @@ async fn scenario(
             h.autopilot
                 .current_model_goal(&h.rt)
                 .await
-                .expect("validate the original source after C acceptance"),
+                .expect("validate the original source after C acceptance")
+                .map(|binding| binding.goal),
             Some(expected)
         );
     } else {
@@ -480,6 +527,10 @@ async fn scenario(
     assert_eq!(blocked.objective, original.objective);
     assert_eq!(blocked.token_budget, original.token_budget);
     assert_eq!(blocked.status, codex_state::ThreadGoalStatus::Blocked);
+    assert!(
+        !runtime.alab_goal_persistence_held(),
+        "turn-stop must settle a terminal callback that followed the last dispatch"
+    );
     if let Some(accounted) = accounted {
         assert!(
             blocked.tokens_used >= accounted,

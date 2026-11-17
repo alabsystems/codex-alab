@@ -21,8 +21,8 @@
 #   5. re-resolve codex-rs/Cargo.lock for ALab's crates, refusing if that moves any package
 #      upstream locked; commit "alab sync: merge upstream openai/codex@<sha>"; run
 #      alab/check.sh; push to origin main as a fast-forward. main is never rewritten
-# Every step that runs upstream's code (the lock re-resolve, alab/check.sh, the pristine build
-# that tells an ALab fault from a lane fault) runs contained (lib.sh, alab_contained), with
+# Every step that runs upstream's code (the lock re-resolve and alab/check.sh, including its
+# certified pristine attribution) runs contained (lib.sh, alab_contained), with
 # the clone's private cargo home <git-common-dir>/alab-cargo-home (ALAB_CARGO_HOME names
 # another), never ~/.cargo: the owner's own builds compile from that one's caches.
 # --stepwise first lands, as one merge, a prefix of the upstream range that merges without a
@@ -36,8 +36,9 @@
 # only merged); 3 conflicts
 # await a resolver; 4 alab/check.sh failed, or a fix is left uncommitted (fix it in the
 # worktree, then --continue); 5 an earlier sync still waits (for its resolver, or a --no-push
-# merge to land); 6 upstream itself does not build and run with this toolchain (a lane fault,
-# fixed in Trust, not here); 1, or a failing git command's own status (128), anything else.
+# merge to land); 6 pristine upstream certified but its exact binary also failed at runtime
+# (a lane fault, fixed in Trust, not here); 1, or a failing git command's own status (128),
+# anything else.
 set -euo pipefail
 
 invoked_from="$(pwd)"
@@ -94,10 +95,22 @@ merge_cfg=(-c "core.attributesFile=${repo_root}/alab/merge-attributes"
   -c "merge.alab-upstream.driver=cp -f %B %A")
 
 in_wt() { git -C "${wt}" "$@"; }
-merging() { in_wt rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; }
+merging() {
+  local rc=0
+  in_wt rev-parse -q --verify MERGE_HEAD >/dev/null || rc=$?
+  case "${rc}" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) alab_die "cannot read sync merge state (git exit ${rc})" ;;
+  esac
+}
 unmerged() { in_wt -c core.quotepath=off diff --name-only --diff-filter=U "$@"; }
 # The sync worktree holds commits origin/main does not (a merge, fix-forward commits).
-unlanded() { [[ -n "$(in_wt rev-list -1 origin/main..HEAD)" ]]; }
+unlanded() {
+  local commits
+  commits="$(in_wt rev-list -1 origin/main..HEAD)" || alab_die "cannot read unlanded sync commits"
+  [[ -n "${commits}" ]]
+}
 # grep -c, not grep -q: under pipefail an early-exiting grep -q SIGPIPEs a long writer and
 # the pipeline then reports failure (141) exactly when the line was found.
 has_line() { [[ "$(grep -cE "$1" || true)" != 0 ]]; }
@@ -108,11 +121,47 @@ new_markers() {
   in_wt -c core.quotepath=off diff --no-renames -U0 "$@" \
     | awk '/^\+\+\+ /{ f = substr($0, 5) } /^\+(<<<<<<<|>>>>>>>)( |$)/{ print f }' | sort -u
 }
+# Only compare complete marker sets; a failed diff or parser is no empty set.
+shared_new_markers() {
+  local left right
+  if [[ "$1" == --cached ]]; then
+    left="$(new_markers --cached "$2")" || return
+    right="$(new_markers --cached "$3")" || return
+  else
+    left="$(new_markers "$1" "$3")" || return
+    right="$(new_markers "$2" "$3")" || return
+  fi
+  comm -12 <([[ -z "${left}" ]] || printf '%s\n' "${left}") \
+    <([[ -z "${right}" ]] || printf '%s\n' "${right}")
+}
+
 state_path() { in_wt rev-parse --path-format=absolute --git-path "alab-sync-$1"; }
 # The upstream commit this sync merges (alab-sync-target); a sync without that record stops for a
 # person rather than guessing.
 sync_target() {
-  cat "$(state_path target)" 2>/dev/null && return 0
+  local path target rc=0
+  path="$(state_path target)" || alab_die "cannot read sync target: path lookup failed"
+  target="$("${ALAB_PYTHON:-/usr/bin/python3}" -I -B -c '
+import os
+import sys
+try:
+    with open(sys.argv[1], "rb") as record:
+        target = record.read().rstrip(b"\n")
+except FileNotFoundError:
+    if os.path.lexists(sys.argv[1]):
+        raise SystemExit("dangling sync target record")
+    sys.exit(3)  # Known absence retains the existing recovery diagnosis.
+except OSError as error:
+    raise SystemExit(str(error))
+if not target or b"\n" in target or b"\0" in target:
+    raise SystemExit("invalid sync target record")
+sys.stdout.buffer.write(target)
+' "${path}")" || rc=$?
+  case "${rc}" in
+    0) printf '%s\n' "${target}"; return 0 ;;
+    3) ;; # Only known absence may produce lost-state recovery advice below.
+    *) alab_die "cannot read sync target" ;;
+  esac
   # No merge and no message either: the commits are not a sync's, and --abort would drop them.
   if ! merging && [[ ! -f "$(state_path msg)" ]]; then
     exit_with 3 "${wt} holds commits main lacks (git -C ${wt} log origin/main..HEAD), and no sync \
@@ -121,20 +170,63 @@ is in progress: land or move them yourself, then alab/sync.sh --abort"
   exit_with 3 "the sync in ${wt} lost its state file $(state_path target): alab/sync.sh --abort, then sync again"
 }
 clear_state() {
-  rm -f "$(state_path msg)" "$(state_path msg).final" "$(state_path auto)" "$(state_path hand)" "$(state_path target)" \
-    "$(state_path stop)"
+  local name path paths=()
+  # Resolve the complete set first: a failed msg lookup must never become .final.
+  for name in msg auto hand target stop; do
+    path="$(state_path "${name}")" || alab_die "cannot locate sync recovery state"
+    [[ "${path}" == /* ]] || alab_die "cannot locate sync recovery state: non-absolute path"
+    paths+=("${path}")
+    [[ "${name}" != msg ]] || paths+=("${path}.final")
+  done
+  rm -f -- "${paths[@]}"
 }
+# Replace a stop decision only after its complete record has been written.
+write_stop() {
+  local path temporary
+  path="$(state_path stop)" || alab_die "cannot write sync stop record: path read failed"
+  [[ "${path}" == /* ]] || alab_die "cannot write sync stop record: non-absolute path"
+  [[ ! -d "${path}" ]] || alab_die "cannot write sync stop record: destination is a directory"
+  temporary="$(mktemp "${path}.XXXXXX")" || alab_die "cannot write sync stop record: staging creation failed"
+  if ! printf '%s\n' "$@" >"${temporary}"; then
+    rm -f -- "${temporary}"
+    alab_die "cannot write sync stop record: incomplete write"
+  fi
+  if ! mv -f -- "${temporary}" "${path}"; then
+    rm -f -- "${temporary}"
+    alab_die "cannot write sync stop record: replacement failed"
+  fi
+}
+
 # stop <code> [<why>]: exit, recording a stop for a person (3, 4, 6) and why, for --status. A
 # sync that stopped on an error instead (exit 1: the network, a missing tool) has no record,
 # and the next run resumes it.
 stop() {
   case "$1" in
-    3 | 4 | 6) printf '%s\n%s\n' "$1" "${2:-}" >"$(state_path stop)" 2>/dev/null || true ;;
+    3 | 4 | 6) write_stop "$1" "${2:-}" ;;
   esac
   exit "$1"
 }
 # stop_code: the first line of the stop record (3, 4, 6, no-push, no-push-unchecked, continue).
-stop_code() { head -n 1 "$(state_path stop)" 2>/dev/null || true; }
+stop_code() {
+  local path
+  path="$(state_path stop)" || return
+  "${ALAB_PYTHON:-/usr/bin/python3}" -I -B -c '
+import os
+import sys
+try:
+    with open(sys.argv[1], "rb") as record:
+        code = record.readline().rstrip(b"\n")
+except FileNotFoundError:
+    if os.path.lexists(sys.argv[1]):
+        raise SystemExit("dangling sync stop record")
+    sys.exit(0)
+except OSError as error:
+    raise SystemExit(str(error))
+if code not in (b"3", b"4", b"6", b"no-push", b"no-push-unchecked", b"continue"):
+    raise SystemExit("invalid sync stop record")
+sys.stdout.buffer.write(code)
+' "${path}"
+}
 exit_with() {
   local code="$1"
   shift
@@ -143,7 +235,11 @@ exit_with() {
 }
 # specs <name>: the pathspecs in alab/<name> (removed-paths, owned-paths, watched-paths) as
 # main has them; the sync worktree's copy can lag behind main between syncs.
-specs() { git show "origin/main:alab/$1" 2>/dev/null | alab_spec_lines; }
+specs() {
+  local policy
+  policy="$(git show "origin/main:alab/$1")" || return
+  printf '%s\n' "${policy}" | alab_spec_lines
+}
 # How long the sync in the worktree has waited: since its merge began, or was committed.
 waiting_hours() {
   local since
@@ -202,7 +298,7 @@ sync_branch_holder() {
 }
 
 ensure_worktree() {
-  local holder
+  local holder commits
   sync_branch_holder
   holder="${sync_holder}"
   # A sync worktree deleted by hand is still registered: drop that registration alone (git
@@ -210,7 +306,8 @@ ensure_worktree() {
   # unless alab-sync holds commits main lacks: a new sync would reset the branch and leave them
   # in its reflog alone.
   if [[ -n "${holder}" && ! -e "${holder}/.git" ]]; then
-    [[ -z "$(git rev-list -1 origin/main..alab-sync)" ]] || alab_die "the sync worktree ${holder} \
+    commits="$(git rev-list -1 origin/main..alab-sync)" || alab_die "cannot read missing sync worktree history"
+    [[ -z "${commits}" ]] || alab_die "the sync worktree ${holder} \
 was deleted, and alab-sync holds commits main lacks (git log origin/main..alab-sync): \
 git worktree add --force ${holder} alab-sync brings it back with them; land them, or drop them \
 with alab/sync.sh --abort"
@@ -228,12 +325,26 @@ or retire it (alab/sync.sh --abort with that ALAB_SYNC_DIR, then git worktree re
   fi
 }
 
-# Status lines (porcelain v1) that are not fully staged: unstaged edits and untracked files.
-loose_changes() { in_wt status --porcelain | grep -v '^[MADRCT] ' || true; }
+# Status predicates return only known clean/dirty answers; read failures are fatal
+# even inside Boolean contexts where shell errexit is disabled.
+worktree_clean() {
+  local porcelain
+  porcelain="$(in_wt status --porcelain "$@")" || alab_die "cannot read sync worktree status"
+  [[ -z "${porcelain}" ]]
+}
+
+worktree_fully_staged() {
+  local porcelain
+  porcelain="$(in_wt status --porcelain)" || alab_die "cannot read sync worktree status"
+  porcelain="$(printf '%s\n' "${porcelain}" | awk 'length && $0 !~ /^[MADRCT] /')" \
+    || alab_die "cannot classify sync worktree status"
+  [[ -z "${porcelain}" ]]
+}
 
 apply_removed_paths() {
-  local list=() line count
-  while IFS= read -r line; do list+=("${line}"); done < <(specs removed-paths)
+  local list=() line count policy
+  policy="$(specs removed-paths)" || alab_die "cannot read alab/removed-paths from origin/main"
+  while IFS= read -r line; do [[ -z "${line}" ]] || list+=("${line}"); done <<<"${policy}"
   [[ ${#list[@]} -gt 0 ]] || return 0
   count="$(in_wt ls-files -- "${list[@]}" | sort -u | wc -l | tr -d ' ')" \
     || alab_die "alab/removed-paths has an entry git rejects (above): fix it in an alab(removed) \
@@ -244,27 +355,62 @@ commit on main, then alab/sync.sh --abort and sync again"
   fi
 }
 
+# A successful tree listing distinguishes deletion from an unreadable object.
+tree_has_path() {
+  local entry
+  entry="$(in_wt ls-tree --full-tree --name-only "$1" -- ":(literal)$2")" \
+    || alab_die "cannot read owned path from $1"
+  [[ -n "${entry}" ]]
+}
+
+# Publish a complete upstream copy without truncating the previous archive on read errors.
+archive_owned_path() {
+  local f="$1" archive directory temporary
+  archive="${wt}/alab/upstream/${f}"
+  directory="${archive%/*}"
+  [[ ! -d "${archive}" ]] || alab_die "cannot archive owned path: destination is a directory"
+  mkdir -p "${directory}" || alab_die "cannot archive owned path: directory creation failed"
+  temporary="$(mktemp -d "${directory}/.alab-archive.XXXXXX")" || alab_die "cannot archive owned path: staging creation failed"
+  if [[ -f "${archive}" && ! -L "${archive}" ]] && ! cp -p "${archive}" "${temporary}/content"; then
+    rm -rf -- "${temporary}"
+    alab_die "cannot archive owned path: mode preservation failed"
+  fi
+  if ! in_wt show "MERGE_HEAD:${f}" >"${temporary}/content"; then
+    rm -rf -- "${temporary}"
+    alab_die "cannot archive owned path: upstream read failed"
+  fi
+  if ! mv -f -- "${temporary}/content" "${archive}"; then
+    rm -rf -- "${temporary}"
+    alab_die "cannot archive owned path: replacement failed"
+  fi
+  rmdir "${temporary}" || alab_die "cannot archive owned path: staging cleanup failed"
+}
+
 # A conflict in a path ALab owns keeps ALab's side. Upstream's version is kept beside it in
 # alab/upstream/<path>, so whoever maintains the ALab file can carry over what matters.
 keep_owned_paths() {
-  local list=() line f ours theirs conflicted
-  while IFS= read -r line; do list+=("${line}"); done < <(specs owned-paths)
+  local list=() line f ours theirs conflicted policy ours_present theirs_present
+  policy="$(specs owned-paths)" || alab_die "cannot read alab/owned-paths from origin/main"
+  while IFS= read -r line; do [[ -z "${line}" ]] || list+=("${line}"); done <<<"${policy}"
   [[ ${#list[@]} -gt 0 ]] || return 0
   # Listed in full first: git diff refreshes the index under index.lock after it prints, so a
   # git add in the loop below, fed by it directly, can race it (exit 128, "index.lock exists").
-  conflicted="$(unmerged -- "${list[@]}")"
+  conflicted="$(unmerged -- "${list[@]}")" || alab_die "cannot read unresolved owned paths"
   while IFS= read -r f; do
     [[ -n "${f}" ]] || continue
-    if in_wt cat-file -e "MERGE_HEAD:${f}" 2>/dev/null; then
-      mkdir -p "$(dirname "${wt}/alab/upstream/${f}")"
-      in_wt show "MERGE_HEAD:${f}" >"${wt}/alab/upstream/${f}"
+    # Read both sides before mutating either the archive or the conflict.
+    ours_present=0 theirs_present=0
+    if tree_has_path HEAD "${f}"; then ours_present=1; fi
+    if tree_has_path MERGE_HEAD "${f}"; then theirs_present=1; fi
+    if [[ "${theirs_present}" -eq 1 ]]; then
+      archive_owned_path "${f}"
       in_wt add -- "alab/upstream/${f}"
       theirs="upstream's is alab/upstream/${f}"
     else
       in_wt rm -q -f --ignore-unmatch -- "alab/upstream/${f}"
       theirs="upstream deleted it"
     fi
-    if in_wt cat-file -e "HEAD:${f}" 2>/dev/null; then
+    if [[ "${ours_present}" -eq 1 ]]; then
       in_wt checkout --quiet --ours -- "${f}"
       in_wt add -- "${f}"
       ours="kept ALab's ${f}"
@@ -300,7 +446,7 @@ lock_packages() {
 # (lib.sh, alab_contained), able to write only the lock and the target dir: it reads the
 # .cargo/config.toml upstream just merged, which can name the rustc cargo runs.
 reresolve_cargo_lock() {
-  local lock="${wt}/codex-rs/Cargo.lock" build_target rc=0
+  local lock="${wt}/codex-rs/Cargo.lock" build_target rc=0 diff_rc=0
   [[ -f "${wt}/codex-rs/Cargo.toml" ]] || return 0
   command -v "${cargo}" >/dev/null 2>&1 \
     || alab_die "${cargo} is not on PATH: it re-resolves codex-rs/Cargo.lock (ALAB_CARGO names another)"
@@ -315,10 +461,15 @@ reresolve_cargo_lock() {
   [[ "${rc}" -ne 75 ]] || exit_with 75 "disk resource stop: no lockfile verdict; free room, then alab/sync.sh --continue"
   [[ "${rc}" -eq 0 ]] || alab_die "${cargo} metadata could not resolve codex-rs in ${wt}: fix the manifests, then --continue"
   [[ -f "${lock}" && ! -L "${lock}" ]] || alab_die "${lock} is not a regular file after ${cargo} metadata"
-  if ! in_wt diff --quiet -- codex-rs/Cargo.lock; then
-    in_wt add -- codex-rs/Cargo.lock
-    echo "  codex-rs/Cargo.lock re-resolved" >>"$(state_path auto)"
-  fi
+  in_wt diff --quiet -- codex-rs/Cargo.lock || diff_rc=$?
+  case "${diff_rc}" in
+    0) ;;
+    1)
+      in_wt add -- codex-rs/Cargo.lock
+      echo "  codex-rs/Cargo.lock re-resolved" >>"$(state_path auto)"
+      ;;
+    *) alab_die "cannot read resolved lock changes (git exit ${diff_rc})" ;;
+  esac
   drift_check
 }
 
@@ -338,15 +489,21 @@ vendored_packages() {
 # codex-rs/Cargo.toml) loses its registry row only when the copy is of the very version and
 # archive upstream locked; an upstream bump past it is drift like any other.
 drift_check() {
-  local target own drift
+  local target own drift entry upstream_set merged_set
   [[ -f "${wt}/codex-rs/Cargo.toml" ]] || return 0
-  target="$(sync_target)"
-  in_wt cat-file -e "${target}:codex-rs/Cargo.lock" 2>/dev/null || return 0
-  own="$(vendored_packages)"
-  drift="$(comm -23 <(in_wt show "${target}:codex-rs/Cargo.lock" | lock_packages) \
-    <(lock_packages <"${wt}/codex-rs/Cargo.lock") \
+  target="$(sync_target)" || alab_die "cannot read sync target for lock comparison"
+  entry="$(in_wt ls-tree --full-tree --name-only "${target}" -- codex-rs/Cargo.lock)" \
+    || alab_die "cannot read upstream lock tree"
+  [[ -n "${entry}" ]] || return 0
+  own="$(vendored_packages)" || alab_die "cannot read vendored package identities"
+  upstream_set="$(in_wt show "${target}:codex-rs/Cargo.lock" | lock_packages)" \
+    || alab_die "cannot read upstream lock packages"
+  merged_set="$(lock_packages <"${wt}/codex-rs/Cargo.lock")" \
+    || alab_die "cannot read merged lock packages"
+  drift="$(comm -23 <([[ -z "${upstream_set}" ]] || printf '%s\n' "${upstream_set}") \
+    <([[ -z "${merged_set}" ]] || printf '%s\n' "${merged_set}") \
     | awk -v own="${own}" 'BEGIN { n = split(own, l, "\n"); for (i = 1; i <= n; i++) set[l[i]] }
-      !(($1 " " $2 " " $4) in set)')"
+      !(($1 " " $2 " " $4) in set)')" || alab_die "cannot read lock drift comparison"
   [[ -z "${drift}" ]] || exit_with 3 "codex-rs/Cargo.lock in ${wt} no longer holds these packages \
 as upstream locked them:
 $(printf '%s\n' "${drift}" | awk '{ gsub(/"/, ""); print "  " $1 " " $2 }')
@@ -356,8 +513,9 @@ codex-rs/Cargo.lock, then alab/sync.sh --continue"
 
 # Upstream changes to paths ALab watches go into the merge message and the run's output.
 note_watched_paths() {
-  local base="$1" target="$2" list=() line changed
-  while IFS= read -r line; do list+=("${line}"); done < <(specs watched-paths)
+  local base="$1" target="$2" list=() line changed policy
+  policy="$(specs watched-paths)" || alab_die "cannot read alab/watched-paths from origin/main"
+  while IFS= read -r line; do [[ -z "${line}" ]] || list+=("${line}"); done <<<"${policy}"
   [[ ${#list[@]} -gt 0 ]] || return 0
   changed="$(git -c core.quotepath=off diff --name-only "${base}" "${target}" -- "${list[@]}")"
   [[ -n "${changed}" ]] || return 0
@@ -368,7 +526,8 @@ note_watched_paths() {
 }
 
 report_conflicts() {
-  local target="$1" base f
+  local target="$1" base f conflicts
+  conflicts="$(unmerged)" || alab_die "cannot read unresolved paths"
   base="$(git merge-base origin/main "${target}")"
   {
     echo "conflicts for a resolver, in ${wt}:"
@@ -377,7 +536,7 @@ report_conflicts() {
       echo "  ${f}"
       git log --format='      upstream %h %s' -3 "${base}..${target}" -- "${f}"
       git log --no-merges --format='      alab     %h %s' -3 "${base}..origin/main" -- "${f}"
-    done < <(unmerged)
+    done <<<"${conflicts}"
     echo "Keep both intents (alab/README.md, 'Resolving a conflict'), git add each file in"
     echo "the worktree, then: alab/sync.sh --continue"
   } >&2
@@ -406,45 +565,18 @@ commit_sync_merge() {
   rm -f "${msg}" "${msg}.final" "${auto}" "${hand}"
 }
 
-# The check failed. If it was the build (check.sh exit 2), build the pristine upstream
-# commit with the same toolchain: when that fails too, the fault is the toolchain's.
+# The selected, contained gate has already certified and run pristine upstream
+# before returning a source verdict. This boundary only maps that proven outcome;
+# setup, resource and precompiler failures carry no lane verdict.
 check_failed() {
-  local rc="$1" target pristine scratch_home pristine_rc=0 config config_args=() vendor_read=()
+  local rc="$1" target
   target="$(cat "$(state_path target)" 2>/dev/null || true)"
-  if [[ "${rc}" -eq 2 && -n "${target}" ]]; then
-    pristine="$(alab_pristine "${wt}" "${target}")" || exit_with 4 "the pristine upstream revision could not be resolved"
-    alab_say "the build failed; building pristine upstream ${target:0:9} to tell an ALab fault from a lane fault"
-    alab_pristine_at "${wt}" "${target}" || exit_with 4 "alab/check.sh failed in ${wt} (above), and \
-pristine upstream ${target:0:9} could not be checked out at ${pristine} to tell an ALab fault from a \
-lane fault. Fix that, then alab/sync.sh --continue"
-    # It builds and runs what check.sh step 2 does, so a binary that builds but cannot run
-    # counts, in the pristine tree's own target dir (lib.sh, alab_pristine).
-    # Contained, as check.sh is (run_check), and with the crates the merge's alab/vendor
-    # carries for the toolchain, as check.sh builds pristine upstream (lib.sh,
-    # alab_pristine_config): without them upstream alone does not build under Trust at all.
-    config="$(alab_pristine_config "${wt}")" || exit_with 4 "the toolchain sources ${wt}/alab/vendor carries could not be named"
-    if [[ -n "${config}" ]]; then
-      config_args=(--config "${config}")
-      vendor_read=(--read "${wt}/alab/vendor")
-    fi
-    scratch_home="$(mktemp -d "${TMPDIR:-/tmp}/alab-pristine-home.XXXXXX")"
-    alab_build_target_ready "${pristine}/codex-rs" "${pristine}/codex-rs/target" >/dev/null \
-      || exit_with 4 "the pristine target could not be prepared; no build started"
-    (cd "${pristine}/codex-rs" && export CARGO_TARGET_DIR="${pristine}/codex-rs/target" \
-      CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CODEX_HOME="${scratch_home}" \
-      && alab_contained --pristine "${pristine}" --read "${alab_library_root}/alab" ${vendor_read[@]+"${vendor_read[@]}"} \
-        "${CARGO_TARGET_DIR}" "${scratch_home}" -- \
-        /bin/bash -c '. "$1/alab/lib.sh"; shift; alab_build_command "$@"' \
-        alab-pristine-disk "${alab_library_root}" "${cargo}" --unverified run --quiet --locked \
-        ${config_args[@]+"${config_args[@]}"} -p codex-cli --bin codex -- --version) || pristine_rc=$?
-    if [[ "${pristine_rc}" -ne 0 ]]; then
-      rm -rf "${scratch_home:?}"
-      [[ "${pristine_rc}" -ne 75 ]] || exit_with 75 "disk resource stop during pristine build: no compiler verdict; free room, then alab/sync.sh --continue"
-      exit_with 6 "upstream ${target:0:9} itself does not build and run with ${cargo} (above): a \
+  if [[ "${rc}" -eq 6 ]]; then
+    exit_with 6 "certified pristine upstream${target:+ ${target:0:9}} failed at runtime in alab/check.sh (above): a \
 Trust lane fault, fixed in Trust, not in codex-alab. Once the toolchain is fixed: alab/sync.sh --continue"
-    fi
-    rm -rf "${scratch_home:?}"
-    alab_say "upstream ${target:0:9} alone builds and runs: ALab's layer broke it"
+  fi
+  if [[ "${rc}" -eq 2 ]]; then
+    alab_say "certified pristine upstream${target:+ ${target:0:9}} passed in alab/check.sh: ALab's layer broke the candidate"
   fi
   exit_with 4 "alab/check.sh failed in ${wt} (above). A wrong resolution is fixed in the merge \
 itself (git rerere forget <file>, fix, git commit --amend); an adaptation to upstream's \
@@ -473,17 +605,12 @@ run_check() {
 # Someone landed ALab work on main while this sync ran: merge it into the sync (the sync
 # merge stays on main's first-parent line), so the result is again a fast-forward of main.
 take_concurrent_main() {
-  local main_upstream target own ancestry_rc=0
+  local main_upstream target own
   # Another clone's sync landed a newer upstream meanwhile: this merge is superseded, and its
   # lockfile (kept below) would roll back upstream's or fail the drift check.
   target="$(sync_target)"
   main_upstream="$(alab_last_sync_upstream origin/main)" || alab_die "cannot read main's last upstream sync"
-  if [[ -n "${main_upstream}" ]]; then
-    git merge-base --is-ancestor "${main_upstream}" "${target}" || ancestry_rc=$?
-    [[ "${ancestry_rc}" -le 1 ]] \
-      || alab_die "cannot read upstream ancestry for main's last sync (git exit ${ancestry_rc})"
-  fi
-  if [[ "${ancestry_rc}" -eq 1 ]]; then
+  if [[ -n "${main_upstream}" ]] && ! alab_ancestor_check git merge-base --is-ancestor "${main_upstream}" "${target}"; then
     # A person's commits on the sync (a fix-forward after exit 4) would go with --abort.
     own="$(in_wt log --no-merges --format='  %h %s' origin/main..HEAD)"
     exit_with 3 "main merged upstream ${main_upstream:0:9} meanwhile, past this sync's: \
@@ -534,15 +661,11 @@ push_main() {
     sync_fetch origin || alab_die "fetching origin after the push race failed (above)"
     [[ "$(git rev-parse origin/main)" != "${before}" ]] \
       || alab_die "push refused (above), but origin/main did not advance"
-    git merge-base --is-ancestor "${before}" origin/main \
+    alab_ancestor_check git merge-base --is-ancestor "${before}" origin/main \
       || alab_die "origin/main changed history during the push (above); a person must inspect it"
-    rc=0
-    in_wt merge-base --is-ancestor origin/main HEAD || rc=$?
-    case "${rc}" in
-      0) alab_die "push refused (above), though origin/main has nothing this sync lacks" ;;
-      1) ;;
-      *) alab_die "could not prove that origin/main has commits this sync lacks" ;;
-    esac
+    if alab_ancestor_check in_wt merge-base --is-ancestor origin/main HEAD; then
+      alab_die "push refused (above), though origin/main has nothing this sync lacks"
+    fi
     alab_say "main advanced during the push; retrying its merge and check after ${delay}s"
     sleep "${delay}"
     take_concurrent_main
@@ -553,18 +676,19 @@ push_main() {
 
 # Commit the merge (if still open), gate it, land it.
 finish() {
-  local before sync_merge=0 target
+  local before sync_merge=0 target markers conflicts merge_head parent parent_rc=0
   merging || unlanded || alab_die "nothing to land in ${wt}: start a sync with alab/sync.sh"
   # A person's --continue that then dies on an error leaves the sync with that person; only an
   # unattended run that died is resumed by the next run.
   if [[ "${mode}" == continue ]]; then
-    echo continue >"$(state_path stop)"
+    write_stop continue
   else
     rm -f "$(state_path stop)"
   fi
   target="$(sync_target)"
   if merging; then
-    if [[ "$(in_wt rev-parse MERGE_HEAD)" == "${target}" ]]; then
+    merge_head="$(in_wt rev-parse --verify MERGE_HEAD)" || alab_die "cannot read sync merge head"
+    if [[ "${merge_head}" == "${target}" ]]; then
       # The upstream merge itself: redo what the sync resolves by itself, in case the run
       # that merged died before it did.
       [[ -f "$(state_path msg)" ]] || exit_with 3 "the sync in ${wt} lost its state file \
@@ -572,23 +696,25 @@ $(state_path msg): alab/sync.sh --abort, then sync again"
       sync_merge=1
       apply_removed_paths
       keep_owned_paths
-    elif ! in_wt merge-base --is-ancestor MERGE_HEAD origin/main; then
-      exit_with 3 "${wt} is merging $(in_wt rev-parse --short MERGE_HEAD), neither the sync's \
+    elif ! alab_ancestor_check in_wt merge-base --is-ancestor "${merge_head}" origin/main; then
+      exit_with 3 "${wt} is merging ${merge_head:0:9}, neither the sync's \
 upstream commit nor main's: git merge --abort there, then alab/sync.sh --continue"
     elif [[ -f "$(state_path msg)" ]]; then
       # The sync merge under it was committed by hand and is not finished (commit_sync_merge).
       exit_with 3 "${wt} is merging main on top of a sync merge committed by hand: git merge \
 --abort there, then alab/sync.sh --continue (it finishes the sync merge, then merges main)"
     fi
-    [[ -z "$(unmerged)" ]] || {
-      [[ "${sync_merge}" -eq 0 || -s "$(state_path hand)" ]] || unmerged >"$(state_path hand)"
-      report_conflicts "$(in_wt rev-parse MERGE_HEAD)"
-      stop 3 "conflicts for a resolver: $(unmerged | tr '\n' ' ')"
+    conflicts="$(unmerged)" || alab_die "cannot read unresolved paths"
+    [[ -z "${conflicts}" ]] || {
+      [[ "${sync_merge}" -eq 0 || -s "$(state_path hand)" ]] || printf '%s\n' "${conflicts}" >"$(state_path hand)"
+      report_conflicts "${merge_head}"
+      stop 3 "conflicts for a resolver: $(printf '%s\n' "${conflicts}" | tr '\n' ' ')"
     }
-    if [[ -n "$(comm -12 <(new_markers --cached HEAD) <(new_markers --cached MERGE_HEAD))" ]]; then
+    markers="$(shared_new_markers --cached HEAD MERGE_HEAD)" || alab_die "cannot read staged conflict markers"
+    if [[ -n "${markers}" ]]; then
       exit_with 3 "conflict markers are staged in ${wt}: finish the resolution, then --continue"
     fi
-    [[ -z "$(loose_changes)" ]] || exit_with 3 "unstaged or untracked changes in ${wt}: \
+    worktree_fully_staged || exit_with 3 "unstaged or untracked changes in ${wt}: \
 stage the resolution (git add) or discard it, then --continue"
     if [[ "${sync_merge}" -eq 1 ]]; then
       commit_sync_merge
@@ -601,31 +727,38 @@ stage the resolution (git add) or discard it, then --continue"
     # The sync merge is committed, but not by this script: the resolver ran `git commit` on
     # the open merge. Give it what this script adds; only an amend of that merge can, so
     # nothing may be committed on top of it yet.
-    if [[ "$(in_wt rev-parse -q --verify HEAD^2 || true)" != "${target}" ]]; then
-      in_wt merge-base --is-ancestor "${target}" HEAD || exit_with 3 "the sync's merge of \
+    parent="$(in_wt rev-parse -q --verify HEAD^2)" || parent_rc=$?
+    case "${parent_rc}" in
+      0) ;;
+      1) parent="" ;; # HEAD is known to have no second parent.
+      *) alab_die "cannot read sync merge parent (git exit ${parent_rc})" ;;
+    esac
+    if [[ "${parent}" != "${target}" ]]; then
+      alab_ancestor_check in_wt merge-base --is-ancestor "${target}" HEAD || exit_with 3 "the sync's merge of \
 ${target:0:9} is gone from ${wt} (aborted by hand?): alab/sync.sh --abort, then sync again"
       exit_with 3 "the sync merge in ${wt} was committed by hand and is not HEAD: fold the commits \
 on top of it into it (git reset --soft <the merge>, git commit --amend), then alab/sync.sh --continue"
     fi
-    [[ -z "$(loose_changes)" ]] || exit_with 3 "unstaged or untracked changes in ${wt}: \
+    worktree_fully_staged || exit_with 3 "unstaged or untracked changes in ${wt}: \
 stage them (git add) or discard them, then --continue"
-    if [[ -n "$(comm -12 <(new_markers HEAD^1 HEAD) <(new_markers HEAD^2 HEAD))" ]]; then
+    markers="$(shared_new_markers HEAD^1 HEAD^2 HEAD)" || alab_die "cannot read committed conflict markers"
+    if [[ -n "${markers}" ]]; then
       exit_with 3 "conflict markers are committed in the sync merge in ${wt}: finish the \
 resolution, git commit --amend, then --continue"
     fi
     commit_sync_merge --amend
   fi
-  [[ -z "$(in_wt status --porcelain)" ]] || exit_with 4 "uncommitted changes in ${wt}: commit \
+  worktree_clean || exit_with 4 "uncommitted changes in ${wt}: commit \
 the fix or discard it, then alab/sync.sh --continue"
-  in_wt merge-base --is-ancestor origin/main HEAD || take_concurrent_main
+  alab_ancestor_check in_wt merge-base --is-ancestor origin/main HEAD || take_concurrent_main
   drift_check
   run_check
   if [[ "${push}" -eq 0 ]]; then
     if [[ "${check}" -eq 1 ]]; then
-      echo no-push >"$(state_path stop)"
+      write_stop no-push
       alab_say "merged and checked in ${wt}, not pushed (--no-push): alab/sync.sh --continue lands it"
     else
-      echo no-push-unchecked >"$(state_path stop)"
+      write_stop no-push-unchecked
       alab_say "merged in ${wt}, neither checked nor pushed: alab/sync.sh --continue checks and lands it"
     fi
     return 0
@@ -638,6 +771,7 @@ the fix or discard it, then alab/sync.sh --continue"
   if git worktree list --porcelain | has_line '^branch refs/heads/main$'; then
     alab_say "landed ${before}..$(git rev-parse --short origin/main); checkouts on main: git pull --ff-only"
   else
+    # The remote already landed; an unreadable optional local main stays put.
     if git merge-base --is-ancestor main origin/main 2>/dev/null; then
       git branch --quiet -f main origin/main
     fi
@@ -650,20 +784,37 @@ the fix or discard it, then alab/sync.sh --continue"
 # git's own pathspec matching (ls-files over the probe's tree in a throwaway index). A probe:
 # git merge-tree writes no worktree, and the clone's index is not touched.
 merges_unattended() {
-  local out rc=0 list=() line idx uncovered
+  local out rc=0 list=() line idx uncovered covered conflict_paths policy policy_name
   out="$(git "${merge_cfg[@]}" -c core.quotepath=off merge-tree --write-tree --name-only \
     --no-messages origin/main "$1")" || rc=$?
   [[ "${rc}" -eq 0 ]] && return 0
-  [[ "${rc}" -eq 1 ]] || return 1
-  while IFS= read -r line; do list+=("${line}"); done < <(specs removed-paths; specs owned-paths)
+  [[ "${rc}" -eq 1 ]] || alab_die "cannot probe unattended merge (git exit ${rc})"
+  for policy_name in removed-paths owned-paths; do
+    policy="$(specs "${policy_name}")" || alab_die "cannot read alab/${policy_name} from origin/main"
+    while IFS= read -r line; do [[ -z "${line}" ]] || list+=("${line}"); done <<<"${policy}"
+  done
   [[ ${#list[@]} -gt 0 ]] || return 1
   idx="${common_dir}/alab-probe.$$.index"
-  GIT_INDEX_FILE="${idx}" git read-tree "$(printf '%s\n' "${out}" | head -n 1)" || {
+  GIT_INDEX_FILE="${idx}" git read-tree "${out%%$'\n'*}" || {
     rm -f "${idx}"
-    return 1
+    alab_die "cannot read unattended-merge probe tree"
   }
-  uncovered="$(comm -23 <(printf '%s\n' "${out}" | sed -e 1d -e '/^$/d' | sort -u) \
-    <(GIT_INDEX_FILE="${idx}" git -c core.quotepath=off ls-files -- "${list[@]}" | sort -u))"
+  covered="$(GIT_INDEX_FILE="${idx}" git -c core.quotepath=off ls-files -- "${list[@]}")" || {
+    rm -f "${idx}"
+    alab_die "cannot read unattended-merge probe paths"
+  }
+  conflict_paths="$(printf '%s\n' "${out}" | sed -e 1d -e '/^$/d' | sort -u)" || {
+    rm -f "${idx}"
+    alab_die "cannot sort unattended-merge conflict paths"
+  }
+  covered="$(printf '%s\n' "${covered}" | sort -u)" || {
+    rm -f "${idx}"
+    alab_die "cannot sort unattended-merge covered paths"
+  }
+  uncovered="$(comm -23 <(printf '%s\n' "${conflict_paths}") <(printf '%s\n' "${covered}"))" || {
+    rm -f "${idx}"
+    alab_die "cannot compare unattended-merge probe paths"
+  }
   rm -f "${idx}"
   [[ -z "${uncovered}" ]]
 }
@@ -672,13 +823,16 @@ merges_unattended() {
 # the whole range merges unattended. Upstream's history is linear, so its first-parent
 # commits are the steps; a binary search keeps the probes to a handful.
 stepwise_plan() {
-  local target="$1" commits=() c lo hi mid
+  local target="$1" commits=() c lo hi mid frontier commits_text
   if merges_unattended "${target}"; then
     echo "${target}|"
     return
   fi
-  while IFS= read -r c; do commits+=("${c}"); done \
-    < <(git rev-list --reverse --first-parent "$(git merge-base origin/main "${target}")..${target}")
+  frontier="$(git merge-base origin/main "${target}")" || alab_die "cannot read stepwise frontier"
+  commits_text="$(git rev-list --reverse --first-parent "${frontier}..${target}")" \
+    || alab_die "cannot read stepwise upstream commits"
+  [[ -n "${commits_text}" ]] || alab_die "stepwise frontier contains no upstream commits"
+  while IFS= read -r c; do commits+=("${c}"); done <<<"${commits_text}"
   lo=0
   hi=${#commits[@]}
   while [[ $((hi - lo)) -gt 1 ]]; do
@@ -694,19 +848,23 @@ stepwise_plan() {
 
 # Merge <target> into origin/main and land it (finish), or stop for a resolver (exit 3).
 run_sync() {
-  local target="$1" base pending merge_rc=0 merge_out
-  if git merge-base --is-ancestor "${target}" origin/main; then
+  local target="$1" base pending merge_rc=0 merge_out conflicts
+  local short_target upstream_summary progress_summary
+  if alab_ancestor_check git merge-base --is-ancestor "${target}" origin/main; then
     alab_say "main already contains $(git log -1 --format='%h %cs' "${target}"): nothing to do"
     return 0
   fi
+  base="$(git merge-base origin/main "${target}")" || alab_die "cannot read sync merge metadata: merge base"
+  pending="$(git rev-list --count "origin/main..${target}")" || alab_die "cannot read sync merge metadata: commit count"
+  short_target="$(git rev-parse --short=12 "${target}")" || alab_die "cannot read sync merge metadata: target identity"
+  upstream_summary="$(git log -1 --format='%H (%cs) %s' "${target}")" || alab_die "cannot read sync merge metadata: upstream summary"
+  progress_summary="$(git log -1 --format='%h %cs %s' "${target}")" || alab_die "cannot read sync merge metadata: progress summary"
   in_wt clean -fdq
   in_wt checkout --quiet -B alab-sync origin/main
-  base="$(git merge-base origin/main "${target}")"
-  pending="$(git rev-list --count "origin/main..${target}")"
   {
-    echo "alab sync: merge upstream openai/codex@$(git rev-parse --short=12 "${target}")"
+    echo "alab sync: merge upstream openai/codex@${short_target}"
     echo
-    echo "Upstream: $(git log -1 --format='%H (%cs) %s' "${target}")"
+    echo "Upstream: ${upstream_summary}"
     echo "New upstream commits: ${pending}"
   } >"$(state_path msg)"
   : >"$(state_path auto)"
@@ -715,7 +873,7 @@ run_sync() {
   echo "${target}" >"$(state_path target)"
   note_watched_paths "${base}" "${target}"
 
-  alab_say "merging ${pending} upstream commit(s) up to $(git log -1 --format='%h %cs %s' "${target}")"
+  alab_say "merging ${pending} upstream commit(s) up to ${progress_summary}"
   merge_out="$(in_wt "${merge_cfg[@]}" merge --no-ff --no-commit "${target}" 2>&1)" || merge_rc=$?
   if ! merging; then
     printf '%s\n' "${merge_out}" >&2
@@ -728,10 +886,11 @@ run_sync() {
 
   apply_removed_paths
   keep_owned_paths
-  if [[ -n "$(unmerged)" ]]; then
-    unmerged >"$(state_path hand)"
+  conflicts="$(unmerged)" || alab_die "cannot read unresolved paths"
+  if [[ -n "${conflicts}" ]]; then
+    printf '%s\n' "${conflicts}" >"$(state_path hand)"
     report_conflicts "${target}"
-    stop 3 "conflicts for a resolver: $(unmerged | tr '\n' ' ')"
+    stop 3 "conflicts for a resolver: $(printf '%s\n' "${conflicts}" | tr '\n' ' ')"
   fi
   finish
 }
@@ -767,18 +926,19 @@ origin/main..upstream/main 2>/dev/null || echo '?') upstream commits not yet in 
     elif [[ ! -e "${wt}/.git" ]]; then
       echo "sync worktree  none yet (${wt})"
     elif merging || unlanded; then
+      stop_reason="$(stop_code)" || alab_die "cannot read sync stop record"
       if merging; then
         echo "sync worktree  merging $(in_wt rev-parse --short MERGE_HEAD), $(waiting_hours)h in ${wt}"
         unmerged | sed 's/^/  unresolved: /'
-      elif in_wt merge-base --is-ancestor origin/main HEAD; then
+      elif alab_ancestor_check in_wt merge-base --is-ancestor origin/main HEAD; then
         echo "sync worktree  committed, not landed, $(waiting_hours)h: alab/sync.sh --continue (${wt})"
       else
         echo "sync worktree  committed, not landed, $(waiting_hours)h, origin/main moved since: \
 --continue merges it in (${wt})"
       fi
-      case "$(stop_code)" in
+      case "${stop_reason}" in
         3 | 4 | 6)
-          echo "  stopped for a person (exit $(stop_code)):"
+          echo "  stopped for a person (exit ${stop_reason}):"
           sed -e 1d -e '/^$/d' -e 's/^/    /' "$(state_path stop)"
           ;;
         no-push) echo "  merged and checked with --no-push" ;;
@@ -786,7 +946,7 @@ origin/main..upstream/main 2>/dev/null || echo '?') upstream commits not yet in 
         continue) echo "  a person's --continue stopped on an error (alab/sync.sh --continue again, or --abort)" ;;
         *) echo "  stopped on an error, not for a resolver: the next alab/sync.sh resumes it" ;;
       esac
-    elif [[ -n "$(in_wt status --porcelain --untracked-files=no)" ]]; then
+    elif ! worktree_clean --untracked-files=no; then
       echo "sync worktree  idle, with uncommitted changes: alab/sync.sh --abort discards them (${wt})"
     else
       echo "sync worktree  idle (${wt})"
@@ -821,21 +981,22 @@ git rev-parse -q --verify origin/main >/dev/null || alab_die "origin has no main
 target="$(git rev-parse --verify "${ref}^{commit}")" || alab_die "no such upstream revision '${ref}'"
 # A release tag is cut off upstream main (version bump, cherry-picks): merged here, its
 # "version = X" and cherry-picks would stay in main through every later sync.
-git merge-base --is-ancestor "${target}" upstream/main || alab_die "${ref} is not on upstream/main \
+alab_ancestor_check git merge-base --is-ancestor "${target}" upstream/main || alab_die "${ref} is not on upstream/main \
 (a release tag? those are cut off main): main tracks upstream/main only (alab/README.md, 'Releases')"
 # Whatever upstream commit main merged last must still be upstream history.
 last_merged="$(alab_last_sync_upstream origin/main)" || alab_die "cannot read main's last upstream sync"
-[[ -z "${last_merged}" ]] || git merge-base --is-ancestor "${last_merged}" upstream/main \
+[[ -z "${last_merged}" ]] || alab_ancestor_check git merge-base --is-ancestor "${last_merged}" upstream/main \
   || alab_die "upstream/main no longer contains ${last_merged:0:9}, the upstream commit main \
 merged last: upstream rewrote its history (alab/README.md, 'If upstream rewrites history')"
-if git merge-base --is-ancestor "${target}" origin/main; then
+if alab_ancestor_check git merge-base --is-ancestor "${target}" origin/main; then
   alab_say "main already contains ${ref} ($(git log -1 --format='%h %cs' "${target}")): nothing to do"
   exit 0
 fi
 
 ensure_worktree
 if merging || unlanded; then
-  case "$(stop_code)" in
+  stop_reason="$(stop_code)" || alab_die "cannot read sync stop record"
+  case "${stop_reason}" in
     "") ;;
     no-push) exit_with 5 "a sync in ${wt} was merged and checked with --no-push $(waiting_hours)h \
 ago and is not landed: alab/sync.sh --continue lands it, or --abort" ;;
@@ -850,7 +1011,7 @@ $(waiting_hours)h ago: alab/sync.sh --continue checks and lands it, or --abort" 
   # Under --no-push it is still unlanded: syncing further would rebuild alab-sync from origin/main.
   [[ "${push}" -eq 1 ]] || exit 0
 fi
-[[ -z "$(in_wt status --porcelain --untracked-files=no)" ]] || alab_die "${wt} has uncommitted \
+worktree_clean --untracked-files=no || alab_die "${wt} has uncommitted \
 changes and no sync in progress: alab/sync.sh --abort discards them"
 
 if [[ "${stepwise}" -eq 0 ]]; then
@@ -859,9 +1020,10 @@ if [[ "${stepwise}" -eq 0 ]]; then
 fi
 # Each round lands a clean prefix and then the first change that needs a resolver; a round
 # whose change rerere resolved lands as well, and the next round goes on from there.
-while ! git merge-base --is-ancestor "${target}" origin/main; do
+while ! alab_ancestor_check git merge-base --is-ancestor "${target}" origin/main; do
   before="$(git rev-parse origin/main)"
-  IFS='|' read -r prefix first <<<"$(stepwise_plan "${target}")"
+  stepwise_result="$(stepwise_plan "${target}")" || exit $?
+  IFS='|' read -r prefix first <<<"${stepwise_result}"
   if [[ -n "${prefix}" ]]; then
     [[ -z "${first}" ]] || alab_say "stepwise: landing the clean prefix up to $(git log -1 --format='%h %s' "${prefix}")"
     run_sync "${prefix}"

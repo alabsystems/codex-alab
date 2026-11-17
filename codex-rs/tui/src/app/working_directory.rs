@@ -594,7 +594,7 @@ impl App {
         }
         let attach_widget = App::replace_chat_widget_with_app_server_thread;
         let (lineage, message) = (ThreadAttachPresentation::SessionLineage, None);
-        if let Err(error) = attach_widget(self, tui, started, lineage, message).await {
+        if let Err(error) = attach_widget(self, tui, Some(app_server), started, lineage, message).await { // ALAB(source-selection): directory transitions retain their original live session through projection.
             return self.working_directory_error(format!("Could not restore session: {error}"));
         }
         if selected_profile.is_some() {

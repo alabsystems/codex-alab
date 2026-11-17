@@ -1,5 +1,7 @@
 use super::thread_input::ensure_direct_input_allowed;
 use super::*;
+#[path = "../../../alab-core/glue/retained_task_turn.rs"]
+pub(super) mod alab_task_turn; // ALAB(upgrade): the actual backend initial turn shares complete turn/start policy.
 use codex_app_server_protocol::ImageReference as V2ImageReference;
 use codex_app_server_protocol::ThreadGuardianAssessment;
 use codex_app_server_protocol::ThreadGuardianReviewParams;
@@ -175,7 +177,7 @@ impl TurnRequestProcessor {
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         validate_user_input_image_urls(&params.input)?;
         self.turn_start_inner(
-            request_id,
+            alab_task_turn::TurnTarget::Client(request_id), // ALAB(upgrade): preserve the real RPC publication and trace identity.
             params,
             app_server_client_name,
             app_server_client_version,
@@ -574,19 +576,18 @@ impl TurnRequestProcessor {
 
     async fn turn_start_inner(
         &self,
-        request_id: ConnectionRequestId,
+        target: alab_task_turn::TurnTarget<'_>, // ALAB(upgrade): backend policy never fabricates a client/request ID.
         params: TurnStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<TurnStartResponse, JSONRPCErrorError> {
-        let (thread_id, thread) =
-            self.load_thread(&params.thread_id)
-                .await
-                .inspect_err(|error| {
-                    self.track_error_response(&request_id, error, /*error_type*/ None);
-                })?;
-        self.ensure_direct_input_allowed(&request_id, thread.as_ref())
-            .await?;
+        let (thread_id, thread) = target // ALAB(upgrade): client lookup or exact captured backend runtime registration.
+            .load_thread(self, &params.thread_id)
+            .await
+            .inspect_err(|error| {
+                target.track_error(self, error, /*error_type*/ None); // ALAB(upgrade): preserve actual client or backend error routing.
+            })?;
+        target.ensure_direct_input_allowed(self, thread.as_ref()).await?; // ALAB(upgrade): identical direct-input policy for both targets.
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
@@ -623,8 +624,8 @@ impl TurnRequestProcessor {
                 });
         if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
             let error = Self::input_too_large_error(actual_chars);
-            self.track_error_response(
-                &request_id,
+            target.track_error( // ALAB(upgrade): input errors retain their real target identity.
+                self,
                 &error,
                 Some(AnalyticsJsonRpcError::Input(InputError::TooLarge)),
             );
@@ -637,7 +638,7 @@ impl TurnRequestProcessor {
             .try_for_each(CoreAdditionalContextEntry::validate)
             .map_err(invalid_request)
             .inspect_err(|error| {
-                self.track_error_response(&request_id, error, /*error_type*/ None);
+                target.track_error(self, error, /*error_type*/ None); // ALAB(upgrade): preserve actual client or backend error routing.
             })?;
         Self::set_app_server_client_info(
             thread.as_ref(),
@@ -646,7 +647,7 @@ impl TurnRequestProcessor {
         )
         .await
         .inspect_err(|error| {
-            self.track_error_response(&request_id, error, /*error_type*/ None);
+            target.track_error(self, error, /*error_type*/ None); // ALAB(upgrade): preserve actual client or backend error routing.
         })?;
         let runtime_workspace_roots = params
             .runtime_workspace_roots
@@ -716,6 +717,7 @@ impl TurnRequestProcessor {
             )
             .await?;
 
+        target.before_submit(self, thread_id).await?; // ALAB(upgrade): recheck exact backend owner/runtime after fallible policy awaits.
         let submission = thread
             .start_or_steer_turn(
                 TurnInputRequest::new(input)
@@ -733,7 +735,7 @@ impl TurnRequestProcessor {
                     .with_additional_context(additional_context)
                     .with_responses_metadata(params.responsesapi_client_metadata)
                     .with_responses_metadata_patch(params.responsesapi_client_metadata_patch)
-                    .with_trace(self.request_trace_context(&request_id).await),
+                    .with_trace(target.trace(self).await), // ALAB(upgrade): retain real client or issuing operation trace.
             )
             .await
             .map_err(|err| {
@@ -741,7 +743,7 @@ impl TurnRequestProcessor {
                     CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
                     _ => internal_error(format!("failed to submit turn input: {err}")),
                 };
-                self.track_error_response(&request_id, &error, /*error_type*/ None);
+                target.track_error(self, &error, /*error_type*/ None); // ALAB(upgrade): preserve actual client or backend error routing.
                 error
             })?;
         let (turn_id, root_turn_id, started) = match submission {
@@ -764,7 +766,7 @@ impl TurnRequestProcessor {
                 } else {
                     internal_error(format!("failed to submit turn input: {reason:?}"))
                 };
-                self.track_error_response(&request_id, &error, /*error_type*/ None);
+                target.track_error(self, &error, /*error_type*/ None); // ALAB(upgrade): preserve actual client or backend error routing.
                 return Err(error);
             }
         };
@@ -783,9 +785,7 @@ impl TurnRequestProcessor {
             }
         }
 
-        self.outgoing
-            .record_request_turn_id(&request_id, &turn_id)
-            .await;
+        target.record_turn(self, &turn_id).await; // ALAB(upgrade): record on the real client request or child operation span.
         let turn = Turn {
             id: turn_id,
             root_turn_id: Some(root_turn_id),
@@ -1087,10 +1087,11 @@ impl TurnRequestProcessor {
             .map_err(invalid_request)?;
         validate_response_item_image_urls(&items)?;
 
-        thread
-            .inject_response_items(items)
-            .await
-            .map_err(|err| match err.details() {
+        #[cfg(unix)]
+        let injected = alab_retained_side::inject_original(&thread, items).await; // ALAB(retained-side): exact accepted occurrence delegates the original complete Core policy.
+        #[cfg(not(unix))]
+        let injected = thread.inject_response_items(items).await;
+        injected.map_err(|err| match err.details() {
                 CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
                 _ => internal_error(format!("failed to inject response items: {err}")),
             })?;
@@ -1593,3 +1594,7 @@ impl TurnRequestProcessor {
         .await
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-core/glue/retained_side_injection.rs"]
+pub(crate) mod alab_retained_side; // ALAB(retained-side): optional same-Core occurrence seam, ordinary injection unchanged.

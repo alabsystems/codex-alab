@@ -208,7 +208,10 @@ pub(super) async fn accept_upgrade_and_capture(
     }
     #[cfg(unix)]
     {
-        let input = match tui.alab_prepare_upgrade_capture() {
+        let input = match tui
+            .alab_prepare_upgrade_capture()
+            .and_then(|input| input.with_editor(app.chat_widget.alab_capture_runtime_editor()?))
+        {
             Ok(input) => input,
             Err(error) => {
                 codex_alab_tui::upgrade::update_pending(format!("Update pending: {error}"));
@@ -230,5 +233,47 @@ pub(super) async fn accept_upgrade_and_capture(
     {
         let _ = tui;
         Ok(false)
+    }
+}
+
+#[cfg(unix)]
+pub(super) async fn attach_runtime_editor(
+    app: &mut App,
+    primary: ThreadId,
+) -> color_eyre::Result<()> {
+    if crate::app_server_session::alab_upgrade_receiver::needs_editor_restore()
+        && let Some(pending) = codex_alab_tui::upgrade_state::pending()
+    {
+        pending.validate_primary(&primary.to_string())?;
+        let frame = codex_alab_tui::upgrade_state::data(pending.bytes())?;
+        app.chat_widget
+            .alab_restore_runtime_editor(primary, frame.terminal.editor.get().as_bytes())?;
+    }
+    crate::app_server_session::alab_upgrade_receiver::attached(primary, app.chat_widget.thread_id())
+        .await
+}
+#[cfg(not(unix))]
+pub(super) async fn attach_runtime_editor(
+    app: &mut App,
+    primary: ThreadId,
+) -> color_eyre::Result<()> {
+    crate::app_server_session::alab_upgrade_receiver::attached(primary, app.chat_widget.thread_id())
+        .await
+}
+
+pub(super) fn runtime_editor_drew(app: &App) {
+    #[cfg(unix)]
+    if codex_alab_tui::upgrade_editor_startup::deferred()
+        && app.chat_widget.alab_runtime_editor_has_layout()
+    {
+        let frames = app.chat_widget.alab_frame_requester();
+        let events = app.app_event_tx.clone();
+        crate::app_server_session::alab_upgrade_receiver::activate_after_layout(move |result| {
+            match result {
+                Ok(()) => codex_alab_tui::upgrade_editor_startup::release_after_activation(),
+                Err(error) => events.send(crate::app_event::AppEvent::FatalExitRequest(error)),
+            }
+            frames.schedule_frame();
+        });
     }
 }

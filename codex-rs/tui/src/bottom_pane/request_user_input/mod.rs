@@ -140,6 +140,8 @@ struct AnswerState {
 pub(crate) struct RequestUserInputOverlay {
     app_event_tx: AppEventSender,
     request: ToolRequestUserInputParams,
+    #[cfg(unix)]
+    alab_inputs: crate::app::retained_original_input::QueueBindings, // ALAB(retained-ui): exact per-item actual reply owner accompanies this queue.
     // Queue of incoming requests to process after the current one.
     queue: VecDeque<ToolRequestUserInputParams>,
     // Reuse the shared chat composer so notes/freeform answers match the
@@ -205,6 +207,8 @@ impl RequestUserInputOverlay {
             app_event_tx,
             request,
             queue: VecDeque::new(),
+            #[cfg(unix)]
+            alab_inputs: crate::app::retained_original_input::QueueBindings::capture(), // ALAB(retained-ui): claim was already retained before original view creation.
             composer,
             answers: Vec::new(),
             current_idx: 0,
@@ -249,6 +253,7 @@ impl RequestUserInputOverlay {
     }
 
     fn advance_queue_or_complete_at(&mut self, now: Instant) {
+        #[cfg(unix)] self.alab_inputs.advance(); // ALAB(retained-ui): advance SAME resource with the original per-item queue.
         if let Some(next) = self.queue.pop_front() {
             self.request = next;
             self.request_started_at = now;
@@ -897,13 +902,10 @@ impl RequestUserInputOverlay {
             tracing::error!("user input request had an invalid thread ID");
             return;
         };
-        self.app_event_tx.user_input_answer(
-            thread_id,
-            self.request.turn_id.clone(),
-            ToolRequestUserInputResponse {
-                answers: answers.clone(),
-            },
-        );
+        #[cfg(unix)] // ALAB(retained-ui): freeze immutable original Value BEFORE the actual AppEvent enqueue.
+        if !self.alab_inputs.submit(&self.app_event_tx, thread_id, self.request.turn_id.clone(), ToolRequestUserInputResponse { answers: answers.clone() }) { return; }
+        #[cfg(not(unix))]
+        self.app_event_tx.user_input_answer(thread_id, self.request.turn_id.clone(), ToolRequestUserInputResponse { answers: answers.clone() });
         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
             history_cell::RequestUserInputResultCell {
                 questions: self.request.questions.clone(),
@@ -921,13 +923,10 @@ impl RequestUserInputOverlay {
             tracing::error!("user input request had an invalid thread ID");
             return;
         };
-        self.app_event_tx.user_input_answer(
-            thread_id,
-            self.request.turn_id.clone(),
-            ToolRequestUserInputResponse {
-                answers: answers.clone(),
-            },
-        );
+        #[cfg(unix)] // ALAB(retained-ui): freeze immutable original Value BEFORE the actual AppEvent enqueue.
+        if !self.alab_inputs.submit(&self.app_event_tx, thread_id, self.request.turn_id.clone(), ToolRequestUserInputResponse { answers: answers.clone() }) { return; }
+        #[cfg(not(unix))]
+        self.app_event_tx.user_input_answer(thread_id, self.request.turn_id.clone(), ToolRequestUserInputResponse { answers: answers.clone() });
         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
             history_cell::RequestUserInputResultCell {
                 questions: self.request.questions.clone(),
@@ -944,8 +943,10 @@ impl RequestUserInputOverlay {
         };
 
         let queue_len = self.queue.len();
-        self.queue
-            .retain(|queued_request| queued_request.item_id != *call_id);
+        #[cfg(unix)] self.alab_inputs.retain(&mut self.queue, call_id); // ALAB(retained-ui): remove the same queue-item resource with its actual request.
+        #[cfg(not(unix))]
+        self.queue.retain(|queued_request| queued_request.item_id != *call_id);
+        #[cfg(unix)] if !self.alab_inputs.current_matches_resolved() { return self.queue.len() != queue_len; } // ALAB(retained-ui): an equal item ID cannot dismiss a later actual callback.
         if self.request.item_id == *call_id {
             self.advance_queue_or_complete_at(Instant::now());
             return true;
@@ -1168,6 +1169,37 @@ impl RequestUserInputOverlay {
 }
 
 impl BottomPaneView for RequestUserInputOverlay {
+    #[cfg(unix)] // ALAB(retained-ui): actual current/FIFO resource list survives delayed A answers.
+    fn alab_original_input_items(&self) -> std::io::Result<Vec<std::sync::Arc<crate::app::retained_original_input::Item>>> {
+        self.alab_inputs.actual_items().into_iter().map(|item| item.ok_or_else(||std::io::Error::new(std::io::ErrorKind::WouldBlock,"original reply resource missing"))).collect()
+    }
+    #[cfg(unix)] // ALAB(retained-ui): native DATA cannot choose another form kind.
+    fn alab_matches_bound_requests(&self, requests:&crate::bottom_pane::alab_retained_views::bound::Requests)->bool {
+        matches!(requests,crate::bottom_pane::alab_retained_views::bound::Requests::UserInput(requests) if alab_retained_view::matches_requests(self,requests))
+    }
+    #[cfg(unix)] // ALAB(retained-ui): actual same-source owners precede native editing installation.
+    fn alab_install_bound_view(&mut self,data:crate::bottom_pane::alab_retained_views::ViewData,owners:&crate::bottom_pane::alab_retained_views::bound::Owners<'_>,keymap:&crate::keymap::RuntimeKeymap,bytes:usize,generations:usize)->std::io::Result<()> {
+        let crate::bottom_pane::alab_retained_views::bound::Owners::UserInput(owners)=owners else{return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"native question owner kind changed"));};
+        alab_retained_view::install(self,data,owners,keymap,bytes,generations)
+    }
+
+    // ALAB(retained-ui): original request view owns capture and exact real-callback restoration.
+    #[cfg(unix)]
+    fn alab_matches_retained_requests(&self, requests: &[ToolRequestUserInputParams]) -> bool {
+        alab_retained_view::matches_requests(self, requests)
+    }
+    #[cfg(unix)]
+    fn alab_capture_retained_view(&self, max_bytes: usize) -> std::io::Result<crate::bottom_pane::alab_retained_views::ViewData> {
+        alab_retained_view::capture(self, max_bytes)
+    }
+    #[cfg(unix)]
+    fn alab_install_retained_view(
+        &mut self, data: crate::bottom_pane::alab_retained_views::ViewData,
+        owners: &[crate::app::app_server_requests::alab_retained_owners::UserInputOwner<'_>],
+        keymap: &RuntimeKeymap, max_bytes: usize, max_generations: usize,
+    ) -> std::io::Result<()> {
+        alab_retained_view::install(self, data, owners, keymap, max_bytes, max_generations)
+    }
     fn keymap_contexts(&self) -> crate::keymap::KeymapContextSet {
         if self.confirm_unanswered_active() {
             return crate::keymap::KeymapContextSet::default();
@@ -1521,6 +1553,7 @@ impl BottomPaneView for RequestUserInputOverlay {
         &mut self,
         request: ToolRequestUserInputParams,
     ) -> Option<ToolRequestUserInputParams> {
+        #[cfg(unix)] self.alab_inputs.push(); // ALAB(retained-ui): preserve each incoming original callback separately.
         self.queue.push_back(request);
         None
     }
@@ -3960,3 +3993,7 @@ mod tests {
     }
 }
 #[path = "../../../../alab-tui/glue/question_answer.rs"] mod alab_answer; // ALAB(answer): reports this overlay to codex-alab and applies its answer
+
+#[cfg(unix)]
+#[path = "../../../../alab-tui/glue/retained_user_input_view.rs"]
+pub(crate) mod alab_retained_view; // ALAB(retained-ui): restore editing DATA only onto original replayed form/callback.

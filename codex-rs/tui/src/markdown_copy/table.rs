@@ -240,3 +240,7 @@ pub(super) fn render(
     }
     (out, CopyFormat::Markdown)
 }
+
+// ALAB(retained-ui): retain exact table fragments and their shared native sources.
+#[path = "../../../alab-tui/glue/retained_text_table.rs"]
+pub(crate) mod alab_retained_table;

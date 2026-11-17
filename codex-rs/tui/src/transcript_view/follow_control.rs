@@ -109,3 +109,7 @@ impl TranscriptView {
 #[cfg(test)]
 #[path = "follow_control_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_transcript_follow_control.rs"]
+pub(in crate::transcript_view) mod alab_retained; // ALAB(retained-ui): retain the original transcript pointer gesture across handoff.

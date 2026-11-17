@@ -289,3 +289,7 @@ mod tests;
 #[cfg(test)]
 #[path = "inline_math_tests.rs"]
 mod inline_math_tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_stream_render.rs"]
+pub(crate) mod alab_retained_render; // ALAB(retained-ui): preserve historical incremental output in the global graph.

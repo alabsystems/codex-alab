@@ -129,3 +129,11 @@ mod tests {
         assert!(state.is_idle());
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_stream_support.rs"]
+pub(crate) mod alab_retained; // ALAB(retained-ui): shared closed native streaming DATA.
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_stream_state.rs"]
+pub(crate) mod alab_retained_state; // ALAB(retained-ui): preserve actual FIFO and original enqueue instants.

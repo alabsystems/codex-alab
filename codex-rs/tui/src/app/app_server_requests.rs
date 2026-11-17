@@ -73,6 +73,8 @@ impl BufferedServerRequest {
 
 #[derive(Debug, Default)]
 pub(super) struct PendingAppServerRequests {
+    #[cfg(unix)]
+    pub(in crate::app) alab_retained_replies: alab_retained_replies::Replies, // ALAB(retained-ui): retain original human reply custody through authenticated Source outcome.
     exec_approvals: HashMap<(String, String), PendingServerRequest>,
     file_change_approvals: HashMap<(String, String), PendingServerRequest>,
     permissions_approvals: HashMap<(String, String), PendingServerRequest>,
@@ -80,6 +82,10 @@ pub(super) struct PendingAppServerRequests {
     mcp_requests: HashMap<McpRequestKey, PendingServerRequest>,
     pub(super) user_verification: super::user_verification_requests::UserVerificationRequests,
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_reply_jobs.rs"]
+pub(in crate::app) mod alab_retained_replies; // ALAB(retained-ui): actual original reply owner, never recreate or retry a saved answer.
 
 impl PendingAppServerRequests {
     fn canonical_thread_id(thread_id: &str) -> String {
@@ -230,7 +236,14 @@ impl PendingAppServerRequests {
         &mut self,
         request: &BufferedServerRequest,
     ) -> Option<UnsupportedAppServerRequest> {
-        self.note_server_request_owned(&request.request, Some(request.reply.clone()))
+        let unsupported = self.note_server_request_owned(&request.request, Some(request.reply.clone()));
+        #[cfg(unix)] // ALAB(retained-ui): claim the actual per-item reply before either original UI queue.
+        if unsupported.is_none() {
+            if let Err(error) = self.alab_retained_replies.pin_user_input(request) {
+                tracing::warn!(%error, "retained input remains registered but its protected view is held");
+            }
+        }
+        unsupported
     }
 
     #[cfg(test)]
@@ -1209,3 +1222,7 @@ mod tests {
 #[cfg(test)]
 #[path = "retained_reply_tests.rs"]
 mod retained_reply_tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_user_input_owners.rs"]
+pub(crate) mod alab_retained_owners; // ALAB(retained-ui): borrow real replayed reply owners, never recreate callbacks from JSON.

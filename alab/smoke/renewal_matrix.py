@@ -5,8 +5,10 @@
 
 import argparse
 import hashlib
+import io
 import json
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 
@@ -14,6 +16,9 @@ import capacity_exec as probe
 import native_host_record
 import package_standing
 import renewal_follow
+
+FILE_HASH = runpy.run_path(str(Path(__file__).resolve().parents[1] / "file_hash.py"))
+CLI = runpy.run_path(str(Path(__file__).resolve().parents[1] / "cli_status.py"))
 
 BASE_CASES = ("happy", "lost-signal-ack", "panic-before-signal", "lost-consume-ack",
               "late-hold", "owner-stop")
@@ -23,7 +28,7 @@ CASES = BASE_CASES + ("weekly-quota", "weekly-quota-rollback", "weekly-quota-exh
 
 
 def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return FILE_HASH["file_sha256"](path, error_type=RuntimeError)
 
 
 def pinned_inputs(host, package):
@@ -39,7 +44,8 @@ def pinned_inputs(host, package):
     return (Path(__file__).resolve(), smoke / "renewal_follow.py", smoke / "capacity_exec.py",
             smoke / "provider_fixture.py", smoke / "native_host_record.py",
             smoke / "package_standing.py",
-            smoke.parent / "command_guard.py", host, host.parent / "build.json",
+            smoke.parent / "command_guard.py", smoke.parent / "cli_status.py", smoke.parent / "file_hash.py",
+            host, host.parent / "build.json",
             package / "bin" / "codex", package / "alab-build.json",
             package / "codex-package.json")
 
@@ -52,12 +58,16 @@ def case_passed(case, returncode, result):
     (renewal_follow.CASE_PROOFS) left that oracle's record: a `five-hour-wall-far` result
     that passed on the weekly oracle alone is not one.
     """
-    if returncode != 0 or not isinstance(result, dict) or result.get("passed") is not True:
+    if (type(returncode) is not int or returncode != 0
+            or not isinstance(result, dict) or result.get("passed") is not True):
         return False
-    guardian = result.get("guardian") or {}
+    guardian = result.get("guardian")
+    if not isinstance(guardian, dict):
+        return False
     proof = renewal_follow.CASE_PROOFS.get(case)
-    return bool(guardian.get("returncode") == 0 and guardian.get("timed_out") is False
-                and result.get("rawHostReturncode") == 0
+    return bool(type(guardian.get("returncode")) is int and guardian["returncode"] == 0
+                and guardian.get("timed_out") is False
+                and type(result.get("rawHostReturncode")) is int and result["rawHostReturncode"] == 0
                 and (proof is None or (isinstance(result.get(proof), dict) and result[proof])))
 
 
@@ -74,7 +84,7 @@ def package_refusal(package):
     return package_standing.not_qualifying(build)
 
 
-def main():
+def _arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", required=True, type=Path)
     parser.add_argument("--package", required=True, type=Path)
@@ -82,6 +92,14 @@ def main():
     parser.add_argument("--case", action="append", choices=CASES)
     parser.add_argument("--quota", action="store_true", help="Use distinct quota accounts for fault cases")
     args = parser.parse_args()
+    return args, parser
+
+
+def main():
+    return _run(*_arguments())
+
+
+def _run(args, parser):
     controller = Path(__file__).with_name("renewal_follow.py").resolve(strict=True)
     host = args.host.resolve(strict=True)
     package = args.package.resolve(strict=True)
@@ -91,7 +109,8 @@ def main():
     try:
         refusal = native_host_record.not_qualifying(native_host_record.load(host))
         native_host_record.require_aterm_name(host)
-        # This file is the qualification: `passed` is read without the record's sentence.
+        # Require qualifying standing before any case can produce a passing summary.
+        # Evidence also needs this invocation's zero CLI status and bound inputs.
         native_host_record.require(refusal is None, "the native host record qualifies no "
             f"run: {refusal}; run a case singly with renewal_follow.py for trial evidence")
         refusal = package_refusal(package)
@@ -124,11 +143,12 @@ def main():
             raise RuntimeError("qualification source or image changed during matrix")
 
     save()
+    primary = None
     try:
         for case in requested:
             unchanged()
             case_root = root / case
-            with (root / (case + ".log")).open("xb") as log:
+            with probe.OutputFiles((("controller", root / (case + ".log")),)) as (log,):
                 command = [sys.executable, str(controller), "--host", str(host),
                            "--package", str(package), "--output", str(case_root), "--case", case]
                 if args.quota:
@@ -139,12 +159,20 @@ def main():
                 )
             unchanged()
             result_path = case_root / "result.json"
-            result = json.loads(result_path.read_text()) if result_path.is_file() else None
+            result_bytes = None
+            if result_path.is_file():
+                _metadata, result_bytes = FILE_HASH["file_bytes_snapshot"](
+                    result_path, error_type=RuntimeError)
+            result = None
+            if result_bytes is not None:
+                with io.TextIOWrapper(io.BytesIO(result_bytes)) as text:
+                    result = json.loads(text.read())
             passed = case_passed(case, completed.returncode, result)
             report["cases"].append({"case": case, "passed": passed,
                                     "controllerExit": completed.returncode,
                                     "result": str(result_path),
-                                    "resultSha256": digest(result_path) if result else None})
+                                    "resultSha256": hashlib.sha256(result_bytes).hexdigest()
+                                    if result_bytes is not None else None})
             save()
             print(json.dumps(report["cases"][-1]), flush=True)
             if not passed:
@@ -152,12 +180,26 @@ def main():
         report["passed"] = True
         report["allSixCasesPassed"] = set(BASE_CASES).issubset(requested)
         report["allAvailableCasesPassed"] = set(requested) == set(CASES)
-    except Exception as error:
-        report["error"] = type(error).__name__ + ": " + str(error)
+    except BaseException as error:
+        primary = error
+        if not isinstance(error, Exception):
+            raise
+        report.update(probe.case_error_fields(error))
     finally:
-        save()
+        try:
+            save()
+        except BaseException as error:
+            if primary is not None:
+                probe._attach_case_notes(primary, [f"matrix final report: {probe._case_label(error)}"])
+                raise primary
+            raise
     return 0 if report["passed"] else 1
 
 
+def cli():
+    args, parser = _arguments()
+    return CLI["run_operation"](lambda: _run(args, parser), "renewal matrix: ")
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

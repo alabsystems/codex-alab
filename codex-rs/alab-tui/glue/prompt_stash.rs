@@ -513,3 +513,15 @@ mod tests {
         assert!(!prompts().lock().unwrap().contains_key(&conversation.0));
     }
 }
+
+#[cfg(unix)]
+#[path = "editor_upgrade_composer.rs"]
+mod editor_upgrade;
+
+#[cfg(unix)]
+#[path = "editor_upgrade_stash_checkpoint.rs"]
+mod draft_checkpoint;
+
+#[cfg(unix)]
+#[path = "retained_startup_submission.rs"]
+mod retained_submission;

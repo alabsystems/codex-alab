@@ -10,12 +10,12 @@ import subprocess
 import sys
 import tempfile
 import shutil
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qualification as QUAL
-import upstream_status as STATUS
 
 ALAB = Path(QUAL.__file__).parent
 
@@ -455,6 +455,7 @@ class QualificationTests(unittest.TestCase):
         self.assertIsNone(record['qualified_source'])
 
     def test_status_reads_qualification_without_inventing_artifact_or_fetch_stages(self):
+        import upstream_status as STATUS
         _, output, _ = self.execute()
         result = STATUS.report(self.repo, qualification_record=output / 'record.json')
         self.assertEqual(result['qualified_sha'], self.source)
@@ -464,6 +465,7 @@ class QualificationTests(unittest.TestCase):
         self.assertFalse(result['errors'])
 
     def test_old_or_malformed_schema_cannot_report_a_qualified_source(self):
+        import upstream_status as STATUS
         _, output, _ = self.execute()
         path = output / 'record.json'
         record = json.loads(path.read_text())
@@ -475,8 +477,60 @@ class QualificationTests(unittest.TestCase):
                 self.assertIsNone(result['qualified_sha'])
                 self.assertTrue(result['errors'])
 
+    def test_status_retains_source_observation_when_snapshot_capabilities_are_unavailable(self):
+        import upstream_status as STATUS
+        _, output, _ = self.execute()
+        baseline = STATUS.report(self.repo)
+        reader = QUAL.FILE_HASH['file_sha256'].__globals__
+        for missing in ('O_NOFOLLOW', 'O_NONBLOCK'):
+            with self.subTest(missing=missing):
+                namespace = SimpleNamespace(**vars(os))
+                delattr(namespace, missing)
+                with patch.object(namespace, 'open', side_effect=AssertionError('snapshot open forbidden')) as opened, \
+                        patch.dict(reader, {'os': namespace}):
+                    result = STATUS.report(self.repo, qualification_record=output / 'record.json')
+                opened.assert_not_called()
+                self.assertIsNone(result['qualified_sha'])
+                self.assertTrue(any('require O_NOFOLLOW and O_NONBLOCK' in error for error in result['errors']))
+                for field in ('main_sha', 'upstream_sha', 'integrated_frontier_sha', 'pending_count'):
+                    self.assertEqual(result[field], baseline[field])
+                for field in ('packaged_sha', 'selected_sha', 'running_sha', 'last_successful_fetch_at'):
+                    self.assertIsNone(result[field])
+
+    def test_after_snapshot_requires_a_mapping_with_boolean_true_clean(self):
+        # This producer runs only setUp's tiny temporary shell gate, not Rust.
+        status, output, _ = self.execute()
+        self.assertEqual(status, 0)
+        path = output / 'record.json'
+        original = json.loads(path.read_text())
+        self.assertIs(original['before']['clean'], True)
+        self.assertIs(original['after']['clean'], True)
+        self.assertEqual(QUAL.inspect(self.repo, path)['source'], self.source)
+        snapshot = original['after']
+        cases = (
+            ('integer clean', {**snapshot, 'clean': 1}),
+            ('float clean', {**snapshot, 'clean': 1.0}),
+            ('false clean', {**snapshot, 'clean': False}),
+            ('missing clean', {key: value for key, value in snapshot.items() if key != 'clean'}),
+            ('null snapshot', None),
+            ('list snapshot', []),
+            ('missing snapshot', None),
+        )
+        for label, after in cases:
+            with self.subTest(shape=label):
+                record = copy.deepcopy(original)
+                if label == 'missing snapshot':
+                    del record['after']
+                else:
+                    record['after'] = after
+                path.write_text(json.dumps(record))
+                with self.assertRaises(ValueError):
+                    QUAL.inspect(self.repo, path)
+        path.write_text(json.dumps(original))
+        self.assertEqual(QUAL.inspect(self.repo, path)['source'], self.source)
+
     def test_production_sync_runs_the_recorder_and_preserves_gate_exit_classes(self):
-        for name in ('qualification.py', 'upstream_intake.py', 'source_content.py'):
+        for name in ('qualification.py', 'cli_status.py', 'file_hash.py', 'upstream_intake.py', 'source_content.py'):
             shutil.copyfile(ALAB / name, self.repo / 'alab' / name)
         source = (ALAB / 'sync.sh').read_text()
         start = source.index('\nrun_check() {') + 1

@@ -1,0 +1,17 @@
+<!--
+Copyright 2026 Andrew Yates
+SPDX-License-Identifier: Apache-2.0
+-->
+# Source construction and selection ownership
+
+Later Core construction needs its own scheduling inhibitor on the retained backend's original GoalOwner. Releasing an initial or replacement Hold must not admit automatic work while another candidate remains unresolved. The same Gate now drains real read windows and issues distinct tickets. Exact ticket and optional matching Hold release occur under one writer after the caller's final recheck. Foreign, stale, failed, canceled and dropped resources cannot open another candidate's barrier. These resources govern Source scheduling; they grant no Native permission.
+
+The SDK now owns Source registration, S1 inhibition and distinct S2 reconciliation resources. Registration and accepted work retain their original tasks across observer loss. A refused registration resolves the exact unaccepted Native reservation instead of assuming that an error means no record exists. Selection observation and App commit use separate opaque receipts; release requires the same ticket, actual operation, final Native commit and caller ownership check. Side conversations have a separate ticket-only release. The configured NoPrimary route can transfer its continuously closed Hold to an actual pending H1 without opening or reacquiring it; old Runtime receipts cannot reuse the moved resource.
+
+Review caught a shutdown deadlock: an accepted worker could wait for the join semaphore while shutdown held that semaphore and awaited the worker. Housekeeping now tries the shared lease without waiting. The original shutdown still drains every handle, and the shared TaskLease restores the exact handle on canceled observation. Two actual Tokio task controls reproduce the overlap and verify completed-handle retirement without consuming live work. The paired Native registration correction separately adds Inhibiting before the first S1 send so cancel-unaccepted cannot retire an active inhibition; its qualification is tracked independently.
+
+Source-selected Trust 15698 and the unchanged protected profile pass SDK 329 and Core 464 tests, with four existing SDK child helpers ignored. Eighteen new controls cover ten real scheduling-window cases, six physical S1/S2 and closed-codec cases, and two actual task/join cases. The native-source-proof feature check passes. Final owned, spanning, failing-target, build-script and set-aside lint findings are all zero. Both selected packages have no build script; compiler and dependency locks are unchanged. These are unverified component executions, not application certification or a successful Native/UI transition.
+
+The first compile required explicit io::Result<Reply> annotations at three frontend response closures. Final lint also required lexical confinement of the acknowledgement stage lock before the network await and removal of one redundant clone. Earlier inputs and failures remain recorded. Final checked input: base 0523bbaae2921daa3f7d425fafedff708a07295d, patch SHA256 94470e52f53b2f6d46f9eb4ef7a5f7673f950cb90bcb7418e4de37321c9b7d5d, 19 ALab-owned paths before this report.
+
+Ordinary activation remains off. Actual prepared-claim/Scope and selected or side Core ownership, the original serialized listener and full UI/input receipt, configured Empty-slot startup, editor custody, a real signed-image update, the complete application gate and main landing remain required. The broad Autopilot failures described in the main reconciliation report are not waived by these component results.

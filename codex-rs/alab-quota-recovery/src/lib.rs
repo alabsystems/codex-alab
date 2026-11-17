@@ -61,6 +61,8 @@ pub use unix::recover_weekly;
 pub struct State;
 #[cfg(not(unix))]
 impl State {
+    pub fn set_notice_sender(&self, _: tokio::sync::mpsc::UnboundedSender<String>) {}
+
     pub async fn bind(_: &codex_login::AuthManager) -> Self {
         Self
     }

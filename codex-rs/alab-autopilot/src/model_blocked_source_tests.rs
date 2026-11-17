@@ -91,15 +91,16 @@ impl ToolLifecycleContributor for SourceGate {
     }
 }
 
-async fn host_set(
+pub(super) async fn host_set(
     h: &Harness,
     goals: &GoalService,
     objective: GoalObjectiveUpdate<'_>,
     status: codex_protocol::protocol::ThreadGoalStatus,
 ) {
+    let db = h.test.codex.state_db().expect("native goal database");
     let outcome = goals
         .set_thread_goal(
-            &h.test.codex.state_db().expect("native goal database"),
+            &db,
             GoalSetRequest {
                 thread_id: h.rt.id,
                 objective,
@@ -118,24 +119,47 @@ async fn host_set(
         .append_rollout_items(&[outcome.thread_goal_updated_item()])
         .await
         .expect("append the actual host/API outcome");
-    outcome.apply_runtime_effects(goals).await;
     h.test
         .codex
         .flush_rollout()
         .await
         .expect("flush the ordered host/API outcome");
+    db.thread_goals()
+        .alab_durable_goal_barrier()
+        .await
+        .expect("make the post-rollout goal row durable");
+    // Match the host: runtime effects follow durable rollout and the final
+    // database barrier, never merely an accepted buffered append.
+    outcome.apply_runtime_effects(goals).await;
 }
 
-pub(super) fn saved_source(h: &Harness) -> WallGoal {
+fn recorded_source(h: &Harness) -> Option<WallGoal> {
     let recorded = serde_json::to_value(codex_alab_tui::record::Pace::from(
         h.shared.pace(h.rt.key()).expect("native source pace"),
     ))
     .expect("encode native source pace");
     let recorded: codex_alab_tui::record::Pace =
         serde_json::from_value(recorded).expect("decode native source pace");
-    Pace::from(recorded)
-        .model_blocked_goal
-        .expect("the codec preserves the committed model stop")
+    Pace::from(recorded).model_blocked_goal
+}
+
+pub(super) fn saved_source(h: &Harness) -> WallGoal {
+    recorded_source(h).expect("the codec preserves the committed model stop")
+}
+
+fn durable_source(h: &Harness) -> Option<WallGoal> {
+    let pid = h
+        .shared
+        .launch()
+        .map_or_else(std::process::id, |launch| launch.pid);
+    let path = codex_alab_tui::record::path_for(
+        &codex_alab_tui::record::sessions_dir(h.test.codex_home_path()),
+        pid,
+    );
+    codex_alab_tui::record::read(&path)
+        .and_then(|record| record.pace)
+        .map(Pace::from)
+        .and_then(|pace| pace.model_blocked_goal)
 }
 
 pub(super) async fn fresh_image(old: Harness, goals: Arc<GoalService>) -> Harness {
@@ -179,7 +203,7 @@ async fn verify_import(
         .await
         .expect("validate the native source after real restart");
     assert_eq!(
-        imported,
+        imported.map(|bound| bound.goal),
         recover.then_some(saved),
         "restart must preserve the original source and honor conservative stop boundaries"
     );
@@ -412,6 +436,558 @@ fn a_same_turn_host_hold_after_the_committed_model_block_defeats_restart_recover
     native_test(|| source_case(HostBoundary::PauseAfter));
 }
 
+#[test]
+fn a_live_host_round_trip_revokes_the_old_model_stop_without_a_restart() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            let original = seed(&h, &goals).await;
+            model_stop(&h, "blocked").await;
+            assert!(
+                lock(&h.rt.model_blocked_goal).is_some(),
+                "the real model block initially owns live recovery"
+            );
+            let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+            let requests = responses::received_responses_requests(&h._server)
+                .await
+                .len();
+
+            host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Paused,
+            )
+            .await;
+            host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Blocked,
+            )
+            .await;
+            let stopped = goal(&h).await;
+            assert_eq!(stopped.goal_id, original.goal_id);
+            assert_eq!(stopped.objective, original.objective);
+            assert_eq!(stopped.token_budget, original.token_budget);
+            assert_eq!(stopped.status, ThreadGoalStatus::Blocked);
+            assert_eq!(
+                h.shared.person_goal_stops(h.rt.key()),
+                0,
+                "automatic host/API outcomes are not person-origin instructions"
+            );
+
+            assert_eq!(
+                h.autopilot
+                    .current_model_goal(&h.rt)
+                    .await
+                    .expect("read live model-goal standing"),
+                None,
+                "an acknowledged native mutation round-trip must fence old model proof"
+            );
+            drop(evaluation);
+            due(&h).await;
+            evaluate(&h).await;
+            assert_eq!(goal(&h).await, stopped);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+            assert_eq!(
+                responses::received_responses_requests(&h._server)
+                    .await
+                    .len(),
+                requests,
+                "stale live proof must not open a provider request"
+            );
+            finish(&h).await;
+        })
+        .await
+        .expect("live host round-trip model-stop fence hang detector");
+    });
+}
+
+#[test]
+fn a_settled_foreign_host_generation_revokes_identical_live_model_proof() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            let original = seed(&h, &goals).await;
+            model_stop(&h, "blocked").await;
+            let bound = lock(&h.rt.model_blocked_goal)
+                .clone()
+                .expect("the real model block initially owns live recovery");
+            let runtime = goals.alab_goal_runtime(h.rt.id).unwrap();
+            assert_eq!(
+                runtime.alab_goal_mutation_epoch(),
+                Some(bound.epoch.clone())
+            );
+
+            // Simulate another process completing a host round trip whose final
+            // SQLite fields equal the old row. Its process-local epoch cannot
+            // advance this runtime; only the settled durable serial witnesses it.
+            let codex_home = h.test.codex_home_path();
+            let foreign =
+                codex_alab_core::goal_chronology_fence::arm(codex_home, h.rt.key()).unwrap();
+            assert!(
+                codex_alab_core::goal_chronology_fence::clear_if_current(
+                    codex_home,
+                    h.rt.key(),
+                    foreign,
+                )
+                .unwrap()
+            );
+            assert_eq!(
+                codex_alab_core::goal_chronology_fence::read_active(codex_home, h.rt.key())
+                    .unwrap(),
+                None,
+            );
+            assert_eq!(runtime.alab_goal_mutation_epoch(), Some(bound.epoch));
+            let stopped = goal(&h).await;
+            assert_eq!(stopped.goal_id, original.goal_id);
+            assert_eq!(stopped.objective, original.objective);
+            assert_eq!(stopped.token_budget, original.token_budget);
+            assert_eq!(stopped.status, ThreadGoalStatus::Blocked);
+            assert_eq!(
+                h.autopilot
+                    .current_model_goal(&h.rt)
+                    .await
+                    .expect("read live model-goal standing after foreign settlement"),
+                None,
+                "a settled foreign mutation serial permanently invalidates older proof"
+            );
+            drop(evaluation);
+            finish(&h).await;
+        })
+        .await
+        .expect("settled foreign model-stop chronology hang detector");
+    });
+}
+
+#[test]
+fn a_vanilla_host_round_trip_cannot_resurrect_an_old_model_stop() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            seed(&h, &goals).await;
+            model_stop(&h, "blocked").await;
+            assert!(lock(&h.rt.model_blocked_goal).is_some());
+
+            codex_alab_core::set_enhanced(false);
+            host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Paused,
+            )
+            .await;
+            host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Blocked,
+            )
+            .await;
+            codex_alab_core::set_enhanced(true);
+
+            assert_eq!(
+                h.autopilot
+                    .current_model_goal(&h.rt)
+                    .await
+                    .expect("read standing after the vanilla mutation round trip"),
+                None,
+                "mode and native mutation epochs both fence the pre-vanilla source"
+            );
+            drop(evaluation);
+            finish(&h).await;
+        })
+        .await
+        .expect("vanilla host round-trip model-stop fence hang detector");
+    });
+}
+
+#[test]
+fn a_mode_epoch_cannot_be_paired_with_a_source_that_its_transition_has_not_cleared() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            seed(&h, &goals).await;
+            model_stop(&h, "blocked").await;
+            let old = lock(&h.rt.model_blocked_goal)
+                .clone()
+                .expect("live pre-transition model source");
+            // The native harness isolates ordinary pace state in a private
+            // Shared. A real mode transition owns the process-wide store, so
+            // seed that production store explicitly before testing its fence.
+            let process_shared = codex_alab_core::session::shared();
+            process_shared.set_pace_at_mode(
+                h.rt.key(),
+                h.shared.pace(h.rt.key()).expect("seeded source pace"),
+                Some(old.mode_epoch),
+            );
+            assert!(
+                process_shared
+                    .pace(h.rt.key())
+                    .is_some_and(|pace| pace.model_blocked_goal.is_some()),
+                "the process-wide store contains the source before transition"
+            );
+
+            codex_alab_core::set_enhanced(false);
+            codex_alab_core::set_enhanced(true);
+            let fresh = codex_alab_core::mode_epoch().expect("fresh Enhanced generation");
+            assert_ne!(fresh, old.mode_epoch);
+            assert!(
+                process_shared
+                    .pace(h.rt.key())
+                    .is_none_or(|pace| pace.model_blocked_goal.is_none()),
+                "the process-wide transition clears durable pace first"
+            );
+
+            // Recreate the old racy midpoint: the local observer has published
+            // the fresh generation, but its old source has not been cleared yet.
+            // Every source reader must wait on the enclosing transition lock.
+            let sources = lock(&h.rt.model_goal_sources);
+            *lock(&h.rt.model_goal_mode_epoch) = Some(fresh);
+            assert_eq!(lock(&h.rt.model_blocked_goal).as_ref(), Some(&old));
+
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+            let autopilot = Arc::clone(&h.autopilot);
+            let rt = Arc::clone(&h.rt);
+            let publisher = std::thread::spawn(move || {
+                started_tx.send(()).expect("announce the pace publisher");
+                autopilot.sync_pace(&rt);
+                finished_tx.send(()).expect("announce pace publication");
+            });
+            started_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("the concurrent publisher started");
+            let entered = Instant::now();
+            while h.autopilot.threads.try_lock().is_ok() {
+                assert!(
+                    entered.elapsed() < Duration::from_secs(1),
+                    "the publisher never reached the source transition"
+                );
+                std::thread::yield_now();
+            }
+            assert!(
+                matches!(
+                    finished_rx.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                ),
+                "no reader may observe the fresh generation beside the old source"
+            );
+
+            lock(&h.rt.model_blocked_goal).take();
+            lock(&h.rt.model_goal_import).goal.take();
+            h.shared.retire_carried_model_goal(h.rt.key());
+            drop(sources);
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("the publisher continues after the transition commits");
+            publisher.join().expect("join the pace publisher");
+
+            assert!(lock(&h.rt.model_blocked_goal).is_none());
+            assert!(
+                h.shared
+                    .pace(h.rt.key())
+                    .is_none_or(|pace| pace.model_blocked_goal.is_none()),
+                "the fresh pace cannot reinsert the pre-transition source"
+            );
+            drop(evaluation);
+            finish(&h).await;
+        })
+        .await
+        .expect("mode/source transition serialization hang detector");
+    });
+}
+
+#[test]
+fn pace_publication_keeps_local_model_provenance_locked_until_the_shared_commit() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            seed(&h, &goals).await;
+            model_stop(&h, "blocked").await;
+            let expected = lock(&h.rt.model_blocked_goal)
+                .as_ref()
+                .expect("live model source")
+                .goal
+                .clone();
+
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            *lock(&h.autopilot.before_pace_source_publish) = Some(Box::new(move || {
+                entered_tx
+                    .send(())
+                    .expect("announce the captured pace source");
+                release_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("release the captured pace source");
+            }));
+
+            let autopilot = Arc::clone(&h.autopilot);
+            let rt = Arc::clone(&h.rt);
+            let publisher = std::thread::spawn(move || autopilot.sync_pace(&rt));
+            entered_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("pace publication reached the shared-source boundary");
+            assert!(
+                h.rt.model_goal_sources.try_lock().is_err(),
+                "the local source must remain locked until its shared pace commits"
+            );
+            release_tx.send(()).expect("release pace publication");
+            publisher.join().expect("join pace publication");
+            assert_eq!(recorded_source(&h), Some(expected));
+
+            drop(evaluation);
+            finish(&h).await;
+        })
+        .await
+        .expect("pace source publication lock hang detector");
+    });
+}
+
+#[test]
+fn a_vanilla_goal_tool_round_trip_advances_the_native_epoch() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            seed(&h, &goals).await;
+            model_stop(&h, "blocked").await;
+            let runtime = h
+                .test
+                .codex
+                .thread_extension_data()
+                .get::<codex_goal_extension::GoalRuntimeHandle>()
+                .expect("native goal runtime");
+            let before = runtime
+                .alab_goal_mutation_epoch()
+                .expect("pre-vanilla model epoch");
+
+            codex_alab_core::set_enhanced(false);
+            mount_goal_calls(
+                &h,
+                vec![
+                    (
+                        codex_goal_extension::UPDATE_GOAL_TOOL_NAME,
+                        serde_json::json!({"status": "paused"}),
+                    ),
+                    (
+                        codex_goal_extension::UPDATE_GOAL_TOOL_NAME,
+                        serde_json::json!({"status": "blocked"}),
+                    ),
+                ],
+            )
+            .await;
+            start_and_complete(&h).await;
+            let after = runtime
+                .alab_goal_mutation_epoch()
+                .expect("post-tool vanilla model epoch");
+            assert_ne!(after, before, "vanilla goal tools retain mutation fencing");
+            codex_alab_core::set_enhanced(true);
+
+            assert_eq!(goal(&h).await.status, ThreadGoalStatus::Blocked);
+            assert_eq!(
+                h.autopilot
+                    .current_model_goal(&h.rt)
+                    .await
+                    .expect("read standing after vanilla model tools"),
+                None,
+                "the old source cannot borrow the tools' same final row"
+            );
+            drop(evaluation);
+            finish(&h).await;
+        })
+        .await
+        .expect("vanilla model-tool round-trip fence hang detector");
+    });
+}
+
+#[test]
+fn a_host_round_trip_defeats_a_prepared_model_block_resume() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            seed(&h, &goals).await;
+            model_stop(&h, "blocked").await;
+            assert!(lock(&h.rt.model_blocked_goal).is_some());
+            drop(evaluation);
+            due(&h).await;
+
+            let (entered, entry) = tokio::sync::oneshot::channel();
+            let (release, blocked) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.before_submit) = Some((entered, blocked));
+            let pilot = Arc::clone(&h.autopilot);
+            let rt = Arc::clone(&h.rt);
+            let recovering = tokio::spawn(async move { pilot.evaluate(rt).await });
+            entry
+                .await
+                .expect("real resume passed its preparatory goal read");
+            let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+            let requests = responses::received_responses_requests(&h._server)
+                .await
+                .len();
+
+            host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Paused,
+            )
+            .await;
+            host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Blocked,
+            )
+            .await;
+            let stopped = goal(&h).await;
+
+            release.send(()).expect("release the prepared resume");
+            recovering.await.expect("prepared evaluator settles");
+            assert_eq!(
+                goal(&h).await,
+                stopped,
+                "the later acknowledged mutation round-trip wins"
+            );
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+            assert_eq!(
+                responses::received_responses_requests(&h._server)
+                    .await
+                    .len(),
+                requests,
+                "the prepared stale resume must not open a provider request"
+            );
+            assert_eq!(
+                h.autopilot
+                    .current_model_goal(&h.rt)
+                    .await
+                    .expect("read model-goal standing after the race"),
+                None
+            );
+            finish(&h).await;
+        })
+        .await
+        .expect("prepared host round-trip model-stop fence hang detector");
+    });
+}
+
+#[test]
+fn a_mode_round_trip_defeats_a_prepared_model_block_resume() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            seed(&h, &goals).await;
+            model_stop(&h, "blocked").await;
+            drop(evaluation);
+            due(&h).await;
+
+            let (entered, entry) = tokio::sync::oneshot::channel();
+            let (release, blocked) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.before_submit) = Some((entered, blocked));
+            let pilot = Arc::clone(&h.autopilot);
+            let rt = Arc::clone(&h.rt);
+            let recovering = tokio::spawn(async move { pilot.evaluate(rt).await });
+            entry
+                .await
+                .expect("real resume passed its preparatory goal read");
+            let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+            let requests = responses::received_responses_requests(&h._server)
+                .await
+                .len();
+
+            codex_alab_core::set_enhanced(false);
+            codex_alab_core::set_enhanced(true);
+            release.send(()).expect("release the prepared resume");
+            recovering.await.expect("prepared evaluator settles");
+
+            assert_eq!(goal(&h).await.status, ThreadGoalStatus::Blocked);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+            assert_eq!(
+                responses::received_responses_requests(&h._server)
+                    .await
+                    .len(),
+                requests,
+                "a pre-mode-boundary resume cannot open a provider request"
+            );
+            assert_eq!(
+                h.autopilot
+                    .current_model_goal(&h.rt)
+                    .await
+                    .expect("read model goal after the mode race"),
+                None
+            );
+            finish(&h).await;
+        })
+        .await
+        .expect("prepared mode-boundary model-stop fence hang detector");
+    });
+}
+
+#[test]
+fn a_fresh_model_block_after_host_activity_establishes_new_epoch_authority() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            let original = seed(&h, &goals).await;
+            host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Paused,
+            )
+            .await;
+            mount_model_stop(&h, "blocked").await;
+            host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Active,
+            )
+            .await;
+            completed(&h).await;
+            let requests = responses::received_responses_requests(&h._server).await;
+            assert_eq!(
+                requests.len(),
+                2,
+                "the host resume started exactly one goal turn"
+            );
+            assert!(requests[0].body_contains_text(OBJECTIVE));
+            assert!(
+                requests[0].body_contains_text("Continue working toward the active thread goal.")
+            );
+            let bound = h
+                .autopilot
+                .current_model_goal(&h.rt)
+                .await
+                .expect("read the fresh model stop")
+                .expect("a later genuine Active-to-Blocked transition binds");
+            assert_eq!(bound.goal_id, original.goal_id);
+            assert_eq!(bound.objective, original.objective);
+            assert_eq!(bound.token_budget, original.token_budget);
+
+            let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+            drop(evaluation);
+            due(&h).await;
+            evaluate(&h).await;
+            wait_requests(&h, 3).await;
+            assert_eq!(goal(&h).await.status, ThreadGoalStatus::Active);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted + 1);
+            finish(&h).await;
+        })
+        .await
+        .expect("fresh post-host model-stop epoch hang detector");
+    });
+}
+
 async fn duplicate_source(held: bool) {
     let (old, goals) = harness().await;
     let old_rt = Arc::clone(&old.rt);
@@ -437,14 +1013,18 @@ async fn duplicate_source(held: bool) {
     }
     mount_model_stop(&old, "blocked").await;
     start_and_complete(&old).await;
-    let saved = if held {
-        assert!(
+    let saved = recorded_source(&old);
+    if held {
+        assert_eq!(
+            saved, None,
+            "a native mutation round-trip retires stale durable model-stop authority"
+        );
+        assert_eq!(
             old.autopilot
                 .current_model_goal(&old.rt)
                 .await
-                .expect("check the duplicate after native host mutations")
-                .is_none(),
-            "a duplicate cannot recreate live proof across the native host hold"
+                .expect("read model-goal standing after the held duplicate"),
+            None
         );
         assert!(
             old.shared
@@ -452,20 +1032,16 @@ async fn duplicate_source(held: bool) {
                 .is_none_or(|pace| pace.model_blocked_goal.is_none()),
             "revoked native proof must leave the current durable pace"
         );
-        // An older selected record can still arrive after the current writer
-        // revoked it. The true restart must reject that pre-hold codec source.
-        source
     } else {
-        let saved = saved_source(&old);
         assert_eq!(
-            saved, source,
-            "a later duplicate block must preserve the whole original source, including its turn"
+            saved.as_ref(),
+            Some(&source),
+            "a contiguous duplicate block preserves the whole original source, including its turn"
         );
-        saved
-    };
+    }
     let h = fresh_image(old, goals).await;
     drop(evaluation);
-    verify_import(&h, saved, &original, !held).await;
+    verify_import(&h, saved.unwrap_or(source), &original, !held).await;
     finish(&h).await;
 }
 
@@ -484,5 +1060,60 @@ fn a_later_duplicate_block_cannot_move_its_source_past_a_native_host_hold() {
         tokio::time::timeout(HANG, duplicate_source(true))
             .await
             .expect("duplicate source host-hold hang detector");
+    });
+}
+
+#[test]
+fn a_transient_duplicate_chronology_read_failure_durably_revokes_the_old_source() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (old, goals) = harness().await;
+            let old_rt = Arc::clone(&old.rt);
+            let evaluation = old_rt.hold_eval_when_free().await;
+            let writer: &'static codex_alab_tui::session::Writer =
+                Box::leak(Box::new(codex_alab_tui::session::Writer::new(
+                    old.shared,
+                    codex_alab_tui::record::sessions_dir(old.test.codex_home_path()),
+                    Duration::ZERO,
+                    None,
+                )));
+            writer
+                .write_now()
+                .expect("write the initial crash-recovery record");
+            writer.install_write_through();
+            seed(&old, &goals).await;
+            model_stop(&old, "blocked").await;
+            let stale = saved_source(&old);
+            assert_eq!(durable_source(&old), Some(stale));
+
+            *lock(&old.autopilot.model_goal_generation_read_failure) =
+                Some("injected transient chronology read failure".into());
+            mount_model_stop(&old, "blocked").await;
+            start_and_complete(&old).await;
+            assert_eq!(
+                recorded_source(&old),
+                None,
+                "an unproven duplicate revokes live source authority"
+            );
+            assert_eq!(
+                durable_source(&old),
+                None,
+                "the exact revocation reaches the crash record before acknowledgement"
+            );
+
+            let h = fresh_image(old, goals).await;
+            drop(evaluation);
+            assert_eq!(
+                h.autopilot
+                    .current_model_goal(&h.rt)
+                    .await
+                    .expect("read model-goal standing after restart"),
+                None,
+                "clearing the transient read failure cannot resurrect the old crash source"
+            );
+            finish(&h).await;
+        })
+        .await
+        .expect("transient duplicate chronology read hang detector");
     });
 }

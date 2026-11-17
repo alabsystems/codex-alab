@@ -17,20 +17,75 @@ struct RuntimeStatusEvents {
 impl codex_extension_api::ExtensionEventSink for RuntimeStatusEvents {
     fn emit(&self, _: codex_protocol::protocol::Event) {}
     fn emit_warning(&self, _: codex_extension_api::ExtensionWarning) {}
-    fn alab_goal_runtime_updated(&self, update: codex_protocol::protocol::AlabGoalRuntimeUpdatedNotification) {
+    fn alab_goal_runtime_updated(
+        &self,
+        update: codex_protocol::protocol::AlabGoalRuntimeUpdatedNotification,
+    ) {
         self.updates.lock().unwrap().push(update);
         self.changed.notify_one();
     }
 }
 
 impl RuntimeStatusEvents {
-    async fn wait_for(&self, phase: codex_protocol::protocol::AlabGoalPersistencePhase, pending: bool, after: u64) -> codex_protocol::protocol::AlabGoalRuntimeUpdatedNotification {
+    async fn wait_for(
+        &self,
+        phase: codex_protocol::protocol::AlabGoalPersistencePhase,
+        pending: bool,
+        after: u64,
+    ) -> codex_protocol::protocol::AlabGoalRuntimeUpdatedNotification {
         loop {
             let changed = self.changed.notified();
-            if let Some(update) = self.updates.lock().unwrap().iter().rev().find(|update| update.persistence == Some(phase) && update.writes_pending == pending && update.revision > after).cloned() { return update; }
+            if let Some(update) = self
+                .updates
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|update| {
+                    update.persistence == Some(phase)
+                        && update.writes_pending == pending
+                        && update.revision > after
+                })
+                .cloned()
+            {
+                return update;
+            }
             changed.await;
         }
     }
+}
+
+/// Apply a successful setup mutation without letting its Active effect start a
+/// model turn. The durable deferral is visible to the exact runtime effect;
+/// clearing it afterwards restores the ordinary admission state for the test.
+async fn apply_setup_goal(
+    goals: &GoalService,
+    db: &codex_state::StateRuntime,
+    thread_id: codex_protocol::ThreadId,
+    outcome: codex_goal_extension::GoalSetOutcome,
+) {
+    let goal = db
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await
+        .expect("read setup goal")
+        .expect("setup goal exists");
+    db.thread_goals()
+        .replace_thread_goal_snapshot(&goal)
+        .await
+        .expect("persist setup-only continuation deferral");
+    outcome.apply_runtime_effects(goals).await;
+    db.thread_goals()
+        .clear_thread_goal_continuation_deferral(thread_id)
+        .await
+        .expect("clear setup-only continuation deferral");
+    assert!(
+        !goals
+            .alab_goal_runtime(thread_id)
+            .expect("setup goal runtime")
+            .alab_goal_persistence_held(),
+        "the setup-only continuation deferral must settle mutation custody"
+    );
 }
 
 #[test]
@@ -40,13 +95,14 @@ fn failed_goal_persistence_holds_native_admission_and_preserves_the_saved_goal()
             let goals = Arc::new(GoalService::new());
             let h = Harness::new_with_goals(Some(goals.clone())).await;
             let db = h.test.codex.state_db().unwrap();
-            goals.set_thread_goal(&db, GoalSetRequest {
+            let created = goals.set_thread_goal(&db, GoalSetRequest {
                 thread_id: h.rt.id,
                 objective: GoalObjectiveUpdate::Set("retain this task across a failed write"),
                 status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 max_goal_token_budget: None,
             }, async { Ok(()) }).await.unwrap();
+            apply_setup_goal(&goals, &db, h.rt.id, created).await;
             let runtime = h.test.codex.thread_extension_data()
                 .get::<codex_goal_extension::GoalRuntimeHandle>().unwrap();
             runtime.restore_after_resume().await.unwrap();
@@ -95,7 +151,7 @@ fn a_queued_old_stop_cannot_overwrite_a_successful_same_goal_reactivation() {
             let h = Harness::new_with_goals(Some(goals.clone())).await;
             h.hold_model_response().await;
             let db = h.test.codex.state_db().unwrap();
-            goals
+            let created = goals
                 .set_thread_goal(
                     &db,
                     GoalSetRequest {
@@ -109,6 +165,7 @@ fn a_queued_old_stop_cannot_overwrite_a_successful_same_goal_reactivation() {
                 )
                 .await
                 .unwrap();
+            apply_setup_goal(&goals, &db, h.rt.id, created).await;
             let runtime = h
                 .test
                 .codex
@@ -212,12 +269,13 @@ fn goal_runtime_status_failed_external_stop_holds_until_a_fresh_persisted_action
             let events = Arc::new(RuntimeStatusEvents::default());
             let h = Harness::new_with_goal_status_sink(goals.clone(), events.clone()).await;
             let db = h.test.codex.state_db().unwrap();
-            goals.set_thread_goal(&db, GoalSetRequest {
+            let created = goals.set_thread_goal(&db, GoalSetRequest {
                 thread_id: h.rt.id,
                 objective: GoalObjectiveUpdate::Set("preserve a failed external stop"),
                 status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep, max_goal_token_budget: None,
             }, async { Ok(()) }).await.unwrap();
+            apply_setup_goal(&goals, &db, h.rt.id, created).await;
             // Leave native accounting inactive: the error must come from the
             // actual requested status write, with no earlier usage write.
             let runtime = h.test.codex.thread_extension_data()
@@ -261,11 +319,12 @@ fn goal_runtime_status_failed_external_stop_holds_until_a_fresh_persisted_action
             }, async { Err(codex_goal_extension::GoalServiceError::InvalidRequest("superseded automatic decision".to_owned())) }).await.is_err());
             assert!(runtime.alab_goal_persistence_held(), "a healthy validation refusal cannot clear the previous failed stop");
             sqlx::query("DROP TRIGGER injected_stop_failure").execute(&mut writer).await.unwrap();
-            goals.set_thread_goal(&db, GoalSetRequest {
+            let recovered = goals.set_thread_goal(&db, GoalSetRequest {
                 thread_id: h.rt.id, objective: GoalObjectiveUpdate::Keep,
                 status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep, max_goal_token_budget: None,
             }, async { Ok(()) }).await.unwrap();
+            apply_setup_goal(&goals, &db, h.rt.id, recovered).await;
             assert!(!runtime.alab_goal_persistence_held());
             let ready = events.wait_for(codex_protocol::protocol::AlabGoalPersistencePhase::Ready, false, held.revision).await;
             assert_eq!(ready.incarnation, held.incarnation);
@@ -283,12 +342,577 @@ fn goal_runtime_status_failed_external_stop_holds_until_a_fresh_persisted_action
 }
 
 #[test]
+fn idempotent_external_clear_acknowledges_its_exact_no_row_effect() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let goals = Arc::new(GoalService::new());
+            let h = Harness::new_with_goals(Some(goals.clone())).await;
+            let db = h.test.codex.state_db().unwrap();
+            let created = goals
+                .set_thread_goal(
+                    &db,
+                    GoalSetRequest {
+                        thread_id: h.rt.id,
+                        objective: GoalObjectiveUpdate::Set("clear exactly twice"),
+                        status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                        token_budget: GoalTokenBudgetUpdate::Keep,
+                        max_goal_token_budget: None,
+                    },
+                    async { Ok(()) },
+                )
+                .await
+                .unwrap();
+            created.apply_runtime_effects(&goals).await;
+            let runtime = h
+                .test
+                .codex
+                .thread_extension_data()
+                .get::<codex_goal_extension::GoalRuntimeHandle>()
+                .unwrap();
+
+            let cleared = goals
+                .clear_thread_goal(&db, h.rt.id, async { Ok(()) })
+                .await
+                .unwrap();
+            assert!(cleared.cleared());
+            cleared.apply_runtime_effects(&goals).await;
+            let absent = goals
+                .clear_thread_goal(&db, h.rt.id, async { Ok(()) })
+                .await
+                .unwrap();
+            assert!(!absent.cleared());
+            absent.apply_runtime_effects(&goals).await;
+            assert!(!runtime.alab_goal_persistence_held());
+            assert!(runtime.alab_automatic_input_permit().await.is_ok());
+            h.test.codex.shutdown_and_wait().await.unwrap();
+        })
+        .await
+        .expect("idempotent external clear hang detector");
+    });
+}
+
+#[test]
+fn external_set_barrier_failure_retains_unknown_mutation_custody_and_applies_no_effect() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let goals = Arc::new(GoalService::new());
+            let h = Harness::new_with_goals(Some(goals.clone())).await;
+            let db = h.test.codex.state_db().unwrap();
+            let created = goals
+                .set_thread_goal(
+                    &db,
+                    GoalSetRequest {
+                        thread_id: h.rt.id,
+                        objective: GoalObjectiveUpdate::Set(
+                            "resume only after the Active row is durable",
+                        ),
+                        status: Some(codex_protocol::protocol::ThreadGoalStatus::Paused),
+                        token_budget: GoalTokenBudgetUpdate::Keep,
+                        max_goal_token_budget: None,
+                    },
+                    async { Ok(()) },
+                )
+                .await
+                .unwrap();
+            created.apply_runtime_effects(&goals).await;
+
+            let options =
+                sqlx::sqlite::SqliteConnectOptions::new().filename(db.sqlite().goals_db_path());
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "owned scratch reader deterministically blocks the set WAL checkpoint"
+            )]
+            let mut reader = sqlx::SqliteConnection::connect_with(&options)
+                .await
+                .unwrap();
+            sqlx::query("BEGIN").execute(&mut reader).await.unwrap();
+            let status: String =
+                sqlx::query_scalar("SELECT status FROM thread_goals WHERE thread_id = ?")
+                    .bind(h.rt.id.to_string())
+                    .fetch_one(&mut reader)
+                    .await
+                    .unwrap();
+            assert_eq!(status, "paused", "reader must pin the pre-set WAL snapshot");
+
+            let error = goals
+                .set_thread_goal(
+                    &db,
+                    GoalSetRequest {
+                        thread_id: h.rt.id,
+                        objective: GoalObjectiveUpdate::Keep,
+                        status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                        token_budget: GoalTokenBudgetUpdate::Keep,
+                        max_goal_token_budget: None,
+                    },
+                    async { Ok(()) },
+                )
+                .await
+                .expect_err("a pinned reader must defeat the set durability checkpoint");
+            assert!(
+                error.to_string().contains("durability is unknown"),
+                "unexpected set failure: {error}"
+            );
+            assert_eq!(
+                db.thread_goals()
+                    .get_thread_goal(h.rt.id)
+                    .await
+                    .unwrap()
+                    .expect("UPDATE returned success before its barrier")
+                    .status,
+                codex_state::ThreadGoalStatus::Active
+            );
+            let runtime = h
+                .test
+                .codex
+                .thread_extension_data()
+                .get::<codex_goal_extension::GoalRuntimeHandle>()
+                .unwrap();
+            assert!(runtime.alab_goal_persistence_held());
+            assert!(runtime.alab_automatic_input_permit().await.is_err());
+            assert!(
+                received_responses_requests(&h._server).await.is_empty(),
+                "an unknown-durability Active set must not launch its runtime effect"
+            );
+
+            reader.close().await.unwrap();
+            h.test.codex.shutdown_and_wait().await.unwrap();
+        })
+        .await
+        .expect("set durability barrier failure hang detector");
+    });
+}
+
+#[test]
+fn a_durable_set_with_missing_chronology_drops_into_held_effect_custody() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let goals = Arc::new(GoalService::new());
+            let h = Harness::new_with_goals(Some(goals.clone())).await;
+            let db = h.test.codex.state_db().unwrap();
+            let created = goals
+                .set_thread_goal(
+                    &db,
+                    GoalSetRequest {
+                        thread_id: h.rt.id,
+                        objective: GoalObjectiveUpdate::Set(
+                            "do not apply a set whose rollout chronology failed",
+                        ),
+                        status: Some(codex_protocol::protocol::ThreadGoalStatus::Paused),
+                        token_budget: GoalTokenBudgetUpdate::Keep,
+                        max_goal_token_budget: None,
+                    },
+                    async { Ok(()) },
+                )
+                .await
+                .unwrap();
+            created.apply_runtime_effects(&goals).await;
+
+            let codex_home = h.test.codex_home_path().to_path_buf();
+            let outcome = codex_alab_core::goal_chronology_fence::scope(
+                codex_home.clone(),
+                h.rt.key().to_owned(),
+                goals.set_thread_goal(
+                    &db,
+                    GoalSetRequest {
+                        thread_id: h.rt.id,
+                        objective: GoalObjectiveUpdate::Keep,
+                        status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                        token_budget: GoalTokenBudgetUpdate::Keep,
+                        max_goal_token_budget: None,
+                    },
+                    async { Ok(()) },
+                ),
+            )
+            .await
+            .expect("host chronology lock is available")
+            .expect("the SQL row itself reaches its first durability barrier");
+            drop(outcome); // Models a later rollout/event persistence failure in the host.
+
+            let runtime = h
+                .test
+                .codex
+                .thread_extension_data()
+                .get::<codex_goal_extension::GoalRuntimeHandle>()
+                .unwrap();
+            assert!(runtime.alab_goal_persistence_held());
+            assert!(runtime.alab_automatic_input_permit().await.is_err());
+            assert!(
+                codex_alab_core::goal_chronology_fence::is_armed(&codex_home, h.rt.key()).unwrap(),
+                "missing rollout settlement must retain its durable chronology fence"
+            );
+            assert!(
+                received_responses_requests(&h._server).await.is_empty(),
+                "dropping the exact outcome must not launch its Active runtime effect"
+            );
+
+            h.test.codex.shutdown_and_wait().await.unwrap();
+        })
+        .await
+        .expect("missing goal chronology effect-custody hang detector");
+    });
+}
+
+#[test]
+fn a_durable_clear_with_missing_chronology_drops_into_held_effect_custody() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let goals = Arc::new(GoalService::new());
+            let h = Harness::new_with_goals(Some(goals.clone())).await;
+            let db = h.test.codex.state_db().unwrap();
+            let created = goals
+                .set_thread_goal(
+                    &db,
+                    GoalSetRequest {
+                        thread_id: h.rt.id,
+                        objective: GoalObjectiveUpdate::Set(
+                            "do not apply a clear whose rollout chronology failed",
+                        ),
+                        status: Some(codex_protocol::protocol::ThreadGoalStatus::Paused),
+                        token_budget: GoalTokenBudgetUpdate::Keep,
+                        max_goal_token_budget: None,
+                    },
+                    async { Ok(()) },
+                )
+                .await
+                .unwrap();
+            created.apply_runtime_effects(&goals).await;
+
+            let codex_home = h.test.codex_home_path().to_path_buf();
+            let outcome = codex_alab_core::goal_chronology_fence::scope(
+                codex_home.clone(),
+                h.rt.key().to_owned(),
+                goals.clear_thread_goal(&db, h.rt.id, async { Ok(()) }),
+            )
+            .await
+            .expect("host chronology lock is available")
+            .expect("the clear row itself reaches its first durability barrier");
+            assert!(outcome.cleared());
+            assert!(
+                db.thread_goals()
+                    .get_thread_goal(h.rt.id)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "the durable DELETE precedes host chronology settlement"
+            );
+            drop(outcome); // Models a later rollout/fence persistence failure in the host.
+
+            let runtime = h
+                .test
+                .codex
+                .thread_extension_data()
+                .get::<codex_goal_extension::GoalRuntimeHandle>()
+                .unwrap();
+            assert!(runtime.alab_goal_persistence_held());
+            assert!(runtime.alab_automatic_input_permit().await.is_err());
+            assert!(
+                codex_alab_core::goal_chronology_fence::is_armed(&codex_home, h.rt.key()).unwrap(),
+                "missing rollout settlement must retain the clear chronology fence"
+            );
+            assert!(
+                received_responses_requests(&h._server).await.is_empty(),
+                "dropping the exact clear outcome must not launch runtime work"
+            );
+
+            h.test.codex.shutdown_and_wait().await.unwrap();
+        })
+        .await
+        .expect("missing clear chronology effect-custody hang detector");
+    });
+}
+
+#[test]
+fn external_clear_barrier_failure_retains_unknown_mutation_custody() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let goals = Arc::new(GoalService::new());
+            let h = Harness::new_with_goals(Some(goals.clone())).await;
+            let db = h.test.codex.state_db().unwrap();
+            let created = goals
+                .set_thread_goal(
+                    &db,
+                    GoalSetRequest {
+                        thread_id: h.rt.id,
+                        objective: GoalObjectiveUpdate::Set(
+                            "retain clear custody until DELETE is durable",
+                        ),
+                        status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                        token_budget: GoalTokenBudgetUpdate::Keep,
+                        max_goal_token_budget: None,
+                    },
+                    async { Ok(()) },
+                )
+                .await
+                .unwrap();
+            created.apply_runtime_effects(&goals).await;
+            db.thread_goals().alab_durable_goal_barrier().await.unwrap();
+
+            let options =
+                sqlx::sqlite::SqliteConnectOptions::new().filename(db.sqlite().goals_db_path());
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "owned scratch reader deterministically blocks the clear WAL checkpoint"
+            )]
+            let mut reader = sqlx::SqliteConnection::connect_with(&options)
+                .await
+                .unwrap();
+            sqlx::query("BEGIN").execute(&mut reader).await.unwrap();
+            let visible: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM thread_goals WHERE thread_id = ?")
+                    .bind(h.rt.id.to_string())
+                    .fetch_one(&mut reader)
+                    .await
+                    .unwrap();
+            assert_eq!(visible, 1, "reader must pin the pre-clear WAL snapshot");
+
+            let error = goals
+                .clear_thread_goal(&db, h.rt.id, async { Ok(()) })
+                .await
+                .expect_err("a pinned reader must defeat the clear durability checkpoint");
+            assert!(
+                error.to_string().contains("durability is unknown"),
+                "unexpected clear failure: {error}"
+            );
+            assert!(
+                db.thread_goals()
+                    .get_thread_goal(h.rt.id)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "DELETE returned success before its durability barrier failed"
+            );
+            let runtime = h
+                .test
+                .codex
+                .thread_extension_data()
+                .get::<codex_goal_extension::GoalRuntimeHandle>()
+                .unwrap();
+            assert!(runtime.alab_goal_persistence_held());
+            assert!(runtime.alab_automatic_input_permit().await.is_err());
+
+            reader.close().await.unwrap();
+            h.test.codex.shutdown_and_wait().await.unwrap();
+        })
+        .await
+        .expect("clear durability barrier failure hang detector");
+    });
+}
+
+#[test]
+fn auth_restore_barrier_failure_retains_unknown_mutation_custody() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let goals = Arc::new(GoalService::new());
+            let h = Harness::new_with_goals(Some(goals)).await;
+            let db = h.test.codex.state_db().unwrap();
+            let goal = db
+                .thread_goals()
+                .replace_thread_goal(
+                    h.rt.id,
+                    "restore only after durable auth acceptance",
+                    codex_state::ThreadGoalStatus::Active,
+                    None,
+                )
+                .await
+                .unwrap();
+            db.thread_goals()
+                .alab_update_for_auth_wall(
+                    h.rt.id,
+                    codex_state::GoalUpdate {
+                        objective: None,
+                        status: Some(codex_state::ThreadGoalStatus::Blocked),
+                        token_budget: None,
+                        expected_goal_id: Some(goal.goal_id.clone()),
+                    },
+                    Some("auth-wall"),
+                )
+                .await
+                .unwrap()
+                .expect("auth wall must block the fixture goal");
+            db.thread_goals().alab_durable_goal_barrier().await.unwrap();
+
+            let options =
+                sqlx::sqlite::SqliteConnectOptions::new().filename(db.sqlite().goals_db_path());
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "owned scratch reader deterministically blocks the auth-accept WAL checkpoint"
+            )]
+            let mut reader = sqlx::SqliteConnection::connect_with(&options)
+                .await
+                .unwrap();
+            sqlx::query("BEGIN").execute(&mut reader).await.unwrap();
+            let status: String = sqlx::query_scalar(
+                "SELECT status FROM thread_goals WHERE thread_id = ?",
+            )
+            .bind(h.rt.id.to_string())
+            .fetch_one(&mut reader)
+            .await
+            .unwrap();
+            assert_eq!(status, "blocked", "reader must pin the pre-restore snapshot");
+
+            let runtime = h
+                .test
+                .codex
+                .thread_extension_data()
+                .get::<codex_goal_extension::GoalRuntimeHandle>()
+                .unwrap();
+            let result = runtime
+                .alab_auth_recovery_permit(
+                    "auth-wall",
+                    Some(goal.goal_id.as_str()),
+                    "reserved-auth-turn",
+                )
+                .await;
+            assert!(result.is_err(), "a pinned reader must defeat auth durability");
+            assert_eq!(
+                db.thread_goals()
+                    .get_thread_goal(h.rt.id)
+                    .await
+                    .unwrap()
+                    .expect("restore committed before its barrier")
+                    .status,
+                codex_state::ThreadGoalStatus::Active
+            );
+            assert!(runtime.alab_goal_persistence_held());
+            assert!(runtime.alab_automatic_input_permit().await.is_err());
+
+            reader.close().await.unwrap();
+            h.test.codex.shutdown_and_wait().await.unwrap();
+        })
+        .await
+        .expect("auth restore durability barrier failure hang detector");
+    });
+}
+
+#[test]
+fn auth_retirement_barrier_failure_retains_live_deferral() {
+    native_test(|| async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let goals = Arc::new(GoalService::new());
+            let h = Harness::new_with_goals(Some(goals)).await;
+            let db = h.test.codex.state_db().unwrap();
+            let goal = db
+                .thread_goals()
+                .replace_thread_goal(
+                    h.rt.id,
+                    "retain auth deferral until retirement is durable",
+                    codex_state::ThreadGoalStatus::Active,
+                    None,
+                )
+                .await
+                .unwrap();
+            db.thread_goals()
+                .alab_update_for_auth_wall(
+                    h.rt.id,
+                    codex_state::GoalUpdate {
+                        objective: None,
+                        status: Some(codex_state::ThreadGoalStatus::Blocked),
+                        token_budget: None,
+                        expected_goal_id: Some(goal.goal_id.clone()),
+                    },
+                    Some("retired-auth-wall"),
+                )
+                .await
+                .unwrap()
+                .expect("auth wall must block the fixture goal");
+            let runtime = h
+                .test
+                .codex
+                .thread_extension_data()
+                .get::<codex_goal_extension::GoalRuntimeHandle>()
+                .unwrap();
+            runtime
+                .alab_defer_auth_recovery("retired-auth-wall")
+                .await
+                .unwrap();
+            assert!(runtime.alab_auth_recovery_deferred());
+
+            let options =
+                sqlx::sqlite::SqliteConnectOptions::new().filename(db.sqlite().goals_db_path());
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "owned scratch reader deterministically blocks the auth-retirement WAL checkpoint"
+            )]
+            let mut reader = sqlx::SqliteConnection::connect_with(&options)
+                .await
+                .unwrap();
+            sqlx::query("BEGIN").execute(&mut reader).await.unwrap();
+            let visible: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM alab_goal_auth_walls WHERE thread_id = ?",
+            )
+            .bind(h.rt.id.to_string())
+            .fetch_one(&mut reader)
+            .await
+            .unwrap();
+            assert_eq!(visible, 1, "reader must pin the pre-retirement snapshot");
+
+            let result = runtime
+                .alab_retire_auth_recovery(
+                    "retired-auth-wall",
+                    Some(goal.goal_id.as_str()),
+                )
+                .await;
+            assert!(
+                result.is_err(),
+                "a pinned reader must defeat auth-retirement durability"
+            );
+            assert!(
+                runtime.alab_auth_recovery_deferred(),
+                "failed retirement must not reopen live continuation"
+            );
+
+            reader.close().await.unwrap();
+            h.test.codex.shutdown_and_wait().await.unwrap();
+        })
+        .await
+        .expect("auth retirement durability barrier failure hang detector");
+    });
+}
+
+#[test]
+fn read_only_goal_set_is_rejected_before_instruction_or_mutation_custody() {
+    native_test(|| async {
+        let goals = Arc::new(GoalService::new());
+        let h = Harness::new_with_goals(Some(goals.clone())).await;
+        let db = h.test.codex.state_db().unwrap();
+        let result = goals
+            .set_thread_goal(
+                &db,
+                GoalSetRequest {
+                    thread_id: h.rt.id,
+                    objective: GoalObjectiveUpdate::Keep,
+                    status: None,
+                    token_budget: GoalTokenBudgetUpdate::Keep,
+                    max_goal_token_budget: None,
+                },
+                async {
+                    panic!("a read-only request must not record an instruction");
+                },
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(codex_goal_extension::GoalServiceError::InvalidRequest(_))
+        ));
+        let runtime = h
+            .test
+            .codex
+            .thread_extension_data()
+            .get::<codex_goal_extension::GoalRuntimeHandle>()
+            .unwrap();
+        assert!(!runtime.alab_goal_persistence_held());
+        assert!(runtime.alab_automatic_input_permit().await.is_ok());
+        h.test.codex.shutdown_and_wait().await.unwrap();
+    });
+}
+
+#[test]
 fn a_healthy_prewrite_validation_refusal_does_not_hold_goal_admission() {
     native_test(|| async {
         let goals = Arc::new(GoalService::new());
         let h = Harness::new_with_goals(Some(goals.clone())).await;
         let db = h.test.codex.state_db().unwrap();
-        goals
+        let created = goals
             .set_thread_goal(
                 &db,
                 GoalSetRequest {
@@ -302,6 +926,7 @@ fn a_healthy_prewrite_validation_refusal_does_not_hold_goal_admission() {
             )
             .await
             .unwrap();
+        apply_setup_goal(&goals, &db, h.rt.id, created).await;
         let runtime = h
             .test
             .codex
@@ -355,11 +980,12 @@ fn a_standalone_auth_retry_cannot_bypass_a_failed_goal_mutation_hold() {
             let goals = Arc::new(GoalService::new());
             let h = Harness::new_with_goals(Some(goals.clone())).await;
             let db = h.test.codex.state_db().unwrap();
-            goals.set_thread_goal(&db, GoalSetRequest {
+            let created = goals.set_thread_goal(&db, GoalSetRequest {
                 thread_id: h.rt.id, objective: GoalObjectiveUpdate::Set("clear this goal safely"),
                 status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep, max_goal_token_budget: None,
             }, async { Ok(()) }).await.unwrap();
+            apply_setup_goal(&goals, &db, h.rt.id, created).await;
             let runtime = h.test.codex.thread_extension_data()
                 .get::<codex_goal_extension::GoalRuntimeHandle>().unwrap();
             let options = sqlx::sqlite::SqliteConnectOptions::new().filename(db.sqlite().goals_db_path());
@@ -393,11 +1019,12 @@ fn goal_runtime_status_healthy_owned_write_rechecks_after_observer_cancellation(
             let h = Harness::new_with_goal_status_sink(goals.clone(), events.clone()).await;
             h.hold_model_response().await;
             let db = h.test.codex.state_db().unwrap();
-            goals.set_thread_goal(&db, GoalSetRequest {
+            let created = goals.set_thread_goal(&db, GoalSetRequest {
                 thread_id: h.rt.id, objective: GoalObjectiveUpdate::Set("resume after the healthy write settles"),
                 status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep, max_goal_token_budget: None,
             }, async { Ok(()) }).await.unwrap();
+            apply_setup_goal(&goals, &db, h.rt.id, created).await;
             let runtime = h.test.codex.thread_extension_data()
                 .get::<codex_goal_extension::GoalRuntimeHandle>().unwrap();
             runtime.restore_after_resume().await.unwrap();
@@ -419,8 +1046,22 @@ fn goal_runtime_status_healthy_owned_write_rechecks_after_observer_cancellation(
             while !runtime.alab_accounting_write_pending() { tokio::task::yield_now().await; }
             let writing = events.wait_for(codex_protocol::protocol::AlabGoalPersistencePhase::Writing, true, 0).await;
             assert!(runtime.alab_goal_persistence_held());
-            assert!(runtime.alab_automatic_input_permit().await.is_err());
-            assert!(runtime.alab_goal_admission_recovery_pending());
+            let admission_error = runtime
+                .alab_automatic_input_permit()
+                .await
+                .err()
+                .expect("the unfinished accounting write must deny automatic input");
+            assert!(
+                admission_error.contains("unfinished goal persistence"),
+                "automatic input was denied before observing the write: {admission_error}"
+            );
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !runtime.alab_goal_admission_recovery_pending() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("goal admission recovery did not observe the pending write");
             observer.abort();
             assert!(observer.await.unwrap_err().is_cancelled());
             sqlx::query("ROLLBACK").execute(&mut writer).await.unwrap();

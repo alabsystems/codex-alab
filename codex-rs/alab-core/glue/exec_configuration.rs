@@ -6,6 +6,8 @@ use super::*;
 
 #[path = "exec_child_configuration.rs"]
 mod child;
+#[path = "exec_tui_invocation.rs"]
+mod tui_invocation;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

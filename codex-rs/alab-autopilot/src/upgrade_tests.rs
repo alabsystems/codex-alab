@@ -13,7 +13,6 @@ fn idle(id: &str) -> LoadedThread {
         id: id.to_string(),
         idle: true,
         background_terminals: 0,
-        goal_active: false,
     }
 }
 
@@ -128,16 +127,6 @@ fn each_precondition_alone_holds_the_upgrade() {
                 ..due()
             },
             "2 background terminal",
-        ),
-        (
-            UpgradeFacts {
-                threads: vec![LoadedThread {
-                    goal_active: true,
-                    ..idle("t1")
-                }],
-                ..due()
-            },
-            "active goal",
         ),
         (
             UpgradeFacts {

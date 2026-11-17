@@ -4,6 +4,8 @@
 //! Statusless semantic refusals retain only safe IDs in their original request diagnostic.
 
 use codex_api::ApiError;
+use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::MisalignmentErrorDetails;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -24,6 +26,28 @@ const TARGET: &str = "codex_api::endpoint::alab_request_diagnostics";
 const PRIVATE_INPUT: &str = "private-semantic-id-model-input";
 const PRIVATE_MESSAGE: &str = "private-semantic-id-provider-message";
 const PRIVATE_HEADER: &str = "private-semantic-id-arbitrary-header";
+const MISALIGNMENT_TYPE: &str = "never-log-private-misalignment-type";
+const MISALIGNMENT_EXPLANATION: &str = "never-log-private-misalignment-explanation";
+const MISALIGNMENT_STEER: &str = "never-log-private-misalignment-steer";
+const MISALIGNMENT_TARGET: &str = " RB/opaque== ";
+
+fn assert_misalignment_details(details: Option<&MisalignmentErrorDetails>, complete: bool) {
+    if !complete {
+        assert!(details.is_none());
+        return;
+    }
+    let details = details.expect("complete typed misalignment details");
+    assert_eq!(details.error_type.as_deref(), Some(MISALIGNMENT_TYPE));
+    assert_eq!(
+        details.detailed_explanation.as_deref(),
+        Some(MISALIGNMENT_EXPLANATION)
+    );
+    assert_eq!(
+        details.steer.as_ref().map(|steer| steer.message.as_str()),
+        Some(MISALIGNMENT_STEER)
+    );
+    assert_eq!(details.review_target.as_deref(), Some(MISALIGNMENT_TARGET));
+}
 
 #[derive(Clone, Copy, Debug)]
 enum Envelope {
@@ -34,12 +58,20 @@ enum Envelope {
 #[derive(Clone, Copy, Debug)]
 enum Case {
     Nested,
+    MisalignmentComplete,
+    MisalignmentMalformed,
     OuterPrimary,
     OuterAlias,
     InvalidOuter,
     MixedHeaders,
     OuterMalformed,
     NestedMalformed,
+    RequestOnly,
+    RayOnly,
+    OuterRequestNestedRay,
+    NestedRequestOuterRay,
+    InvalidRequestValidRay,
+    ValidRequestInvalidRay,
     PositionalError,
     Invalid,
     Overlong,
@@ -59,7 +91,7 @@ impl Case {
             "retry-after":"11", "authorization":PRIVATE_HEADER, "x-unrelated":PRIVATE_HEADER
         });
         match self {
-            Self::Nested => {}
+            Self::Nested | Self::MisalignmentComplete | Self::MisalignmentMalformed => {}
             Self::OuterPrimary | Self::OuterAlias | Self::NestedMalformed => {
                 outer["x-request-id"] = json!("req_semantic-outer-1");
                 outer["x-oai-request-id"] = json!("req_semantic-outer-alias-1");
@@ -85,6 +117,28 @@ impl Case {
                 });
             }
             Self::OuterMalformed => outer = json!(42),
+            Self::RequestOnly => {
+                nested.as_object_mut().unwrap().remove("cf-ray");
+            }
+            Self::RayOnly => {
+                nested.as_object_mut().unwrap().remove("x-request-id");
+            }
+            Self::OuterRequestNestedRay => {
+                outer["x-request-id"] = json!("req_semantic-outer-1");
+                outer["cf-ray"] = json!("private invalid outer ray");
+            }
+            Self::NestedRequestOuterRay => {
+                outer["x-request-id"] = json!("private invalid outer primary");
+                outer["x-oai-request-id"] = json!("private.invalid.outer.alias");
+                outer["cf-ray"] = json!("ray_semantic-outer-1");
+            }
+            Self::InvalidRequestValidRay => {
+                nested["x-request-id"] = json!("private invalid request");
+                nested["x-oai-request-id"] = json!("private.invalid.alias");
+            }
+            Self::ValidRequestInvalidRay => {
+                nested["cf-ray"] = json!("private invalid ray");
+            }
             Self::PositionalError => {
                 assert!(matches!(envelope, Envelope::Failed));
                 outer["x-request-id"] = json!("req_semantic-outer-1");
@@ -116,11 +170,28 @@ impl Case {
                 }
             }
         }
-        let error = if matches!(self, Self::PositionalError) {
+        let mut error = if matches!(self, Self::PositionalError) {
             json!([null, code, PRIVATE_MESSAGE, null, null, null])
         } else {
             json!({"code":code, "message":PRIVATE_MESSAGE, "headers":nested})
         };
+        if matches!(
+            self,
+            Self::MisalignmentComplete | Self::MisalignmentMalformed
+        ) {
+            assert_eq!(code, "misalignment_policy_violation");
+            assert!(matches!(envelope, Envelope::Failed));
+            let mut details = json!({
+                "error_type":MISALIGNMENT_TYPE,
+                "detailed_explanation":MISALIGNMENT_EXPLANATION,
+                "steer":{"message":MISALIGNMENT_STEER},
+                "review_target":MISALIGNMENT_TARGET
+            });
+            if matches!(self, Self::MisalignmentMalformed) {
+                details["steer"]["message"] = json!(42);
+            }
+            error["misalignment"] = details;
+        }
         match envelope {
             Envelope::Error => json!({
                 "type":"error", "headers":outer, "error":error,
@@ -153,22 +224,42 @@ impl Case {
         }
     }
 
-    fn ids(self) -> Option<(&'static str, &'static str)> {
+    fn ids(self) -> (Option<&'static str>, Option<&'static str>) {
         match self {
-            Self::Nested | Self::InvalidOuter | Self::OuterMalformed => {
-                Some(("req_semantic-nested-1", "ray_semantic-nested-1"))
+            Self::Nested
+            | Self::MisalignmentComplete
+            | Self::MisalignmentMalformed
+            | Self::InvalidOuter
+            | Self::OuterMalformed => {
+                (Some("req_semantic-nested-1"), Some("ray_semantic-nested-1"))
             }
             Self::OuterPrimary | Self::NestedMalformed | Self::PositionalError => {
-                Some(("req_semantic-outer-1", "ray_semantic-outer-1"))
+                (Some("req_semantic-outer-1"), Some("ray_semantic-outer-1"))
             }
-            Self::OuterAlias => Some(("req_semantic-outer-alias-1", "ray_semantic-outer-1")),
-            Self::MixedHeaders => Some(("req_semantic-mixed-1", "ray_semantic-mixed-1")),
-            Self::IgnoredThenCurrent => Some(("req_semantic-current-B", "ray_semantic-current-B")),
+            Self::OuterAlias => (
+                Some("req_semantic-outer-alias-1"),
+                Some("ray_semantic-outer-1"),
+            ),
+            Self::MixedHeaders => (Some("req_semantic-mixed-1"), Some("ray_semantic-mixed-1")),
+            Self::RequestOnly | Self::ValidRequestInvalidRay => {
+                (Some("req_semantic-nested-1"), None)
+            }
+            Self::RayOnly | Self::InvalidRequestValidRay => (None, Some("ray_semantic-nested-1")),
+            Self::OuterRequestNestedRay => {
+                (Some("req_semantic-outer-1"), Some("ray_semantic-nested-1"))
+            }
+            Self::NestedRequestOuterRay => {
+                (Some("req_semantic-nested-1"), Some("ray_semantic-outer-1"))
+            }
+            Self::IgnoredThenCurrent => (
+                Some("req_semantic-current-B"),
+                Some("ray_semantic-current-B"),
+            ),
             Self::Invalid
             | Self::Overlong
             | Self::Punctuation(_)
             | Self::IgnoredThenWithoutIds
-            | Self::IgnoredThenCompleted => None,
+            | Self::IgnoredThenCompleted => (None, None),
         }
     }
 }
@@ -371,11 +462,108 @@ async fn exchange(case: Case, code: &str, envelope: Envelope) {
         let Some(Err(error)) = outcome else {
             panic!("expected semantic refusal, got {outcome:?}");
         };
-        assert!(matches!((code, &error),
-                ("invalid_request", ApiError::InvalidRequest { message })
-                | ("invalid_prompt", ApiError::InvalidPrompt { message }) if message == PRIVATE_MESSAGE));
+        let audio_per_recording = match code {
+            "invalid_audio" => Some(true),
+            "audio_too_large" => Some(false),
+            _ => None,
+        };
+        if let Some(expected_per_recording) = audio_per_recording {
+            let ApiError::InvalidAudioInput {
+                message,
+                per_recording,
+            } = &error
+            else {
+                panic!("expected original typed audio rejection, got {error:?}");
+            };
+            assert_eq!(message, PRIVATE_MESSAGE);
+            assert_eq!(*per_recording, expected_per_recording);
+        } else {
+            match (code, &error) {
+                ("inference_hook_denied", ApiError::InferenceHookDenied { message })
+                | ("access_program_not_enabled", ApiError::AccessProgramNotEnabled { message })
+                | ("cyber_policy", ApiError::CyberPolicy { message })
+                | ("bio_policy", ApiError::BioPolicy { message }) => {
+                    assert_eq!(message, PRIVATE_MESSAGE);
+                }
+                ("model_not_found", ApiError::ModelNotFound { message, status })
+                | (
+                    "content_policy_violation",
+                    ApiError::ContentPolicyViolation { message, status },
+                ) => {
+                    assert_eq!(message, PRIVATE_MESSAGE);
+                    assert!(
+                        status.is_none(),
+                        "statusless refusal retains no HTTP status"
+                    );
+                }
+                (
+                    "misalignment_policy_violation",
+                    ApiError::MisalignmentPolicyViolation {
+                        message,
+                        misalignment,
+                    },
+                ) => {
+                    assert_eq!(message, PRIVATE_MESSAGE);
+                    assert_misalignment_details(
+                        misalignment.as_ref(),
+                        matches!(case, Case::MisalignmentComplete),
+                    );
+                }
+                ("context_length_exceeded", ApiError::ContextWindowExceeded)
+                | ("insufficient_quota", ApiError::QuotaExceeded)
+                | ("usage_not_included", ApiError::UsageNotIncluded)
+                | ("budget_reached", ApiError::SessionBudgetExceeded)
+                | ("flex_unavailable", ApiError::FlexUnavailable) => {}
+                _ => {
+                    assert!(matches!((code, &error),
+                        ("invalid_request", ApiError::InvalidRequest { message })
+                        | ("invalid_prompt", ApiError::InvalidPrompt { message }) if message == PRIVATE_MESSAGE));
+                }
+            }
+        }
         let mapped = codex_api::map_api_error(error);
-        assert_eq!(mapped.to_string(), PRIVATE_MESSAGE);
+        if code == "misalignment_policy_violation" {
+            let CodexErrorDetails::MisalignmentPolicyViolation {
+                message,
+                misalignment,
+            } = mapped.details()
+            else {
+                panic!("expected mapped typed misalignment refusal");
+            };
+            assert_eq!(message, PRIVATE_MESSAGE);
+            assert_misalignment_details(
+                misalignment.as_ref(),
+                matches!(case, Case::MisalignmentComplete),
+            );
+        }
+        if let Some(expected_per_recording) = audio_per_recording {
+            let CodexErrorDetails::InvalidAudioInput {
+                message,
+                per_recording,
+            } = mapped.details()
+            else {
+                panic!("expected mapped typed audio rejection");
+            };
+            assert_eq!(message, PRIVATE_MESSAGE);
+            assert_eq!(*per_recording, expected_per_recording);
+        }
+        let expected_message = match code {
+            "context_length_exceeded" => {
+                "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
+            }
+            "insufficient_quota" => "Quota exceeded. Check your plan and billing details.",
+            "usage_not_included" => {
+                "To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus."
+            }
+            "budget_reached" => "budget reached",
+            "flex_unavailable" => "Flex capacity unavailable.",
+            _ => PRIVATE_MESSAGE,
+        };
+        assert_eq!(mapped.to_string(), expected_message);
+        assert!(
+            !mapped.requires_http_fallback(),
+            "terminal semantic refusal does not switch transports"
+        );
         assert!(
             mapped.retry_delay(1).is_none(),
             "semantic validation refusal is never retried"
@@ -408,7 +596,14 @@ async fn exchange(case: Case, code: &str, envelope: Envelope) {
             shape.fields["local_attempt"],
             failed.fields["local_attempt"]
         );
-        assert_eq!(failed.fields["failure_kind"], format!("{code:?}"));
+        let failure_kind = match code {
+            "invalid_audio" | "audio_too_large" => "invalid_audio_input",
+            "context_length_exceeded" => "context_window",
+            "insufficient_quota" => "quota_exceeded",
+            "budget_reached" => "session_budget_exceeded",
+            _ => code,
+        };
+        assert_eq!(failed.fields["failure_kind"], format!("{failure_kind:?}"));
         assert!(!failed.fields.contains_key("http_status"));
         assert!(!failed.fields.contains_key("retry_advised"));
     }
@@ -420,6 +615,11 @@ async fn exchange(case: Case, code: &str, envelope: Envelope) {
             "body",
             "payload",
             "headers",
+            "misalignment",
+            "error_type",
+            "detailed_explanation",
+            "steer",
+            "review_target",
         ] {
             assert!(!record.fields.contains_key(field));
         }
@@ -434,6 +634,7 @@ async fn exchange(case: Case, code: &str, envelope: Envelope) {
         "ray_ignored-A",
         "req_ignored-nested-A",
         "ray_ignored-nested-A",
+        "RB/opaque==",
     ] {
         assert!(
             !text.contains(forbidden),
@@ -443,16 +644,28 @@ async fn exchange(case: Case, code: &str, envelope: Envelope) {
     // Keep correlation checks last: RED must first establish unchanged semantic
     // error, cleanup, attempt/context and privacy, then expose missing safe IDs.
     if let Some(failed) = records.get(1) {
-        if let Some((request_id, cf_ray)) = case.ids() {
-            assert_eq!(
-                failed.fields.get("request_id"),
-                Some(&format!("{request_id:?}"))
-            );
-            assert_eq!(failed.fields.get("cf_ray"), Some(&format!("{cf_ray:?}")));
-        } else {
-            assert!(!failed.fields.contains_key("request_id"));
-            assert!(!failed.fields.contains_key("cf_ray"));
+        if matches!(case, Case::Nested) {
+            match code {
+                "invalid_audio" => println!(
+                    "ALAB_WS_AUDIO_ERROR_IDS:code=invalid_audio:case=Nested:stage=late_ids"
+                ),
+                "audio_too_large" => println!(
+                    "ALAB_WS_AUDIO_ERROR_IDS:code=audio_too_large:case=Nested:stage=late_ids"
+                ),
+                "inference_hook_denied" => println!(
+                    "ALAB_WS_TERMINAL_ERROR_IDS:code=inference_hook_denied:case=Nested:stage=late_ids"
+                ),
+                "context_length_exceeded" => println!(
+                    "ALAB_WS_TERMINAL_ERROR_IDS:code=context_length_exceeded:case=Nested:stage=late_ids"
+                ),
+                _ => {}
+            }
         }
+        let (request_id, cf_ray) = case.ids();
+        let request_id = request_id.map(|value| format!("{value:?}"));
+        let cf_ray = cf_ray.map(|value| format!("{value:?}"));
+        assert_eq!(failed.fields.get("request_id"), request_id.as_ref());
+        assert_eq!(failed.fields.get("cf_ray"), cf_ray.as_ref());
     }
 }
 
@@ -461,6 +674,10 @@ async fn isolated(name: &str, cases: &[Case]) {
 }
 
 async fn isolated_for(name: &str, cases: &[Case], code: &str, envelope: Envelope) {
+    isolated_for_codes(name, cases, &[code], envelope).await;
+}
+
+async fn isolated_for_codes(name: &str, cases: &[Case], codes: &[&str], envelope: Envelope) {
     let exact = format!("{}::{name}", module_path!().split_once("::").unwrap().1);
     if let Some(child) = std::env::var_os(CHILD) {
         assert_eq!(child.to_str(), Some(name));
@@ -469,8 +686,10 @@ async fn isolated_for(name: &str, cases: &[Case], code: &str, envelope: Envelope
             ["--exact", &exact, "--nocapture", "--test-threads=1"]
         );
         codex_alab_core::activate();
-        for &case in cases {
-            exchange(case, code, envelope).await;
+        for &code in codes {
+            for &case in cases {
+                exchange(case, code, envelope).await;
+            }
         }
         std::io::stdout()
             .lock()
@@ -521,6 +740,12 @@ async fn statusless_semantic_error_ids_keep_outer_precedence_and_aliases() {
             Case::MixedHeaders,
             Case::OuterMalformed,
             Case::NestedMalformed,
+            Case::RequestOnly,
+            Case::RayOnly,
+            Case::OuterRequestNestedRay,
+            Case::NestedRequestOuterRay,
+            Case::InvalidRequestValidRay,
+            Case::ValidRequestInvalidRay,
         ],
     )
     .await;
@@ -562,6 +787,12 @@ const PROMPT_CASES: &[Case] = &[
     Case::MixedHeaders,
     Case::OuterMalformed,
     Case::NestedMalformed,
+    Case::RequestOnly,
+    Case::RayOnly,
+    Case::OuterRequestNestedRay,
+    Case::NestedRequestOuterRay,
+    Case::InvalidRequestValidRay,
+    Case::ValidRequestInvalidRay,
     Case::Invalid,
     Case::Overlong,
     Case::Punctuation("."),
@@ -611,6 +842,91 @@ async fn positional_invalid_prompt_keeps_outer_error_ids() {
         "positional_invalid_prompt_keeps_outer_error_ids",
         &[Case::PositionalError],
         "invalid_prompt",
+        Envelope::Failed,
+    )
+    .await;
+}
+
+// Audio failures reuse only the object-frame matrix; positional controls remain separate.
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_audio_failed_response_ids_survive_selected_semantic_failure() {
+    isolated_for(
+        "invalid_audio_failed_response_ids_survive_selected_semantic_failure",
+        PROMPT_CASES,
+        "invalid_audio",
+        Envelope::Failed,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn audio_too_large_failed_response_ids_survive_selected_semantic_failure() {
+    isolated_for(
+        "audio_too_large_failed_response_ids_survive_selected_semantic_failure",
+        PROMPT_CASES,
+        "audio_too_large",
+        Envelope::Failed,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn misalignment_details_survive_selected_websocket_failure() {
+    isolated_for(
+        "misalignment_details_survive_selected_websocket_failure",
+        &[Case::MisalignmentComplete, Case::MisalignmentMalformed],
+        "misalignment_policy_violation",
+        Envelope::Failed,
+    )
+    .await;
+}
+
+// Reuse representative frame ownership and independent-token controls for each
+// typed terminal category without repeating every malformed-container case.
+const TERMINAL_CASES: &[Case] = &[
+    Case::Nested,
+    Case::IgnoredThenWithoutIds,
+    Case::IgnoredThenCurrent,
+    Case::IgnoredThenCompleted,
+    Case::RequestOnly,
+    Case::RayOnly,
+    Case::OuterRequestNestedRay,
+    Case::NestedRequestOuterRay,
+    Case::InvalidRequestValidRay,
+    Case::ValidRequestInvalidRay,
+];
+
+#[tokio::test(flavor = "current_thread")]
+async fn terminal_access_refusals_keep_selected_event_ids() {
+    isolated_for_codes(
+        "terminal_access_refusals_keep_selected_event_ids",
+        TERMINAL_CASES,
+        &[
+            "inference_hook_denied",
+            "access_program_not_enabled",
+            "model_not_found",
+            "content_policy_violation",
+            "cyber_policy",
+            "bio_policy",
+            "misalignment_policy_violation",
+        ],
+        Envelope::Failed,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn terminal_limit_refusals_keep_selected_event_ids() {
+    isolated_for_codes(
+        "terminal_limit_refusals_keep_selected_event_ids",
+        TERMINAL_CASES,
+        &[
+            "context_length_exceeded",
+            "insufficient_quota",
+            "usage_not_included",
+            "budget_reached",
+            "flex_unavailable",
+        ],
         Envelope::Failed,
     )
     .await;

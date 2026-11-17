@@ -45,6 +45,36 @@ type ConnectFuture<'a> = Pin<Box<dyn Future<Output = ConnectResult> + 'a>>;
 #[derive(Default)]
 struct Fields(BTreeMap<String, serde_json::Value>);
 
+impl Fields {
+    fn assert_allowed(metadata: &tracing::Metadata<'_>) {
+        // Reject an unexpected payload-bearing event field before invoking its
+        // Debug formatter or retaining its value in a test failure.
+        for field in metadata.fields() {
+            assert!(
+                matches!(
+                    field.name(),
+                    "message"
+                        | "transport"
+                        | "phase"
+                        | "http_status"
+                        | "body_capture"
+                        | "body_wait_ms"
+                        | "rejection_body_bytes"
+                        | "rejection_body_bytes_accepted"
+                        | "retry_advised"
+                        | "upgrade_request_id"
+                        | "upgrade_cf_ray"
+                        | "thread_id"
+                        | "thread.id"
+                        | "turn.id"
+                ),
+                "unexpected handshake diagnostic field: {}",
+                field.name()
+            );
+        }
+    }
+}
+
 impl tracing::field::Visit for Fields {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         self.0
@@ -100,6 +130,7 @@ where
         if event.metadata().target() != DIAGNOSTIC_TARGET {
             return;
         }
+        Fields::assert_allowed(event.metadata());
         let mut fields = Fields::default();
         event.record(&mut fields);
         let mut ancestors = Vec::new();
@@ -131,6 +162,7 @@ impl Capture {
         url: &str,
         body_capture: &str,
         body_bytes: Option<usize>,
+        accepted_bytes: usize,
     ) {
         let records = self.0.lock().unwrap();
         assert_eq!(records.len(), 1, "one rejection and no request-shape event");
@@ -213,6 +245,17 @@ impl Capture {
         ] {
             assert!(!text.contains(forbidden), "{text}");
         }
+        // Keep this regression after the existing status, complete-body,
+        // correlation, retry and privacy controls. For truncated delivery the
+        // actual parser consumes the whole prefix before observing EOF; this
+        // does not infer client progress from a successful server write.
+        assert_eq!(
+            fields
+                .get("rejection_body_bytes_accepted")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::try_from(accepted_bytes).unwrap()),
+            "accepted entity progress survives incomplete-body suppression"
+        );
     }
 }
 
@@ -398,6 +441,113 @@ impl Drop for RejectionFixture {
     }
 }
 
+struct PendingRejectionFixture {
+    uri: String,
+    request: oneshot::Receiver<()>,
+    release: Option<oneshot::Sender<()>>,
+    delivered: oneshot::Receiver<()>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl PendingRejectionFixture {
+    async fn start(prefix: &'static str) -> Self {
+        let listener = tokio::time::timeout(WAIT, TcpListener::bind("127.0.0.1:0"))
+            .await
+            .expect("pending rejection bind deadline")
+            .unwrap();
+        let uri = format!("http://{}", listener.local_addr().unwrap());
+        let (observed, request) = oneshot::channel();
+        let (release, gate) = oneshot::channel();
+        let (written, delivered) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = tokio::time::timeout(WAIT, listener.accept())
+                .await
+                .expect("pending rejection accept deadline")
+                .unwrap();
+            let request = tokio::time::timeout(WAIT, async {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0, "complete Upgrade request before cancellation");
+                    request.extend_from_slice(&buffer[..count]);
+                    assert!(request.len() < 64 * 1024, "bounded Upgrade request");
+                    if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                        assert_eq!(end + 4, request.len(), "no model payload in handshake");
+                        break String::from_utf8(request).unwrap();
+                    }
+                }
+            })
+            .await
+            .expect("pending rejection Upgrade request deadline");
+            assert!(request.starts_with("GET /v1/responses HTTP/1.1\r\n"));
+            assert!(
+                request
+                    .lines()
+                    .any(|line| line.eq_ignore_ascii_case("upgrade: websocket"))
+            );
+            observed.send(()).unwrap();
+            tokio::time::timeout(WAIT, gate)
+                .await
+                .expect("pending rejection release deadline")
+                .unwrap();
+            let response = format!(
+                "HTTP/1.1 400 Bad Request\r\ncontent-length: {}\r\nretry-after: 7\r\nx-request-id: req_cancel-1\r\n\r\n{prefix}",
+                prefix.len() + 1,
+            );
+            tokio::time::timeout(WAIT, socket.write_all(response.as_bytes()))
+                .await
+                .expect("pending rejection delivery deadline")
+                .unwrap();
+            written.send(()).unwrap();
+            // Keep the final declared byte and write-side EOF withheld. Only
+            // dropping the public connect future should close this connection.
+            let mut unexpected = [0_u8; 1];
+            let result = tokio::time::timeout(WAIT, socket.read(&mut unexpected))
+                .await
+                .expect("cancelled public handshake releases its connection");
+            // Closing with unread or newly arriving data may reset TCP
+            // (RFC 9293 section 3.6.1). Both outcomes retire this peer.
+            match result {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                Ok(count) => panic!("cancelled handshake sent {count} unexpected bytes"),
+                Err(error) => panic!("unexpected cancellation read error: {error:?}"),
+            }
+        });
+        Self {
+            uri,
+            request,
+            release: Some(release),
+            delivered,
+            task: Some(task),
+        }
+    }
+
+    async fn finish(mut self) {
+        match tokio::time::timeout(WAIT, self.task.as_mut().unwrap()).await {
+            Ok(result) => {
+                drop(self.task.take());
+                result.expect("cancelled rejection fixture joins after peer retirement");
+            }
+            Err(_) => {
+                let task = self.task.take().unwrap();
+                task.abort();
+                let _ = task.await;
+                panic!("cancelled rejection fixture cleanup deadline");
+            }
+        }
+    }
+}
+
+impl Drop for PendingRejectionFixture {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.as_ref() {
+            task.abort();
+        }
+    }
+}
+
 struct NoAuth;
 impl codex_api::AuthProvider for NoAuth {
     fn add_auth_headers(&self, _: &mut http::HeaderMap) -> Result<(), codex_api::AuthError> {
@@ -405,7 +555,7 @@ impl codex_api::AuthProvider for NoAuth {
     }
 }
 
-async fn rejection(status: u16, body: &'static str, delivery: Delivery) {
+async fn rejection(status: u16, body: &'static str, delivery: Delivery, retryable: bool) {
     let truncated = matches!(delivery, Delivery::Truncated);
     let expected_body = (!truncated).then_some(body);
     let mut server = RejectionFixture::start(status, body, delivery).await;
@@ -556,7 +706,7 @@ async fn rejection(status: u16, body: &'static str, delivery: Delivery) {
         Some(advice),
         "mapping cannot restart the provider deadline"
     );
-    assert_eq!(mapped.retry_delay(1).is_some(), status == 400 && !truncated);
+    assert_eq!(mapped.retry_delay(1).is_some(), retryable);
     if status == 400 {
         assert_eq!(
             mapped
@@ -573,6 +723,7 @@ async fn rejection(status: u16, body: &'static str, delivery: Delivery) {
         &expected_url,
         if truncated { "truncated" } else { "complete" },
         expected_body.map(str::len),
+        body.len(),
     );
 }
 
@@ -599,8 +750,8 @@ async fn complete_handshake_rejections_preserve_body_and_retry_policy() {
         return;
     }
     codex_alab_core::activate();
-    rejection(400, OPAQUE, Delivery::Complete).await;
-    rejection(403, FORBIDDEN, Delivery::Complete).await;
+    rejection(400, OPAQUE, Delivery::Complete, true).await;
+    rejection(403, FORBIDDEN, Delivery::Complete, false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -609,7 +760,7 @@ async fn split_opaque_handshake_rejection_preserves_body_and_retry_policy() {
         return;
     }
     codex_alab_core::activate();
-    rejection(400, OPAQUE, Delivery::Split).await;
+    rejection(400, OPAQUE, Delivery::Split, true).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -619,7 +770,7 @@ async fn split_forbidden_handshake_rejection_preserves_body_and_terminal_policy(
         return;
     }
     codex_alab_core::activate();
-    rejection(403, FORBIDDEN, Delivery::Split).await;
+    rejection(403, FORBIDDEN, Delivery::Split, false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -628,7 +779,7 @@ async fn delayed_handshake_body_preserves_header_receipt_retry_deadline() {
         return;
     }
     codex_alab_core::activate();
-    rejection(400, OPAQUE, Delivery::SplitDelayedAdvice).await;
+    rejection(400, OPAQUE, Delivery::SplitDelayedAdvice, true).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -637,5 +788,124 @@ async fn truncated_opaque_handshake_body_cannot_trigger_opaque_recovery() {
         return;
     }
     codex_alab_core::activate();
-    rejection(400, OPAQUE, Delivery::Truncated).await;
+    rejection(400, OPAQUE, Delivery::Truncated, false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn empty_handshake_rejections_measure_zero_accepted_entity_bytes() {
+    if !run_isolated("empty_handshake_rejections_measure_zero_accepted_entity_bytes").await {
+        return;
+    }
+    codex_alab_core::activate();
+    rejection(403, "", Delivery::Complete, true).await;
+    rejection(403, "", Delivery::Truncated, true).await;
+}
+
+async fn cancel_pending_rejection(prefix: &'static str) {
+    let mut fixture = PendingRejectionFixture::start(prefix).await;
+    let client = codex_api::ResponsesWebsocketClient::new(
+        codex_api::Provider {
+            name: "cancel-fixture".into(),
+            base_url: format!("{}/v1", fixture.uri),
+            query_params: None,
+            headers: http::HeaderMap::new(),
+            retry: codex_api::RetryConfig {
+                max_attempts: 1,
+                base_delay: Duration::from_millis(1),
+                retry_429: false,
+                retry_5xx: false,
+                retry_transport: false,
+            },
+            stream_idle_timeout: WAIT,
+        },
+        Arc::new(NoAuth),
+    );
+    let factory = codex_http_client::HttpClientFactory::new(
+        codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+    );
+    let capture = Capture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let _subscriber = tracing::subscriber::set_default(subscriber);
+    let session = tracing::info_span!("session_loop", thread_id = "cancel-handshake-thread");
+    let turn = tracing::info_span!(
+        parent: &session,
+        "turn",
+        thread.id = "cancel-handshake-thread",
+        turn.id = "cancel-handshake-turn"
+    );
+    let mut connect: ConnectFuture<'_> = Box::pin(
+        client
+            .connect(
+                &factory,
+                http::HeaderMap::new(),
+                http::HeaderMap::new(),
+                None,
+                None,
+            )
+            .instrument(turn),
+    );
+    let wake = Arc::new(ConnectWake::default());
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let revision = wake.revision();
+            assert!(poll_connect(&mut connect, &wake).is_pending());
+            tokio::select! {
+                result = &mut fixture.request => { result.unwrap(); break; }
+                () = wake.after(revision) => {}
+            }
+        }
+    })
+    .await
+    .expect("public cancellation has an observed Upgrade request");
+    assert!(poll_connect(&mut connect, &wake).is_pending());
+    let read_checkpoint = wake.revision();
+    fixture.release.take().unwrap().send(()).unwrap();
+    tokio::time::timeout(WAIT, &mut fixture.delivered)
+        .await
+        .expect("rejection headers and prefix delivered before cancellation")
+        .unwrap();
+    tokio::time::timeout(WAIT, wake.after(read_checkpoint))
+        .await
+        .expect("public response read becomes runnable after delivery");
+    assert!(
+        poll_connect(&mut connect, &wake).is_pending(),
+        "an incomplete rejection cannot complete the public connect call"
+    );
+    assert!(capture.0.lock().unwrap().is_empty());
+    // Server delivery and this read-poll barrier do not measure decoder progress.
+    // The scripted adapter tests establish that separate internal boundary.
+    drop(connect);
+    fixture.finish().await;
+    assert!(capture.0.lock().unwrap().is_empty());
+
+    // Finish all real TCP I/O before pausing time, so automatic time advancement
+    // cannot race socket readiness. Keep the subscriber alive past the old body
+    // capture deadline to catch any completed diagnostic detached from its owner.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(6)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
+    assert!(
+        capture.0.lock().unwrap().is_empty(),
+        "cancellation must not emit a completed or late handshake diagnostic"
+    );
+    // Only the future was cancelled; these callers outlive the peer retirement observation.
+    drop(client);
+    drop(factory);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_public_handshake_retires_connection_without_late_diagnostics() {
+    if !run_isolated("cancelled_public_handshake_retires_connection_without_late_diagnostics").await
+    {
+        return;
+    }
+    codex_alab_core::activate();
+    // A real completed rejection first verifies the same capture layer and
+    // active diagnostic path. Cancellation cases each use fresh empty records.
+    rejection(400, OPAQUE, Delivery::Complete, true).await;
+    for prefix in ["", OPAQUE] {
+        cancel_pending_rejection(prefix).await;
+    }
 }

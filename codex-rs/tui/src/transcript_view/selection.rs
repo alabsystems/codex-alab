@@ -834,3 +834,7 @@ impl TranscriptView {
 #[cfg(test)]
 #[path = "selection_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_transcript_selection.rs"]
+pub(in crate::transcript_view) mod alab_retained_selection; // ALAB(retained-ui): prepare exact native ranges and pending clipboard requirements before installation.

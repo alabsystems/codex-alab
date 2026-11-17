@@ -129,9 +129,16 @@ tikv-jemallocator = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+hmac = { workspace = true } # ALAB(retained-ui): authenticate Source-only callback bookkeeping in production.
 
 [target.'cfg(windows)'.dependencies]
 codex-windows-sandbox = { workspace = true }
+
+# ALAB(upgrade): use the existing locked MCP package for the retained loopback host.
+[target.'cfg(unix)'.dependencies.rmcp]
+workspace = true
+default-features = false
+features = ["server", "transport-streamable-http-server"]
 
 [dev-dependencies]
 codex-alab-core = { path = "../alab-core", features = ["test-support"] } # ALAB(test): inspect actual compressed first-party request bodies.
@@ -175,6 +182,13 @@ wiremock = { workspace = true }
 [dependencies.codex-alab-core]
 path = "../alab-core"
 
+# ALAB(upgrade): narrow local worktree adapter, preserving the existing manager.
+[dependencies.codex-alab-task-worktree]
+path = "../alab-task-worktree"
+
 # ALAB(build): codex-alab's native autopilot (codex-rs/alab-autopilot)
 [dependencies.codex-alab-autopilot]
 path = "../alab-autopilot"
+
+[target.'cfg(unix)'.dependencies.codex-alab-aterm]
+path = "../alab-aterm" # ALAB(owned-local): concrete actual Native origin checker, never type-erased permission.

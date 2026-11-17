@@ -148,3 +148,7 @@ impl App {
 #[cfg(test)]
 #[path = "native_history_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_native_history_queue.rs"]
+pub(super) mod alab_retained_queue; // ALAB(retained-ui): retain original unprinted source/owner queue over the enclosing cell graph.

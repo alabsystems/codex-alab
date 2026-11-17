@@ -524,11 +524,71 @@ fn vanilla_switch_restores_upstream_defaults_and_behavior() {
         let mut experience = crate::experience_changes();
         assert!(*experience.borrow_and_update());
         assert!(crate::active());
+        let initial_mode_epoch = crate::mode_epoch().expect("initial enhanced generation");
+        let source_thread = "unloaded-mode-source";
+        let source = crate::session::WallGoal {
+            goal_id: "mode-goal".into(),
+            objective: "prove mode provenance".into(),
+            token_budget: Some(100),
+            chronology_fence_generation: None,
+            turn: "mode-source-turn".into(),
+            person_stops: 0,
+        };
+        let flushes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let flush_ok = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let seen_flushes = std::sync::Arc::clone(&flushes);
+        let writer_ok = std::sync::Arc::clone(&flush_ok);
+        assert!(crate::session::shared().set_flush(Box::new(move || {
+            seen_flushes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                crate::session::shared()
+                    .carried_model_goal(source_thread)
+                    .is_none(),
+                "the source is retired before its mode boundary is written"
+            );
+            writer_ok.load(std::sync::atomic::Ordering::SeqCst)
+        })));
+        crate::session::shared().carry_model_goal(source_thread, Some(source.clone()));
+        assert!(
+            crate::session::shared()
+                .carried_model_goal(source_thread)
+                .is_some()
+        );
         assert_ne!(crate::packaged_defaults(UPSTREAM), UPSTREAM);
-        crate::set_enhanced(false);
+        assert!(!crate::set_enhanced(false));
+        assert_eq!(flushes.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(experience.has_changed().unwrap());
         assert!(!*experience.borrow_and_update());
         assert!(!crate::active());
+        assert_eq!(crate::mode_epoch(), None);
+        assert_eq!(
+            crate::session::shared().carried_model_goal(source_thread),
+            None,
+            "mode transition clears sources even without a loaded runtime"
+        );
+        assert!(
+            crate::session::shared()
+                .pace(source_thread)
+                .is_none_or(|pace| pace.model_blocked_goal.is_none())
+        );
+        crate::session::shared().carry_model_goal("late-mode-source", Some(source.clone()));
+        assert_eq!(
+            crate::session::shared().carried_model_goal("late-mode-source"),
+            None,
+            "late disk imports stay retired after the boundary"
+        );
+        crate::session::shared().set_pace(
+            "late-mode-pace",
+            crate::session::Pace {
+                model_blocked_goal: Some(source.clone()),
+                ..Default::default()
+            },
+        );
+        assert!(
+            crate::session::shared()
+                .pace("late-mode-pace")
+                .is_none_or(|pace| pace.model_blocked_goal.is_none())
+        );
         crate::configure_enhanced(true);
         assert!(
             !crate::active(),
@@ -540,15 +600,79 @@ fn vanilla_switch_restores_upstream_defaults_and_behavior() {
         assert!(crate::trace_diagnostics());
         assert!(crate::turn_git_metadata());
         assert!(crate::feedback_tags_logged());
-        crate::set_enhanced(true);
+        assert!(crate::set_enhanced(true));
+        assert_eq!(flushes.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert!(experience.has_changed().unwrap());
         assert!(*experience.borrow_and_update());
         assert!(crate::active());
+        assert_ne!(
+            crate::mode_epoch().expect("restored enhanced generation"),
+            initial_mode_epoch
+        );
+        let restored_epoch = crate::mode_epoch().unwrap();
+        crate::session::shared().set_pace_at_mode(
+            "fresh-live-mode-source",
+            crate::session::Pace {
+                model_blocked_goal: Some(source),
+                ..Default::default()
+            },
+            Some(restored_epoch),
+        );
+        assert!(
+            crate::session::shared()
+                .pace("fresh-live-mode-source")
+                .and_then(|pace| pace.model_blocked_goal)
+                .is_some(),
+            "a source created in the new live generation remains publishable"
+        );
         assert_ne!(crate::packaged_defaults(UPSTREAM), UPSTREAM);
+        flush_ok.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            crate::set_enhanced(false),
+            "a failed durable retirement leaves Enhanced in force"
+        );
+        assert!(crate::active());
+        flush_ok.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(!crate::set_enhanced(false));
+        assert_eq!(flushes.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(crate::packaged_defaults(UPSTREAM), UPSTREAM);
         return;
     }
     // Process-global mode changes cannot race unrelated tests in this binary.
     let name = "tests::vanilla_switch_restores_upstream_defaults_and_behavior";
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+    child.args(["--exact", name]).env(CHILD, "1");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(test_child_process::run(
+            child,
+            std::time::Duration::from_secs(30),
+        ))
+        .unwrap_or_else(|failure| panic!("{name}: {failure}"))
+        .assert_test_success(name);
+}
+
+#[test]
+fn mode_retirement_without_a_durability_witness_fails_closed() {
+    const CHILD: &str = "ALAB_TEST_MODE_DURABILITY_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        crate::activate();
+        assert!(crate::session::shared().set_launch(crate::session::Launch {
+            pid: std::process::id(),
+            ..Default::default()
+        }));
+        let epoch = crate::mode_epoch().expect("initial Enhanced generation");
+        assert!(
+            crate::set_enhanced(false),
+            "the effective mode remains Enhanced without a record witness"
+        );
+        assert!(crate::active());
+        assert_eq!(crate::mode_epoch(), Some(epoch));
+        return;
+    }
+    let name = "tests::mode_retirement_without_a_durability_witness_fails_closed";
     let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
     child.args(["--exact", name]).env(CHILD, "1");
     tokio::runtime::Builder::new_current_thread()

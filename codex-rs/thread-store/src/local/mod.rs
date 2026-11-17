@@ -164,12 +164,20 @@ pub struct LocalThreadStore {
     startup_migration_retry_gate: Option<Arc<StartupMigrationRetryGate>>,
 }
 
+// ALAB(retained-history): serialize the exact recorder observation with original writer lifecycle.
+#[path = "../../../alab-core/glue/retained_deferred_store.rs"]
+mod alab_retained_deferred;
+
+#[path = "../../../alab-core/glue/retained_local_store.rs"]
+mod alab_retained_local; // ALAB(retained-side): actual writer acquisition and bounded positional observation.
+
 type ThreadDataCleanup = dyn Fn(Vec<ThreadId>) -> ThreadStoreFuture<'static, ()> + Send + Sync;
 
 type WriterLockGuard = Arc<codex_rollout::WriterLockGuard>;
 
 struct LiveRecorderEntry {
     recorder: RolloutRecorder,
+    retained_writer: crate::RetainedWriterIdentity, // ALAB(retained-history): allocated at this exact installation.
     // Rollout projection rows are keyed by immutable rollout ID, not the stable thread ID used
     // to find this live writer.
     rollout_id: ThreadId,
@@ -417,19 +425,21 @@ impl LocalThreadStore {
         rollout_id: ThreadId,
         history_mode: ThreadHistoryMode,
         writer_lock: WriterLockGuard,
-    ) -> ThreadStoreResult<()> {
+    ) -> ThreadStoreResult<crate::RetainedWriterIdentity> { // ALAB(retained-history): return actual installed identity.
         match self.live_recorders.lock().await.entry(thread_id) {
             Entry::Occupied(entry) => Err(ThreadStoreError::InvalidRequest {
                 message: format!("thread {} already has a live local writer", entry.key()),
             }),
             Entry::Vacant(entry) => {
+                let retained_writer = crate::RetainedWriterIdentity::new(); // ALAB(retained-history): no post-acquisition lookup.
                 entry.insert(LiveRecorderEntry {
                     recorder,
+                    retained_writer: retained_writer.clone(), // ALAB(retained-history): same marker returned to this owner.
                     rollout_id,
                     history_mode,
                     writer_lock,
                 });
-                Ok(())
+                Ok(retained_writer) // ALAB(retained-history): identity owns no recorder or lock.
             }
         }
     }
@@ -527,7 +537,7 @@ impl ThreadStore for LocalThreadStore {
     }
 
     fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreFuture<'_, ()> {
-        Box::pin(async move { live_writer::create_thread(self, params).await })
+        Box::pin(async move { live_writer::create_thread(self, params).await.map(drop) }) // ALAB(retained-history): original public result unchanged.
     }
 
     fn stage_pending_thread_metadata(
@@ -574,7 +584,7 @@ impl ThreadStore for LocalThreadStore {
         &self,
         params: ResumeThreadParams,
     ) -> ThreadStoreFuture<'_, Arc<Vec<RolloutItem>>> {
-        Box::pin(async move { live_writer::resume_thread(self, params).await })
+        Box::pin(async move { live_writer::resume_thread(self, params).await.map(|(history, _)| history) }) // ALAB(retained-history): original public result unchanged.
     }
 
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
@@ -615,6 +625,31 @@ impl ThreadStore for LocalThreadStore {
         params: LoadThreadHistoryParams,
     ) -> ThreadStoreFuture<'_, StoredThreadHistory> {
         Box::pin(LocalThreadStore::load_history(self, params))
+    }
+
+    // ALAB(retained-history): SAME original create/resume bodies return actual installed identity.
+    fn create_thread_with_retained_writer(&self, params: CreateThreadParams)
+        -> ThreadStoreFuture<'_, Option<crate::RetainedWriterIdentity>> {
+        Box::pin(alab_retained_deferred::create(self, params))
+    }
+    fn resume_thread_with_retained_writer(&self, params: ResumeThreadParams,
+        preparation: Option<crate::ThreadStoreResumePreparation>,
+    ) -> ThreadStoreFuture<'_, (Arc<Vec<RolloutItem>>, Option<crate::RetainedWriterIdentity>)> {
+        Box::pin(alab_retained_deferred::resume(self, params, preparation))
+    }
+    fn retained_deferred_history(&self, thread_id: ThreadId, writer: crate::RetainedWriterIdentity)
+        -> ThreadStoreFuture<'_, Option<crate::RetainedDeferredHistory>> {
+        Box::pin(alab_retained_deferred::load(self, thread_id, writer))
+    }
+
+    fn retained_deferred_display_history(&self, thread_id: ThreadId, writer: crate::RetainedWriterIdentity)
+        -> ThreadStoreFuture<'_, Option<crate::RetainedDeferredDisplayHistory>> {
+        Box::pin(alab_retained_deferred::display(self, thread_id, writer)) // ALAB(retained-history): SAME generation + original frozen lineage, never force persistence.
+    }
+
+    fn retained_local_history(&self, thread_id: ThreadId, writer: crate::RetainedWriterIdentity, max_bytes: usize)
+        -> ThreadStoreFuture<'_, crate::RetainedLocalHistory> {
+        Box::pin(alab_retained_local::load(self, thread_id, writer, max_bytes)) // ALAB(retained-side): same actual acquisition/lifecycle and writer-ordered cutoff.
     }
 
     fn load_latest_turn_history(&self, params: LoadThreadHistoryParams) -> ThreadStoreFuture<'_, StoredThreadHistory> { Box::pin(alab_exec_recovery_history::load(self, params)) } // ALAB(exec-recovery): never use a possibly stale display projection to authorize recovery.
@@ -894,6 +929,9 @@ impl ThreadStore for LocalThreadStore {
 
 #[cfg(test)]
 mod tests {
+    // ALAB(retained-history): real local writer lifecycle and cold absence controls.
+    #[path = "../../../../alab-core/glue/retained_deferred_store_tests.rs"]
+    mod alab_retained_deferred;
     #[path = "acquisition_tests.rs"]
     mod acquisition_tests;
     #[path = "delegated_preview_tests.rs"]

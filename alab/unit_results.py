@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import stat
 import sys
 
@@ -25,12 +26,15 @@ SUMMARY = re.compile(r"test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; 
 IDENTITY = ("package", "version", "manifest", "target", "source")
 DIAGNOSTICS_PREFIX = "alab-unit-diagnostics."
 DIAGNOSTIC_MANIFEST = "manifest.json"
+CLI = runpy.run_path(str(Path(__file__).with_name("cli_status.py")))
 
 
 class Refusal(Exception):
     def __init__(self, message, status=1):
         super().__init__(message)
-        self.status = status
+        # A refusal must stay a failure at the process boundary, where POSIX
+        # truncates integer exit codes to eight bits.
+        self.status = status if type(status) is int and 1 <= status <= 255 else 1
 
 
 def require(condition, message):
@@ -74,13 +78,21 @@ def _cleanup_after_error(action, primary, phase):
     try:
         action()
     except BaseException as cleanup_error:
-        if isinstance(primary, Exception) and not isinstance(cleanup_error, Exception):
-            if hasattr(cleanup_error, "add_note"):
-                cleanup_error.add_note(f"{phase} failed: {primary!r}")
+        promote = (issubclass(type(primary), Exception)
+                   and not issubclass(type(cleanup_error), Exception))
+        selected, secondary = ((cleanup_error, primary) if promote
+                               else (primary, cleanup_error))
+        try:
+            detail = repr(secondary)
+        except BaseException:
+            detail = "<unprintable exception>"
+        try:
+            selected.add_note(f"{phase} failed: {detail}" if promote
+                              else f"{phase} cleanup failed: {detail}")
+        except BaseException:
+            pass  # Diagnostic callbacks cannot replace the selected authority.
+        if promote:
             raise cleanup_error from primary
-        if hasattr(primary, "add_note"):
-            primary.add_note(f"{phase} cleanup failed: {cleanup_error!r}")
-
 
 def _close_directory_after_error(descriptor, primary, phase):
     _cleanup_after_error(lambda: os.close(descriptor), primary, phase)
@@ -354,12 +366,13 @@ def collect(args):
     if state["mode"] == "record":
         for library in state["libraries"]:
             observed = observations[library["key"]]
-            failures = [name for name, outcome in observed["results"] if outcome == "FAILED"]
+            matches = observed["results"]
+            failures = [name for name, outcome in matches if outcome == "FAILED"]
             require(observed["summaries"], f"unit-test harness did not report results: {library['package']}")
             require(int(observed["summaries"][-1][1]) == len(failures),
                     "unit-test failure lines disagree with their summaries")
-            require(len(set(failures)) == len(failures),
-                    "one unit-test copy failed more than once without distinct provenance")
+            require(len({name for name, _ in matches}) == len(matches),
+                    "one unit-test copy reported more than one outcome without distinct provenance")
             for name in failures:
                 copy = {field: library[field] for field in IDENTITY}
                 copy.update(test=name, origin={"repo": state["repo"], "package_id": library["package_id"],
@@ -427,8 +440,13 @@ def main():
             prepare(args)
         else:
             collect(args)
+    except SystemExit as error:
+        if not CLI["successful_exit"](error):
+            raise
+        return CLI["report_failure"]("alab/check.sh: unit-test attribution refused: ",
+                                     error, incomplete=True)
     except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
-        print(f"alab/check.sh: unit-test attribution refused: {error}", file=sys.stderr)
+        CLI["report_failure"]("alab/check.sh: unit-test attribution refused: ", error)
         return error.status if isinstance(error, Refusal) else 1
     return 0
 

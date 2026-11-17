@@ -1189,6 +1189,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::PrivateSessionEvent(private) => match private.event {
+            PrivateSessionEventPayload::AlabSideBoundary(_) => {} // ALAB(retained-side): original listener consumes local occurrence, never a public notification.
             PrivateSessionEventPayload::RecordedItem(mut recorded) => {
                 recorded.item.clear_executed_tool_calls();
                 let mut notification = ServerNotification::RawResponseItemCompleted(

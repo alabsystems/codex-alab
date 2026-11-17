@@ -1,4 +1,4 @@
-#![recursion_limit = "256"]
+#![recursion_limit = "512"] // ALAB(toolchain): retain finite depth for the async runtime graph.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 #[cfg(unix)]
@@ -496,6 +496,8 @@ pub struct AppServerRuntimeOptions {
     pub remote_control_startup_mode: RemoteControlStartupMode,
     pub install_shutdown_signal_handler: bool,
     pub managed_daemon: bool,
+    #[cfg(unix)]
+    pub alab_incoming: Option<codex_alab_core::native_incoming::Incoming>, // ALAB(upgrade): actual owned input for the unchanged persistent runtime.
 }
 
 impl Default for AppServerRuntimeOptions {
@@ -507,6 +509,8 @@ impl Default for AppServerRuntimeOptions {
             remote_control_startup_mode: RemoteControlStartupMode::ResolvePersisted,
             install_shutdown_signal_handler: true,
             managed_daemon: false,
+            #[cfg(unix)]
+            alab_incoming: None, // ALAB(upgrade): native input requires an explicit owner.
         }
     }
 }
@@ -523,6 +527,7 @@ pub async fn run_main_with_transport_options(
     auth: WebsocketAuthSettings,
     runtime_options: AppServerRuntimeOptions,
 ) -> IoResult<AppServerExit> {
+    let (mut alab_owner_withdrawal, alab_native_incoming) = runtime_options.alab_prepare_incoming(&transport)?; // ALAB(upgrade): retain actual input owner before runtime construction.
     let cloud_skill_provider = match runtime_options.cloud_skills_snapshot {
         Some(path) => {
             let provider = tokio::task::spawn_blocking(move || {
@@ -879,6 +884,7 @@ pub async fn run_main_with_transport_options(
         }
         AppServerTransport::Off => {}
     }
+    transport_accept_handles.extend(alab_native_incoming.start(transport_event_tx.clone(), transport_shutdown_token.clone(), websocket_compression)); // ALAB(upgrade): one runtime accepts successive native WebSocket streams.
     drop(unix_socket_startup_lock);
 
     let remote_control_enabled = remote_control_policy == RemoteControlPolicy::Allowed
@@ -1138,6 +1144,11 @@ pub async fn run_main_with_transport_options(
                 }
 
                 tokio::select! {
+                    _ = &mut alab_owner_withdrawal => { // ALAB(upgrade): actual native input owner withdrawal stops admission and runs backend cleanup.
+                        processor.turn_admission.begin_drain();
+                        transport_shutdown_token.cancel();
+                        break "native_backend_owner_withdrawn";
+                    }
                     _ = &mut snapshot, if shutdown_state.requested() && active_admissions == 0 && !snapshot_finished => {
                         snapshot_finished = true;
                     }
@@ -1181,6 +1192,7 @@ pub async fn run_main_with_transport_options(
                                 connection_id,
                                 origin,
                                 auth,
+                                resource, // ALAB(owned-local): carry accepted custody without changing ordinary transport policy.
                                 writer,
                                 disconnect_sender,
                             } => {
@@ -1215,8 +1227,15 @@ pub async fn run_main_with_transport_options(
                                         outbound_initialized,
                                         outbound_experimental_api_enabled,
                                         outbound_opted_out_notification_methods,
+                                        resource, // ALAB(owned-local): exact opened allocation reaches its actual session.
                                     ),
                                 );
+                                #[cfg(unix)]
+                                if let Some(actual)=connections.get(&connection_id){processor.alab_callback_connection_open(connection_id,&actual.session);} // ALAB(retained-ui): retain SAME real connection gate before any message is admitted.
+                            }
+                            TransportEvent::AlabIngressDrained { connection_id } => {
+                                #[cfg(unix)]
+                                processor.alab_callback_ingress_drained(connection_id); // ALAB(retained-ui): real transport reader joined, private connection resource only.
                             }
                             TransportEvent::ConnectionClosed { connection_id } => {
                                 let Some(connection_state) = connections.remove(&connection_id) else {
@@ -1224,6 +1243,8 @@ pub async fn run_main_with_transport_options(
                                 };
                                 let stdio_closed = connection_state.origin == ConnectionOrigin::Stdio;
                                 connection_state.session.rpc_gate.close().await;
+                                #[cfg(unix)]
+                                processor.alab_callback_connection_closing(connection_id, &connection_state.session); // ALAB(retained-ui): close accepted publication dispatch admission before async cleanup.
                                 let outbound_closed = outbound_control_tx
                                     .send(OutboundControlEvent::Closed { connection_id })
                                     .await
@@ -1605,3 +1626,4 @@ fn analytics_rpc_transport(transport: &AppServerTransport) -> AppServerRpcTransp
 #[path = "lib_tests.rs"]
 mod tests;
 #[path = "../../alab-core/glue/state_log_filter.rs"] mod alab_live_logs; // ALAB(quiet-logs): mode-aware SQLite filter
+#[path = "../../alab-core/glue/native_incoming_runtime.rs"] mod alab_native_incoming; // ALAB(upgrade): preserve all runtime inputs while extending the transport owner.

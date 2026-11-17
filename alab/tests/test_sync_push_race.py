@@ -68,7 +68,7 @@ sys.exit(rc)
         # Execute the production function, replacing only external Git, sleep and unchanged
         # merge/gate actions with recording implementations and explicit failure outcomes.
         harness = scratch / "run.sh"
-        harness.write_text("set -euo pipefail\n" + source[begin:end] + '''
+        harness.write_text("set -euo pipefail\n. " + shlex.quote(str(ROOT / "alab/lib.sh")) + "\n" + source[begin:end] + '''
 wt=candidate
 in_wt() { git -C "${wt}" "$@"; }
 sync_push() { in_wt push --porcelain origin HEAD:refs/heads/main; }
@@ -134,6 +134,17 @@ push_main
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertEqual(actions, [])
                 self.assertEqual(sum("push" in command for command in commands), 1)
+
+    def test_forward_read_errors_do_not_claim_rewritten_history(self):
+        for status in (2, 128, 137):
+            with self.subTest(status=status):
+                result, commands, actions = self.run_loop(pushes=[rejected()], forward_rc=status)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(actions, [])
+                self.assertEqual(sum("push" in command for command in commands), 1)
+                self.assertIn("cannot read ancestry", result.stderr)
+                self.assertNotIn("changed history", result.stderr)
+                self.assertNotIn("a person must inspect", result.stderr)
 
     def test_conflict_or_failed_check_stops_before_another_push(self):
         for options, code, actions in [(dict(merge_rc=3), 3, ["sleep 1", "merge"]),

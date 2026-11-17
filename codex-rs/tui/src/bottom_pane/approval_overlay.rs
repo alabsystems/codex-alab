@@ -183,7 +183,13 @@ impl ApprovalRequest {
 
 /// Modal overlay asking the user to approve or deny one or more requests.
 pub(crate) struct ApprovalOverlay {
+    #[cfg(unix)]
+    alab_editing: alab_retained_approval::EditingGeneration, // ALAB(retained-ui): reject overwrite after real destination input.
+    #[cfg(unix)]
+    alab_activations: alab_retained_approval::activations::Book, // ALAB(retained-ui): actual per-item native editing survives replay normalization.
     current_request: Option<ApprovalRequest>,
+    #[cfg(unix)]
+    alab_inputs: crate::app::retained_original_input::approvals::Bindings, // ALAB(retained-ui): original physical LIFO queue carries exact private reply owners.
     queue: Vec<ApprovalRequest>,
     app_event_tx: AppEventSender,
     list: ListSelectionView,
@@ -204,7 +210,11 @@ impl ApprovalOverlay {
         list_keymap: ListKeymap,
     ) -> Self {
         let mut view = Self {
+            #[cfg(unix)]
+            alab_editing: Default::default(), // ALAB(retained-ui): original native view starts before any editing.
+            #[cfg(unix)] alab_activations: Default::default(), // ALAB(retained-ui): only actual native activations populate this resource.
             current_request: None,
+            #[cfg(unix)] alab_inputs: crate::app::retained_original_input::approvals::Bindings::capture(), // ALAB(retained-ui): actual incoming scope was claimed before native conversion.
             queue: Vec::new(),
             app_event_tx: app_event_tx.clone(),
             list: ListSelectionView::new(Default::default(), app_event_tx, list_keymap.clone()),
@@ -220,13 +230,17 @@ impl ApprovalOverlay {
     }
 
     pub fn enqueue_request(&mut self, req: ApprovalRequest) {
+        #[cfg(unix)] self.alab_inputs.push(&req); // ALAB(retained-ui): keep the same queue item through physical LIFO ordering.
         self.queue.push(req);
     }
 
     fn dismiss_resolved_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
         let queue_len = self.queue.len();
-        self.queue
-            .retain(|queued_request| !queued_request.matches_resolved_request(request));
+        #[cfg(unix)] self.alab_inputs.retain(&mut self.queue, |queued| queued.matches_resolved_request(request)); // ALAB(retained-ui): only exact resolved RPC can remove its protected item.
+        #[cfg(unix)] self.alab_prune_activations(); // ALAB(retained-ui): actual removal retires only its local native editing owner.
+        #[cfg(not(unix))]
+        self.queue.retain(|queued_request| !queued_request.matches_resolved_request(request));
+        #[cfg(unix)] if !self.alab_inputs.current_matches_resolved() { return self.queue.len() != queue_len; } // ALAB(retained-ui): equal params cannot dismiss a later callback.
         if self
             .current_request
             .as_ref()
@@ -241,6 +255,8 @@ impl ApprovalOverlay {
     }
 
     fn set_current(&mut self, request: ApprovalRequest) {
+        #[cfg(unix)] let Some(request)=self.alab_restore_actual_activation(request) else {return;}; // ALAB(retained-ui): original pop reuses exact retained native state.
+        #[cfg(unix)] { self.app_event_tx = self.alab_inputs.sender(&self.app_event_tx, &request); } // ALAB(retained-ui): actual sender/actions retain SAME callback while native request changes.
         self.current_complete = false;
         let header = build_header(&request);
         let (options, params) = Self::build_options(
@@ -254,6 +270,7 @@ impl ApprovalOverlay {
         self.options = options;
         self.list =
             ListSelectionView::new(params, self.app_event_tx.clone(), self.list_keymap.clone());
+        #[cfg(unix)] self.alab_apply_queued_activation(); // ALAB(retained-ui): actual original activation precedes bound queued editing DATA.
     }
 
     fn build_options(
@@ -338,6 +355,7 @@ impl ApprovalOverlay {
     }
 
     fn apply_selection(&mut self, actual_idx: usize) {
+        #[cfg(unix)] self.alab_editing.changed(); // ALAB(retained-ui): automatic and direct decisions also protect current editing.
         if self.current_complete {
             return;
         }
@@ -505,6 +523,7 @@ impl ApprovalOverlay {
     }
 
     fn advance_queue(&mut self) {
+        #[cfg(unix)] self.alab_inputs.advance(); // ALAB(retained-ui): advance SAME actual resource with original pop().
         if let Some(next) = self.queue.pop() {
             self.set_current(next);
         } else {
@@ -513,6 +532,7 @@ impl ApprovalOverlay {
     }
 
     fn cancel_current_request(&mut self) {
+        #[cfg(unix)] self.alab_editing.changed(); // ALAB(retained-ui): actual cancellation cannot be overwritten by saved DATA.
         if self.done {
             return;
         }
@@ -546,7 +566,9 @@ impl ApprovalOverlay {
                 }
             }
         }
+        #[cfg(unix)] self.alab_inputs.clear_queue(); // ALAB(retained-ui): original UI cancellation drops only unanswered local queue references.
         self.queue.clear();
+        #[cfg(unix)] self.alab_prune_activations(); // ALAB(retained-ui): original human cancellation owns unanswered native queue removal.
         self.done = true;
     }
 
@@ -593,12 +615,35 @@ impl ApprovalOverlay {
 }
 
 impl BottomPaneView for ApprovalOverlay {
+    #[cfg(unix)] // ALAB(retained-ui): actual replay order can differ from the original delayed FIFO.
+    fn alab_normalize_delayed_approvals(&mut self,requests:&[alab_retained_approval::RequestData],ids:&[codex_app_server_protocol::RequestId],client:&codex_app_server_client::AppServerRequestHandle)->std::io::Result<()> {self.alab_normalize_original_delayed(requests,ids,client)}
+    #[cfg(unix)] // ALAB(retained-ui): actual physical approval queue supplies its opaque original resources.
+    fn alab_original_input_items(&self)->std::io::Result<Vec<std::sync::Arc<crate::app::retained_original_input::Item>>> {
+        self.alab_inputs.actual_items().into_iter().map(|item|item.ok_or_else(||std::io::Error::new(std::io::ErrorKind::WouldBlock,"approval needs its actual separate reply/auth owner"))).collect()
+    }
+    #[cfg(unix)] // ALAB(retained-ui): exact native current/queue prefix, not an old view index.
+    fn alab_matches_bound_requests(&self,requests:&crate::bottom_pane::alab_retained_views::bound::Requests)->bool {
+        let crate::bottom_pane::alab_retained_views::bound::Requests::Approval(requests)=requests else{return false;};
+        let actual:Vec<_>=self.current_request.iter().chain(self.queue.iter()).collect();
+        !requests.is_empty()&&requests.len()<=actual.len()&&requests.iter().zip(actual).all(|(old,actual)|old.matches_native(actual).unwrap_or(false))
+    }
+    #[cfg(unix)] // ALAB(retained-ui): Root's codec requires same actual queue resource and completed-value proof.
+    fn alab_install_bound_view(&mut self,data:crate::bottom_pane::alab_retained_views::ViewData,owners:&crate::bottom_pane::alab_retained_views::bound::Owners<'_>,_keymap:&crate::keymap::RuntimeKeymap,bytes:usize,_generations:usize)->std::io::Result<()> {
+        let (crate::bottom_pane::alab_retained_views::ViewData::Approval {original},crate::bottom_pane::alab_retained_views::bound::Owners::Approval(owners))=(data,owners) else{return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"native approval owner kind changed"));};
+        alab_retained_approval::PreparedApproval::decode(&original,bytes)?.install_bound(self,owners)
+    }
+    #[cfg(unix)] // ALAB(retained-ui): whole native approval editing DATA preserves all original actions/resources.
+    fn alab_capture_retained_view(&self,bytes:usize)->std::io::Result<crate::bottom_pane::alab_retained_views::ViewData> {
+        Ok(crate::bottom_pane::alab_retained_views::ViewData::Approval {original:self.alab_capture_approval_editing(bytes)?})
+    }
+
     fn keymap_contexts(&self) -> crate::keymap::KeymapContextSet {
         crate::keymap::KeymapContextSet::new(crate::keymap::KeymapContext::Approval)
             .with(crate::keymap::KeymapContext::List)
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
+        #[cfg(unix)] self.alab_editing.changed(); // ALAB(retained-ui): actual key precedes any original approval handling.
         if self.try_handle_shortcut(&key_event) {
             return;
         }
@@ -2599,3 +2644,7 @@ mod tests {
 #[path = "approval_overlay/clipping_tests.rs"]
 mod clipping_tests;
 #[path = "../../../alab-tui/glue/approval_answer.rs"] mod alab_answer; // ALAB(answer): reports a box codex-alab cleared and applies its one-shot yes
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_approval_overlay.rs"]
+pub(crate) mod alab_retained_approval; // ALAB(retained-ui): preserve actual approval editing under borrowed original callback owners.

@@ -67,6 +67,7 @@ pub(crate) async fn handle_response_stream_error(
     request: ResponsesStreamRequest,
 ) -> Result<(), CodexErr> {
     let turn_context = &step_context.turn;
+    if alab_capacity_retry::request_failed(&err, retry_state, max_retries, client_session, turn_context).await { return Ok(()); } // ALAB(recovery): a repeated opaque HTTPS rejection drops the turn's routing state; a request the returned WebSocket did not carry is replayed over HTTPS.
     if alab_capacity_retry::should_retry(&err, turn_context) { // ALAB(capacity): keep sampling and compaction on the same task and selected model
         alab_capacity_retry::wait(&mut retry_state.capacity, err, sess, turn_context, request).await;
         return Ok(());
@@ -127,7 +128,7 @@ pub(crate) async fn handle_response_stream_error(
     }
 
     let requires_http_fallback = err.requires_http_fallback();
-    let switched = (requires_http_fallback || retry_state.retries >= max_retries || alab_capacity_retry::prefer_clean_transport(&err)) // ALAB(recovery): replay an opaque rejection without reusing websocket continuation state.
+    let switched = (requires_http_fallback || retry_state.retries >= max_retries)
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             turn_context.model_info(),

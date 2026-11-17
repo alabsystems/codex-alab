@@ -117,15 +117,19 @@ class Review:
                       "ephemeral review lifecycle is incomplete or replayed")
         probe.require(self.control or isinstance(turn, str) and bool(turn),
                       "ephemeral review recovery needs the native parent turn binding")
-        completed = [event.get("item", {}) for event in events if event.get("type") == "item.completed"]
-        answers = [item for item in completed if item.get("type") == "agent_message"]
-        probe.require(len(answers) == 1 and answers[0].get("text") == ANSWER,
+        completed = [(index, event.get("item", {})) for index, event in enumerate(events)
+                     if event.get("type") == "item.completed"]
+        answers = [(index, item) for index, item in completed if item.get("type") == "agent_message"]
+        probe.require(len(answers) == 1 and answers[0][1].get("text") == ANSWER,
                       "ephemeral review did not render its result exactly once")
-        commands = [item for item in completed if item.get("type") == "command_execution"]
-        probe.require(len(commands) == 1 and commands[0].get("exit_code") == 0
-                      and commands[0].get("status") == "completed"
-                      and commands[0].get("aggregated_output", "").strip() == MARKER,
+        commands = [(index, item) for index, item in completed if item.get("type") == "command_execution"]
+        probe.require(len(commands) == 1 and commands[0][1].get("exit_code") == 0
+                      and commands[0][1].get("status") == "completed"
+                      and commands[0][1].get("aggregated_output", "").strip() == MARKER,
                       "ephemeral review lost or repeated its actual command output")
+        probe.require(types.index("turn.started") < commands[0][0] < answers[0][0]
+                      < types.index("turn.completed"),
+                      "ephemeral review command and answer do not follow their original turn order")
         report["reviewContinuity"] = {
             "identity": identity, "parentTurn": turn, "control": self.control,
             "evidence": "exec-json-and-native-receipt" if turn else "exec-json-control",

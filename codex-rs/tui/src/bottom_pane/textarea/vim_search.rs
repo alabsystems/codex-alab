@@ -1,6 +1,10 @@
 //! Draft-local search motions and operator transactions. Query entry never edits the buffer;
 //! accepted searches wrap, skip atomic elements, and record patterns rather than byte offsets.
 
+#[cfg(unix)]
+#[path = "../../../../alab-tui/glue/editor_upgrade_vim_search.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): carry native editor data without serializing live resource owners.
+
 use super::TextArea;
 use super::TextAreaState;
 use super::VimAction;

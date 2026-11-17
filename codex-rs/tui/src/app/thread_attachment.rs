@@ -22,6 +22,7 @@ impl Target {
 
 #[derive(Debug)]
 pub(crate) enum PreparedAttachment {
+    #[cfg(unix)] Retained(Box<super::alab_attachment::RetainedAttachment>), // ALAB(source-selection): the original prepared result carries one actual replay through the chooser flight.
     Live(Box<AppServerStartedThread>),
     ReplayOnly(Box<Thread>),
 }
@@ -167,7 +168,7 @@ pub(super) async fn prepare_saved(
             }
             _ => ResumeModelSettings::PreserveExistingThread,
         };
-        prepare(&mut view, settings, config, child, mode).await
+        super::alab_attachment::prepare_saved_result(&mut view, settings, config, child, mode).await // ALAB(source-selection): only the actual saved-child caller declares Side before its original Resume.
     }
     .await
     .map_err(
@@ -178,12 +179,7 @@ pub(super) async fn prepare_saved(
             _ => err.to_string(),
         },
     );
-    let metadata = view.take_attachment_metadata(child);
-    Prepared {
-        result,
-        metadata,
-        close_check: Ok(false),
-    }
+    super::alab_attachment::finish_saved(&mut view, result, child) // ALAB(source-selection): move the same fresh metadata with its original prepared attachment.
 }
 
 pub(super) async fn prepare(
@@ -200,11 +196,15 @@ pub(super) async fn prepare(
                 .instructions(resume_config.developer_instructions.as_deref()),
         );
     }
+    #[cfg(unix)] let original_policy = super::alab_attachment::capture_policy(app_server, &resume_config, resume_settings); // ALAB(source-selection): capture the actual transformed original policy before its first await.
     match app_server
         .resume_thread(local_settings, resume_config, thread_id, resume_settings)
         .await
     {
-        Ok(started) => Ok(PreparedAttachment::Live(Box::new(started))),
+        Ok(started) => {
+            #[cfg(unix)] { super::alab_attachment::prepare_result(app_server, local_settings, original_policy, started).await } // ALAB(source-selection): reconcile the SAME original result before returning its nonclone carrier.
+            #[cfg(not(unix))] { Ok(PreparedAttachment::Live(Box::new(started))) }
+        }
         // Once subscribed, a second unanchored read could overlap live events.
         Err(err) if app_server.attachment_subscribed == Some(true) => Err(err),
         Err(resume_err) => {

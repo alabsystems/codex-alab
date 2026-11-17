@@ -30,7 +30,10 @@ class CertifiedDispatchTests(unittest.TestCase):
         self.repo = self.root / "source with spaces"
         (self.repo / "alab").mkdir(parents=True)
         (self.repo / "codex-rs").mkdir()
-        for name in ("certified-build.sh", "lib.sh", "project-targo.sh", "proof-policy.toml"):
+        (self.repo / "codex-rs/Cargo.toml").write_text("[workspace]\nmembers = []\n")
+        for name in ("certified-build.sh", "lib.sh", "project-targo.sh", "proof-policy.toml",
+                     "pristine_state.py", "qualification.py", "upstream_intake.py",
+                     "source_content.py", "cli_status.py", "file_hash.py"):
             shutil.copy2(ROOT / "alab" / name, self.repo / "alab" / name)
         self.env = dict(HOME=str(self.root), PATH="/usr/bin:/bin:/usr/sbin:/sbin",
                         GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
@@ -59,7 +62,7 @@ raise SystemExit(status)
         self.env.update(ATPKG_PROJECT_FRONT=str(self.front), ATPKG_PROJECT_TARGO="/usr/bin/true",
                         ATPKG_PROJECT_TRUSTC="/usr/bin/true", ATPKG_PROJECT_TRUSTDOC="/usr/bin/true",
                         ATPKG_PROJECT_PAYLOAD=str(self.root), ATPKG_PROJECT_EXECUTION=str(self.root),
-                        FIXTURE_CALLS=str(self.calls))
+                        ALAB_PYTHON=sys.executable, FIXTURE_CALLS=str(self.calls))
 
     def git(self, *args):
         return subprocess.run(["/usr/bin/git", "-C", str(self.repo), *args], env=self.env,
@@ -71,6 +74,14 @@ raise SystemExit(status)
         return subprocess.run([str(self.repo / "alab/certified-build.sh"), str(self.report),
                                source or self.source, *arguments, *extra], cwd=cwd or self.repo / "codex-rs", env=dict(self.env, **env),
                               capture_output=True, text=True, timeout=20)
+
+    def worktree(self, path):
+        subprocess.run(["/usr/bin/git", "-C", str(self.repo), "worktree", "add", "--quiet",
+                        "--detach", str(path), self.source], env=self.env, check=True,
+                       capture_output=True, text=True, timeout=20)
+        self.addCleanup(lambda: subprocess.run(
+            ["/usr/bin/git", "-C", str(self.repo), "worktree", "remove", "--force", str(path)],
+            env=self.env, capture_output=True, text=True, timeout=20))
 
     def test_live_compile_uses_certify_and_transitive_application_scope(self):
         done = self.build()
@@ -86,6 +97,41 @@ raise SystemExit(status)
         self.assertIn("-Ztrust-verify-include-dependencies=yes", flags)
         self.assertEqual(args[-6:], ["--release", "--locked", "-p", "codex-cli", "--bin", "codex"])
 
+    def test_pristine_mode_derives_vendor_config_and_keeps_the_fixed_policy(self):
+        base = Path(self.git("rev-parse", "--path-format=absolute", "--git-path", "alab-pristine"))
+        pristine = Path(str(base) + "-" + self.source)
+        self.worktree(pristine)
+        vendor = self.repo / "alab/vendor/fixture"
+        vendor.mkdir(parents=True)
+        (vendor / "ALAB-SOURCE.json").write_text("{}\n")
+        done = self.build("--pristine-upstream", cwd=pristine / "codex-rs")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        args = json.loads(self.calls.read_text())
+        self.assertIn("--certify", args)
+        self.assertNotIn("--unverified", args)
+        configs = [args[index + 1] for index, word in enumerate(args) if word == "--config"]
+        self.assertEqual(configs, [str(self.repo / "alab/proof-policy.toml"),
+                                   f'paths = ["{vendor}"]'])
+
+    def test_pristine_mode_refuses_dirty_or_unrelated_worktrees_before_compiler(self):
+        base = Path(self.git("rev-parse", "--path-format=absolute", "--git-path", "alab-pristine"))
+        pristine = Path(str(base) + "-" + self.source)
+        self.worktree(pristine)
+        dirty = pristine / "unexpected-source"
+        dirty.write_text("not committed\n")
+        done = self.build("--pristine-upstream", cwd=pristine / "codex-rs")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("clean exact upstream worktree", done.stderr)
+        self.assertFalse(self.calls.exists())
+        dirty.unlink()
+
+        unrelated = self.root / "another worktree"
+        self.worktree(unrelated)
+        done = self.build("--pristine-upstream", cwd=unrelated / "codex-rs")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("prepared exact upstream worktree", done.stderr)
+        self.assertFalse(self.calls.exists())
+
     def test_unproved_or_unavailable_compilation_never_becomes_success(self):
         for status in (1, 2, 3, 75):
             with self.subTest(status=status):
@@ -96,7 +142,7 @@ raise SystemExit(status)
 
     def test_missing_report_is_an_error_even_after_successful_child_exit(self):
         done = self.build(FIXTURE_REPORT="no")
-        self.assertNotEqual(done.returncode, 0)
+        self.assertEqual(done.returncode, 2)
         self.assertIn("no retained canonical report", done.stderr)
 
     def test_stale_reports_and_wrong_source_start_no_compiler(self):
@@ -114,6 +160,16 @@ raise SystemExit(status)
         done = self.build(ATPKG_PROJECT_FRONT="")
         self.assertNotEqual(done.returncode, 0)
         self.assertFalse(self.calls.exists())
+
+    def test_precompiler_resource_and_signal_stops_propagate_without_a_verdict(self):
+        library = self.repo / "alab/lib.sh"
+        library.write_text(library.read_text() +
+                           '\nalab_project_selected() { return "$FIXTURE_PREFLIGHT_STATUS"; }\n')
+        for status in (75, 130):
+            with self.subTest(status=status):
+                done = self.build(FIXTURE_PREFLIGHT_STATUS=str(status))
+                self.assertEqual(done.returncode, status, done.stderr)
+                self.assertFalse(self.calls.exists())
 
     def test_extra_config_target_manifest_and_lane_options_start_no_compiler(self):
         for arguments in (("--config", "target.'cfg(all())'.rustflags=[]"),

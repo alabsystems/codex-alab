@@ -301,3 +301,7 @@ fn run_ranges(text: &str, width: usize, policy: LineWrapPolicy) -> Vec<Range<usi
         }
     }
 }
+
+// ALAB(retained-ui): retain original row tab projection, not regenerated wraps.
+#[path = "../../../alab-tui/glue/retained_text_tabs.rs"]
+pub(crate) mod alab_retained_tabs;

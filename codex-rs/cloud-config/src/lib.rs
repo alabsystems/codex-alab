@@ -25,3 +25,8 @@ pub use config_server::config_server_auth_manager;
 pub use config_server::config_server_bundle_loader;
 
 pub use bundle_loader::alab_destination::loader as alab_destination_config_loader; // ALAB(accounts): exact B manager, without detached credential prewarm.
+
+pub use bundle_loader::alab_bootstrap::PreparedAuth as PreparedBootstrapAuth; // ALAB(owned-local): actual partial constructor, never SDK admission from metadata.
+pub use bundle_loader::alab_bootstrap::OwnedLoader as OwnedBootstrapCloudLoader; // ALAB(owned-local): custody of the original refresh task through explicit phase shutdown.
+
+pub use bundle_loader::alab_managed_bootstrap::ManagedBootstrapOwner; // ALAB(owned-local): actual backend cloud owners, without a second manager.

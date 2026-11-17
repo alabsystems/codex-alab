@@ -156,3 +156,7 @@ impl CopyFeedback {
 #[cfg(test)]
 #[path = "composer_gap_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_transcript_feedback.rs"]
+pub(super) mod alab_retained_feedback; // ALAB(retained-ui): preserve original feedback outcome and monotonic expiry in the whole view.

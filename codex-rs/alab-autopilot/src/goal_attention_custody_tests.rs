@@ -7,6 +7,10 @@ use super::upgrade_handoff_tests::Harness;
 use super::upgrade_handoff_tests::native_test;
 use super::upgrade_handoff_tests::wait_for_supervisor;
 use super::*;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use core_test_support::responses;
 
 const HANG: Duration = super::upgrade_handoff_tests::NATIVE_HANG;
@@ -21,6 +25,12 @@ struct StartGate(
 );
 
 impl TurnLifecycleContributor for StartGate {
+    fn turn_start_phase(&self, _thread: &ExtensionData) -> codex_extension_api::TurnStartPhase {
+        // Hold native work after registration so Core can answer the Active
+        // effect's ordered idle request while the turn remains busy.
+        codex_extension_api::TurnStartPhase::RegularTaskStart
+    }
+
     fn on_turn_start<'a>(&'a self, _input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let gate = lock(&self.0).take();
@@ -53,6 +63,25 @@ async fn set_goal(
         .expect("real GoalService mutation")
 }
 
+async fn set_mode(h: &Harness, mode: ModeKind) {
+    core_test_support::submit_thread_settings(
+        &h.test.codex,
+        ThreadSettingsOverrides {
+            collaboration_mode: Some(CollaborationMode {
+                mode,
+                settings: Settings {
+                    model: h.test.session_configured.model.clone(),
+                    reasoning_effort: None,
+                    developer_instructions: None,
+                },
+            }),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("native collaboration mode");
+}
+
 #[test]
 fn a_detached_active_read_keeps_a_later_blocked_goals_attention() {
     native_test(|| async {
@@ -68,7 +97,17 @@ fn a_detached_active_read_keeps_a_later_blocked_goals_attention() {
                 let installed = (!active_complete).then(|| goals.clone());
                 let h = Harness::new_with_goals_and_observer(installed, Some(start_gate.clone())).await;
                 h.immediate_point().await;
-                let _active = set_goal(&h, &goals, codex_protocol::protocol::ThreadGoalStatus::Active).await;
+                set_mode(&h, ModeKind::Plan).await;
+                let active_outcome =
+                    set_goal(&h, &goals, codex_protocol::protocol::ThreadGoalStatus::Active).await;
+                // Settle the exact Active effect before native-start accounting can
+                // change its boundary. Plan keeps this setup from launching a turn.
+                active_outcome.apply_runtime_effects(&goals).await;
+                drop(active_outcome);
+                assert!(!h.test.codex.has_active_turn().await, "Plan defers the setup goal");
+                assert!(h._server.received_requests().await.unwrap_or_default().is_empty(),
+                        "the setup goal makes no provider request in Plan mode");
+                set_mode(&h, ModeKind::Default).await;
                 h.autopilot.sup.attention_for(h.rt.key(), "goal", Some("goal: the previous stop".into())).await;
                 responses::mount_sse_once(&h._server, responses::sse(vec![
                     responses::ev_response_created("goal-report"),
@@ -85,8 +124,8 @@ fn a_detached_active_read_keeps_a_later_blocked_goals_attention() {
                 let mut finishing = Some(finishing);
                 *lock(&h.rt.after_goal_read) = Some(GoalReadGate { read, resume: resuming, finished });
                 h.shared.expect_own_turn("Continue the original task.");
-                // Commit Active through the real service; this explicit native input
-                // supplies its turn. The later Blocked mutation applies its effects too.
+                // This explicit native input supplies the gated turn. The later
+                // Blocked mutation applies its exact effects too.
                 let starting = h.test.codex.start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
                     text: "Continue the original task.".into(), text_elements: Vec::new(),
                 }]));

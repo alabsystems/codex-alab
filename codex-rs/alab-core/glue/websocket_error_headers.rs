@@ -11,6 +11,7 @@ use crate::responses_headers::json_headers_to_http_headers;
 use codex_http_client::RetryAfter;
 use http::HeaderMap;
 use http::StatusCode;
+use http::header::RETRY_AFTER;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::de::MapAccess;
@@ -72,6 +73,13 @@ fn copy_correlation(
 /// parse, so normal response deltas do not pay for envelope normalization.
 pub(super) fn parse_for_stream(
     payload: &str,
+) -> Result<Option<WrappedWebsocketErrorEvent>, ApiError> {
+    parse_for_stream_with_advice(payload, RetryAfter::from_headers)
+}
+
+pub(super) fn parse_for_stream_with_advice(
+    payload: &str,
+    mut from_headers: impl FnMut(&HeaderMap) -> Option<RetryAfter>,
 ) -> Result<Option<WrappedWebsocketErrorEvent>, ApiError> {
     if !codex_alab_core::active() {
         return Ok(super::parse_wrapped_websocket_error_event(payload));
@@ -138,24 +146,27 @@ pub(super) fn parse_for_stream(
         // Invalid metadata must not erase a reported refusal and enter the
         // unbounded capacity loop. Use ordinary bounded retry/fallback without
         // inventing an HTTP identity, and retain any validated provider deadline.
-        // Preserve repeated raw error/header fields until every deadline is
-        // validated. Envelope advice remains a fallback to valid nested advice.
-        let retry_after = raw
+        // Keep raw duplicates until all candidates in one priority tier share a
+        // single receipt. Per-field/container captures could restart advice
+        // across a sleep while this frame was being handled.
+        let mut nested = HeaderMap::new();
+        for (_, headers) in raw
             .0
             .iter()
             .filter(|(name, _)| name == "error")
             .filter_map(|(_, value)| serde_json::from_str::<WireFields>(value.get()).ok())
             .flat_map(|fields| fields.0)
             .filter(|(name, _)| name == "headers")
-            .filter_map(|(_, value)| retry_advice(&value))
-            .max_by_key(|advice| advice.deadline())
-            .or_else(|| {
-                raw.0
-                    .iter()
-                    .filter(|(name, _)| name == "headers")
-                    .filter_map(|(_, value)| retry_advice(value))
-                    .max_by_key(|advice| advice.deadline())
-            });
+        {
+            append_retry_headers(&mut nested, &headers);
+        }
+        let retry_after = retry_advice(&nested, &mut from_headers).or_else(|| {
+            let mut outer = HeaderMap::new();
+            for (_, headers) in raw.0.iter().filter(|(name, _)| name == "headers") {
+                append_retry_headers(&mut outer, headers);
+            }
+            retry_advice(&outer, &mut from_headers)
+        });
         return Err(ApiError::Retryable {
             message: "invalid WebSocket error metadata".into(),
             retry_after,
@@ -230,17 +241,33 @@ fn http_status(value: &RawValue) -> Option<StatusCode> {
     StatusCode::from_u16(status).ok()
 }
 
-fn retry_advice(headers: &RawValue) -> Option<RetryAfter> {
-    serde_json::from_str::<WireFields>(headers.get())
-        .ok()?
-        .0
-        .into_iter()
-        .filter_map(|(name, value)| {
-            let value = serde_json::from_str::<Value>(value.get()).ok()?;
-            let headers = Map::from_iter([(name, value)]);
-            RetryAfter::from_headers(&json_headers_to_http_headers(&headers))
-        })
-        .max_by_key(|advice| advice.deadline())
+fn retry_advice(
+    headers: &HeaderMap,
+    from_headers: &mut impl FnMut(&HeaderMap) -> Option<RetryAfter>,
+) -> Option<RetryAfter> {
+    if headers.is_empty() {
+        None
+    } else {
+        from_headers(headers)
+    }
+}
+
+fn append_retry_headers(mapped: &mut HeaderMap, headers: &RawValue) {
+    let Ok(fields) = serde_json::from_str::<WireFields>(headers.get()) else {
+        return;
+    };
+    for (name, value) in fields.0 {
+        if !name.eq_ignore_ascii_case(RETRY_AFTER.as_str()) {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(value.get()) else {
+            continue;
+        };
+        let headers = json_headers_to_http_headers(&Map::from_iter([(name, value)]));
+        for value in headers.get_all(RETRY_AFTER).iter() {
+            mapped.append(RETRY_AFTER, value.clone());
+        }
+    }
 }
 
 // A Value map would discard earlier status fields. Capture every raw top-level

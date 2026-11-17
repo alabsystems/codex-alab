@@ -186,3 +186,7 @@ fn decode_mcp_image(data: &str) -> Option<DynamicImage> {
         })
         .ok()
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_mcp_result.rs"]
+pub(in crate::history_cell) mod alab_retained_result; // ALAB(retained-ui): preserve exact native activity state and shared graph identity.

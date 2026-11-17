@@ -63,9 +63,9 @@ async fn verification_is_delivered_to_one_owner_and_other_connections_cannot_res
             .await
             .contains_key(&id)
     );
-    outgoing
+    assert!(outgoing
         .replay_requests_to_connection_for_thread(ConnectionId(2), thread_id)
-        .await;
+        .await.is_ok());
     assert!(messages.try_recv().is_err());
     outgoing
         .notify_client_response(ConnectionId(1), id.clone(), proof.clone())

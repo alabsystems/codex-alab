@@ -284,6 +284,8 @@ impl ChatWidget {
         turn_id: String,
         render_source: ThreadItemRenderSource,
     ) {
+        #[cfg(unix)]
+        let _alab_source = self.alab_history_source.enter(self.side_conversation_active(), self.thread_id(), &turn_id, &item); // ALAB(retained-ui): actual original turn/item context owns emitted cells.
         let from_replay = render_source.is_replay();
         let replay_kind = render_source.replay_kind();
         match item {

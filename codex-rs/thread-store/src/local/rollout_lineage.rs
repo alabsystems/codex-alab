@@ -40,6 +40,7 @@ pub(super) struct RolloutLineage {
     pub(super) reads: AncestorReads,
     requested_thread_id: ThreadId,
     mode: LineageResolutionMode,
+    initial_end: Option<HistoryPosition>, // ALAB(retained-history): actual deferred base seed survives original alternate-copy fallback.
 }
 
 impl LocalThreadStore {
@@ -51,6 +52,7 @@ impl LocalThreadStore {
         self.resolve_rollout_lineage_with_mode(
             requested_thread_id,
             LineageResolutionMode::Existing,
+            None, // ALAB(retained-history): ordinary durable leaf resolution is unchanged.
             initial_path,
             &HashMap::new(),
         )
@@ -64,6 +66,7 @@ impl LocalThreadStore {
         self.resolve_rollout_lineage_with_mode(
             requested_thread_id,
             LineageResolutionMode::HistoryPage,
+            None, // ALAB(retained-history): ordinary durable leaf resolution is unchanged.
             /*initial_path*/ None,
             &HashMap::new(),
         )
@@ -77,6 +80,7 @@ impl LocalThreadStore {
         self.resolve_rollout_lineage_with_mode(
             requested_thread_id,
             LineageResolutionMode::PlainForReference,
+            None, // ALAB(retained-history): ordinary durable leaf resolution is unchanged.
             /*initial_path*/ None,
             &HashMap::new(),
         )
@@ -87,12 +91,13 @@ impl LocalThreadStore {
         &self,
         requested_thread_id: ThreadId,
         mode: LineageResolutionMode,
+        initial_end: Option<HistoryPosition>, // ALAB(retained-history): an actual in-memory header may already identify its first ancestor.
         mut initial_path: Option<PathBuf>,
         excluded: &HashMap<ThreadId, FailedAncestor>,
     ) -> ThreadStoreResult<RolloutLineage> {
         let mut segments = Vec::new();
         let mut seen = HashSet::new();
-        let mut end: Option<HistoryPosition> = None;
+        let mut end = initial_end; // ALAB(retained-history): follow the SAME original ancestor/cutoff/owner loop, without synthesizing a child header.
         let mut prefetched_paths = HashMap::new();
         let mut ancestor_paths = HashMap::new();
 
@@ -208,6 +213,7 @@ impl LocalThreadStore {
             reads: AncestorReads::new(ancestor_paths),
             requested_thread_id,
             mode,
+            initial_end, // ALAB(retained-history): preserve the actual reader origin for retries.
         })
     }
 }
@@ -525,6 +531,7 @@ impl RolloutLineage {
             reads: self.reads.clone(),
             requested_thread_id: self.requested_thread_id,
             mode: LineageResolutionMode::HistoryPage,
+            initial_end: self.initial_end, // ALAB(retained-history): a display view keeps its same actual frozen base.
         }))
     }
 
@@ -638,3 +645,6 @@ fn malformed_lineage(thread_id: ThreadId, detail: &str) -> ThreadStoreError {
 #[cfg(test)]
 #[path = "rollout_lineage_tests.rs"]
 mod tests;
+
+#[path = "../../../alab-core/glue/retained_deferred_lineage.rs"]
+mod alab_retained_lineage; // ALAB(retained-history): use this original pointer/owner/cutoff resolver for a live deferred child.

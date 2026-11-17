@@ -12,6 +12,7 @@ fn started(model: &str) -> AppServerStartedThread {
     let mut session = test_thread_session(ThreadId::new(), test_path_buf("/tmp/project"));
     session.model = model.into();
     AppServerStartedThread {
+        #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
         session,
         turns: Vec::new(),
         blocks_direct_input: false,
@@ -120,6 +121,7 @@ async fn only_a_confirmed_empty_new_task_shows_the_sparkle() -> Result<()> {
             .flatten();
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
+            None, // ALAB(source-selection): retain actual session context for a retained construction.
             thread,
             presentation,
             initial_message,
@@ -148,6 +150,7 @@ async fn disconnected_sparkle_input_routed_by_app_consumes_the_opportunity_witho
             let mut tui = crate::tui::test_support::make_test_tui()?;
             app.replace_chat_widget_with_app_server_thread(
                 &mut tui,
+                None, // ALAB(source-selection): retain actual session context for a retained construction.
                 started(model),
                 ThreadAttachPresentation::Fresh,
                 /*initial_user_message*/ None,
@@ -204,6 +207,7 @@ async fn commands_can_precede_the_sparkle_but_inserted_or_typed_drafts_cannot() 
         let mut tui = crate::tui::test_support::make_test_tui()?;
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
+            None, // ALAB(source-selection): retain actual session context for a retained construction.
             started("gpt-5.5"),
             ThreadAttachPresentation::Fresh,
             /*initial_user_message*/ None,
@@ -287,6 +291,7 @@ async fn overlays_shortcuts_and_key_chords_leave_the_main_sparkle_untouched() ->
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.replace_chat_widget_with_app_server_thread(
         &mut tui,
+        None, // ALAB(source-selection): retain actual session context for a retained construction.
         started("gpt-6-astra"),
         ThreadAttachPresentation::Fresh,
         /*initial_user_message*/ None,
@@ -387,6 +392,7 @@ async fn only_confirmed_picker_model_changes_can_arm_the_sparkle() -> Result<()>
         let original_id = thread.session.thread_id;
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
+            None, // ALAB(source-selection): retain actual session context for a retained construction.
             thread,
             ThreadAttachPresentation::Fresh,
             /*initial_user_message*/ None,
@@ -446,6 +452,7 @@ async fn only_confirmed_picker_model_changes_can_arm_the_sparkle() -> Result<()>
             "old_task" => {
                 app.replace_chat_widget_with_app_server_thread(
                     &mut tui,
+                    None, // ALAB(source-selection): retain actual session context for a retained construction.
                     started("gpt-5.5"),
                     ThreadAttachPresentation::Fresh,
                     /*initial_user_message*/ None,
@@ -496,6 +503,7 @@ async fn astra_picker_confirms_the_model_at_application_after_an_automatic_updat
         let thread = server.start_thread(&app.config).await?;
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
+            None, // ALAB(source-selection): retain actual session context for a retained construction.
             thread,
             ThreadAttachPresentation::Fresh,
             /*initial_user_message*/ None,
@@ -596,6 +604,7 @@ fn astra_picker_xhigh_applies_on_a_bounded_stack() -> Result<()> {
                 let thread = server.start_thread(&app.config).await?;
                 Box::pin(app.replace_chat_widget_with_app_server_thread(
                     &mut tui,
+                    None, // ALAB(source-selection): retain actual session context for a retained construction.
                     thread,
                     ThreadAttachPresentation::Fresh,
                     /*initial_user_message*/ None,
@@ -666,6 +675,7 @@ async fn session_only_astra_picker_shows_stars_only_on_an_untouched_task() -> Re
         assert_eq!(thread.session.model, "gpt-5.5");
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
+            None, // ALAB(source-selection): retain actual session context for a retained construction.
             thread,
             ThreadAttachPresentation::Fresh,
             /*initial_user_message*/ None,
@@ -745,6 +755,7 @@ async fn a_read_only_command_can_return_to_active_stars_but_mention_ends_them() 
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.replace_chat_widget_with_app_server_thread(
         &mut tui,
+        None, // ALAB(source-selection): retain actual session context for a retained construction.
         started("gpt-6-astra"),
         ThreadAttachPresentation::Fresh,
         /*initial_user_message*/ None,

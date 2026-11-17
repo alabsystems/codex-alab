@@ -6,13 +6,16 @@ import argparse
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from feature_evidence import snapshot, validate
+from feature_evidence import read_record, snapshot, validate
 from upstream_gate import admission as review_admission
 from upstream_intake import git
+
+CLI = runpy.run_path(str(Path(__file__).resolve().with_name('cli_status.py')))
 
 
 def bundle_path(repo, source, override=None):
@@ -46,12 +49,12 @@ def admission(repo, base, source='HEAD', upstream='upstream/main', bundle_root=N
     if not (root / 'record.json').is_file():
         result['errors'] = ['complete exact-source feature bundle required at ' + str(root)]
         return result
-    record = json.loads((root / 'record.json').read_text())
+    record = read_record(root / 'record.json')
     result['errors'] = validate(record, expected, root)
     return result
 
 
-def main():
+def _arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--base', required=True)
@@ -59,6 +62,14 @@ def main():
     parser.add_argument('--upstream', default='upstream/main')
     parser.add_argument('--bundle-root', type=Path, default=os.environ.get('ALAB_FEATURE_BUNDLE'))
     args = parser.parse_args()
+    return args
+
+
+def main():
+    return _run(_arguments())
+
+
+def _run(args):
     try:
         result = admission(args.repo, args.base, args.source, args.upstream, args.bundle_root)
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
@@ -68,5 +79,10 @@ def main():
     return 1 if result['errors'] else 0
 
 
+def cli():
+    args = _arguments()
+    return CLI['run_operation'](lambda: _run(args), 'feature evidence admission: ')
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(cli())

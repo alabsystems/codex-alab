@@ -169,7 +169,7 @@ async fn descriptor_inheritance_matches_command() -> anyhow::Result<()> {
     symlink("/bin/sh", root.path().join("shell"))?;
     let file = fs::File::open("/dev/null")?;
     for (operation, expected) in [
-        (libc::F_DUPFD, "inherited"),
+        (libc::F_DUPFD, "closed"), // ALAB(live-update): the default and selected std both exclude ambient descriptors.
         (libc::F_DUPFD_CLOEXEC, "closed"),
     ] {
         // SAFETY: Duplicate a harmless descriptor with the requested inheritance flag.

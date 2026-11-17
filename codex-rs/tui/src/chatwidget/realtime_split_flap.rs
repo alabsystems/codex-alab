@@ -331,3 +331,7 @@ fn flap_glyph(
     let tile = char::from(sample[offset % sample.len()]);
     (tile.to_string(), true)
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_split_flap.rs"]
+pub(crate) mod alab_retained_split_flap; // ALAB(retained-ui): preserve native animated cells and require the actual current Tui frame resource.

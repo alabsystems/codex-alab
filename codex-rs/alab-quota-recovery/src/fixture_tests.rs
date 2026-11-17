@@ -238,11 +238,11 @@ async fn the_fixtures_weekly_wall_ends_the_turn_for_a_ready_host() {
     assert_eq!(
         asked.week.load(Ordering::SeqCst),
         1,
-        "one clean, empty credit list is conclusive: the host is asked at once"
+        "a weekly refresh within 24 hours forbids redemption: the host is asked at once"
     );
     assert_eq!(asked.five_hour.load(Ordering::SeqCst), 0);
     assert_eq!(login.received("GET", USAGE).await, 1);
-    assert_eq!(login.received("GET", CREDITS).await, 1);
+    assert_eq!(login.received("GET", CREDITS).await, 0);
     assert_eq!(
         login.received("POST", CONSUME).await,
         0,

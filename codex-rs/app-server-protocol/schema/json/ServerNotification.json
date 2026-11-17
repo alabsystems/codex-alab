@@ -4151,6 +4151,77 @@
       },
       "type": "object"
     },
+    "RetainedFrontierFailure": {
+      "description": "Closed classification only. It identifies no underlying private payload, physical cause, absent child, Native effect settlement or permission.",
+      "enum": [
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "RetainedFrontierNotification": {
+      "additionalProperties": false,
+      "properties": {
+        "frontier": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/definitions/RetainedFrontierOutcome"
+        },
+        "snapshot": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "frontier",
+        "outcome",
+        "snapshot",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "RetainedFrontierOutcome": {
+      "description": "A terminal failure after the real projection response cannot become a second RPC response or be silently mistaken for an applied UI tail.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "enum": [
+                "ready"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "title": "ReadyRetainedFrontierOutcome",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "$ref": "#/definitions/RetainedFrontierFailure"
+            },
+            "state": {
+              "enum": [
+                "failed"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "SandboxPolicy": {
       "oneOf": [
         {
@@ -7871,6 +7942,26 @@
         "params"
       ],
       "title": "Alab/thread/goal/runtimeUpdatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "alab/retainedFrontier"
+          ],
+          "title": "Alab/retainedFrontierNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/RetainedFrontierNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Alab/retainedFrontierNotification",
       "type": "object"
     },
     {

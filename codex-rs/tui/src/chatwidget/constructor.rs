@@ -103,6 +103,10 @@ impl ChatWidget {
         );
         let config_panel_tui = local_settings.tui.clone();
         let mut widget = Self {
+            #[cfg(unix)]
+            alab_history: crate::app::alab_new_side_provenance(), // ALAB(retained-ui): original focused widget owns actual cell provenance.
+            #[cfg(unix)]
+            alab_history_source: Default::default(), // ALAB(retained-ui): no original item context guessed at startup.
             empty_state_animation: std::cell::RefCell::new(empty_state_animation),
             daybreak_enabled: false,
             app_event_tx: app_event_tx.clone(),
@@ -262,6 +266,7 @@ impl ChatWidget {
             show_welcome_banner: is_first_run,
             startup_tooltip_override,
             suppress_session_configured_redraw: false,
+            #[cfg(unix)] alab_retained_startup: None, // ALAB(retained-frontier): original non-owned-local startup is unchanged.
             suppress_initial_user_message_submit: false,
             pending_notification: None,
             quit_shortcut_expires_at: None,

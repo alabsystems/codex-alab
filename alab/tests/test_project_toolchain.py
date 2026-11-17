@@ -24,7 +24,7 @@ class ProjectToolchainTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.repo = self.root / "source with spaces"
         (self.repo / "alab").mkdir(parents=True)
-        for name in ("lib.sh", "check.sh", "package.sh", "github.py", "command_guard.py", "project-targo.sh"):
+        for name in ("lib.sh", "check.sh", "package.sh", "github.py", "cli_status.py", "command_guard.py", "project-targo.sh"):
             shutil.copy2(ROOT / "alab" / name, self.repo / "alab" / name)
         self.cache = self.root / "must not exist cache"
         self.record = self.root / "native.json"

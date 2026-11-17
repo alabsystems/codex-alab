@@ -5,6 +5,67 @@
 use super::*;
 
 #[test]
+fn unpublished_source_refusal_preserves_work_and_reopens_native_admission() {
+    native_test(|| async {
+        let mut h = Harness::new_with_goals(Some(Arc::new(GoalService::new()))).await;
+        let owed = h.rt.owed_timer().expect("original paced work");
+        assert!(
+            codex_alab_tui::upgrade::test_support::prepare(h.shared)
+                .unwrap()
+                .native_builds()
+                .is_err(),
+            "this fixture runs outside a published native package"
+        );
+        assert!(!h.autopilot.try_upgrade().await);
+        assert!(h.autopilot.sup.journal().iter().any(|line| {
+            line.contains("upgrade native image recipe: the running image has no exact native published build")
+        }), "{:?}", h.autopilot.sup.journal());
+        assert!(!h.shared.exec_pending());
+        assert!(h.requests.try_recv().is_err());
+        let restored =
+            h.rt.owed_timer()
+                .expect("refused update retains paced work");
+        assert_eq!(restored.rule, owed.rule);
+        assert_eq!(restored.text, owed.text);
+        let forest = h.autopilot.prepare_upgrade_forest().await.unwrap();
+        let source =
+            crate::upgrade_source::Prepared::from_forest(h.test.codex.exec_thread_id(), forest)
+                .await
+                .unwrap();
+        assert!(
+            source.valid(),
+            "Core and goal admission reopened after refusal"
+        );
+        drop(source);
+        h.test
+            .codex
+            .submit(codex_protocol::protocol::Op::Interrupt)
+            .await
+            .expect("ordinary native input remains admitted");
+        h.test.codex.shutdown_and_wait().await.unwrap();
+    });
+}
+
+#[test]
+fn native_fixture_prepares_its_own_runtime_forest_without_global_tui_inputs() {
+    native_test(|| async {
+        let h = Harness::new().await;
+        let forest = h.autopilot.prepare_upgrade_forest().await.unwrap();
+        assert_eq!(forest.roots(), &[h.test.codex.exec_thread_id()]);
+        assert!(forest.valid());
+        let source =
+            crate::upgrade_source::Prepared::from_forest(h.test.codex.exec_thread_id(), forest)
+                .await
+                .unwrap();
+        assert!(source.valid());
+        assert!(source.goal_snapshots().all(|(_, goal)| goal.is_none()));
+        drop(source);
+        assert!(!h.shared.exec_pending());
+        h.test.codex.shutdown_and_wait().await.unwrap();
+    });
+}
+
+#[test]
 fn upgrade_facts_use_captured_handles_while_a_new_root_waits_for_the_registry() {
     native_test(|| async {
         tokio::time::timeout(Duration::from_secs(60), async {

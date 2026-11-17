@@ -63,6 +63,14 @@ impl AppServerReplyHandle {
     }
 }
 
+
+#[path = "../../alab-core/glue/retained_input_reply.rs"]
+pub(crate) mod alab_original_input; // ALAB(retained-ui): same original reply capability claimed before queue/send.
+
 #[cfg(test)]
 #[path = "server_request_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../alab-core/glue/retained_reply_identity.rs"]
+mod alab_retained_identity; // ALAB(retained-ui): compare actual unclaimed reply/channel resources only.

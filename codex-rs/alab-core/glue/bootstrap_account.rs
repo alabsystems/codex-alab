@@ -28,16 +28,30 @@ fn alab_bootstrap_account(
 #[cfg(test)]
 mod alab_bootstrap_account_unit_tests {
     use super::*;
+    use codex_login::auth::RefreshTokenFailedReason;
 
     #[test]
-    fn unauthorized_routing_requests_sign_in() -> Result<(), AccountReadError> {
-        let account =
-            alab_bootstrap_account(Err(WorkspaceRoutingError::DiscoveryUnauthorized.into()))?;
-        assert!(account.account_state.account.is_none());
-        assert!(account.account_state.requires_openai_auth);
-        assert!(account.user_id.is_none());
-        assert!(account.workspace_routing.is_none());
-        assert!(account.user_id.is_none());
+    fn authentication_failures_request_sign_in() -> Result<(), AccountReadError> {
+        let refresh_rejected = |reason| {
+            WorkspaceRoutingError::RefreshTokenRejected(RefreshTokenFailedError::new(
+                reason,
+                "refresh token rejected",
+            ))
+        };
+        for error in [
+            WorkspaceRoutingError::DiscoveryUnauthorized,
+            refresh_rejected(RefreshTokenFailedReason::Expired),
+            refresh_rejected(RefreshTokenFailedReason::Exhausted),
+            refresh_rejected(RefreshTokenFailedReason::Revoked),
+            refresh_rejected(RefreshTokenFailedReason::Other),
+        ] {
+            let account = alab_bootstrap_account(Err(error.into()))?;
+            assert!(account.account_state.account.is_none());
+            assert!(account.account_state.requires_openai_auth);
+            assert!(account.user_id.is_none());
+            assert!(account.workspace_routing.is_none());
+            assert!(account.workspace_name.is_none());
+        }
         Ok(())
     }
 

@@ -290,3 +290,7 @@ impl HistoryCell for ComputerActivityCell {
 #[cfg(test)]
 #[path = "computer_activity_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_computer_cells.rs"]
+pub(in crate::history_cell) mod alab_retained_computer; // ALAB(retained-ui): preserve exact native activity state and shared graph identity.

@@ -73,3 +73,7 @@ impl HistoryCell for DelegatedMessageCell {
             .collect()
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_delegated_cell.rs"]
+pub(in crate::history_cell) mod alab_retained_delegated; // ALAB(retained-ui): preserve native delegated-message attribution and Markdown without sender authority.

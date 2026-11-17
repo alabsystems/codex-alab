@@ -211,8 +211,8 @@ fn assert_goal_continues_after_refusal(refusal: wiremock::ResponseTemplate) {
             .thread_goals()
             .get_thread_goal(id)
             .await
-            .expect("read active goal")
-            .expect("goal remains");
+            .unwrap_or_else(|err| panic!("read active goal: {err}"))
+            .unwrap_or_else(|| panic!("goal remains"));
         assert_eq!(continued.status, codex_state::ThreadGoalStatus::Active);
         assert_eq!(
             continued.goal_id, original.goal_id,
@@ -222,7 +222,9 @@ fn assert_goal_continues_after_refusal(refusal: wiremock::ResponseTemplate) {
         assert_eq!(continued.token_budget, original.token_budget);
         tokio::time::timeout(Duration::from_secs(60), gate.entered.notified())
             .await
-            .expect("the next automatic turn reaches its native start");
+            .unwrap_or_else(|err| {
+                panic!("the next automatic turn reaches its native start: {err}")
+            });
         assert_eq!(
             h.mock.requests().len(),
             2,
@@ -241,7 +243,7 @@ fn assert_goal_continues_after_refusal(refusal: wiremock::ResponseTemplate) {
                 },
             )
             .await
-            .expect("pause only future goal turns");
+            .unwrap_or_else(|err| panic!("pause only future goal turns: {err}"));
         gate.release.notify_one();
         wait_for_event_with_timeout(&h.test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(done)
@@ -252,8 +254,8 @@ fn assert_goal_continues_after_refusal(refusal: wiremock::ResponseTemplate) {
             .thread_goals()
             .get_thread_goal(id)
             .await
-            .expect("read paused goal")
-            .expect("goal remains");
+            .unwrap_or_else(|err| panic!("read paused goal: {err}"))
+            .unwrap_or_else(|| panic!("goal remains"));
         assert_eq!(paused.status, codex_state::ThreadGoalStatus::Paused);
         assert_eq!(
             paused.goal_id, original.goal_id,

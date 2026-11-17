@@ -437,3 +437,7 @@ impl LayoutCache {
 #[cfg(test)]
 #[path = "layout_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_transcript_cache.rs"]
+pub(in crate::transcript_view) mod alab_retained_cache; // ALAB(retained-ui): retain exact historical native layouts and weak source bindings.

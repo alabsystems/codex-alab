@@ -6,7 +6,8 @@
 Builds nothing. Supply --codex /absolute/binary or --package /absolute/package.
 All cases retain commands, guardian outcomes, native events and HTTP traces.
 Backend requests require the fixture bearer and account headers; traces retain
-only presence and match booleans for those headers.
+only presence and match booleans for those headers. Automatic spending requires
+a weekly window at >=99% with more than 24 hours until its natural refresh.
 """
 import argparse
 import base64
@@ -20,7 +21,6 @@ from pathlib import Path
 import re
 import select
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -33,7 +33,13 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--exec-wrapp
         pidfile.write(str(os.getpid()))
     os.execv(sys.argv[3], sys.argv[3:])
 
+import runpy
+
 import provider_fixture
+from capacity_exec import case_error_fields, cleanup_case, package_records, run as guarded_run, start_listener, write_json
+
+CLI = runpy.run_path(str(Path(__file__).resolve().parents[1] / "cli_status.py"))
+FILE_HASH = runpy.run_path(str(Path(__file__).resolve().parents[1] / "file_hash.py"))
 
 MODEL = "gpt-5"
 PROMPT = "Keep this weekly reset smoke task and its completed plan."
@@ -45,7 +51,6 @@ ANSWER = "Weekly reset recovery succeeded."
 ACCOUNT = "weekly-smoke-account"
 USER = "weekly-smoke-user"
 COMMAND_TIMEOUT_SECONDS = 120
-GUARD_PATH = Path(__file__).resolve().parents[1] / "command_guard.py"
 OUTAGE_CASES = ("usage-outage", "credit-list-outage")
 DEADLINE_OUTAGE_CASES = ("usage-outage-deadline", "credit-list-outage-deadline")
 PROPAGATION_CASES = ("propagating-reset", "lost-ack-propagation")
@@ -54,44 +59,122 @@ TWO_TOOLS = ("shared-credit", "repeated-same-cycle", "stale-credit-ledger", "unu
 PREPOST_NEGATIVE_CASES = ("prepost-recovery-shifted", "prepost-recovery-foreign", "prepost-recovery-below-99")
 PREPOST_CASES = ("prepost-recovery-restored", *PREPOST_NEGATIVE_CASES,
                  "prepost-recovery-denied", "prepost-preflight-99")
-PREFLIGHT_CASES = ("preflight-five-hour", "preflight-weekly", "preflight-weekly-24h", "preflight-beyond-24h", "preflight-weekly-25h", "prepost-preflight-99")
-POLICY_PREFLIGHT_CASES = ("preflight-below-99", "preflight-elapsed-reset", "preflight-mixed-windows")
-POLICY_BLOCKED_CASES = (*POLICY_PREFLIGHT_CASES, "recovery-below-99", "recovery-elapsed-reset")
-POLICY_POLL_CASES = ("preflight-elapsed-reset", "preflight-mixed-windows", "recovery-elapsed-reset")
-SUCCESS_CASES = ("recovery-beyond-24h", "recovery-weekly-25h", "prepost-recovery-restored", "prepost-recovery-denied", "spent-retry-deadline", *DEADLINE_OUTAGE_CASES, "stale-allowance-credit", *OUTAGE_CASES, "shared-credit", "natural-reset", "committed-ack", "stale-reset-credit", *PROPAGATION_CASES, "near-reset", "late-credit", "recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit", *PREFLIGHT_CASES)
+PREFLIGHT_CASES = ("preflight-weekly", "preflight-weekly-25h", "preflight-weekly-48h", "preflight-beyond-48h", "preflight-weekly-49h", "prepost-preflight-99")
+POLICY_PREFLIGHT_CASES = ("preflight-five-hour", "preflight-weekly-24h", "preflight-below-99", "preflight-elapsed-reset", "preflight-mixed-windows")
+POLICY_BLOCKED_CASES = (*POLICY_PREFLIGHT_CASES, "recovery-weekly-24h", "near-reset", "recovery-below-99", "recovery-elapsed-reset")
+POLICY_POLL_CASES = ("preflight-five-hour", "preflight-weekly-24h", "recovery-weekly-24h", "near-reset", "preflight-elapsed-reset", "preflight-mixed-windows", "recovery-elapsed-reset")
+SUCCESS_CASES = ("recovery-weekly-25h", "recovery-weekly-48h", "recovery-beyond-48h", "recovery-weekly-49h", "prepost-recovery-restored", "prepost-recovery-denied", "spent-retry-deadline", *DEADLINE_OUTAGE_CASES, "stale-allowance-credit", *OUTAGE_CASES, "shared-credit", "natural-reset", "committed-ack", "stale-reset-credit", *PROPAGATION_CASES, "late-credit", "recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit", *PREFLIGHT_CASES)
 CASE_NAMES = (*SUCCESS_CASES, *POLICY_BLOCKED_CASES, *PREPOST_NEGATIVE_CASES, "stale-credit-ledger", "stale-restored", "identity-mismatch", "no-credit", "unrelated-provider")
+NOTICE_SUCCESS_CASES = ("recovery", "preflight-weekly", "preflight-weekly-25h", "recovery-weekly-25h")
+NOTICE_PRESERVE_CASES = ("preflight-weekly-24h", "recovery-weekly-24h")
+RESET_NOTICE_PREFIX = "[codex-alab reset] "
 
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
 
+def reset_notice_messages(events):
+    """Exec JSON represents runtime warnings as nonfatal completed error items."""
+    messages = []
+    for event in events:
+        item = event.get("item")
+        if (event.get("type") == "item.completed" and isinstance(item, dict)
+                and item.get("type") == "error" and isinstance(item.get("message"), str)
+                and item["message"].startswith(RESET_NOTICE_PREFIX)):
+            messages.append(item["message"][len(RESET_NOTICE_PREFIX):])
+    return messages
+
+def check_reset_notice_events(name, events, requests):
+    """Qualify representative printed decisions through the production JSON renderer."""
+    if name not in (*NOTICE_SUCCESS_CASES, *NOTICE_PRESERVE_CASES):
+        return
+    require(not any(event.get("type") == "error"
+                    and str(event.get("message", "")).startswith(RESET_NOTICE_PREFIX)
+                    for event in events), "reset notice became a fatal JSON error")
+    messages = reset_notice_messages(events)
+    listings = [request["response"] for request in requests
+                if request.get("path", "").endswith("/rate-limit-reset-credits")
+                and "available_count" in request.get("response", {})]
+    require(listings, "reset notice fixture never listed earned credits")
+    inventory = listings[0]
+    expirations = [datetime.datetime.fromisoformat(credit["expires_at"].replace("Z", "+00:00")).isoformat()
+                   for credit in inventory.get("credits", [])
+                   if credit.get("status") == "available"
+                   and credit.get("reset_type") == "codex_rate_limits"
+                   and credit.get("expires_at")]
+    require(inventory["available_count"] > 0 and expirations,
+            "reset notice fixture must offer credits with explicit expiry")
+    def inventory_message(listing):
+        expiries = []
+        for credit in listing.get("credits", []):
+            if credit.get("status") != "available" or credit.get("reset_type") != "codex_rate_limits":
+                continue
+            expiry = credit.get("expires_at")
+            if expiry is None:
+                expiries.append("expiry not provided")
+            else:
+                try:
+                    expiries.append(datetime.datetime.fromisoformat(expiry.replace("Z", "+00:00")).isoformat())
+                except ValueError:
+                    expiries.append("unknown expiry (invalid server timestamp)")
+        return (f'Considered earned usage reset: {max(listing["available_count"], 0)} available; '
+                f'expirations: {", ".join(expiries) if expiries else "none provided"}.')
+
+    expected = [inventory_message(listing) for listing in listings]
+    inventories, decisions, applied, restorations = [], [], [], []
+    listing_index = 0
+    spending = name in NOTICE_SUCCESS_CASES
+    informational_inventory = (
+        "Considered earned usage reset: available count and expiry unknown because authentication changed or is unavailable. No reset used.",
+        "Considered earned usage reset: allowance already restored; no new reset needed, so available count and expiry were not queried.",
+        "Considered earned usage reset: available count and expiry are not re-listed while reconciling an earlier reset. Retaining its operation key to avoid spending twice.",
+        "Considered earned usage reset: available count and expiry unknown because the reset list could not be read. No new reset will be used until availability is confirmed.",
+    )
+    for index, message in enumerate(messages):
+        inventory_prefix = "Considered earned usage reset:"
+        if message.startswith(inventory_prefix) and message not in informational_inventory:
+            match = next((position for position in range(listing_index, len(expected))
+                          if message == expected[position]), None)
+            require(match is not None,
+                    "printed reset notice lost the backend's available count or expiration timestamps")
+            require(inventories or match == 0,
+                    "printed reset notice omitted the initial backend inventory")
+            listing_index = match  # Duplicate observations can share the same actual listing.
+            inventories.append(index)
+        elif message.startswith("Using an earned usage reset"):
+            require(spending and re.fullmatch(
+                    r"Using an earned usage reset automatically: the weekly allowance refreshes "
+                    r"(?:at [^,\s]+, )?more than 24 hours away\."
+                    r"(?: Choosing the earliest-expiring usable reset\.)?", message),
+                    "printed reset notice contradicts the automatic spending decision")
+            decisions.append(index)
+        elif message.startswith("Reset not used"):
+            require(not spending and re.fullmatch(
+                    r"Reset not used: the weekly allowance refreshes "
+                    r"(?:within 24 hours|at \S+ \(within 24 hours\)); preserving earned resets\.", message),
+                    "printed reset notice contradicts the preservation decision")
+            decisions.append(index)
+        elif message.startswith("Usage allowance restored"):
+            require(spending and message == "Usage allowance restored after the earned reset; continuing the original request.",
+                    "printed reset notice contradicts confirmed restoration")
+            restorations.append(index)
+        elif message.startswith("Earned usage reset applied"):
+            require(spending and message == "Earned usage reset applied; checking that allowance is restored.",
+                    "printed reset notice contradicts reset application")
+            applied.append(index)
+    require(inventories,
+            "printed reset notice lost the backend's available count or expiration timestamps")
+    require(decisions, "printed reset notice omitted the automatic spending decision" if spending
+            else "printed reset notice omitted the reason for preserving the available reset")
+    require(max(inventories) < min(decisions), "printed reset notice decision preceded its inventory")
+    if spending:
+        require(restorations, "printed reset notice omitted confirmed restoration before continuing")
+        require(max(decisions) < min(restorations), "printed reset notice restoration preceded its decision")
+        require(all(max(decisions) < index < min(restorations) for index in applied),
+                "printed reset notice application preceded its decision or followed restoration")
+
 def file_sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-def write_json(path, value):
-    with path.open("x") as handle:
-        json.dump(value, handle, indent=2)
-        handle.write("\n")
-
-def package_records(package):
-    records = []
-    for name in ("alab-build.json", "codex-package.json"):
-        path = package / name
-        require(path.is_file() and not path.is_symlink(), f"missing regular {name}")
-        require(path.stat().st_size <= 1024 * 1024, f"oversized {name}")
-        records.append(json.loads(path.read_text()))
-    build, manifest = records
-    require(build["version"] == manifest["version"], "package versions disagree")
-    require(build["target"] == manifest["target"], "package targets disagree")
-    require(re.fullmatch(r"[0-9a-f]{40}", build["source"]), "missing exact source commit")
-    require(manifest["entrypoint"] == "bin/codex", "unexpected package entrypoint")
-    executable = (package / manifest["entrypoint"]).resolve(strict=True)
-    require(executable.is_relative_to(package) and executable.is_file(), "entrypoint escapes package")
-    return build, manifest, executable
+    return FILE_HASH["file_sha256"](path, error_type=RuntimeError)
 
 def fresh_environment(root):
     for name in ("home", "codex-home", "work", "xdg", "tmp"):
@@ -102,90 +185,28 @@ def fresh_environment(root):
             "TMPDIR": str(root / "tmp"), "TERM": "dumb", "NO_COLOR": "1", "LANG": "en_US.UTF-8"}
 
 def run(executable, args, root, env, label, *, interact=None):
-    command = [str(executable), *args]
-    require(GUARD_PATH.is_file(), "missing alab/command_guard.py; keep the probe in its source tree")
-    result_path = root / (label + "-guardian-result.json")
-    require(not result_path.exists() and not result_path.is_symlink(), "guardian result already exists")
-    guardian = [sys.executable, "-I", str(GUARD_PATH), "--", sys.executable, "-I", str(GUARD_PATH),
-                "--result-file", str(result_path), "--inherited-group-timeout",
-                str(COMMAND_TIMEOUT_SECONDS), "--", *command]
-    write_json(root / (label + "-command.json"), command)
-    write_json(root / (label + "-guardian-command.json"), guardian)
-    with (root / (label + "-stdout.jsonl")).open("xb") as stdout, \
-            (root / (label + "-stderr.txt")).open("xb") as stderr:
-        child, pending, cleaning = None, None, False
-        interaction_error = None
-        handlers = {}
+    interaction_error = None
 
-        def cancel(signum, _frame):
-            nonlocal pending
-            pending = signum
-            # Do not interrupt Popen before it returns the child we must reap.
-            if child is not None and not cleaning:
-                raise SystemExit(128 + signum)
-
+    def observe(child, stdout):
+        nonlocal interaction_error
         try:
-            for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-                handlers[signum] = signal.signal(signum, cancel)
-            # Keep our direct guardian PID leased until wait, even under SIG_IGN.
-            handlers[signal.SIGCHLD] = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
-            if pending is not None:
-                raise SystemExit(128 + pending)
-            # The HTTP server has threads. All preexec/group handling belongs in
-            # the dedicated single-threaded guardian, never in this process.
-            child = subprocess.Popen(guardian, cwd=root / "work", env=env,
-                                     stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.PIPE if interact else stdout, stderr=stderr)
-            if pending is not None:
-                raise SystemExit(128 + pending)
-            if interact:
-                try:
-                    interact(child, stdout)
-                except BaseException as error:
-                    # The interaction callback interrupts its leased native PID
-                    # even when an oracle fails. Let both guardians finish and
-                    # record the real exit before propagating that failure.
-                    interaction_error = error
-                trailing, _ = child.communicate()
-                stdout.write(trailing)
-                code = child.returncode
-            else:
-                code = child.wait()
-        finally:
-            cleaning = True
-            try:
-                if child is not None and child.returncode is None:
-                    # Popen checks child ownership before relaying TERM: wait may
-                    # have reaped it just before an interrupt prevented status storage.
-                    # The guardian stops its group before exiting; never kill it.
-                    try:
-                        child.terminate()
-                    except ProcessLookupError:
-                        pass
-                    child.wait()
-            finally:
-                for signum, handler in handlers.items():
-                    signal.signal(signum, handler)
-    if pending is not None:
-        raise SystemExit(128 + pending)
-    result = json.loads(result_path.read_text())
-    require(isinstance(result, dict) and type(result.get("schema")) is int and result["schema"] == 1
-            and result.get("argv") == command
-            and type(result.get("timeout_seconds")) in (int, float)
-            and result["timeout_seconds"] == COMMAND_TIMEOUT_SECONDS
-            and type(result.get("timed_out")) is bool, "invalid guardian command evidence")
-    raw = result.get("returncode")
-    if result["timed_out"]:
-        require(raw is None and code == 124, "guardian timeout evidence disagrees with exit")
-        raise subprocess.TimeoutExpired(command, COMMAND_TIMEOUT_SECONDS)
-    require(type(raw) is int and -signal.NSIG < raw < 256,
-            "missing or invalid raw command status")
-    require(code == (raw if raw >= 0 else 128 - raw), "guardian exit disagrees with raw command status")
+            interact(child, stdout)
+        except BaseException as error:
+            # This callback interrupts its leased native PID even on failure.
+            # Preserve its raw exit before propagating the interaction error.
+            interaction_error = error
+
+    raw = guarded_run(executable, args, root, env, label,
+                      interact=observe if interact else None, stdin_pipe=False,
+                      timeout_seconds=COMMAND_TIMEOUT_SECONDS)
     if interaction_error is not None:
-        write_json(root / (label + "-interaction-failure.json"), {
-            "error": f"{type(interaction_error).__name__}: {interaction_error}",
-            "guardianExit": code, "rawReturncode": raw, "guardianTimedOut": False})
-        raise interaction_error
+        try:
+            write_json(root / (label + "-interaction-failure.json"), {
+                "error": f"{type(interaction_error).__name__}: {interaction_error}",
+                "guardianExit": raw if raw >= 0 else 128 - raw,
+                "rawReturncode": raw, "guardianTimedOut": False})
+        finally:
+            raise interaction_error
     return raw
 
 def sse(events):
@@ -213,8 +234,10 @@ class Mock:
         self.name = name
         reset_delay = (90 if name == "natural-reset" else 4 * 60 if name == "near-reset"
                        else -3600 if name == "preflight-mixed-windows"
-                       else 25 * 3600 if name in ("preflight-beyond-24h", "recovery-beyond-24h", "preflight-weekly-25h", "recovery-weekly-25h")
-                       else 24 * 3600 if name == "preflight-weekly-24h" else 13 * 3600)
+                       else 49 * 3600 if name in ("preflight-beyond-48h", "recovery-beyond-48h", "preflight-weekly-49h", "recovery-weekly-49h")
+                       else 25 * 3600 if name in ("preflight-weekly-25h", "recovery-weekly-25h")
+                       else 48 * 3600 if name in ("preflight-weekly-48h", "recovery-weekly-48h")
+                       else 24 * 3600 if name in ("preflight-weekly-24h", "recovery-weekly-24h") else 72 * 3600)
         now = int(time.time())
         self.reset = now + reset_delay
         self.five_hour_reset = now + 3600
@@ -279,7 +302,7 @@ class Mock:
                         "reset_after_seconds": self.five_hour_reset - now, "reset_at": self.five_hour_reset},
                     "secondary_window": {"used_percent": (0 if healthy or self.name in ("preflight-five-hour", "preflight-below-99")
                                                          else 98 if self.name == "recovery-below-99"
-                                                         else 99 if preflight or self.name == "recovery-weekly-25h" else 100),
+                                                         else 99 if preflight or self.name in ("recovery-weekly-25h", "recovery-weekly-48h", "recovery-weekly-49h") else 100),
                         "limit_window_seconds": 604800,
                         "reset_after_seconds": reset - now, "reset_at": reset}},
                 "rate_limit_reset_credits": {"available_count": available}}
@@ -444,11 +467,11 @@ class Mock:
                 require(latest is not None and latest["account_id"] == ACCOUNT and latest["user_id"] == USER
                         and any(isinstance(window.get("used_percent"), (int, float))
                                 and math.isfinite(window["used_percent"]) and window["used_percent"] >= 99
-                                and window.get("limit_window_seconds") in (18000, 604800)
+                                and window.get("limit_window_seconds") == 604800
                                 and isinstance(window.get("reset_at"), int)
-                                and window["reset_at"] > now
+                                and window["reset_at"] - now > 24 * 3600
                                 for window in (latest["rate_limit"]["primary_window"], latest["rate_limit"]["secondary_window"])),
-                        "redemption policy requires >=99% and a future reset on the same current window")
+                        "redemption policy requires a weekly window at >=99% with more than 24 hours until its reset")
                 if self.name == "pending-old-cycle" and body.get("credit_id") == "previous-earned-credit":
                     require(body.get("redeem_request_id") == self.old_key,
                             "pending redemption did not retain the original key")
@@ -544,10 +567,7 @@ def serve(mock):
         do_GET = handle_request
         do_POST = handle_request
 
-    server = provider_fixture.LoopbackHTTPServer(("127.0.0.1", 0), Handler)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    return server, worker
+    return start_listener(Handler)
 
 
 def configure(root, port, openai_auth=True):
@@ -583,6 +603,8 @@ def case(executable, output, name):
     mock = Mock(name)
     server, worker = serve(mock)
     cancelled = False
+    cleanup_result = {"case": name, "passed": True}
+    primary = None
 
     def cancel_after_check(child, stdout):
         nonlocal cancelled
@@ -676,11 +698,15 @@ def case(executable, output, name):
                          str(executable), *arguments]
         code = run(command_executable, arguments, root, env, "exec",
                    interact=cancel_after_check if observed else None)
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        server.shutdown()
-        worker.join()
-        server.server_close()
-        write_json(root / "requests.json", mock.requests)
+        cleanup_case(server, worker, lambda: write_json(root / "requests.json", mock.requests),
+                     cleanup_result, primary)
+    if not cleanup_result["passed"]:
+        write_json(root / "result.json", cleanup_result)
+        return cleanup_result
     events = [json.loads(line) for line in (root / "exec-stdout.jsonl").read_text().splitlines()]
     types = [event.get("type") for event in events]
     guardian = json.loads((root / "exec-guardian-result.json").read_text())
@@ -890,7 +916,7 @@ def case(executable, output, name):
             require(mock.spent == ["earned-weekly-credit"], "external restore excluded an unspent earned credit")
             require(consumes[0]["body"]["redeem_request_id"] == mock.old_key,
                     "new depletion abandoned the original ambiguous redemption key")
-        if name == "recovery-weekly-25h":
+        if name in ("recovery-weekly-25h", "recovery-weekly-48h", "recovery-weekly-49h"):
             denied = [request["response"] for request in mock.requests
                       if request["path"].endswith("/usage")
                       and request.get("response", {}).get("rate_limit", {}).get("allowed") is False]
@@ -899,7 +925,7 @@ def case(executable, output, name):
                                   and reading["rate_limit"]["secondary_window"]["limit_window_seconds"] == 604800
                                   and reading["rate_limit"]["secondary_window"]["reset_after_seconds"] > 24 * 3600
                                   for reading in denied),
-                    "25-hour recovery did not observe its denied 99% weekly window")
+                    "recovery did not observe its denied 99% weekly window beyond 24 hours")
         if name in PREFLIGHT_CASES:
             first_model = next(request for request in mock.requests if request["path"] == "/v1/responses")
             require(consumes[0]["at"] < first_model["at"], "reset happened after model work started")
@@ -927,7 +953,13 @@ def case(executable, output, name):
                 and all("Plan updated" in str(item.get("output")) for item in outputs),
                 "completed plan outputs missing")
         require(types.count("turn.completed") == 1 and "turn.failed" not in types, "native turn failed")
-        require(any(event.get("item", {}).get("text") == ANSWER for event in events), "reply missing")
+        answers = [(index, event["item"].get("text")) for index, event in enumerate(events)
+                   if event.get("type") == "item.completed"
+                   and event.get("item", {}).get("type") == "agent_message"]
+        require(len(answers) == 1 and answers[0][1] == ANSWER,
+                "weekly reset recovery lost, changed or repeated the fixture answer")
+        require(types.index("turn.started") < answers[0][0] < types.index("turn.completed"),
+                "weekly reset recovery answer is outside its original turn")
         restored_after = consumes[-1]["at"] if consumes else next(
             request["at"] for request in mock.requests if "quotaResetUnix" in request)
         require(name in DEADLINE_OUTAGE_CASES or any(request["path"].endswith("/usage")
@@ -992,15 +1024,18 @@ def case(executable, output, name):
         for post in consumes:
             require(any(lists[0]["at"] < read["at"] < post["at"] for read in fresh),
                     "POST lacks an actual post-selection usage observation")
+    check_reset_notice_events(name, events, mock.requests)
     result = {"case": name, "passed": True, "exit": code, "cancelled": cancelled,
               "guardianTimedOut": guardian["timed_out"], "rawReturncode": guardian["returncode"],
               "authenticatedBackendRequests": len(account_requests),
-              "modelRequests": len(mock.models), "consumeRequests": len(consumes), "postSelectionUsageReads": mock.post_selection_reads, "events": types}
+              "modelRequests": len(mock.models), "consumeRequests": len(consumes),
+              "resetNotices": len(reset_notice_messages(events)),
+              "postSelectionUsageReads": mock.post_selection_reads, "events": types}
     write_json(root / "result.json", result)
     return result
 
 
-def main():
+def _arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--codex", type=Path)
@@ -1012,6 +1047,13 @@ def main():
     selected = list(args.case or CASE_NAMES)
     if len(selected) != len(set(selected)):
         parser.error("--case must not repeat a case")
+    return args
+
+
+def main(args=None):
+    if args is None:
+        args = _arguments()
+    selected = list(args.case or CASE_NAMES)
     output = args.output.absolute()
     output.mkdir(parents=True, exist_ok=False)
     report = {"passed": False, "fullSuite": False, "requestedCases": selected,
@@ -1028,25 +1070,39 @@ def main():
         report.update(executable=str(executable), binarySha256=file_sha256(executable))
         for name in selected:
             report["failedCase"] = name
-            report["cases"].append(case(executable, output, name))
+            result = case(executable, output, name)
+            report["cases"].append(result)
+            require(result["passed"], f"{name} did not pass")
         del report["failedCase"]
+        require(file_sha256(executable) == report["binarySha256"],
+                "Codex executable changed during the smoke")
         report["passed"] = True
         report["fullSuite"] = set(selected) == set(CASE_NAMES)
     except Exception as error:
-        report["error"] = f"{type(error).__name__}: {error}"
+        report.update(case_error_fields(error))
     except (KeyboardInterrupt, SystemExit) as error:
         # case/run have already unwound their child and server cleanup. Keep
         # incomplete evidence without converting cancellation into a normal exit.
         interrupted = error
         report["interrupted"] = True
-        report["error"] = f"{type(error).__name__}: {error}"
-    report["probeSha256"] = file_sha256(Path(__file__))
-    write_json(output / "result.json", report)
-    print(json.dumps(report, indent=2))
-    if interrupted is not None:
-        raise interrupted
+        report.update(case_error_fields(error))
+    try:
+        report["probeSha256"] = file_sha256(Path(__file__))
+        write_json(output / "result.json", report)
+        print(json.dumps(report, indent=2))
+    finally:
+        # Reporting incomplete evidence must preserve the original cancellation,
+        # even when hashing, saving or printing the report also fails.
+        if interrupted is not None:
+            raise interrupted
     return 0 if report["passed"] else 1
 
 
+def cli():
+    # Help, parser errors and duplicate selections finish before an observation.
+    args = _arguments()
+    return CLI["run_operation"](lambda: main(args), "weekly reset: ")
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

@@ -487,3 +487,182 @@ fn poisoned_metadata_is_omitted_without_replacing_errors_or_callbacks() {
         matches!(result, Err(ApiError::InvalidRequest { message }) if message == "original refusal")
     );
 }
+
+#[test]
+fn advised_results_preserve_values_and_measured_advice_without_frame_ids() {
+    const PRIVATE: &str = "private selected advised error";
+    for advice in [
+        Some(codex_http_client::RetryAfter::from_delay(Duration::from_secs(7)).unwrap()),
+        Some(codex_http_client::RetryAfter::from_delay(Duration::ZERO).unwrap()),
+        None,
+    ] {
+        for (error, kind) in [
+            (
+                ApiError::Retryable {
+                    message: PRIVATE.into(),
+                    retry_after: advice,
+                },
+                "retryable",
+            ),
+            (
+                ApiError::RateLimitExceeded {
+                    message: PRIVATE.into(),
+                    retry_after: advice,
+                },
+                "rate_limit_exceeded",
+            ),
+            (
+                ApiError::ServerOverloaded {
+                    retry_after: advice,
+                },
+                "server_overloaded",
+            ),
+            (
+                ApiError::PolicyCapacityUnavailable {
+                    retry_after: advice,
+                },
+                "policy_capacity_unavailable",
+            ),
+        ] {
+            let original_kind = std::mem::discriminant(&error);
+            let capture = Capture::default();
+            tracing::subscriber::with_default(capture.clone(), || {
+                let (diagnostic, observer) = wrapped();
+                observer.on_ws_text_event(
+                    &frame(json!({"x-request-id":"req_advised-candidate", "cf-ray":"ray_advised-candidate",
+                        "authorization":"private unrelated header"})),
+                    Some("error"),
+                    Duration::ZERO,
+                );
+                assert_eq!(
+                    selected_ids(Some(&diagnostic)),
+                    expected("req_advised-candidate", "ray_advised-candidate")
+                );
+                let result = super::super::websocket_result(Some(&diagnostic), Err(error));
+                let Err(returned) = result else {
+                    panic!("the selected error was replaced");
+                };
+                assert_eq!(std::mem::discriminant(&returned), original_kind);
+                let returned_advice = match returned {
+                    ApiError::Retryable {
+                        message,
+                        retry_after,
+                    }
+                    | ApiError::RateLimitExceeded {
+                        message,
+                        retry_after,
+                    } => {
+                        assert_eq!(message, PRIVATE);
+                        retry_after
+                    }
+                    ApiError::ServerOverloaded { retry_after }
+                    | ApiError::PolicyCapacityUnavailable { retry_after } => retry_after,
+                    _ => panic!("the selected advised variant was replaced"),
+                };
+                assert_eq!(
+                    returned_advice, advice,
+                    "preserve the captured advice value, including zero"
+                );
+            });
+            let state = capture.state.lock().unwrap();
+            assert_eq!(state.records.len(), 1);
+            let record = &state.records[0];
+            assert_eq!(record["message"], "Responses request failed");
+            assert_eq!(record["failure_kind"], format!("{kind:?}"));
+            assert_eq!(record["retry_advised"], advice.is_some().to_string());
+            for field in [
+                "request_id",
+                "cf_ray",
+                "http_status",
+                "headers",
+                "body",
+                "payload",
+                "error_message",
+            ] {
+                assert!(!record.contains_key(field));
+            }
+            let logged = format!("{:?}", state.records);
+            for excluded in [
+                "private",
+                "req_advised-candidate",
+                "ray_advised-candidate",
+                "authorization",
+            ] {
+                assert!(!logged.contains(excluded));
+            }
+        }
+    }
+}
+
+#[test]
+fn status_qualified_provider_errors_preserve_values_without_frame_ids() {
+    const PRIVATE: &str = "private status-qualified provider error";
+    for (error, kind) in [
+        (
+            ApiError::ModelNotFound {
+                message: PRIVATE.into(),
+                status: Some(http::StatusCode::NOT_FOUND),
+            },
+            "model_not_found",
+        ),
+        (
+            ApiError::ContentPolicyViolation {
+                message: PRIVATE.into(),
+                status: Some(http::StatusCode::BAD_REQUEST),
+            },
+            "content_policy_violation",
+        ),
+    ] {
+        let original_kind = std::mem::discriminant(&error);
+        let original_status = match &error {
+            ApiError::ModelNotFound { status, .. }
+            | ApiError::ContentPolicyViolation { status, .. } => *status,
+            _ => unreachable!(),
+        };
+        let capture = Capture::default();
+        tracing::subscriber::with_default(capture.clone(), || {
+            let (diagnostic, observer) = wrapped();
+            observer.on_ws_text_event(
+                &frame(
+                    json!({"x-request-id":"req_status-candidate", "cf-ray":"ray_status-candidate"}),
+                ),
+                Some("error"),
+                Duration::ZERO,
+            );
+            assert_eq!(
+                selected_ids(Some(&diagnostic)),
+                expected("req_status-candidate", "ray_status-candidate")
+            );
+            let result = super::super::websocket_result(Some(&diagnostic), Err(error));
+            let Err(returned) = result else {
+                panic!("the selected error was replaced");
+            };
+            assert_eq!(std::mem::discriminant(&returned), original_kind);
+            match returned {
+                ApiError::ModelNotFound { message, status }
+                | ApiError::ContentPolicyViolation { message, status } => {
+                    assert_eq!(message, PRIVATE);
+                    assert_eq!(status, original_status);
+                }
+                _ => panic!("the selected status-qualified variant was replaced"),
+            }
+        });
+        let state = capture.state.lock().unwrap();
+        assert_eq!(state.records.len(), 1);
+        let record = &state.records[0];
+        assert_eq!(record["message"], "Responses request failed");
+        assert_eq!(record["failure_kind"], format!("{kind:?}"));
+        for field in [
+            "request_id",
+            "cf_ray",
+            "retry_advised",
+            "headers",
+            "body",
+            "payload",
+            "error_message",
+        ] {
+            assert!(!record.contains_key(field));
+        }
+        assert!(!format!("{:?}", state.records).contains("private"));
+    }
+}

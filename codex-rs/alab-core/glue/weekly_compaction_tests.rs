@@ -32,9 +32,9 @@ fn creditless_weekly_wall_reads_its_handoff_from_the_turn_store() {
 }
 
 /// A hidden helper's walled turn (the TUI's title or rename suggestion, and its
-/// recap) ends on its usage error at once. No handoff is ever ready for such a
-/// thread, so recovery would hold the turn, and the session busy, until the
-/// wall's reset.
+/// recap) does not spend an earned reset during preflight and ends on its usage
+/// error at once. Its reset decisions would be routed to the hidden thread,
+/// and no handoff is ever ready for it.
 #[test]
 fn hidden_title_turn_ends_on_its_usage_wall_without_recovery() {
     run_private_child("helper_wall_child", "helper-title", "ALAB_HELPER_WALL_OK");
@@ -160,7 +160,7 @@ async fn weekly_compaction_child() {
         let restored = Arc::new(AtomicBool::new(false));
         let observed = Arc::clone(&restored);
         let usage_reads = Arc::new(AtomicUsize::new(0));
-        let horizon = if retry { 25 * 3600 } else { 13 * 3600 };
+        let horizon = 72 * 3600;
         let reset = chrono::Utc::now().timestamp() + horizon;
         Mock::given(method("GET"))
             .and(path("/api/codex/usage"))
@@ -188,7 +188,8 @@ async fn weekly_compaction_child() {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "available_count":1,"credits":[{"id":"earned-compaction",
                     "status":"available","reset_type":"codex_rate_limits",
-                    "granted_at":"2026-01-01T00:00:00Z"}]
+                    "granted_at":"2026-01-01T00:00:00Z",
+                    "expires_at":(chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339()}]
             })))
             .expect(1)
             .mount(&server)
@@ -350,6 +351,33 @@ async fn weekly_compaction_child() {
             );
         }
         assert!(restored.load(Ordering::SeqCst));
+        let notices = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event.msg {
+                EventMsg::Warning(warning) => warning
+                    .message
+                    .strip_prefix("[codex-alab reset] ")
+                    .map(str::to_owned),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            notices.iter().any(|notice| {
+                notice.contains("1 available; expirations:") && !notice.contains("unknown")
+            }),
+            "the conversation must receive the reset inventory and expiry: {notices:?}"
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("automatically")),
+            "the conversation must receive the automatic redemption decision: {notices:?}"
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("continuing the original request")),
+            "the final restoration notice must reach the conversation before returning: {notices:?}"
+        );
         if retry {
             let requests = server.received_requests().await.unwrap();
             let model_indices = requests
@@ -369,7 +397,7 @@ async fn weekly_compaction_child() {
                 model_indices[0] < consume && consume < model_indices[1],
                 "the earned reset must precede the retried request"
             );
-            assert!(reset - chrono::Utc::now().timestamp() > 24 * 3600);
+            assert!(reset - chrono::Utc::now().timestamp() > 48 * 3600);
         }
         assert!(
             turn.extension_data
@@ -538,21 +566,51 @@ async fn helper_wall_child() {
     let server = responses::start_mock_server().await;
     let home = tempfile::tempdir().unwrap();
     let reset = chrono::Utc::now().timestamp() + 13 * 3600;
+    let expiry = (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+    let preflight = Arc::new(AtomicBool::new(true));
+    let restored = Arc::new(AtomicBool::new(false));
+    let phase = Arc::clone(&preflight);
+    let redeemed = Arc::clone(&restored);
     Mock::given(method("GET"))
         .and(path("/api/codex/usage"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "account_id":"account","user_id":"user","plan_type":"plus",
-            "rate_limit":{"allowed":false,"limit_reached":true,
-                "secondary_window":{"used_percent":100,"limit_window_seconds":604800,
-                    "reset_at":reset,"reset_after_seconds":46800}}
-        })))
+        .respond_with(move |_: &wiremock::Request| {
+            let proactive = phase.load(Ordering::SeqCst);
+            let healthy = proactive && redeemed.load(Ordering::SeqCst);
+            let horizon = if proactive { 72 * 3600 } else { 13 * 3600 };
+            ResponseTemplate::new(200).set_body_json(json!({
+                "account_id":"account","user_id":"user","plan_type":"plus",
+                "rate_limit":{"allowed":proactive,"limit_reached":!proactive,
+                    "secondary_window":{"used_percent":if healthy {0}else if proactive {99}else{100},
+                        "limit_window_seconds":604800,
+                        "reset_at":if proactive {reset + 59 * 3600}else{reset},
+                        "reset_after_seconds":horizon}}
+            }))
+        })
         .mount(&server)
         .await;
+    let phase = Arc::clone(&preflight);
+    let offered_expiry = expiry.clone();
     Mock::given(method("GET"))
         .and(path("/api/codex/rate-limit-reset-credits"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"available_count":0,"credits":[]})),
-        )
+        .respond_with(move |_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(if phase.load(Ordering::SeqCst) {
+                json!({"available_count":1,"credits":[{"id":"helper-preflight-credit",
+                    "status":"available","reset_type":"codex_rate_limits",
+                    "granted_at":"2026-01-01T00:00:00Z","expires_at":offered_expiry}]})
+            } else {
+                json!({"available_count":0,"credits":[]})
+            })
+        })
+        .mount(&server)
+        .await;
+    let redeemed = Arc::clone(&restored);
+    Mock::given(method("POST"))
+        .and(path("/api/codex/rate-limit-reset-credits/consume"))
+        .respond_with(move |_: &wiremock::Request| {
+            redeemed.store(true, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(json!({"code":"reset","windows_reset":2}))
+        })
+        .expect(if hidden { 0 } else { 1 })
         .mount(&server)
         .await;
     let auth = CodexAuth::from_external_chatgpt_tokens(
@@ -563,7 +621,7 @@ async fn helper_wall_child() {
     provider.base_url = Some(format!("{}/v1", server.uri()));
     provider.supports_websockets = false;
     let base = server.uri();
-    let (session, mut turn, _events) = make_session_and_context_with_auth_config_home_and_rx(
+    let (session, mut turn, events) = make_session_and_context_with_auth_config_home_and_rx(
         auth,
         Vec::new(),
         home.path(),
@@ -611,6 +669,58 @@ async fn helper_wall_child() {
     }));
     let state = codex_alab_quota_recovery::State::bind(&session.services.auth_manager).await;
     turn.extension_data.insert_if(state, |old| old.is_none());
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::responses_retry::alab_capacity_retry::preflight_weekly(&session, &turn),
+    )
+    .await
+    .expect("the eligible preflight must finish without a recovery poll");
+    let requests = server.received_requests().await.unwrap();
+    let preflight_reads = |wanted: &str| {
+        requests
+            .iter()
+            .filter(|request| request.url.path() == wanted)
+            .count()
+    };
+    assert_eq!(
+        (
+            preflight_reads("/api/codex/usage"),
+            preflight_reads("/api/codex/rate-limit-reset-credits"),
+            preflight_reads("/api/codex/rate-limit-reset-credits/consume"),
+        ),
+        if hidden { (0, 0, 0) } else { (3, 1, 1) },
+        "only a conversation or exec request may preflight and redeem at 99% with 72 hours left"
+    );
+    assert_eq!(restored.load(Ordering::SeqCst), !hidden);
+    let notices = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event.msg {
+            EventMsg::Warning(warning) => warning
+                .message
+                .strip_prefix("[codex-alab reset] ")
+                .map(str::to_owned),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if hidden {
+        assert!(
+            notices.is_empty(),
+            "a hidden helper must not own reset notices"
+        );
+    } else {
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains(&format!("1 available; expirations: {expiry}."))),
+            "the conversation must receive the reset inventory: {notices:?}"
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("automatically")),
+            "the conversation must receive the spending decision: {notices:?}"
+        );
+    }
+    preflight.store(false, Ordering::SeqCst);
     let wall = codex_protocol::error::CodexErr::UsageLimitReached(
         codex_protocol::error::UsageLimitReachedError {
             plan_type: None,

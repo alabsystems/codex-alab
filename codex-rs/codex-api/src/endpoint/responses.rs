@@ -144,6 +144,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
                 "/responses",
                 extra_headers,
                 Some(body),
+                alab_diagnostic, // ALAB(recovery): each HTTP operation retains its opening request context.
                 |req| {
                     req.headers.insert(
                         http::header::ACCEPT,

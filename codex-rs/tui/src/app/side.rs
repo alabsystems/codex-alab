@@ -177,6 +177,8 @@ impl SideParentStatusChange {
 
 #[derive(Clone, Debug)]
 pub(super) struct SideThreadState {
+    #[cfg(unix)]
+    pub(super) alab_retained: Option<Arc<super::alab_retained_passive::PassiveBinding>>, // ALAB(retained-ui): view focus/parking does not lose original accepted side ownership.
     /// Thread to return to when the current side conversation is dismissed.
     pub(super) parent_thread_id: ThreadId,
     /// Parent-thread condition that changed while this side thread is visible.
@@ -192,6 +194,8 @@ impl SideThreadState {
             parent_thread_id,
             parent_status: None,
             opening_message: None,
+            #[cfg(unix)]
+            alab_retained: None, // ALAB(retained-ui): ordinary side state has no retained frontier.
             close_request: None,
             storage: SideChatStorage::Temporary,
         }
@@ -512,20 +516,23 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> bool {
+        let close = app_server.alab_unsubscribe_side_view(thread_id); // ALAB(side-boundary): capture exact close owner before original interrupt awaits.
         if let Err(message) = self.interrupt_side_thread(app_server, thread_id).await {
             tracing::warn!("{message}");
             self.add_agents_overview_error(message);
             return false;
         }
-        if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
+        if let Err(err) = close.await {
             let message =
                 format!("Failed to close side conversation {thread_id}; it is still open: {err}");
             tracing::warn!("{message}");
             self.add_agents_overview_error(message);
+            if let Err(error)=app_server.alab_observe_side_close(thread_id).await {tracing::warn!(%error,"Side close result observation retained");} // ALAB(side-boundary): preserve actual failed close after original error application.
             return false;
         }
         self.abandoned_side_threads.insert(thread_id);
         self.discard_thread_local_state(thread_id).await;
+        if let Err(error)=app_server.alab_observe_side_close(thread_id).await {tracing::warn!(%error,"Side close result observation retained");} // ALAB(side-boundary): cleanup follows actual original UI removal.
         true
     }
 
@@ -551,14 +558,16 @@ impl App {
             .map(|side| side.parent_thread_id);
         self.discard_thread_local_state(thread_id).await;
 
+        let close=view.alab_unsubscribe_side_view(thread_id); // ALAB(side-boundary): same retained operation before spawned original cleanup.
         let cleanup = tokio::spawn(async move {
             if let Err(error) = interrupt_for_close(&mut view, thread_id, turn_id, attachment).await
             {
                 tracing::warn!(%error, "failed to interrupt side conversation");
             }
-            if let Err(error) = view.thread_unsubscribe(thread_id).await {
+            if let Err(error) = close.await {
                 tracing::warn!(%error, "failed to unsubscribe side conversation");
             }
+            if let Err(error)=view.alab_observe_side_close(thread_id).await {tracing::warn!(%error,"Side close result observation retained");} // ALAB(side-boundary): original local pane was already removed before cleanup.
         });
         if let Some(parent) = saved_parent {
             self.sidebars
@@ -907,7 +916,12 @@ impl App {
         result: Result<Box<crate::app_server_session::SidebarFork>, String>,
     ) {
         match result {
-            Ok(fork) => {
+            Ok(mut fork) => {
+                #[cfg(unix)]
+                let mut retained = match super::alab_retained_passive::begin_creation(self, app_server, &mut fork) { // ALAB(retained-ui): retain SAME original replay before snapshot await.
+                    Ok(retained) => retained,
+                    Err(_) => { fork.boundary = Err("retained side projection unavailable".into()); None }
+                };
                 app_server.observe_sidebar_fork(&fork);
                 let forked = fork.thread;
                 let child_thread_id = forked.session.thread_id;
@@ -950,7 +964,12 @@ impl App {
                         .selected_permission_profiles
                         .insert(child_thread_id, profile.id.clone());
                 }
+                #[cfg(unix)]
+                let mut retained_birth = None; // ALAB(retained-ui): original allocation/lookup result, never a supplied Ready bit.
                 if !enter {
+                    #[cfg(unix)]
+                    { retained_birth = Some(super::alab_retained_passive::ensure_companion(self, child_thread_id, forked.session.cwd.clone())); } // ALAB(retained-ui): retain the actual same passive view incarnation.
+                    #[cfg(not(unix))]
                     self.side_companions
                         .entry(child_thread_id)
                         .or_insert_with(|| SideCompanion::empty(forked.session.cwd.clone()));
@@ -959,6 +978,12 @@ impl App {
                 channel.backend_id = Some(app_server.backend_id());
                 {
                     let mut store = channel.store.lock().await;
+                    #[cfg(unix)]
+                    match retained.as_mut() {
+                        Some(install) => super::alab_retained_passive::install_creation_store(install,&channel.store,&mut store,forked.session,forked.turns), // ALAB(retained-ui): apply actual fresh child-visible history on SAME original store.
+                        None => Self::install_side_thread_snapshot(&mut store,forked.session,forked.turns),
+                    }
+                    #[cfg(not(unix))]
                     Self::install_side_thread_snapshot(&mut store, forked.session, forked.turns);
                 }
                 let mut child = SideThreadState::new(parent_thread_id);
@@ -984,6 +1009,13 @@ impl App {
                     .entry(Some(parent_thread_id))
                     .or_default()
                     .chat_ready(child_thread_id);
+                #[cfg(unix)] // ALAB(retained-ui): original side snapshot, boundary/storage and sidebar install finish before its actual replay End.
+                if let Some(retained) = retained
+                    && super::alab_retained_passive::finish_creation(self, tui, app_server, retained, retained_birth).await.is_err() {
+                    super::alab_retained_passive::hold_opening(self, child_thread_id, &mut user_message);
+                    self.chat_widget.add_error_message("retained side installation unavailable".into());
+                    return;
+                }
                 if !enter {
                     self.sync_side_thread_ui();
                     return;
@@ -1018,6 +1050,8 @@ impl App {
                     return;
                 }
                 if self.active_thread_id == Some(child_thread_id) {
+                    #[cfg(unix)] // ALAB(retained-ui): park the SAME accepted opening message before any original focused-side submit.
+                    if super::alab_retained_passive::hold_opening(self, child_thread_id, &mut user_message) { return; }
                     if let Some(user_message) = user_message.take() {
                         let _ = self
                             .chat_widget

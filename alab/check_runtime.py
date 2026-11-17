@@ -4,11 +4,11 @@
 """Exercise the newly built Codex's automatic reset policy using isolated loopback fixtures."""
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import stat
 import subprocess
@@ -17,13 +17,17 @@ import sys
 
 # All entries run against the actual requested executable on every maintained
 # gate. Counts are model requests, consumption POSTs, and successful app exit.
+# Keep policy outcomes explicit instead of inheriting the probe's categories.
 EXPECTATIONS = {
-    "preflight-five-hour": (2, 1, True),
+    "preflight-five-hour": (2, 0, False),
     "preflight-below-99": (2, 0, False),
     "preflight-weekly": (2, 1, True),
-    "preflight-beyond-24h": (2, 1, True),
-    "preflight-weekly-24h": (2, 1, True),
+    "preflight-beyond-48h": (2, 1, True),
+    "preflight-weekly-24h": (2, 0, False),
     "preflight-weekly-25h": (2, 1, True),
+    "preflight-weekly-48h": (2, 1, True),
+    "recovery-weekly-48h": (3, 1, True),
+    "recovery-weekly-49h": (3, 1, True),
     "preflight-elapsed-reset": (2, 0, False),
     "prepost-recovery-restored": (3, 0, True),
     "prepost-recovery-shifted": (2, 0, False),
@@ -36,24 +40,11 @@ CASES = tuple(EXPECTATIONS)
 BOOTSTRAP = ("import runpy,sys; from pathlib import Path; "
              "probe=Path(sys.argv.pop(1)); sys.path.insert(0,str(probe.parent)); "
              "runpy.run_path(str(probe),run_name='__main__')")
+FILE_HASH = runpy.run_path(str(Path(__file__).resolve().with_name("file_hash.py")))
 
 
 def sha256(path):
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise ValueError(f"runtime input is not a regular file: {path}")
-        digest = hashlib.sha256()
-        while chunk := os.read(descriptor, 1024 * 1024):
-            digest.update(chunk)
-        after = os.fstat(descriptor)
-        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-                after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-            raise ValueError(f"runtime input changed while hashing: {path}")
-        return digest.hexdigest()
-    finally:
-        os.close(descriptor)
+    return FILE_HASH["file_sha256"](path)
 
 
 def git_head(repo):
@@ -88,7 +79,8 @@ def run(repo, executable, source, scratch, output):
         raise ValueError("runtime smoke requires fresh scratch")
     output.mkdir(mode=0o700)
     probe = repo / "alab/smoke/weekly_reset.py"
-    inputs = [repo / "alab/check_runtime.py", probe, probe.with_name("provider_fixture.py"),
+    inputs = [repo / "alab/check_runtime.py", repo / "alab/cli_status.py", repo / "alab/file_hash.py",
+              probe, probe.with_name("provider_fixture.py"),
               repo / "alab/command_guard.py", probe.with_name("history_pagination.py"),
               probe.with_name("capacity_exec.py"), probe.with_name("quota_resume.py")]
     before = {str(path.relative_to(repo)): sha256(path) for path in inputs}

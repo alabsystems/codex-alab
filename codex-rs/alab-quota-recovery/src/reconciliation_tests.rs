@@ -17,7 +17,7 @@ async fn reconcile_old_credit(had_usable_allowance: bool, committed_ack: bool) {
     let server = MockServer::start().await;
     let restored = Arc::new(AtomicBool::new(had_usable_allowance));
     let observed = Arc::clone(&restored);
-    let cycle = chrono::Utc::now().timestamp() + 24 * 3600;
+    let cycle = chrono::Utc::now().timestamp() + 72 * 3600;
     Mock::given(method("GET"))
         .and(path("/api/codex/usage"))
         .respond_with(move |_: &wiremock::Request| {
@@ -26,7 +26,7 @@ async fn reconcile_old_credit(had_usable_allowance: bool, committed_ack: bool) {
                 "account_id":"account","user_id":"user","plan_type":"plus",
                 "rate_limit":{"allowed":healthy,"limit_reached":!healthy,
                     "secondary_window":{"used_percent":if healthy {0}else{100},
-                        "limit_window_seconds":604800,"reset_at":cycle,"reset_after_seconds":86400}}
+                        "limit_window_seconds":604800,"reset_at":cycle,"reset_after_seconds":259200}}
             }))
         })
         .expect(if had_usable_allowance && !committed_ack {

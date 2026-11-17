@@ -3,12 +3,10 @@
 
 //! Native process custody and timer bounds, without an application or a drive lease.
 
-#[path = "../../alab-core/glue/test_child_process.rs"]
-mod test_child_process;
-
 use super::FakeCli;
 use super::THREAD;
 use super::frame;
+use super::test_child_process;
 use crate::identity;
 use crate::record;
 use crate::session::ProgramState;

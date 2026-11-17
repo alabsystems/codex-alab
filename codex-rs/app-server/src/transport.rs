@@ -51,8 +51,10 @@ impl ConnectionState {
         outbound_initialized: Arc<AtomicBool>,
         outbound_experimental_api_enabled: Arc<AtomicBool>,
         outbound_opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
+        resource: Option<codex_alab_core::connection_resource::ConnectionResource>, // ALAB(owned-local): process-local custody from the real opened event.
     ) -> Self {
         let mut session = ConnectionSessionState::new(origin);
+        session.alab_connection_resource = resource; // ALAB(owned-local): no origin/classification change.
         let mut rpc_gate = crate::connection_rpc_gate::ConnectionRpcGate::new();
         rpc_gate.auth = auth;
         session.rpc_gate = Arc::new(rpc_gate);

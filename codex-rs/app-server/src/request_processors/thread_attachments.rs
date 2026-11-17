@@ -43,6 +43,18 @@ impl ThreadRequestProcessor {
         request_id: ConnectionRequestId,
         params: ThreadAttachmentAddParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let added = self.alab_attachment_add_response(params).await?; // ALAB(upgrade): share exact validation/store policy with a typed backend result.
+        self.outgoing.send_response(request_id, added.response).await;
+        if let Some(notification) = added.notification {
+            self.outgoing.send_server_notification(ServerNotification::ThreadAttachmentUpdated(notification)).await;
+        }
+        Ok(None)
+    }
+
+    pub(in crate::request_processors) async fn alab_attachment_add_response(
+        &self,
+        params: ThreadAttachmentAddParams,
+    ) -> Result<codex_alab_task_worktree::AttachmentAdded, JSONRPCErrorError> {
         const OPERATION: &str = "thread/attachment/add";
         self.ensure_thread_attachments_supported(OPERATION)?;
         validate_attachment_identity(&params.attachment_type, &params.identity_key)?;
@@ -92,13 +104,7 @@ impl ThreadRequestProcessor {
             ),
         };
 
-        self.outgoing.send_response(request_id, response).await;
-        if let Some(notification) = notification {
-            self.outgoing
-                .send_server_notification(ServerNotification::ThreadAttachmentUpdated(notification))
-                .await;
-        }
-        Ok(None)
+        Ok(codex_alab_task_worktree::AttachmentAdded { response, notification }) // ALAB(upgrade): the caller owns publication, without an invented client.
     }
 
     pub(crate) async fn thread_attachment_list(

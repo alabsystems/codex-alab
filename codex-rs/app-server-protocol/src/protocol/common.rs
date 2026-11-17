@@ -340,6 +340,7 @@ macro_rules! client_request_definitions {
         pub enum ClientResponsePayload {
             $( $variant($response), )*
             InterruptConversation(v1::InterruptConversationResponse),
+            AlabResponseMetadata(crate::alab_response_metadata::Payload), // ALAB(owned-local): preserve typed payload plus private correlation metadata.
         }
 
         impl ClientResponsePayload {
@@ -354,6 +355,7 @@ macro_rules! client_request_definitions {
                         }
                     )*
                     Self::InterruptConversation(_) => None,
+                    Self::AlabResponseMetadata(value) => value.into_client_response(request_id), // ALAB(owned-local): analytics still sees the original typed response.
                 }
             }
 
@@ -2065,6 +2067,8 @@ server_notification_definitions! {
     ThreadAttachmentUpdated => "thread/attachment/updated" (v2::ThreadAttachmentUpdatedNotification),
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
     AlabGoalRuntimeUpdated => "alab/thread/goal/runtimeUpdated" (v2::AlabGoalRuntimeUpdatedNotification), // ALAB(storage-status): live runtime observation, never a saved-goal mutation.
+    AlabRetainedConfigured => "alab/retainedConfigured" (v2::RetainedConfiguredNotification), // ALAB(retained-frontier): exact configured empty-slot projection tail without a fabricated thread.
+    AlabRetainedFrontier => "alab/retainedFrontier" (v2::RetainedFrontierNotification), // ALAB(owned-local): exact ordered primary projection tail, never an SDK/UI grant.
     #[experimental("thread/prediction/updated")]
     ThreadPredictionUpdated => "thread/prediction/updated" (v2::ThreadPredictionUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),

@@ -10,15 +10,18 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import tomllib
 
 # Resolve only this tool's owned sibling, including under Python's isolated mode.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from upstream_intake import git, snapshot, validate
+from upstream_intake import catalog_feature_ids, git, snapshot, validate
 from artifact_status import observe as artifact_observation
 from qualification import inspect as qualification_observation
+
+CLI = runpy.run_path(str(Path(__file__).resolve().with_name('cli_status.py')))
 
 
 def report(repo, main='origin/main', upstream='upstream/main', now=None, *,
@@ -58,23 +61,29 @@ def report(repo, main='origin/main', upstream='upstream/main', now=None, *,
     for field, ref in (('main_sha', main), ('upstream_sha', upstream)):
         try:
             result[field] = git(repo, 'rev-parse', '--verify', '--end-of-options', ref + '^{commit}')
-        except subprocess.CalledProcessError:
+        except (OSError, subprocess.SubprocessError):
             result['errors'].append('Cannot resolve ' + ref)
     if not result['main_sha'] or not result['upstream_sha']:
         return result
     base, target = result['main_sha'], result['upstream_sha']
-    frontiers = git(repo, 'merge-base', '--all', base, target).splitlines()
-    if len(frontiers) != 1:
-        result['errors'].append('Integration frontier is ambiguous')
-        return result
-    result['integrated_frontier_sha'] = frontiers[0]
-    pending = git(repo, 'rev-list', base + '..' + target).splitlines()
-    result['pending_count'] = len(pending)
-    if pending:
-        # Use the oldest actual timestamp, not rev-list traversal ordering.
-        timestamp = min(map(int, git(repo, 'log', '--format=%ct', base + '..' + target).splitlines()))
-        result['oldest_pending_committed_at'] = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
-        result['oldest_pending_age_seconds'] = max(0, int(now.timestamp()) - timestamp)
+    stage = 'integration frontier'
+    try:
+        frontiers = git(repo, 'merge-base', '--all', base, target).splitlines()
+        if len(frontiers) != 1:
+            result['errors'].append('Integration frontier is ambiguous')
+            return result
+        result['integrated_frontier_sha'] = frontiers[0]
+        stage = 'pending commits'
+        pending = git(repo, 'rev-list', base + '..' + target).splitlines()
+        result['pending_count'] = len(pending)
+        if pending:
+            stage = 'pending timestamps'
+            # Use the oldest actual timestamp, not rev-list traversal ordering.
+            timestamp = min(map(int, git(repo, 'log', '--format=%ct', base + '..' + target).splitlines()))
+            result['oldest_pending_committed_at'] = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+            result['oldest_pending_age_seconds'] = max(0, int(now.timestamp()) - timestamp)
+    except (OSError, ValueError, OverflowError, subprocess.SubprocessError) as error:
+        result['errors'].append('Cannot observe ' + stage + ': ' + str(error))
     return result
 
 
@@ -141,7 +150,7 @@ def observe(repo, base, target, candidate, main, records, feature_ids):
     }
 
 
-def main():
+def _arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--base', help='Enable review coverage over this explicit integration range')
@@ -156,6 +165,15 @@ def main():
     parser.add_argument('--qualification-record', type=Path,
                         help='inspect a retained qualification.py gate record and its log')
     args = parser.parse_args()
+    return args
+
+
+def main():
+    return _run(_arguments())
+
+
+def _run(args):
+    result = None
     try:
         if args.intake and not args.base:
             raise ValueError('--intake requires an explicit --base')
@@ -167,19 +185,26 @@ def main():
             candidate = git(args.repo, 'rev-parse', '--verify', '--end-of-options',
                             args.candidate + '^{commit}')
             features = tomllib.loads(git(args.repo, 'show', candidate + ':alab/features.toml'))
-            if type(features.get('schema')) is not int or features.get('schema') != 1:
-                raise ValueError('unsupported feature inventory schema')
+            feature_ids = catalog_feature_ids(features)
             records = [(str(path), json.loads(path.read_text())) for path in args.intake]
             result['assessment'] = observe(
                 args.repo, args.base, result['upstream_sha'], candidate,
-                result['main_sha'], records, {entry['id'] for entry in features['features']})
-    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+                result['main_sha'], records, feature_ids)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print('upstream status: ' + str(error), file=sys.stderr)
-        return 1
+        if result is None:
+            return 1
+        # Assessment failures do not invalidate the completed source observation.
+        result['errors'].append('assessment: ' + str(error))
     print(json.dumps(result, indent=2))
     # Successful observation may report incomplete work. This is not an admission gate.
     return 1 if result['errors'] or result.get('assessment', {}).get('errors') else 0
 
 
+def cli():
+    args = _arguments()
+    return CLI['run_operation'](lambda: _run(args), 'upstream status: ')
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(cli())

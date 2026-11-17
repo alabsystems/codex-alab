@@ -20,6 +20,9 @@
 //! atomic. Wheel browsing leaves the caret in place; moving or editing returns to caret following.
 //! The editing module resolves replacement targets shared by insertion and paste-context inspection.
 
+#[path = "../../../alab-tui/glue/editor_upgrade_textarea_values.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): preserve native editor transactions as data for runtime transfer.
+
 use crate::key_hint::KeyBindingListExt;
 use crate::key_hint::is_altgr;
 use crate::keymap::EditorKeymap;

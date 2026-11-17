@@ -66,6 +66,7 @@ mod tests {
             goal_id: "goal-1".to_string(),
             objective: "finish the original task".to_string(),
             token_budget: None,
+            chronology_fence_generation: None,
             turn: "turn-1".to_string(),
             person_stops,
         };
@@ -109,6 +110,7 @@ mod tests {
             goal_id: "goal-1".into(),
             objective: "finish the original task".into(),
             token_budget: None,
+            chronology_fence_generation: None,
             turn: "turn-1".into(),
             person_stops,
         };

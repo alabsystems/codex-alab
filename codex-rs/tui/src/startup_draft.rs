@@ -43,6 +43,13 @@ use crate::tui::Tui;
 use crate::tui::TuiEvent;
 use crate::version::cli_version;
 
+#[path = "../../alab-tui/glue/editor_upgrade_startup.rs"]
+pub(crate) mod alab_upgrade; // ALAB(upgrade): keep constructor input and the retained screen out of provisional editing.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_configured_startup.rs"]
+pub(crate) mod alab_configured; // ALAB(retained-ui): the original provisional composer owns configured observation.
+
 const STARTUP_EVENT_BATCH_SIZE: usize = 64;
 const STARTUP_PASTE_NEWLINE_TIMEOUT: Duration = Duration::from_millis(120);
 
@@ -103,6 +110,10 @@ pub(crate) struct StartupDraft {
 
 /// Keeps terminal input responsive and carries one submission intent into the live session.
 pub(crate) struct StartupDraftPump {
+    #[cfg(unix)]
+    alab_constructor: Option<std::sync::Arc<crate::owned_local_entered_readers::constructor::Constructor>>, // ALAB(retained-ui): original initial-message/decoded E1 custody before startup awaits.
+    #[cfg(unix)]
+    alab_configured: Option<std::sync::Arc<alab_configured::Pending>>, // ALAB(retained-ui): retain before polling actual configured work.
     header: Box<dyn HistoryCell>,
     pub(crate) blossom: std::cell::RefCell<crate::empty_state_animation::EmptyStateAnimation>,
     motion: crate::motion::MotionMode,
@@ -128,7 +139,7 @@ impl StartupDraft {
         session_action: StartupDraftSessionAction,
         screen: StartupScreen,
     ) -> io::Result<Self> {
-        initialized_terminal.terminal.clear()?;
+        alab_upgrade::clear_screen(&mut initialized_terminal.terminal)?; // ALAB(upgrade): retain the original screen during runtime restoration.
 
         let mut tui = Tui::new(
             initialized_terminal.terminal,
@@ -137,7 +148,7 @@ impl StartupDraft {
         );
         terminal_restore_guard.events = Some(tui.event_broker.clone());
         tui.terminal_app_over_ssh = initialized_terminal.terminal_app_over_ssh;
-        tui.set_alt_screen_enabled(screen.use_alt_screen);
+        alab_upgrade::alt_screen(&mut tui, screen.use_alt_screen); // ALAB(upgrade): retain the admitted startup mode during restoration.
         let mut pump = StartupDraftPump::new(&tui, initial_screen, session_action);
         pump.motion = screen.welcome_motion;
         pump.bottom_pane
@@ -151,11 +162,12 @@ impl StartupDraft {
             terminal_restore_guard,
             pump,
         };
+        #[cfg(unix)] draft.alab_retain_prepared_entered_constructor()?; // ALAB(retained-ui): SAME pre-await constructor installs genuine rich E1 pump before first paint.
         // Present the screen switch and its first composer frame together.
         std::io::stdout().sync_update(|_| {
             draft
                 .tui
-                .set_owned_screen(screen.transcript_mode.is_owned())?;
+                .alab_startup_owned_screen(screen.transcript_mode.is_owned())?; // ALAB(upgrade): retain the original screen during runtime restoration.
             draft.pump.redraw_if_visible(&mut draft.tui)
         })??;
         Ok(draft)
@@ -207,6 +219,10 @@ impl StartupDraftPump {
         }
         let header = startup_session_header(/*cwd*/ None);
         Self {
+            #[cfg(unix)]
+            alab_configured: None, // ALAB(retained-ui): ordinary startup has no configured frontier owner.
+            #[cfg(unix)]
+            alab_constructor: None, // ALAB(retained-ui): actual startup binds its original constructor before polling.
             header,
             blossom: std::cell::RefCell::new(blossom),
             motion: crate::system_motion::mode(),
@@ -298,7 +314,11 @@ impl StartupDraftPump {
             SessionSelection::Resume(_) => StartupDraftSessionAction::Resume,
             SessionSelection::Fork(_) => StartupDraftSessionAction::Fork,
         };
-        let destination_changed = match self.resolved_selection.as_ref() {
+        #[cfg(unix)]
+        let restored_destination_changed = self.alab_restored_destination_changed(session_selection)?; // ALAB(retained-ui): original confirmation cancellation uses captured choice DATA.
+        #[cfg(not(unix))]
+        let restored_destination_changed = false;
+        let destination_changed = restored_destination_changed || match self.resolved_selection.as_ref() {
             Some(SessionSelection::StartFresh) => {
                 !matches!(session_selection, SessionSelection::StartFresh)
             }
@@ -340,6 +360,7 @@ impl StartupDraftPump {
     where
         F: Future,
     {
+        if alab_upgrade::deferred() { return Ok(Box::pin(future).await); } // ALAB(upgrade): native restoration owns pending input.
         if self.initial_screen == StartupDraftInitialScreen::Composer {
             self.draw(tui, tui.terminal.last_known_screen_size)?;
         }
@@ -362,6 +383,7 @@ impl StartupDraftPump {
 
     /// Preserve pending draft edits while continuing to reject startup actions and submission.
     pub(crate) async fn flush_pending_events(&mut self, tui: &mut Tui) -> io::Result<()> {
+        if alab_upgrade::deferred() { return Ok(()); } // ALAB(upgrade): restoration must finish before provisional input or drawing.
         loop {
             for _ in 0..STARTUP_EVENT_BATCH_SIZE {
                 let Poll::Ready(Some(event)) = std::future::poll_fn(|context| {
@@ -381,6 +403,7 @@ impl StartupDraftPump {
 
     /// Resolve an ambiguous paste newline before its provisional input owner disappears.
     pub(crate) async fn flush_pending_paste_newline(&mut self, tui: &mut Tui) -> io::Result<()> {
+        if alab_upgrade::deferred() { return Ok(()); } // ALAB(upgrade): restoration must finish before provisional input or drawing.
         while let Some((started_at, _)) = &self.pending_paste_newline {
             let Some(remaining) = STARTUP_PASTE_NEWLINE_TIMEOUT.checked_sub(started_at.elapsed())
             else {
@@ -410,6 +433,7 @@ impl StartupDraftPump {
     }
 
     fn cancel_submission(&mut self) {
+        #[cfg(unix)] self.alab_cancel_captured_confirmation(); // ALAB(retained-ui): same original edit/destination policy cancels saved widget intent before restore.
         if std::mem::take(&mut self.submission_pending) {
             self.bottom_pane.set_footer_hint_override(/*items*/ None);
         }
@@ -431,6 +455,7 @@ impl StartupDraftPump {
     }
 
     fn draw(&mut self, tui: &mut Tui, screen_size: Size) -> io::Result<()> {
+        if alab_upgrade::deferred() { return Ok(()); } // ALAB(upgrade): restoration must finish before provisional input or drawing.
         if self.bottom_pane.flush_paste_burst_if_due() {
             crate::startup_recovery::remember(self.bottom_pane.composer_recovery_snapshot());
         }
@@ -556,3 +581,11 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "startup_draft_submission_tests.rs"]
 mod submission_tests;
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_startup_transfer.rs"]
+pub(crate) mod alab_retained_transfer; // ALAB(retained-ui): transfer the original provisional composer and selection DATA.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_constructor_pump.rs"]
+mod alab_constructor; // ALAB(retained-ui): mandatory original initial-message custody on real StartupDraftPump.

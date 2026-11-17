@@ -13,3 +13,15 @@ pub(super) fn error(error: std::io::Error) -> RuntimeAuthError {
         None => RuntimeAuthError::Unavailable,
     }
 }
+
+/// Retain runtime selection's original lock, refresh and registration future
+/// behind a checked interface before provider/task-local wrappers embed it.
+pub(super) fn select<'a>(
+    binding: &'a std::sync::Arc<super::RuntimeAuthBinding>,
+    selection: &'a crate::PlatformResourceSelection,
+    expected_source: Option<u64>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<crate::RuntimeAuth, RuntimeAuthError>> + Send + 'a>,
+> {
+    Box::pin(binding.select_auth(selection, expected_source))
+}

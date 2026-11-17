@@ -26,6 +26,10 @@ use crate::session_log;
 pub(crate) struct AppEventSender {
     pub app_event_tx: UnboundedSender<AppEvent>,
     pub(crate) voice_only: Arc<AtomicBool>,
+    #[cfg(unix)]
+    pub(crate) alab_copy_guard_drop: Option<Arc<crate::copy_input_guard::alab_retained_graph::DropState>>, // ALAB(retained-ui): uninstalled restored local copy guards cannot emit a close event.
+    #[cfg(unix)]
+    pub(crate) alab_original_input: Option<Arc<crate::app::retained_original_input::Item>>, // ALAB(retained-ui): exact original approval reply owner accompanies each sender clone.
 }
 
 impl AppEventSender {
@@ -33,12 +37,16 @@ impl AppEventSender {
         Self {
             app_event_tx,
             voice_only: Arc::default(),
+            #[cfg(unix)] alab_copy_guard_drop: None, // ALAB(retained-ui): ordinary guards retain original close behavior.
+            #[cfg(unix)] alab_original_input: None, // ALAB(retained-ui): ordinary senders acquire no retained callback authority.
         }
     }
 
     /// Send an event to the app event channel. If it fails, we swallow the
     /// error and log it.
     pub(crate) fn send(&self, event: AppEvent) {
+        #[cfg(unix)] // ALAB(retained-ui): freeze the exact original decision before its actual enqueue; never resolve a later logical key.
+        let Some(event) = crate::app::retained_original_input::approvals::rewrite(self, event) else { return; };
         // A parked voice owner keeps processing its session, but its UI and queued
         // typed work must not act on the visible session. Thread-scoped metadata still applies.
         if self.voice_only.load(Ordering::Relaxed)

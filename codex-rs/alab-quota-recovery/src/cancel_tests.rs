@@ -36,7 +36,7 @@ async fn interrupted_redemption(automatic_timeout: bool, natural_reset: bool) {
     let observed_sent = Arc::clone(&sent);
     let reads = Arc::new(AtomicUsize::new(0));
     let observed_reads = Arc::clone(&reads);
-    let cycle = chrono::Utc::now().timestamp() + 3600;
+    let cycle = chrono::Utc::now().timestamp() + 72 * 3600;
     Mock::given(method("GET"))
         .and(path("/api/codex/usage"))
         .respond_with(move |_: &wiremock::Request| {
@@ -54,7 +54,7 @@ async fn interrupted_redemption(automatic_timeout: bool, natural_reset: bool) {
                 "account_id":"account", "user_id":"user", "plan_type":"plus",
                 "rate_limit":{"allowed":healthy,"limit_reached":!healthy,
                     "secondary_window":{"used_percent":if healthy {0}else{100},
-                        "limit_window_seconds":604800,"reset_at":reset,"reset_after_seconds":3600}}
+                        "limit_window_seconds":604800,"reset_at":reset,"reset_after_seconds":259200}}
             }))
         })
         .expect(6)

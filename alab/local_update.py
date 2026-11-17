@@ -617,6 +617,18 @@ def run_fixed_locked(argv):
                       initial_details=details, guardian_contract=GUARDIAN_CONTRACT)
 
 
+def run_fixed_cli(argv):
+    """Keep the guardian's CLI nonzero if its private transaction exits early."""
+    try:
+        return run_fixed_locked(argv)
+    except SystemExit as error:
+        if not PROMOTE.successful_exit(error):
+            raise
+        return PROMOTE.report_failure("alab: local update: ", error, incomplete=True)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        return PROMOTE.report_failure("alab: local update: ", error)
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     args = parser().parse_args(argv)
@@ -654,16 +666,19 @@ def main(argv=None):
             "alab-local-update", str(ROOT), cache, str(args.out.absolute()), str(args.repo.absolute()),
             sys.executable, "-I", "-B", "-c",
             'import runpy,sys; ns=runpy.run_path(sys.argv[1]); '
-            'sys.exit(ns["run_fixed_locked"](sys.argv[2:]))',
+            'sys.exit(ns["run_fixed_cli"](sys.argv[2:]))',
             str(Path(__file__).resolve()), *argv],
             check=False, env=PROMOTE.git_environment())
         if done.returncode == 75:
             print("alab: local update: another packager owns the cache; next poll will look again",
                   file=sys.stderr)
         return done.returncode
+    except SystemExit as error:
+        if not PROMOTE.successful_exit(error):
+            raise
+        return PROMOTE.report_failure("alab: local update: ", error, incomplete=True)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-        print(f"alab: local update: {error}", file=sys.stderr)
-        return 1
+        return PROMOTE.report_failure("alab: local update: ", error)
 
 
 if __name__ == "__main__":

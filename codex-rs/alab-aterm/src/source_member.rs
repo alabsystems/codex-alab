@@ -25,6 +25,7 @@ fn transport_error(error: crate::Error) -> io::Error {
         crate::Error::Io(error) => error.kind(),
         crate::Error::Unanswered => io::ErrorKind::TimedOut,
         crate::Error::Closed => io::ErrorKind::ConnectionReset,
+        crate::Error::PolicyInvalidated => io::ErrorKind::Interrupted,
         crate::Error::Busy { .. } => io::ErrorKind::WouldBlock,
         crate::Error::Refused(_) => io::ErrorKind::PermissionDenied,
         crate::Error::Malformed(_) => io::ErrorKind::InvalidData,
@@ -139,8 +140,9 @@ enum Kind {
     Unrelated(core::NoNativeReader),
 }
 
-struct Transport {
+pub(super) struct Transport {
     conn: Conn,
+    server_pid: Option<u32>,
     sid: String,
     birth: String,
     // Serializes nonce allocation with the complete wire exchange, including Waiting polls.
@@ -150,6 +152,27 @@ struct Transport {
     endpoint: Endpoint,
 }
 impl Transport {
+    /// Release this original transport only; supplies no backend/cohort
+    /// settlement observation and never reconnects a replacement channel.
+    pub(super) fn release(&self) {
+        self.conn.close();
+    }
+
+    /// Kernel peer of this original authenticated connection, for callback
+    /// consistency only. A PID grants no SDK, frontend or descriptor authority.
+    pub(super) fn server_pid(&self) -> io::Result<u32> {
+        if !self.conn.is_open() {
+            return Err(unavailable());
+        }
+        self.original_server_pid()
+    }
+
+    /// Historical kernel-peer DATA survives EOF solely to retain late received
+    /// rights as unresolved custody. It grants no current admission or IO use.
+    pub(super) fn original_server_pid(&self) -> io::Result<u32> {
+        self.server_pid.ok_or_else(unavailable)
+    }
+
     fn epoch(&self) -> io::Result<Option<String>> {
         self.epoch
             .lock()
@@ -164,7 +187,7 @@ impl Transport {
         *current = Some(epoch.into());
         Ok(())
     }
-    async fn call(
+    pub(super) async fn call(
         &self,
         action: &str,
         operation: &str,
@@ -177,13 +200,38 @@ impl Transport {
         {
             return Err(unavailable());
         }
-        let result = tokio::time::timeout(WAIT, async {
+        let mut confirmed_negative = false;
+        let result = self
+            .exchange(action, operation, fields, member, &mut confirmed_negative)
+            .await;
+        if result.is_err() {
+            self.conn.close();
+        }
+        result
+    }
+
+    // Same serialized/authenticated connection, counters and exact identity
+    // checks. The ordinary caller still closes on every exchange error above.
+    async fn exchange(
+        &self,
+        action: &str,
+        operation: &str,
+        fields: &str,
+        member: Option<&str>,
+        confirmed_negative: &mut bool,
+    ) -> io::Result<String> {
+        tokio::time::timeout(WAIT, async {
             let _serial = self.serial.acquire().await.map_err(|_| unavailable())?;
             for _ in 0..8 {
                 let request = self.sequence.lock().map_err(|_| unavailable())?.allocate()?;
                 let command = format!("@{} codex-auth {action} schema=1 request={request} operation={operation}{fields}", self.sid);
                 loop {
-                    let reply = self.conn.request_status_bounded(&command, MAX_FRAME).await.map_err(transport_error)?;
+                    let deadline = if matches!(action, "controller-root-start" | "member-root" | "controller-service-start" | "controller-service-attach") {
+                        WAIT
+                    } else {
+                        CALL_TIMEOUT
+                    };
+                    let reply = self.conn.request_status_bounded_within(&command, MAX_FRAME, deadline).await.map_err(transport_error)?;
                     if let Some(body) = reply.status.strip_prefix("OK codex-auth member-waiting ") {
                         let waiting: WaitingFrame = serde_json::from_str(body).map_err(|_| unavailable())?;
                         waiting.validate(&request, operation, &self.sid, &self.birth, self.epoch()?.as_deref())?;
@@ -207,10 +255,10 @@ impl Transport {
                         return Ok("source-changed".into());
                     }
                     match reply.status.as_str() {
-                        "ERR codex-auth denied" => return Err(io::Error::new(io::ErrorKind::PermissionDenied, "native member denied")),
-                        "ERR codex-auth unsupported" => return Err(io::Error::new(io::ErrorKind::Unsupported, "native member unsupported")),
-                        "ERR codex-auth unavailable" => return Err(io::Error::new(io::ErrorKind::WouldBlock, "native member unavailable")),
-                        "ERR codex-auth invalid request" => return Err(io::Error::new(io::ErrorKind::InvalidInput, "native member request refused")),
+                        "ERR codex-auth denied" => { *confirmed_negative = true; return Err(io::Error::new(io::ErrorKind::PermissionDenied, "native member denied")); },
+                        "ERR codex-auth unsupported" => { *confirmed_negative = true; return Err(io::Error::new(io::ErrorKind::Unsupported, "native member unsupported")); },
+                        "ERR codex-auth unavailable" => { *confirmed_negative = true; return Err(io::Error::new(io::ErrorKind::WouldBlock, "native member unavailable")); },
+                        "ERR codex-auth invalid request" => { return Err(io::Error::new(io::ErrorKind::InvalidInput, "native member request refused")); },
                         _ => {}
                     }
                     let response_action = match action {
@@ -243,12 +291,9 @@ impl Transport {
                     return Ok(body.into());
                 }
             }
+            *confirmed_negative = true;
             Err(io::Error::new(io::ErrorKind::WouldBlock, "native member busy"))
-        }).await.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "native member unanswered")).and_then(std::convert::identity);
-        if result.is_err() {
-            self.conn.close();
-        }
-        result
+        }).await.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "native member unanswered")).and_then(std::convert::identity)
     }
 }
 // This first pass locates identity, while the exact closed action structs reject unknown fields.
@@ -290,6 +335,41 @@ impl Default for UseAdmission {
     }
 }
 impl NativeMember {
+    async fn owned_control(
+        &self,
+        action: &str,
+        operation: &str,
+        nonce: Option<&str>,
+    ) -> io::Result<()> {
+        if self.target.is_some()
+            || self.poisoned.load(std::sync::atomic::Ordering::Acquire)
+            || self.retired.load(std::sync::atomic::Ordering::Acquire)
+            || !valid_hex(operation, 32)
+            || nonce.is_some_and(|nonce| !valid_hex(nonce, 32))
+        {
+            return Err(unavailable());
+        }
+        let mut fields = format!(" member={}", self.id);
+        if let Some(nonce) = nonce {
+            fields.push_str(&format!(" nonce={nonce}"));
+        }
+        // Native admission binds this exact original constructor connection.
+        // A reconnected work channel cannot acknowledge the physical socket.
+        let body = self
+            .transport
+            .call(action, operation, &fields, Some(&self.id))
+            .await?;
+        let reply: CommonFrame = serde_json::from_str(&body).map_err(|_| unavailable())?;
+        if reply.member != self.id
+            || self.poisoned.load(std::sync::atomic::Ordering::Acquire)
+            || self.retired.load(std::sync::atomic::Ordering::Acquire)
+            || !self.transport.conn.is_open()
+        {
+            return Err(unavailable());
+        }
+        Ok(())
+    }
+
     fn new(
         transport: Transport,
         id: String,
@@ -876,6 +956,63 @@ impl NativeMember {
     }
 }
 impl core::Member for NativeMember {
+    fn prepare_owned_listener<'a>(
+        &'a self,
+        operation: &'a str,
+    ) -> codex_alab_core::native_root::KeyFuture<'a> {
+        Box::pin(root::prepare_listener(self, operation))
+    }
+
+    fn root_tool_execution<'a>(
+        &'a self,
+        operation: &'a str,
+        tool: &'a str,
+    ) -> codex_alab_core::native_root::ExecutionFuture<'a> {
+        Box::pin(root::execution(self, operation, tool))
+    }
+
+    fn root_prepare_tool<'a>(
+        &'a self,
+        operation: &'a str,
+        tool: &'a str,
+        payload: &'a [u8],
+    ) -> codex_alab_core::native_root::IoFuture<'a> {
+        Box::pin(root::prepare(self, operation, tool, payload))
+    }
+    fn root_protocol<'a>(&'a self, operation: &'a str) -> core::UnitFuture<'a> {
+        Box::pin(root::available(self, operation))
+    }
+    fn root_tool_key<'a>(
+        &'a self,
+        operation: &'a str,
+        tool: &'a str,
+    ) -> codex_alab_core::native_root::KeyFuture<'a> {
+        Box::pin(root::key(self, operation, tool))
+    }
+    fn root_tool_state<'a>(
+        &'a self,
+        operation: &'a str,
+        tool: &'a str,
+        action: codex_alab_core::native_root::ToolAction,
+    ) -> codex_alab_core::native_root::StateFuture<'a> {
+        Box::pin(root::state(self, operation, tool, action))
+    }
+    fn begin_owned_control<'a>(&'a self, operation: &'a str) -> core::UnitFuture<'a> {
+        Box::pin(async move {
+            self.owned_control("member-control-begin", operation, None)
+                .await
+        })
+    }
+    fn acknowledge_owned_control<'a>(
+        &'a self,
+        operation: &'a str,
+        nonce: &'a str,
+    ) -> core::UnitFuture<'a> {
+        Box::pin(async move {
+            self.owned_control("member-control-ack", operation, Some(nonce))
+                .await
+        })
+    }
     fn runtime_upgrade(&self) -> Option<Arc<dyn codex_alab_core::runtime_upgrade::Host>> {
         Some(runtime_upgrade::host(self.transport.clone()))
     }
@@ -1345,8 +1482,10 @@ async fn connect_transport(endpoint: &Endpoint, birth: &str) -> io::Result<Trans
     let opened = conn::open(&endpoint.sock, CALL_TIMEOUT)
         .await
         .map_err(transport_error)?;
+    let server_pid = opened.server_pid;
     let transport = Transport {
         conn: Conn::spawn(opened, CALL_TIMEOUT),
+        server_pid,
         sid: endpoint.sid.clone(),
         birth: birth.into(),
         sequence: Default::default(),
@@ -1354,6 +1493,29 @@ async fn connect_transport(endpoint: &Endpoint, birth: &str) -> io::Result<Trans
         epoch: Default::default(),
         endpoint: endpoint.clone(),
     };
+    Ok(transport)
+}
+
+/// A separate authenticated control transport. The peer handshake allocates no
+/// Source member and supplies no credential or backend attachment authority.
+pub(super) async fn controller_transport(
+    endpoint: &Endpoint,
+    birth: &str,
+) -> io::Result<Transport> {
+    if !crate::locate::valid_sid(&endpoint.sid)
+        || birth.is_empty()
+        || birth.len() > 128
+        || birth.chars().any(char::is_control)
+    {
+        return Err(unavailable());
+    }
+    let transport = connect_transport(endpoint, birth).await?;
+    let hello = format!(
+        "{:016x}{:016x}",
+        core::connection_request_prefix(),
+        core::connection_request_prefix()
+    );
+    work_rebind::PeerIdentity::establish(&transport, &hello).await?;
     Ok(transport)
 }
 
@@ -1460,8 +1622,19 @@ mod tests;
 #[path = "source_runtime_upgrade.rs"]
 mod runtime_upgrade;
 
+#[path = "source_root.rs"]
+mod root;
+
 /// Connect supervision only after actual native settlement. Claim adoption
 /// still requires native verification on the new connection's kernel peer.
-pub async fn connect_settled_runtime_client(endpoint: Endpoint, options: crate::Options) -> Result<crate::Client, crate::Error> {
+pub async fn connect_settled_runtime_client(
+    endpoint: Endpoint,
+    options: crate::Options,
+) -> Result<crate::Client, crate::Error> {
     crate::runtime_claim::settled_client(endpoint, options).await
 }
+
+#[path = "source_retained_observation.rs"]
+mod retained_observation;
+pub(super) use retained_observation::ObservationError;
+pub(super) use retained_observation::RetainedQuery;

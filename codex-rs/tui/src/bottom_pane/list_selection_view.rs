@@ -3515,3 +3515,7 @@ mod tests {
 #[path = "selection_picker_tests.rs"]
 mod picker_tests;
 #[path = "../../../alab-tui/glue/plan_answer.rs"] mod alab_answer; // ALAB(answer): reports the plan box and the goal box to codex-alab and applies their answers
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_approval_list.rs"]
+pub(crate) mod alab_retained_approval_list; // ALAB(retained-ui): data-only native approval list state, with original callbacks intact.

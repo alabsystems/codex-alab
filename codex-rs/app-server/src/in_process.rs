@@ -102,6 +102,11 @@ use tokio::time::timeout;
 use toml::Value as TomlValue;
 use tracing::warn;
 
+#[cfg(unix)]
+#[path = "../../alab-core/glue/owned_local_runtime.rs"] mod alab_retained; // ALAB(upgrade): retain complete embedded inputs under an independent native host lifetime.
+#[cfg(unix)]
+pub use alab_retained::{FrontendMetadata, RetainedRuntimeOwner, start_retained, start_retained_with_worktree_source, start_retained_with_worktree_source_and_goal_gate}; // ALAB(upgrade): frontend metadata never substitutes runtime or native admission.
+
 #[path = "in_process_bootstrap.rs"]
 mod bootstrap;
 
@@ -122,6 +127,8 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadQueueChanged(_)
             | ServerNotification::AlabGoalRuntimeUpdated(_) // ALAB(storage-status): dropped Ready must not leave a stale Held observation.
+            | ServerNotification::AlabRetainedConfigured(_) // ALAB(retained-frontier): losing configured outcome cannot acknowledge its UI.
+            | ServerNotification::AlabRetainedFrontier(_) // ALAB(owned-local): losing the ordered tail must never acknowledge replay.
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ThreadAttachmentUpdated(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
@@ -1511,3 +1518,16 @@ mod tests {
         .expect("shutdown should succeed");
     }
 }
+
+#[cfg(unix)]
+#[path = "../../alab-core/glue/initial_session_plan.rs"]
+mod alab_initial_plan;
+#[cfg(unix)]
+pub use alab_initial_plan::{InitialSessionKind, InitialSessionPlan}; // ALAB(owned-local): actual initial resource plus selection DATA.
+#[cfg(unix)]
+pub use alab_retained::start_retained_ordinary; // ALAB(owned-local): same full inputs/gate/operation, no standalone defaults.
+
+#[cfg(unix)]
+pub use alab_retained::start_retained_ordinary_bound; // ALAB(retained-frontier): exact same physical-bind owner supplies Gate/Incoming/runtime observer.
+#[cfg(unix)]
+pub use codex_alab_aterm::frontend_control::retained_service::BoundBackend as RetainedBoundBackend; // ALAB(retained-frontier): real opaque resource, no constructor or label authority.

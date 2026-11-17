@@ -20,14 +20,18 @@ workspace = true
 [features]
 # The in-process fake aterm server (`fake`), for ALab crates that test against it.
 test-support = []
+# Explicit debug-only genuine SDK/native transport qualification.
+native-source-proof = []
 
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { workspace = true }
 codex-alab-core = { path = "../alab-core" }
 libc = { workspace = true }
+rustix = "=1.1.4"
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 
 [dev-dependencies]

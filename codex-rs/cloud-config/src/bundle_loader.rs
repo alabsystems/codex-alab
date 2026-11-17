@@ -1,4 +1,8 @@
+#[path = "../../alab-core/glue/managed_bootstrap_owner.rs"]
+pub mod alab_managed_bootstrap; // ALAB(owned-local): retain actual original cloud constructors and refresh custody.
 #[path = "../../alab-core/glue/cloud_destination_loader.rs"] pub(crate) mod alab_destination; // ALAB(accounts): destination reads remain in actual caller admission.
+#[path = "../../alab-core/glue/cloud_bootstrap_owner.rs"]
+pub(crate) mod alab_bootstrap; // ALAB(owned-local): retain the actual mandatory bootstrap constructor through Source preparation.
 use crate::backend::BackendBundleClient;
 use crate::chatgpt::ChatGptSource;
 use crate::chatgpt::plan_requires_managed_config;
@@ -246,17 +250,7 @@ async fn chatgpt_config_bundle_service_for_storage(
     auth_config: AuthConfig,
     enable_codex_api_key_env: bool,
 ) -> std::io::Result<CloudConfigBundleService<ChatGptSource<BackendBundleClient>>> {
-    let auth_manager =
-        AuthManager::shared_from_auth_config(auth_config.clone(), enable_codex_api_key_env).await?;
-    Ok(CloudConfigBundleService::new(
-        auth_manager,
-        Arc::new(BackendBundleClient::new(
-            auth_config
-                .chatgpt_base_url
-                .unwrap_or_else(|| "https://chatgpt.com/backend-api/".to_string()),
-            auth_config.auth_route_config.http_client_factory().clone(),
-        )),
-        auth_config.codex_home,
-        CLOUD_CONFIG_BUNDLE_TIMEOUT,
-    ))
+    alab_bootstrap::PreparedAuth::prepare(auth_config, enable_codex_api_key_env)
+        .await
+        .map(alab_bootstrap::PreparedAuth::into_service) // ALAB(owned-local): same original service and mandatory auth constructor, with an owned partial phase.
 }

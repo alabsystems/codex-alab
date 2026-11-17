@@ -568,16 +568,31 @@ mod remote_control_processor;
 mod rollout;
 mod search;
 mod thread_attachments;
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_task_worktree as retained_task_worktree; // ALAB(upgrade): actual retained local worktree policy handle.
 mod thread_enrichment;
 mod thread_fork_goal;
 mod thread_input;
 mod thread_memory;
 mod thread_processor;
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_task_fork::backend as retained_task_fork; // ALAB(upgrade): complete typed retained task fork consumer.
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_task_send as retained_task_send; // ALAB(upgrade): actual complete retained MCP SEND owner.
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_task_read as retained_task_read; // ALAB(upgrade): actual retained task MCP read consumer, no client facade.
+#[cfg(unix)]
+pub(crate) use crate::message_processor::alab_task_mcp::PreparedChildBinding; // ALAB(upgrade): opaque actual host binding, never serialized permission.
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_task_start::create_operation as retained_task_create; // ALAB(upgrade): the actual backend MCP host consumes complete CREATE work.
 mod thread_queue_processor;
 mod thread_read_state;
 mod thread_sections;
 mod token_usage_replay;
 mod turn_processor;
+#[cfg(unix)]
+pub(crate) use turn_processor::alab_task_turn::BackendInitialTurn; // ALAB(upgrade): actual retained host initial-turn policy handle.
+pub(crate) use thread_processor::alab_task_start::OperationContext; // ALAB(upgrade): real operation trace/cancellation, never a client facade.
 mod windows_sandbox_processor;
 
 pub(crate) use account_processor::AccountRequestProcessor;
@@ -600,6 +615,7 @@ pub(crate) use process_exec_processor::ProcessExecRequestProcessor;
 pub(crate) use projects::ProjectRequestProcessor;
 pub(crate) use remote_control_processor::RemoteControlRequestProcessor;
 pub(crate) use search::SearchRequestProcessor;
+pub(crate) use thread_goal_processor::GoalProcessorThreadState; // ALAB(goal-recovery): expose the ALab-owned constructor aggregate to the app-server assembler.
 pub(crate) use thread_goal_processor::ThreadGoalRequestProcessor;
 pub(crate) use thread_processor::ThreadRequestProcessor;
 pub(crate) use thread_processor::ThreadResumeTarget;
@@ -758,3 +774,22 @@ pub(crate) fn build_legacy_api_turns_from_rollout_items(items: &[RolloutItem]) -
     }
     builder.finish()
 }
+
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_initial_start::ValidatedProspectiveStart; // ALAB(owned-local): actual validation resource carried by genuine fork construction.
+
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_initial_session::InitialSessionOperation; // ALAB(owned-local): runtime owns exact accepted startup.
+
+pub(crate) use thread_processor::alab_initial_resume::ResumePublication; // ALAB(owned-local): actual accepted result resource follows the original listener command.
+
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_initial_session::InitialSlot as InitialSessionSlot; // ALAB(owned-local): same weak accepted-call registry follows real host termination observation.
+
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_retained_frontier::Binding as RetainedFrontierBinding; // ALAB(retained-frontier): actual bound runtime owner.
+#[cfg(test)] pub(crate) use thread_processor::alab_retained_frontier::projection_history as alab_retained_projection_history; // ALAB(retained-history): test the same private Core history capture without exposing it in production.
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_retained_frontier::Projection as RetainedProjection; // ALAB(retained-frontier): exact listener tail.
+#[cfg(unix)]
+pub(crate) use thread_processor::alab_retained_frontier::ProjectionCommand as RetainedProjectionCommand; // ALAB(retained-frontier): same listener owns subscribe/snapshot/replay order.

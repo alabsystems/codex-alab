@@ -35,6 +35,7 @@ struct Pending {
     upgrade: OnceLock<Option<Arc<dyn crate::runtime_upgrade::Host>>>,
     result: OnceCell<Result<Mutex<Option<Allocation>>, ()>>,
     changed: Notify,
+    retirement: Mutex<Option<crate::native_source_retirement::Receipt>>,
 }
 #[derive(Default)]
 struct Startup {
@@ -324,6 +325,64 @@ pub async fn enter() -> io::Result<()> {
     STARTUP.enter(requested(), allocate).await
 }
 
+/// Bind a native-owned backend's actual bootstrap socket before configuration
+/// consumes its original constructor. A normal/derived/target member cannot be
+/// substituted. The native host independently verifies child/socket custody;
+/// this result supplies no Source readiness or frontend attachment permission.
+#[cfg(unix)]
+pub async fn bind_owned_control(
+    stream: std::os::unix::net::UnixStream,
+) -> io::Result<crate::native_owned_control::Bound> {
+    enter().await?;
+    let member = {
+        let pending = STARTUP.seed.get().ok_or_else(unavailable)?;
+        let allocation = pending
+            .result
+            .get()
+            .ok_or_else(unavailable)?
+            .as_ref()
+            .map_err(|_| unavailable())?
+            .lock()
+            .map_err(|_| unavailable())?;
+        let allocation = allocation.as_ref().ok_or_else(unavailable)?;
+        if allocation.target.is_some() || allocation.parent_use.is_some() {
+            return Err(unavailable());
+        }
+        Arc::clone(&allocation.member)
+    };
+    crate::native_owned_control::bind(member, stream).await
+}
+
+/// Keep the actual bound backend owner separate from credential-reader allocations.
+#[cfg(unix)]
+pub(crate) fn separate_backend_constructor(
+    control: &crate::native_owned_control::Bound,
+) -> io::Result<()> {
+    let pending = STARTUP.seed.get().ok_or_else(unavailable)?;
+    let mut seed = pending
+        .result
+        .get()
+        .ok_or_else(unavailable)?
+        .as_ref()
+        .map_err(|_| unavailable())?
+        .lock()
+        .map_err(|_| unavailable())?;
+    let allocation = seed.as_ref().ok_or_else(unavailable)?;
+    if allocation.parent_use.is_some()
+        || allocation.target.is_some()
+        || !control.retains_member(&allocation.member)
+    {
+        return Err(unavailable());
+    }
+    // The actual bound owner retains this member. Credential managers must
+    // obtain separate native allocations, so their explicit retirement cannot
+    // withdraw the backend constructor's original control connection.
+    let allocation = seed.take();
+    drop(seed);
+    drop(allocation);
+    Ok(())
+}
+
 /// A manager takes the real early allocation once. Other managers allocate independently;
 /// they do not inherit another manager's source, policy, or AuthChangeState counters.
 pub async fn allocate_manager() -> io::Result<Option<Allocation>> {
@@ -484,3 +543,8 @@ mod tests {
         }
     }
 }
+
+// ALAB(retained-readers): actual unused early seed retires through its original Native owner.
+#[path = "native_source_startup_retirement.rs"]
+mod startup_retirement;
+pub use startup_retirement::retire_unused_startup;

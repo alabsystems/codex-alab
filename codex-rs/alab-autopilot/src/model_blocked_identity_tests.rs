@@ -4,6 +4,7 @@
 //! Provider IDs can collide with an observed host CodeMode call's actual UUID.
 
 use super::*;
+use crate::extension::test_progress;
 use codex_extension_api::ToolCallSource;
 use codex_protocol::protocol::EventMsg;
 use std::path::Path;
@@ -17,6 +18,17 @@ enum Case {
     OriginFirst,
     DirectFailure,
     NestedAborted,
+    DirectFailureNestedAborted,
+}
+
+impl Case {
+    fn direct_fails(self) -> bool {
+        matches!(self, Self::DirectFailure | Self::DirectFailureNestedAborted)
+    }
+
+    fn nested_aborts(self) -> bool {
+        matches!(self, Self::NestedAborted | Self::DirectFailureNestedAborted)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -103,18 +115,11 @@ impl Hooks {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("owned identity hook gate");
         std::fs::write(
-            root.path().join("pre.sh"),
-            r#"#!/bin/sh
-/bin/cat >/dev/null
-if /bin/mkdir "$1/first-pre" 2>/dev/null; then exit 0; fi
-while [ ! -f "$1/entered" ] || [ ! -f "$1/allow-duplicate" ]; do /bin/sleep 0.01; done
-"#,
-        )
-        .expect("write invocation-counted native pre-hook");
-        std::fs::write(
             root.path().join("post.sh"),
             r#"#!/bin/sh
+: > "$1/hook-started"
 /bin/cat >/dev/null
+: > "$1/hook-stdin-drained"
 if /bin/mkdir "$1/first-post" 2>/dev/null; then
     : > "$1/entered"
     while [ ! -f "$1/release" ]; do /bin/sleep 0.01; done
@@ -140,7 +145,6 @@ fi
 
     fn configuration(&self) -> serde_json::Value {
         serde_json::json!({"hooks": {
-            "PreToolUse": [{"matcher": "^update_goal$", "hooks": [{"type": "command", "command": self.command("pre.sh")}]}],
             "PostToolUse": [{"matcher": "^update_goal$", "hooks": [{"type": "command", "command": self.command("post.sh")}]}]
         }})
     }
@@ -162,6 +166,17 @@ impl Drop for Hooks {
     }
 }
 
+fn wait_for_duplicate_release(root: &Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !root.join("entered").is_file() || !root.join("allow-duplicate").is_file() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nested PostToolUse or duplicate release marker never arrived"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 async fn goal(h: &Harness) -> codex_state::ThreadGoal {
     h.test
         .codex
@@ -180,8 +195,10 @@ async fn scenario(
     hooks: &Hooks,
     observed: &Observed,
     case: Case,
+    progress: &test_progress::Progress,
 ) {
     let rt = Arc::clone(&h.rt);
+    progress.phase("hold automatic evaluation");
     let evaluation = rt.hold_eval_when_free().await;
     assert!(
         h.test
@@ -191,7 +208,8 @@ async fn scenario(
             .is_none(),
         "this native configuration has no opt-in V2 active-ID reservation"
     );
-    goals
+    progress.phase("seed original goal");
+    let outcome = goals
         .set_thread_goal(
             &h.test.codex.state_db().expect("native database"),
             GoalSetRequest {
@@ -205,18 +223,47 @@ async fn scenario(
         )
         .await
         .expect("seed the actual original goal");
-    h.test
+    let db = h.test.codex.state_db().expect("native database");
+    progress.phase("read setup goal");
+    let setup_goal = db
+        .thread_goals()
+        .get_thread_goal(h.rt.id)
+        .await
+        .expect("read setup goal")
+        .expect("setup goal exists");
+    progress.phase("persist setup continuation deferral");
+    db.thread_goals()
+        .replace_thread_goal_snapshot(&setup_goal)
+        .await
+        .expect("persist setup-only continuation deferral");
+    progress.phase("apply setup exact effect");
+    outcome.apply_runtime_effects(goals).await;
+    progress.phase("clear setup continuation deferral");
+    db.thread_goals()
+        .clear_thread_goal_continuation_deferral(h.rt.id)
+        .await
+        .expect("clear setup-only continuation deferral");
+    let runtime = h
+        .test
         .codex
         .thread_extension_data()
         .get::<codex_goal_extension::GoalRuntimeHandle>()
-        .expect("native goal runtime")
+        .expect("native goal runtime");
+    assert!(
+        !runtime.alab_goal_persistence_held(),
+        "the setup-only continuation deferral must settle mutation custody"
+    );
+    progress.phase("restore native accounting");
+    runtime
         .restore_after_resume()
         .await
         .expect("restore native accounting");
+    progress.phase("read original goal");
     let original = goal(h).await;
     if matches!(case, Case::OriginFirst) {
         hooks.mark("hold-second");
     }
+    progress.phase("start mixed native turn");
     h.test
         .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -225,7 +272,24 @@ async fn scenario(
         }]))
         .await
         .expect("start actual mixed CodeMode/native turn");
-    wait_for_supervisor(|| hooks.0.path().join("entered").is_file()).await;
+    progress.phase("await nested PostToolUse entry");
+    wait_for_supervisor(|| {
+        hooks.0.path().join("entered").is_file()
+            || lock(&observed.finished).iter().any(|call| call.nested)
+    })
+    .await;
+    if !hooks.0.path().join("entered").is_file() {
+        let early = lock(&observed.finished)
+            .iter()
+            .find(|call| call.nested)
+            .cloned()
+            .expect("nested completion was observed");
+        panic!(
+            "nested goal finished before PostToolUse entry: {:?}",
+            early.outcome
+        );
+    }
+    progress.phase("check committed nested goal");
     assert_eq!(goal(h).await.status, codex_state::ThreadGoalStatus::Blocked);
     assert!(
         lock(&h.rt.model_blocked_goal).is_none(),
@@ -235,24 +299,57 @@ async fn scenario(
         .alab_model_goal_epoch(h.rt.id)
         .expect("A's actual native commit epoch");
     let before_b = goal(h).await;
+    progress.phase("release provider duplicate");
     hooks.mark("allow-duplicate");
     if matches!(case, Case::OriginFirst) {
-        wait_for_supervisor(|| hooks.0.path().join("second-entered").is_file()).await;
+        progress.phase("await direct PostToolUse entry");
+        wait_for_supervisor(|| {
+            hooks.0.path().join("second-entered").is_file()
+                || lock(&observed.finished).iter().any(|call| !call.nested)
+        })
+        .await;
+        if !hooks.0.path().join("second-entered").is_file() {
+            let failed = lock(&observed.finished)
+                .iter()
+                .find(|call| !call.nested)
+                .cloned()
+                .expect("direct B finished before its post-hook");
+            observed.provider.notify_one();
+            progress.phase("await direct failure provider output");
+            while responses::received_responses_requests(&h._server)
+                .await
+                .len()
+                < 3
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let requests = responses::received_responses_requests(&h._server).await;
+            panic!(
+                "direct B did not reach PostToolUse: {:?}; provider output: {:?}",
+                failed.outcome,
+                requests
+                    .last()
+                    .and_then(|request| request.function_call_output_text(&failed.id))
+            );
+        }
+        progress.phase("release nested hook before direct callback");
         hooks.mark("release");
         wait_for_supervisor(|| lock(&observed.finished).len() == 1).await;
         assert!(
             lock(&observed.finished)[0].nested,
             "A's callback precedes B's acceptance"
         );
+        progress.phase("release direct hook");
         hooks.mark("release-second");
         wait_for_supervisor(|| lock(&observed.finished).len() == 2).await;
         observed.provider.notify_one();
     } else {
+        progress.phase("await direct completion before nested hook");
         wait_for_supervisor(|| lock(&observed.finished).len() == 1).await;
         {
             let finished = lock(&observed.finished);
             assert!(!finished[0].nested, "direct B finishes before nested A");
-            let expected = if matches!(case, Case::DirectFailure) {
+            let expected = if case.direct_fails() {
                 ToolCallOutcome::Failed {
                     handler_executed: true,
                 }
@@ -261,7 +358,8 @@ async fn scenario(
             };
             assert_eq!(finished[0].outcome, Some(expected));
         }
-        if matches!(case, Case::DirectFailure) {
+        if case.direct_fails() {
+            progress.phase("check direct validation failure custody");
             assert_eq!(
                 goals.alab_model_goal_epoch(h.rt.id),
                 Some(a_epoch),
@@ -273,7 +371,8 @@ async fn scenario(
                 "B's validation failure cannot change A's committed goal"
             );
         }
-        if matches!(case, Case::NestedAborted) {
+        if case.nested_aborts() {
+            progress.phase("await provider request before native interrupt");
             observed.provider.notify_one();
             while responses::received_responses_requests(&h._server)
                 .await
@@ -282,22 +381,26 @@ async fn scenario(
             {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
+            progress.phase("interrupt nested native hook");
             h.test
                 .codex
                 .submit(codex_protocol::protocol::Op::Interrupt)
                 .await
                 .expect("interrupt A's actual pending CodeMode post-hook");
+            progress.phase("await nested aborted callback");
             wait_for_supervisor(|| lock(&observed.finished).len() == 2).await;
         } else {
+            progress.phase("release nested hook before provider completion");
             hooks.mark("release");
             wait_for_supervisor(|| lock(&observed.finished).len() == 2).await;
             observed.provider.notify_one();
         }
     }
+    progress.phase("await native terminal event");
     core_test_support::wait_for_event_with_timeout(
         &h.test.codex,
         |event| {
-            if matches!(case, Case::NestedAborted) {
+            if case.nested_aborts() {
                 matches!(event, EventMsg::TurnAborted(_))
             } else {
                 matches!(event, EventMsg::TurnComplete(_))
@@ -306,10 +409,12 @@ async fn scenario(
         NATIVE_HANG,
     )
     .await;
+    progress.phase("await native idle state");
     while h.test.codex.has_active_turn().await {
         tokio::task::yield_now().await;
     }
     wait_for_supervisor(|| !h.shared.turn_running_on(h.rt.key())).await;
+    progress.phase("check native callback identities");
     let starts = lock(&observed.calls).clone();
     let finished = lock(&observed.finished).clone();
     assert_eq!(starts.len(), 2, "both actual native handlers ran");
@@ -330,10 +435,10 @@ async fn scenario(
     assert_eq!(finished[0].turn, finished[1].turn);
     for call in &finished {
         let expected = match (case, call.nested) {
-            (Case::DirectFailure, false) => ToolCallOutcome::Failed {
+            (case, false) if case.direct_fails() => ToolCallOutcome::Failed {
                 handler_executed: true,
             },
-            (Case::NestedAborted, true) => ToolCallOutcome::Aborted,
+            (case, true) if case.nested_aborts() => ToolCallOutcome::Aborted,
             _ => ToolCallOutcome::Completed { success: true },
         };
         assert_eq!(
@@ -342,17 +447,30 @@ async fn scenario(
             "{case:?}: actual native completion"
         );
     }
+    progress.phase("check settled blocked goal");
     let blocked = goal(h).await;
     assert_eq!(blocked.goal_id, original.goal_id);
     assert_eq!(blocked.objective, original.objective);
     assert_eq!(blocked.token_budget, original.token_budget);
     assert_eq!(blocked.status, codex_state::ThreadGoalStatus::Blocked);
+    assert!(
+        !runtime.alab_goal_persistence_held(),
+        "turn end must settle same-goal tokens that arrived after the terminal dispatch"
+    );
+    if case.direct_fails() {
+        let accounted = blocked.tokens_used - original.tokens_used;
+        assert!(
+            matches!(accounted, 10 | 30),
+            "the first callback is charged before dispatch or both callbacks are retained after dispatch; accounted={accounted}",
+        );
+    }
     assert_eq!(
         responses::received_responses_requests(&h._server)
             .await
             .len(),
         3
     );
+    progress.phase("read original native model proof");
     let source = h
         .autopilot
         .current_model_binding(&h.rt)
@@ -369,8 +487,11 @@ async fn scenario(
         state.point.as_mut().expect("completed native point").at =
             clock() - Duration::from_secs(3601)
     });
+    progress.phase("stage recovery decision");
     h.immediate_point().await;
+    progress.phase("evaluate native model-goal recovery");
     Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
+    progress.phase("await recovered provider request");
     while responses::received_responses_requests(&h._server)
         .await
         .len()
@@ -378,6 +499,7 @@ async fn scenario(
     {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    progress.phase("check recovered goal");
     let resumed = goal(h).await;
     assert_eq!(resumed.goal_id, original.goal_id);
     assert_eq!(resumed.objective, original.objective);
@@ -385,6 +507,7 @@ async fn scenario(
     assert_eq!(resumed.tokens_used, blocked.tokens_used);
     assert_eq!(resumed.status, codex_state::ThreadGoalStatus::Active);
     assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted + 1);
+    progress.phase("await recovered native turn start");
     let started = core_test_support::wait_for_event_with_timeout(
         &h.test.codex,
         |event| matches!(event, EventMsg::TurnStarted(_)),
@@ -399,9 +522,13 @@ async fn scenario(
         responses::received_responses_requests(&h._server).await[3]
             .body_contains_text(words::MODEL_BLOCKED_GOAL_CONTINUE)
     );
+    progress.phase("scenario complete");
 }
 
 async fn run(case: Case) {
+    let progress = test_progress::Progress::default();
+    progress.case(format!("{case:?}"));
+    progress.phase("create native harness");
     let hooks = Hooks::new();
     let observed = Arc::new(Observed::default());
     let goals = Arc::new(GoalService::new());
@@ -413,6 +540,7 @@ async fn run(case: Case) {
         },
     )
     .await;
+    progress.phase("observe native policy");
     h.fake.set_policy_key("upgrade", "false");
     h.fake.set_policy_key("autopilot", "cruise");
     wait_for_supervisor(|| {
@@ -424,6 +552,8 @@ async fn run(case: Case) {
     .await;
     let response_count = Arc::new(AtomicUsize::new(0));
     let response_source = Arc::clone(&observed);
+    let response_gate = hooks.0.path().to_path_buf();
+    progress.phase("install controlled provider responses");
     responses::mount_response_handler(&h._server, move |_| {
             match response_count.fetch_add(1, Ordering::SeqCst) {
                 0 => responses::sse_response(responses::sse(vec![
@@ -433,14 +563,15 @@ async fn run(case: Case) {
                 ])),
                 1 => {
                     let actual = response_source.nested_call();
+                    wait_for_duplicate_release(&response_gate);
                     responses::sse_response(responses::sse(vec![
                         responses::ev_response_created("identity-direct"),
                         responses::ev_function_call(&actual.id, codex_goal_extension::UPDATE_GOAL_TOOL_NAME,
-                            if matches!(case, Case::DirectFailure) { r#"{"status":"active"}"# } else { r#"{"status":"blocked"}"# }),
+                            if case.direct_fails() { r#"{"status":"active"}"# } else { r#"{"status":"blocked"}"# }),
                         responses::ev_completed_with_tokens("identity-direct", 20),
                     ]))
                 }
-                2 if matches!(case, Case::NestedAborted) => wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(60)),
+                2 if case.nested_aborts() => wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(60)),
                 2 => responses::sse_response(responses::sse(vec![
                     responses::ev_assistant_message("identity-final", "The temporary validation file is missing, so I stopped the goal."),
                     responses::ev_completed("identity-done"),
@@ -451,7 +582,7 @@ async fn run(case: Case) {
     let result = {
         let mut pending = Box::pin(tokio::time::timeout(
             NATIVE_HANG,
-            scenario(&h, &goals, &hooks, &observed, case),
+            scenario(&h, &goals, &hooks, &observed, case, &progress),
         ));
         std::future::poll_fn(|context| {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -464,19 +595,60 @@ async fn run(case: Case) {
         })
         .await
     };
-    hooks.release();
-    observed.provider.notify_one();
+    let failed_progress = progress.describe();
     if !matches!(&result, Ok(Ok(()))) {
+        let markers = [
+            "hook-started",
+            "hook-stdin-drained",
+            "first-post",
+            "entered",
+            "allow-duplicate",
+            "hold-second",
+            "second-entered",
+            "release",
+            "release-second",
+        ]
+        .into_iter()
+        .map(|name| (name, hooks.0.path().join(name).exists()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+        let calls = |items: &Mutex<Vec<Call>>| {
+            lock(items)
+                .iter()
+                .map(|call| {
+                    serde_json::json!({
+                        "nested": call.nested, "id": call.id, "turn": call.turn,
+                        "outcome": format!("{:?}", call.outcome),
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let evidence = serde_json::json!({
+            "case": format!("{case:?}"), "phase": failed_progress,
+            "hook_markers_before_cleanup": markers,
+            "calls": calls(&observed.calls), "finished": calls(&observed.finished),
+        });
+        if let Err(error) = std::fs::write(
+            hooks.0.path().join("failure-before-cleanup.json"),
+            evidence.to_string(),
+        ) {
+            eprintln!("native identity failure evidence could not be retained: {error}");
+        }
         h.retain_artifacts();
         h.retain_artifact_root("hook", hooks.0.path());
     }
+    hooks.release();
+    observed.provider.notify_one();
+    progress.phase("cancel fixture timer");
     Autopilot::cancel_timer(&h.rt).await;
+    progress.phase("shutdown native fixture");
     h.shutdown_and_export()
         .await
         .expect("owned native shutdown");
     match result {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => panic!("native marker identity collision hang detector: {error}"),
+        Ok(Err(error)) => {
+            panic!("native marker identity collision hang detector: {error}; {failed_progress}")
+        }
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
@@ -499,4 +671,9 @@ fn model_goal_observed_native_call_id_collision_failure_before_sql_cannot_consum
 #[test]
 fn model_goal_observed_native_call_id_collision_preserves_a_committed_aborted_source() {
     native_test(|| run(Case::NestedAborted));
+}
+
+#[test]
+fn model_goal_observed_native_call_id_collision_failed_duplicate_cannot_strand_aborted_usage() {
+    native_test(|| run(Case::DirectFailureNestedAborted));
 }

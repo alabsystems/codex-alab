@@ -8,12 +8,14 @@ local fixture repositories, and compares/updates local refs. No private
 publication checkout, credential helper, or PATH replacement is required.
 """
 import argparse
+from contextlib import contextmanager
 import fnmatch
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import stat
 import subprocess
@@ -26,24 +28,85 @@ OID = re.compile(r"[0-9a-f]{40}")
 ZERO = "0" * 40
 MAX_FETCH_REFS = 2048
 MAX_LOCAL_REFS = 8192
+_GIT_FAILURE_STAGES = {
+    "publication-init": "publication transport initialization",
+    "publication-candidate-fetch": "publication candidate preparation",
+}
 
 
 class Refused(Exception):
     native_error = None
 
 
-def git(repo, *args, data=None, codes=(0,)):
+CLI = runpy.run_path(str(Path(__file__).with_name("cli_status.py")))
+successful_exit = CLI["successful_exit"]
+failure_detail = CLI["failure_detail"]
+report_failure = CLI["report_failure"]
+
+
+def is_native_error(error, exit_status):
+    """Recognize canonical integer metadata before trusting a native failure."""
+    return (isinstance(error, dict) and type(error.get("v")) is int and error["v"] == 1
+            and type(error.get("exit")) is int and error["exit"] == exit_status
+            and (error.get("status") is None or type(error["status"]) is int)
+            and error.get("side_effect") == "none")
+
+
+@contextmanager
+def temporary_directory(**kwargs):
+    """Retire owned scratch without replacing an in-flight failure."""
+    directory = tempfile.TemporaryDirectory(**kwargs)
+    try:
+        yield directory.name
+    except BaseException as primary:
+        try:
+            directory.cleanup()
+        except BaseException as cleanup:
+            if isinstance(primary, Exception) and not isinstance(cleanup, Exception):
+                raise cleanup from primary
+            try:
+                if hasattr(primary, "add_note"):
+                    primary.add_note(f"temporary directory cleanup failed: {cleanup!r}")
+            except BaseException as note_error:
+                if isinstance(primary, Exception) and not isinstance(note_error, Exception):
+                    raise note_error from primary
+        raise
+    else:
+        directory.cleanup()
+
+
+def _git_reported_no_space(stderr):
+    """A bounded diagnostic text signal, not an errno or volume observation."""
+    if type(stderr) is not bytes:
+        return False
+    sample = stderr[-4096:]
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return b"No space left on device" in sample
+
+
+def git(repo, *args, data=None, codes=(0,), failure_stage=None):
+    if failure_stage is not None and (type(failure_stage) is not str
+                                     or failure_stage not in _GIT_FAILURE_STAGES):
+        raise Refused("unsupported local Git failure stage")
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
                GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1",
-               GIT_NO_REPLACE_OBJECTS="1", GIT_TERMINAL_PROMPT="0")
+               GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull,
+               GIT_TERMINAL_PROMPT="0")
     done = subprocess.run(
         ["git", "-c", "core.hooksPath=" + os.devnull, "-c", "core.fsmonitor=false",
          "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
          "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-C", str(repo), *args],
         input=data, capture_output=True, env=env, timeout=120)
     if done.returncode not in codes:
-        raise Refused("local Git " + args[0] + " failed (exit " + str(done.returncode) + ")")
+        stage = args[0] if failure_stage is None else _GIT_FAILURE_STAGES[failure_stage]
+        message = "local Git " + stage + " failed (exit " + str(done.returncode) + ")"
+        if failure_stage is not None and _git_reported_no_space(done.stderr):
+            message += ": Git reported no space left on device"
+        raise Refused(message)
     return done.stdout
 
 
@@ -58,11 +121,15 @@ def location(repo, remote, named=True):
                 or parsed.query or parsed.fragment or not parsed.path.startswith("/")):
             raise Refused("a local transfer requires an existing local repository")
         candidate = Path(unquote(parsed.path))
-    else:
+    elif Path(remote).drive or not re.match(r"^[^/]+:", remote):
         candidate = Path(remote).expanduser()
         if not candidate.is_absolute():
             candidate = Path(repo) / candidate
-    if candidate.is_dir():
+    else:
+        # URL schemes and SCP-style authorities are remote syntax even when
+        # the checkout contains a directory with the same spelling.
+        candidate = None
+    if candidate is not None and candidate.is_dir():
         return str(candidate.resolve()), False
     value = remote
     if value.startswith("git@") and ":" in value:
@@ -129,11 +196,11 @@ class Agh:
                         break
                 except ValueError:
                     pass
-            typed = (error.get("v") == 1 and error.get("exit") == done.returncode
-                     and error.get("side_effect") == "none")
+            typed = is_native_error(error, done.returncode)
             missing = (done.returncode == 6 and error.get("kind") == "not_found"
-                       and error.get("status") == 404)
-            empty = (error.get("status") == 409 and error.get("message") == "Git Repository is empty.")
+                       and type(error.get("status")) is int and error["status"] == 404)
+            empty = (type(error.get("status")) is int and error["status"] == 409
+                     and error.get("message") == "Git Repository is empty.")
             if absent and typed and (missing or empty):
                 return None
             failure = Refused("Agh request failed (exit " + str(done.returncode) + "): " + text.strip())
@@ -150,7 +217,7 @@ class Agh:
             raise Refused("Agh returned invalid JSON") from None
 
     def fetch_batch(self, identity, repo, rows, *, anonymous=False):
-        with tempfile.TemporaryDirectory(prefix="codex-agh-fetch-", suffix=".noindex") as directory:
+        with temporary_directory(prefix="codex-agh-fetch-", suffix=".noindex") as directory:
             path = Path(directory) / "refs.json"
             path.write_text(json.dumps(rows, sort_keys=True) + "\n")
             return self.call("repo", "fetch", identity, str(Path(repo).resolve()),
@@ -370,12 +437,16 @@ def main():
     parser.add_argument("remote")
     parser.add_argument("refspecs", nargs="+")
     args = parser.parse_args()
-    fetch(args.repo, args.remote, args.refspecs, anonymous=args.anonymous)
+    try:
+        fetch(args.repo, args.remote, args.refspecs, anonymous=args.anonymous)
+    except SystemExit as error:
+        if not successful_exit(error):
+            raise
+        return report_failure("ALab GitHub read refused: ", error, incomplete=True)
+    except (Refused, OSError, subprocess.TimeoutExpired) as error:
+        return report_failure("ALab GitHub read refused: ", error)
+    return 0
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except (Refused, OSError, subprocess.TimeoutExpired) as error:
-        print("ALab GitHub read refused: " + str(error), file=sys.stderr)
-        sys.exit(1)
+    sys.exit(main())

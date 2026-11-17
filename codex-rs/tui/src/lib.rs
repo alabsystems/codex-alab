@@ -74,7 +74,6 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::canonicalize_existing_preserving_symlinks;
 use codex_utils_home_dir::find_codex_home;
 use codex_utils_oss::ensure_oss_provider_ready;
-use codex_utils_oss::get_default_model_for_oss_provider;
 use color_eyre::eyre::WrapErr;
 use crossterm::SynchronizedUpdate;
 use cwd_prompt::CwdPromptAction;
@@ -104,6 +103,8 @@ pub(crate) use codex_app_server_client::legacy_core;
 
 pub(crate) use worktree_startup::ManagedTuiWorktree;
 
+#[path = "../../alab-tui/glue/editor_upgrade_codec.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): native editor projections keep pending edits across process replacement.
 mod activation_key_guard;
 mod additional_dirs;
 mod analytics;
@@ -332,8 +333,28 @@ async fn start_embedded_app_server(
     .await
 }
 
+#[path = "../../alab-tui/glue/owned_local_config_overrides.rs"]
+mod alab_local_config; // ALAB(owned-local): share the original pure CLI/Arg0 config mapping.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_bootstrap.rs"]
+pub mod owned_local_bootstrap; // ALAB(owned-local): post-interaction inputs start the actual retained owner without changing target selection.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_prepare.rs"]
+pub mod owned_local_prepare; // ALAB(owned-local): retain real partial bootstrap resources through Source interaction and final handoff.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_frontend.rs"]
+pub(crate) mod owned_local_frontend; // ALAB(owned-local): actual frontend custody is distinct from backend runtime ownership.
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_frontend_startup.rs"]
+mod owned_local_frontend_startup; // ALAB(owned-local): original launch DATA and real preparation deliveries.
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AppServerTarget {
+    #[cfg(unix)]
+    OwnedLocal { target: owned_local_frontend::OwnedLocalTarget }, // ALAB(owned-local): explicit local semantics on an actual retained connection.
     Embedded,
     Cloud,
     LocalDaemon {
@@ -346,6 +367,11 @@ pub(crate) enum AppServerTarget {
 }
 
 impl AppServerTarget {
+    fn is_owned_local(&self) -> bool {
+        #[cfg(unix)] { matches!(self, Self::OwnedLocal { .. }) } // ALAB(owned-local): semantic target classification, never Native permission.
+        #[cfg(not(unix))] { false }
+    }
+
     fn preserve_selected_backend(&mut self, selection: &resume_picker::SessionSelection) {
         if matches!(
             selection,
@@ -364,6 +390,7 @@ impl AppServerTarget {
     }
 
     fn uses_embedded_network_policy(&self) -> bool {
+        #[cfg(unix)] if matches!(self, Self::OwnedLocal { .. }) { return true; } // ALAB(owned-local): retain local environment/bootstrap network restrictions.
         matches!(
             self,
             Self::Embedded
@@ -381,6 +408,7 @@ impl AppServerTarget {
     ) -> codex_http_client::HttpClientFactory {
         let factory = config.http_client_factory();
         match self {
+            #[cfg(unix)] Self::OwnedLocal { .. } => policy.bind(factory), // ALAB(owned-local): wire transport does not strip local network policy.
             Self::Embedded
             | Self::LocalDaemon {
                 allow_embedded_fallback: true,
@@ -408,6 +436,7 @@ impl AppServerTarget {
 
     fn thread_params_mode(&self) -> ThreadParamsMode {
         match self {
+            #[cfg(unix)] Self::OwnedLocal { .. } => ThreadParamsMode::Embedded, // ALAB(owned-local): preserve local cwd, permissions and configuration parameters.
             Self::Embedded | Self::LocalDaemon { .. } => ThreadParamsMode::Embedded,
             Self::Remote { .. } => ThreadParamsMode::Remote,
             Self::Cloud => ThreadParamsMode::Cloud,
@@ -420,6 +449,7 @@ async fn init_state_db_for_app_server_target(
     app_server_target: &AppServerTarget,
 ) -> std::io::Result<Option<StateDbHandle>> {
     match app_server_target {
+        #[cfg(unix)] AppServerTarget::OwnedLocal { .. } => Ok(state_db::get_state_db(config).await), // ALAB(owned-local): backend owns runtime initialization; frontend keeps its UI-local DB view.
         AppServerTarget::Embedded => state_db::try_init(config).await.map(Some).map_err(|err| {
             let database_path = codex_state::runtime_db_path_for_corruption_error(&err)
                 .unwrap_or_else(|| config.sqlite_config().state_db_path());
@@ -596,6 +626,13 @@ async fn start_app_server(
     environment_manager: Arc<EnvironmentManager>,
     embedded_network_policy: codex_app_server_client::EmbeddedNetworkPolicy,
 ) -> color_eyre::Result<AppServerClient> {
+    #[cfg(unix)]
+    if let AppServerTarget::OwnedLocal { target: owned } = target { // ALAB(owned-local): use the complete original declaration without constructing another runtime.
+        return start_embedded_app_server_with(arg0_paths, config, cli_kv_overrides,
+            loader_overrides, strict_config, cloud_config_bundle, feedback, log_db,
+            state_db.clone(), environment_manager, embedded_network_policy,
+            |args| owned.connect(args)).await;
+    }
     let connection = if matches!(target, AppServerTarget::Embedded) {
         None
     } else {
@@ -682,6 +719,7 @@ pub(crate) async fn start_app_server_for_picker(
     .await?;
     Ok(
         AppServerSession::new(backend_id, app_server, target.thread_params_mode())
+            .with_selected_target(&target)? // ALAB(owned-local): retain the actual selected controller in every live local session.
             .with_local_codex_home(&config.codex_home),
     )
 }
@@ -717,7 +755,7 @@ pub(crate) async fn start_embedded_app_server_for_picker(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn start_embedded_app_server_with<F, Fut>(
+async fn start_embedded_app_server_with<F, Fut, T>( // ALAB(owned-local): preserve the complete assembler for both local runtime owners.
     arg0_paths: Arg0DispatchPaths,
     config: Config,
     cli_kv_overrides: Vec<(String, toml::Value)>,
@@ -730,10 +768,10 @@ async fn start_embedded_app_server_with<F, Fut>(
     environment_manager: Arc<EnvironmentManager>,
     embedded_network_policy: codex_app_server_client::EmbeddedNetworkPolicy,
     start_client: F,
-) -> color_eyre::Result<InProcessAppServerClient>
+) -> color_eyre::Result<T> // ALAB(owned-local): constructor output keeps its own lifecycle semantics.
 where
     F: FnOnce(InProcessClientStartArgs) -> Fut,
-    Fut: Future<Output = std::io::Result<InProcessAppServerClient>>,
+    Fut: Future<Output = std::io::Result<T>>, // ALAB(owned-local): the constructor retains its actual output and lifetime.
 {
     let config_warnings = config
         .startup_warnings
@@ -1141,6 +1179,8 @@ async fn cloud_config_bundle_for_app_server_target(
     codex_home: &Path,
     embedded_network_policy: &codex_app_server_client::EmbeddedNetworkPolicy,
 ) -> std::io::Result<CloudConfigBundleLoader> {
+    #[cfg(unix)] if let Some(actual) = owned_local_entered_readers::frozen_cloud_loader()? { return Ok(actual); } // ALAB(retained-readers): SAME mandatory decoded E1 policy precedes any auth constructor.
+    #[cfg(unix)] if let AppServerTarget::OwnedLocal { target } = app_server_target { return Ok(target.snapshot()?.ui_cloud_loader()); } // ALAB(owned-local): frontend consumes exact backend bundle DATA without another credential manager.
     managed_config_bundle_loader_for_storage(
         embedded_network_policy
             .bind_bootstrap_auth(app_server_target.auth_config_for_cloud_loader(
@@ -1260,6 +1300,7 @@ async fn run_ratatui_app(
     >,
     startup_draft: startup_draft::StartupDraft,
 ) -> color_eyre::Result<AppExitInfo> {
+    crate::legacy_core::config::ExecConfiguration::record_tui_invocation(&initial_config, &overrides); // ALAB(upgrade): retain actual loader inputs before any resume/backend reload.
     // Capture host credentials and project inputs before resume/fork reloads executor config.
     let backend_preference_context = app::backend_selection::BackendPreferenceContext::new(
         &initial_config,
@@ -1350,6 +1391,7 @@ async fn run_ratatui_app(
     let mut app_server_session = match startup_app_server {
         Ok(Ok(app_server)) => {
             tui.terminal_size_tags = launch_telemetry.record(match &app_server_target {
+                #[cfg(unix)] AppServerTarget::OwnedLocal { .. } => "owned_local", // ALAB(owned-local): explicit local target rather than a remote workspace.
                 AppServerTarget::Embedded => "in_process",
                 AppServerTarget::LocalDaemon { .. } => "local_daemon",
                 AppServerTarget::Remote { .. } => "remote",
@@ -1361,6 +1403,7 @@ async fn run_ratatui_app(
                 app_server_target.thread_params_mode(),
             )
             .with_local_codex_home(&initial_config.codex_home)
+            .with_selected_target(&app_server_target)? // ALAB(owned-local): retain the actual frontend controller across session/request views.
         }
         Ok(Err(err)) => {
             terminal_restore_guard.restore_silently();
@@ -1539,6 +1582,7 @@ async fn run_ratatui_app(
             let mut server =
                 AppServerSession::new(backend_id, client, app_server_target.thread_params_mode())
                     .with_local_codex_home(&selected.codex_home)
+                    .with_selected_target(&app_server_target)? // ALAB(owned-local): onboarding retains the same actual frontend owner.
                     .with_remote_cwd_override(remote_cwd_override.clone());
             if let Err(err) = boxed_future!(onboarding::authenticate_gateway(
                 &mut tui,
@@ -1559,7 +1603,8 @@ async fn run_ratatui_app(
                 // bundle and rebuild config. This avoids missing newly available cloud-managed
                 // policy due to login status detection edge cases.
                 if show_login_screen && !uses_remote_workspace && !workload_identity_selected {
-                    cloud_config_bundle = managed_config_bundle_loader_for_storage(
+                    cloud_config_bundle = crate::owned_local_managed_readers::after_login_loader(
+                        &app_server_target, app_server.as_ref(),
                         embedded_network_policy.bind_bootstrap_auth(initial_config.auth_config()),
                         initial_config.config_layer_stack.requirements_toml(),
                         /*enable_codex_api_key_env*/ false,
@@ -2003,6 +2048,7 @@ async fn run_ratatui_app(
                     app_server_target.thread_params_mode(),
                 )
                 .with_local_codex_home(&config.codex_home)
+                .with_selected_target(&app_server_target)? // ALAB(owned-local): a picker session retains the actual selected controller.
                 .with_remote_cwd_override(remote_cwd_override.clone())
             }
             Ok(Err(err)) => {
@@ -2116,7 +2162,8 @@ async fn run_ratatui_app(
                     client,
                     app_server_target.thread_params_mode(),
                 )
-                .with_local_codex_home(&config.codex_home);
+                .with_local_codex_home(&config.codex_home)
+                .with_selected_target(&app_server_target)?; // ALAB(owned-local): preserve physical frontend tenure after an explicit reconnect.
             }
             #[cfg(target_os = "windows")]
             {
@@ -2136,6 +2183,8 @@ async fn run_ratatui_app(
                 .await;
             }
             session_selection = resume_picker::SessionSelection::AgentsOverview;
+            #[cfg(unix)]
+            startup_draft.alab_cancel_original_initial_message()?; // ALAB(retained-ui): mirror this actual original consent cancellation, never infer it from argv.
             cli.prompt = None;
             cli.images.clear();
             startup_draft.update_session_selection(&mut tui, &session_selection)?;
@@ -2584,15 +2633,13 @@ async fn load_bootstrap_config_or_exit(
     strict_config: bool,
     cloud_config_bundle: CloudConfigBundleLoader,
 ) -> ConfigTomlLoadResult {
-    match load_config_toml_with_layer_stack(
+    match owned_local_backend_policy::bootstrap( // ALAB(owned-local): shared original load, with foreground fatal delivery retained here.
         codex_home,
         cwd,
         cli_kv_overrides,
-        codex_config::ConfigLoadOptions {
-            loader_overrides,
-            strict_config,
-            cloud_config_bundle,
-        },
+        loader_overrides,
+        strict_config,
+        cloud_config_bundle,
     )
     .await
     {
@@ -2646,6 +2693,7 @@ fn should_show_provider_setup_wizard(
     feature: Feature,
 ) -> bool {
     let supported_target = match app_server_target {
+        #[cfg(unix)] AppServerTarget::OwnedLocal { .. } => true, // ALAB(owned-local): preserve original local onboarding eligibility; replacement remains an explicit transaction.
         AppServerTarget::Embedded => true,
         AppServerTarget::LocalDaemon { .. } => feature == Feature::BedrockSetupWizard,
         AppServerTarget::Remote { .. } | AppServerTarget::Cloud => false,
@@ -2679,3 +2727,46 @@ pub(crate) use tests::test_backend;
 pub(crate) use tests::test_support;
 
 #[cfg(unix)] pub use tui::restore_after_failed_upgrade; // ALAB(upgrade): expose the same cleanup boundary to the CLI recovery owner.
+
+#[path = "../../alab-tui/glue/owned_local_launch_policy.rs"]
+mod owned_local_launch_policy; // ALAB(owned-local): shared original CLI setup policy.
+#[path = "../../alab-tui/glue/owned_worktree_source_builder.rs"]
+mod owned_worktree_source_builder; // ALAB(owned-local): exact original source-builder resource.
+
+#[path = "../../alab-tui/glue/owned_local_backend_policy.rs"]
+mod owned_local_backend_policy; // ALAB(owned-local): original fallible config engines before foreground error delivery.
+
+#[path = "../../alab-tui/glue/owned_local_logging.rs"]
+mod owned_local_logging; // ALAB(owned-local): share original per-process logging and recorder policy.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_ui_snapshot.rs"]
+mod owned_local_ui_snapshot; // ALAB(owned-local): bounded cloud/cwd DATA, never a native observation.
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_backend_prepare.rs"]
+mod owned_local_backend_prepare; // ALAB(owned-local): actual original backend resources, no CLI activation.
+#[cfg(unix)]
+pub use owned_local_backend_prepare::{OrdinaryBackendRuntime, PreparedOrdinaryBackend, prepare as prepare_retained_local_backend, prepare_bound as prepare_retained_local_backend_bound}; // ALAB(owned-local): complete Source component; Native caller remains explicit.
+
+#[path = "../../alab-tui/glue/owned_local_managed_readers.rs"]
+mod owned_local_managed_readers; // ALAB(retained-readers): original storage loader or same-backend frozen DATA, no frontend auth constructor.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_ui_transfer.rs"]
+pub(crate) mod owned_local_ui_transfer; // ALAB(retained-ui): mandatory whole E1 DATA, never a UI/native receipt.
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/owned_local_entered_readers.rs"]
+mod owned_local_entered_readers; // ALAB(retained-readers): actual E1 decoder owner routes original readers and actual old census retirement.
+#[cfg(unix)]
+pub use owned_local_entered_readers::{RetainedFrontendReaders, FrontendReaderRetirement};
+
+#[path = "../../alab-tui/glue/retained_tui_images.rs"]
+mod retained_tui_images; // ALAB(retained-ui): actual image transport files survive partial terminal publication and granted exec.
+
+#[cfg(unix)]
+#[path="../../alab-tui/glue/retained_image_renderer.rs"]
+mod retained_image_renderer; // ALAB(retained-ui): genuine installed Config/Entered/pre-ACK frontier binds original image resources.
+
+#[cfg(unix)]
+pub use owned_local_ui_transfer::image_startup::pin_before_threads as pin_retained_image_custody_before_threads; // ALAB(retained-ui): actual early pin/reporter is compiled with the mandatory E1 resource field.

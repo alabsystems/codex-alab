@@ -40,7 +40,8 @@ class CapacityExecTimingTests(unittest.TestCase):
         if phase == "start":
             thread.start.side_effect = original
         with mock.patch.object(probe.provider_fixture, "LoopbackHTTPServer", return_value=server), \
-                mock.patch.object(probe.threading, "Thread", return_value=thread) as construct:
+                mock.patch.object(probe.threading, "Thread", return_value=thread) as construct, \
+                mock.patch.object(probe, "LISTENER_STARTUP_CLEANUP_SECONDS", 0):
             if phase == "construct":
                 construct.side_effect = original
             with self.assertRaises(error_type) as caught:
@@ -72,7 +73,10 @@ class CapacityExecTimingTests(unittest.TestCase):
         with mock.patch.object(probe.provider_fixture, "LoopbackHTTPServer", return_value=server), \
                 mock.patch.object(probe.threading, "Thread", return_value=thread) as construct:
             self.assertEqual(probe.serve(probe.Mock(False)), (server, thread))
-        construct.assert_called_once_with(target=server.serve_forever, daemon=True)
+        construct.assert_called_once()
+        self.assertIs(construct.call_args.kwargs["daemon"], True)
+        construct.call_args.kwargs["target"]()
+        server.serve_forever.assert_called_once_with()
         thread.start.assert_called_once_with()
         server.server_close.assert_not_called()
         server.shutdown.assert_not_called()

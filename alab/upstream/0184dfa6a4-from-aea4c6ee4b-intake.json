@@ -1,0 +1,569 @@
+{
+  "schema": 1,
+  "base": "aea4c6ee4b652d84b416731b11c2b8299d767209",
+  "target": "0184dfa6a48f0110dd9c6835522492908e5abcf3",
+  "frontier": "aea4c6ee4b652d84b416731b11c2b8299d767209",
+  "commits": [
+    {
+      "sha": "09c711b783cf19f5ed60b6e26fcf4ef269acae00",
+      "subject": "Use `clip.exe` for single-line ASCII clipboard copies in WSL (#61724)",
+      "paths": [
+        "codex-rs/tui/src/clipboard_copy/wsl.rs",
+        "codex-rs/tui/src/clipboard_copy/wsl_tests.rs",
+        "codex-rs/utils/path-utils/src/lib.rs",
+        "codex-rs/utils/path-utils/src/system_commands.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "execution-continuity",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Use bounded clip.exe for eligible single-line printable ASCII/tab copies under WSL, preserving installed Linux PowerShell adapter precedence and Unicode/multiline fallback.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 09c711b783cf19f5ed60b6e26fcf4ef269acae00; SHA256 2661f0bdfcd9daeca0ccd8d572fb14794388cd479ea3f51432ff0570c804e26d (16225 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Keep trusted system-directory discovery separate from user PATH/cwd and defer built-in PowerShell discovery until fallback; no command/text interpolation in the shell argument bridge.",
+        "Integration requirement: Retain the original overall deadline, 200 ms clip discovery/1 s clip writer subdeadlines, kill-and-reap before fallback, and exact released PowerShell command signature. Even-length ASCII gets a temporary trailing NUL; Unicode/newlines/control bytes use PowerShell.",
+        "Integration requirement: No clipboard writer, installed adapter or Windows process was invoked during source review. Preserve optional ALab clipboard/title suppression and raw-mode/source ownership.",
+        "ALab interaction: No owned direct WSL writer, system_directories, linux_system_executable or modified options caller was found. Linux-only production and Unix adapter fixtures are different runtime boundaries.",
+        "Required source-coverage gap: Actual supported WSL clip/OEM-text decoding, NUL handling, missing/failing writer and real Windows process retirement remain required platform evidence; a macOS shell-adapter test alone cannot qualify WSL behavior.",
+        "Source selector (not_run): codex-tui --lib filter installed_adapter_receives_compatible_command_and_never_copies_expired_work; codex-rs/tui/src/clipboard_copy/wsl_tests.rs:9 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual Unix shell adapter exercises byte eligibility/padding, precedence, compatible arguments, exact received text and expired work; cfg(all(test,unix)), not actual WSL clipboard."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "e649c6d74c92c638658af8f08290a1ea81d6872f",
+      "subject": "Fix Unicode grapheme highlighting in history search (#61725)",
+      "paths": [
+        "codex-rs/tui/src/bottom_pane/chat_composer/history_search.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Map history-search matches onto complete Unicode graphemes and render the separate bash prompt independently.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary e649c6d74c92c638658af8f08290a1ea81d6872f; SHA256 cf04f070f17be523f82500f03300e14cd7600fb7c608444fe1c369619132c5ed (7616 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Preserve byte ranges used by textarea, lowercase-expansion handling, deduplication of identical grapheme ranges and the separately rendered ASCII ! prefix; do not alter stored command text or submit a search preview.",
+        "Integration requirement: Retain escape/Ctrl+C restoration of structured draft, pending paste flush and ALab stash ownership.",
+        "ALab interaction: Changed private helper has only upstream internal/test callers; owned draft capture operates on actual composer state and is not replaced by highlight ranges.",
+        "Source selector (not_run): codex-tui --lib filter history_search_match_ranges_preserve_unicode_boundaries; codex-rs/tui/src/bottom_pane/chat_composer/history_search.rs:778 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Combining marks, case folding and repeated matches use exact original UTF-8/grapheme boundaries.",
+        "Source selector (not_run): codex-tui --lib filter history_search_highlights_matches_until_accepted; codex-rs/tui/src/bottom_pane/chat_composer/history_search.rs:1001 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual composer render checks prompt-only/body styles and combining-mark highlight.",
+        "Source selector (not_run): codex-tui --lib filter history_search_esc_restores_original_draft; codex-rs/tui/src/bottom_pane/chat_composer/history_search.rs:1109 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual composer draft restored after preview cancellation."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "eff3036bf41b4b00bb5d34c6ec0ca3a1ff131baa",
+      "subject": "Preserve graphemes in mention search match highlighting (#61726)",
+      "paths": [
+        "codex-rs/tui/src/bottom_pane/mentions_v2/render.rs",
+        "codex-rs/tui/src/bottom_pane/mentions_v2/render_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "skill-discovery"
+      ],
+      "decision": "adopt",
+      "reason": "Render whole grapheme clusters for fuzzy mention-name/path highlights, retaining the different scalar/grapheme index conventions.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary eff3036bf41b4b00bb5d34c6ec0ca3a1ff131baa; SHA256 040f65f4ce73dd766a27991a28b115a66c67fceda48587addcf6129584087b69 (7068 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Keep primary scalar match indices separate from filesystem path grapheme indices and bold a cluster if any indexed part matches; width truncation must not split joined emoji.",
+        "Integration requirement: Display highlighting must not mutate mention insertion, file paths, selected tool identities or plugin/skill policy.",
+        "ALab interaction: No owned caller or literal of these private SearchResult/render helpers was found. Later cloud-label row 630 adds a field to this fixture; its missing literal is fixed by 0184.",
+        "Source selector (not_run): codex-tui --lib filter fuzzy_matches_preserve_graphemes_when_truncated; codex-rs/tui/src/bottom_pane/mentions_v2/render_tests.rs:169 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual ratatui buffer and bold-cell assertions for joined-emoji plugin/path truncation; use final0184 literal fix."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "ca0bbbdf0c83cb64f2fb48cf0d5ffbc3d4409ab9",
+      "subject": "Optimize default and attached thread listings with targeted indexes (#61727)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/thread_list.rs",
+        "codex-rs/state/migrations/0063_thread_listing_indexes.sql",
+        "codex-rs/state/src/runtime/threads.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "history-pagination",
+        "execution-continuity",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Use targeted visible-interactive timestamp and attached-parent/archive indexes with literal built-in source predicates.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary ca0bbbdf0c83cb64f2fb48cf0d5ffbc3d4409ab9; SHA256 261ea05284aae7d5ecd90b0c3cf056e8dab401263c9d3b4442ab85ef12c63224 (8187 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Adopt together with subsequent eb53 numbering/test repair before claiming any usable prefix: ca0 alone duplicates upstream migration 0063 and omits ThreadFilterOptions.included_thread_ids in its new test.",
+        "Integration requirement: Literal SQL values are the four fixed built-in encoded sources, selected only for the exact default interactive set and existing filter conditions. Preserve provider/cwd/source/archive/relation/search/cursor filters and stable timestamp/id ordering.",
+        "Integration requirement: DROP INDEX changes an index, not thread data or lifecycle custody. Extra indexes impose migration/storage/write work; query-plan selection is not a measured latency or zero-I/O claim.",
+        "Integration requirement: ALab auth-wall tables use separate owned schema setup and no 0063/0064 numbered migration; do not edit upstream migration contents/checksums or use a failed migration as permission to reset a database.",
+        "ALab interaction: No owned ThreadFilterOptions literal or caller of private query builder was found. Existing history projections and native goal/journal source ownership remain independent.",
+        "Required source-coverage gap: ca0 intermediate prefix is source-known invalid until eb53; this record is not a pristine build or actual database-upgrade result.",
+        "Source selector (not_run): codex-state --lib filter default_sidebar_listing_uses_the_interactive_timestamp_index; codex-rs/state/src/runtime/threads.rs:2850 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Scratch SQLite EXPLAIN QUERY PLAN requires the interactive updated-time index; corrected final test field.",
+        "Source selector (not_run): codex-state --lib filter attached_thread_discovery_preserves_parent_lifecycle_and_cwd; codex-rs/state/src/runtime/threads.rs:1901 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual state attached-thread/cwd/parent ownership control.",
+        "Source selector (not_run): codex-state --lib filter archived_thread_pages_use_ordered_indexes_without_sorting; codex-rs/state/src/runtime/threads.rs:2903 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual archived query plans and sort/ordering controls.",
+        "Source selector (not_run): codex-app-server --test all filter thread_list_empty_source_kinds_defaults_to_interactive_only; codex-rs/app-server/tests/suite/v2/thread_list.rs:1811 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; App-server default CLI+chatgpt inclusion excludes exec source using real scratch rollouts."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "eb53da6c3ab0787f22707fcdc7f26ffd7316055e",
+      "subject": "Fix thread listing migration numbering and test setup (#61730)",
+      "paths": [
+        "codex-rs/state/migrations/0063_thread_listing_indexes.sql",
+        "codex-rs/state/migrations/0064_thread_listing_indexes.sql",
+        "codex-rs/state/src/runtime/threads.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "history-pagination",
+        "build-and-adoption",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Repair the preceding upstream index migration collision by moving it to 0064 and complete the new query-plan fixture literal.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary eb53da6c3ab0787f22707fcdc7f26ffd7316055e; SHA256 9da1505f509f767edf6aa11137f36b0da855accc6814ee856684d11766451aa9 (4406 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Retain existing 0063 session-model migration and identical index SQL bytes at 0064; no ALab renumbering or migration-ledger bypass.",
+        "Integration requirement: Set included_thread_ids=None only in the upstream unrestricted-list fixture; retain actual caller inclusion filters. The earlier ca0 comment still says0063 but is not executed migration authority.",
+        "ALab interaction: Canonical no-renames patch represents exact delete/add SQL bytes; tree at target contains unique0063 and0064 migrations. No owned migration number collision found.",
+        "Source selector (not_run): codex-state --lib filter default_sidebar_listing_uses_the_interactive_timestamp_index; codex-rs/state/src/runtime/threads.rs:2850 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; StateRuntime scratch init plus corrected actual query plan executes final migration set; not an installed-database upgrade certificate."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "540eb31ece8b5fea95062795183fc00a05340c85",
+      "subject": "Keep bidirectional TUI headers stable during shimmer (#61731)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml",
+        "codex-rs/tui/Cargo.toml",
+        "codex-rs/tui/src/motion.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__status_indicator_widget__summary_shimmer__tests__rtl_headers_remain_stable_during_the_sweep.snap",
+        "codex-rs/tui/src/status_indicator_widget.rs",
+        "codex-rs/tui/src/summary_shimmer.rs",
+        "codex-rs/tui/src/summary_shimmer_tests.rs",
+        "codex-rs/tui/src/text_formatting.rs"
+      ],
+      "classes": [
+        "fix",
+        "packaging"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Keep bidi-sensitive animated headers as one static dim span and schedule only clock ticks unless progress animation still needs frames.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 540eb31ece8b5fea95062795183fc00a05340c85; SHA256 b52f3076d6d5939009b4d4e95f6e8a911804b4dc24221e994ff1a14eea086f39 (10386 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Detect strong R/AL or Arabic-number bidi classes without reordering logical text. Retain reduced motion, progress updates and ordinary animated headers.",
+        "Integration requirement: Carry upstream unicode-bidi workspace/TUI dependency and upstream lock delta normally; never hand-edit upstream lock entries. No rendering throughput or power-saving measurement is claimed.",
+        "ALab interaction: ALab header/status integration and optional interface remain; no owned caller of changed shimmer helper or dependency pin was found.",
+        "Source selector (not_run): codex-tui --lib filter rtl_headers_remain_stable_during_the_sweep; codex-rs/tui/src/summary_shimmer_tests.rs:8 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Hebrew/Arabic/mixed-direction/Arabic-number snapshots compare both shimmer implementations and initial/sweep frames.",
+        "Source selector (not_run): codex-tui --lib filter static_bidi_headers_only_schedule_clock_ticks_without_progress; codex-rs/tui/src/status_indicator_widget.rs:352 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual frame requester deadlines preserve 1,000 ms static ticks versus 32 ms progress/ordinary shimmer."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "ac2c4a339c15d96c9cd32b242ef487d48d27961b",
+      "subject": "Preserve agent message phases in the cloud backend (#61737)",
+      "paths": [
+        "codex-rs/app-server-client/src/cloud_backend/events.rs",
+        "codex-rs/app-server-client/src/cloud_backend/events_tests.rs",
+        "codex-rs/cloud-client/src/history_tests.rs",
+        "codex-rs/cloud-client/src/item_tests.rs",
+        "codex-rs/cloud-client/src/item_wire.rs",
+        "codex-rs/cloud-client/src/items.rs",
+        "codex-rs/cloud-client/src/lib.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "history-pagination",
+        "exec-handoff",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve explicitly supplied cloud commentary/final/partial phases through wire summaries into app-server agent items.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary ac2c4a339c15d96c9cd32b242ef487d48d27961b; SHA256 76a30f745479aef33ba29b272ca582cccb014fe75bd1d154ba6c194988370c8d (9084 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Known oneof tag with sentinel1 maps to matching phase; absent, unknown tag or other value staysNone, not an invented FinalAnswer.",
+        "Integration requirement: Retain item/turn IDs, timestamps, questions, ordering, redacted Debug and owned model-context/phase custody. A phase is presentation/history metadata, not a native receipt, goal-stop origin, policy fence or Cloud execution grant.",
+        "Integration requirement: Cloud/remote backends remain opt-in and SourceV1/all-root receiver stays held; do not equate live cloud events with complete local history/accepted input.",
+        "ALab interaction: No owned cloud ItemSummary::AgentMessage literal/exhaustive match was found. ALab MessagePhase use is the existing protocol enum and does not need this new cloud enum field.",
+        "Required source-coverage gap: Named modified controls cover FinalAnswer and missing phase; actual Commentary, PartialAnswer and unknown numeric/tag controls are not newly supplied by this patch and remain required before claiming all variant runtime coverage.",
+        "Source selector (not_run): codex-app-server-client --lib filter completed_reply_preserves_the_full_text_phase_questions_and_timestamp; codex-rs/app-server-client/src/cloud_backend/events_tests.rs:57 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Conversion retains final phase, actual full text/questions and timestamp.",
+        "Source selector (not_run): codex-cloud-client --lib filter item_lifecycle_keeps_identity_and_timestamps; codex-rs/cloud-client/src/item_tests.rs:35 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Real protobuf lifecycle bytes decode final phase and identity/timestamps.",
+        "Source selector (not_run): codex-cloud-client --lib filter item_history_paginates_with_explicit_filters_and_preserves_rows; codex-rs/cloud-client/src/history_tests.rs:15 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; HTTP/2 history pages preserve rows/filters with missing phase.",
+        "Source selector (not_run): codex-cloud-client --lib filter item_summaries_redact_sensitive_fields; codex-rs/cloud-client/src/item_tests.rs:388 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Phase field does not expose private item text in Debug."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "f1ebc7b372bc837b7c6386113e867256d7cc7036",
+      "subject": "Reuse matching thread inventories for lightweight MCP status pages (#61738)",
+      "paths": [
+        "codex-rs/app-server/src/request_processors.rs",
+        "codex-rs/app-server/src/request_processors/mcp_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/mcp_server_status.rs",
+        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/codex-mcp/src/connection_manager/status.rs",
+        "codex-rs/codex-mcp/src/connection_manager_tests.rs",
+        "codex-rs/codex-mcp/src/lib.rs",
+        "codex-rs/codex-mcp/src/mcp/mod.rs",
+        "codex-rs/codex-mcp/src/mcp/mod_tests.rs",
+        "codex-rs/codex-mcp/src/runtime.rs",
+        "codex-rs/codex-mcp/src/runtime/status.rs",
+        "codex-rs/codex-mcp/src/server.rs",
+        "codex-rs/codex-mcp/src/trusted_access.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/mcp.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/core/src/session/mcp_runtime.rs",
+        "codex-rs/rmcp-client/tests/mcp_2026_stdio.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "account-isolation",
+        "skill-discovery",
+        "execution-continuity",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Reuse connected MCP tool inventories only when exact page registrations, client settings, environments, permissions and authentication match and credentials are fixed.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary f1ebc7b372bc837b7c6386113e867256d7cc7036; SHA256 8e6cc05d31954e651b13273986f8e814f2aecdd5705042bca525345cce47ea90 (74030 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Retain auth token/account/user/FedRAMP comparison and exact ready Environment Arc identities, client config, exposure, cwd/MXC/requirements and per-server permission comparison. A same server name is insufficient; scoped environment keys stay distinct.",
+        "Integration requirement: No runtime-auth, stored OAuth, EMA or dynamic env/header/helper source qualifies as fixed credentials. Apps keeps independent auth/filtering; EMA uses only its admitted thread connection; remaining servers discover separately and full detail retains resources/templates.",
+        "Integration requirement: Limit failure inspection and inventory work to the requested page; status metadata is not a tool invocation, connection/source lease or automatic MCP runtime activation.",
+        "Integration requirement: Preserve ALab assignment publication guard in Session::publish_mcp_projection and captured credential/transport source retirement. Matching token bytes are not ALab source authority. Keep apps/plugins/tool_suggest packaged off and all held routes unchanged.",
+        "ALab interaction: New McpClientConfig groups six client fields; no owned McpConfig literal/client-field access or private status-helper caller was found. Owned Config capture rebuilds under fresh destination helpers rather than serializing McpRuntime inventories.",
+        "ALab interaction: Core mcp_runtime.rs refactor retains the publication method containing ALAB(accounts) guard outside the modified binding helper. Status reuse optimization is not equivalent to account retirement.",
+        "Required source-coverage gap: Exact source matching/selected fixtures cannot qualify every policy/auth/environment race; run actual source-retirement controls plus selected MCP integration fixtures after adaptation/import.",
+        "Source selector (not_run): codex-app-server --test all filter mcp_server_status_discovers_thread_inventory; codex-rs/app-server/tests/suite/v2/mcp_server_status.rs:130 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Two test_case variants compare fixed Authorization one initialization versus stored OAuth rediscovery, and Full actual resource/template calls.",
+        "Source selector (not_run): codex-app-server --test all filter dormant_thread_status_returns_live_inventory_without_waking_the_thread; codex-rs/app-server/tests/suite/v2/mcp_server_status.rs:1091 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual app-server two-thread stdio inventories retain second NotStarted state; explicit lazy startup fixture flag only.",
+        "Source selector (not_run): codex-app-server --test all filter mcp_server_status_keeps_same_named_environment_inventory_separate; codex-rs/app-server/tests/suite/v2/mcp_server_status.rs:1736 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual paginated ToolsAndAuthOnly same-name environment keys preserve origin/title/tools/auth.",
+        "Source selector (not_run): codex-app-server --test all filter mcp_server_status_list_discovers_only_the_requested_page; codex-rs/app-server/tests/suite/v2/mcp_server_status.rs:236 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual server request counts bound discovery to requested page.",
+        "Source selector (not_run): codex-app-server --test all filter mcp_server_status_list_reports_thread_runtime_connections; codex-rs/app-server/tests/suite/v2/mcp_server_status.rs:1246 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual config replacement and connected runtime statuses preserve fixed-header source.",
+        "Source selector (not_run): codex-mcp --lib filter read_only_policy_does_not_reuse_a_writable_connection; codex-rs/codex-mcp/src/connection_manager_tests.rs:5893 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual reconciliation requires a distinct read-only connection.",
+        "Source selector (not_run): codex-mcp --lib filter view_only_changes_reuse_connection_and_preserve_the_old_step; codex-rs/codex-mcp/src/connection_manager_tests.rs:7392 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual connection sharing retains old frozen binding.",
+        "Source selector (not_run): codex-mcp --lib filter shared_apps_snapshot_requires_writable_discovery_and_a_shared_cache; codex-rs/codex-mcp/src/connection_manager_tests.rs:2247 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Hosted Apps cache cannot bypass read-only/discovery constraints.",
+        "Source selector (not_run): codex-login --lib filter a_fresh_cache_read_renews_application_policy_without_renewing_retained_credentials; codex-rs/alab-core/glue/auth_epoch_snapshot.rs:449 @ d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; Existing owned source-epoch/transport policy control, not MCP reuse proof by itself."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "630c0d75abbe74784a35673926868cc4133ef6fa",
+      "subject": "Mark cloud threads with a cloud icon in the TUI (#61742)",
+      "paths": [
+        "codex-rs/tui/src/app/agent_center/rows.rs",
+        "codex-rs/tui/src/app/agent_center_tests.rs",
+        "codex-rs/tui/src/app/agents_overview.rs",
+        "codex-rs/tui/src/app/agents_overview_view.rs",
+        "codex-rs/tui/src/app/backend_registry.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/sidebar.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__command_center__live_center_columns.snap",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/mentions_v2/candidate.rs",
+        "codex-rs/tui/src/bottom_pane/mentions_v2/filter.rs",
+        "codex-rs/tui/src/bottom_pane/mentions_v2/render.rs",
+        "codex-rs/tui/src/bottom_pane/mentions_v2/render_tests.rs",
+        "codex-rs/tui/src/bottom_pane/mentions_v2/search_catalog.rs",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__task_mention_popup.snap",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/service_tiers.rs",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/chatwidget/tests/snapshots/codex_tui__chatwidget__tests__terminal_title__thread_identity_status_surfaces.snap",
+        "codex-rs/tui/src/chatwidget/tests/terminal_title.rs",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/resume_picker.rs",
+        "codex-rs/tui/src/sidebar_chooser.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__resume_picker__tests__resume_picker_table.snap",
+        "codex-rs/tui/src/task_mentions.rs",
+        "codex-rs/tui/src/thread_label.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "history-pagination",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Decorate cloud thread labels independently of underlying names, search text and backend/thread identity, retaining markers across disconnect.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 630c0d75abbe74784a35673926868cc4133ef6fa; SHA256 5e1c821ec9055b7bef2139d2e81ce4e887c4425923d8840a33dd6afbf6baf7e3 (60406 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Retain first-observed backend owner and separate cloud backend identity from live handles. Cloud icon, title fallback and labels never confer account/source/workspace/approval/goal authority.",
+        "Integration requirement: Account for prefix display width before truncation in pickers, side tabs, mentions and task rows; leave stored names, inserted thread:// IDs, raw search and original ownership unchanged.",
+        "Integration requirement: Preserve ALab parked-backend bookkeeping, selected identity/status publication and title/clipboard suppression. New ThreadParamsMode carries actual Cloud versus Embedded settings ownership, not an ALab native grant.",
+        "Integration requirement: Take subsequent0184 required test literal correction before qualifying this prefix. Existing a394 terminal-scroll state carry and598/e51 local/remote exec ownership obligations remain open.",
+        "ALab interaction: No owned TaskMention/SearchResult/ChatTabs/AgentsOverviewRow/BackendRegistry literal or thread_settings_owner reference was found. Existing owned interface uses native fields without changing their owner or enabling cloud.",
+        "Required source-coverage gap: 630 prefix has missing SearchResult.label_style in the earlier fuzzy fixture until 0184; do not weaken that test or claim this intermediate source builds.",
+        "Source selector (not_run): codex-tui --lib filter live_center_columns; codex-rs/tui/src/app/agent_center_tests.rs:294 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual live overview columns/cloud+local labels and narrow ellipsis.",
+        "Source selector (not_run): codex-tui --lib filter handle_start_side_seeds_navigation_before_thread_started; codex-rs/tui/src/app/tests.rs:4144 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual side tabs/chooser cloud labels and navigation preserve widths and native requests.",
+        "Source selector (not_run): codex-tui --lib filter expanded_session_details_include_metadata; codex-rs/tui/src/resume_picker.rs:4831 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual detail rendering prefixes only named cloud session within constrained width.",
+        "Source selector (not_run): codex-tui --lib filter mixed_backend_resume_table_snapshot; codex-rs/tui/src/resume_picker.rs:5114 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Mixed backend picker and narrow cloud row preserve ownership/order.",
+        "Source selector (not_run): codex-tui --lib filter thread_identity_renders_names_and_fallbacks_on_both_surfaces; codex-rs/tui/src/chatwidget/tests/terminal_title.rs:286 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Embedded/cloud real status/title fallbacks and truncation.",
+        "Source selector (not_run): codex-tui --lib filter task_mention_popup_and_selected_composer_snapshots; codex-rs/tui/src/bottom_pane/chat_composer.rs:7811 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Cloud label remains display-only in actual mention insertion.",
+        "Source selector (not_run): codex-tui --lib filter parked_completion_matches_backend_and_exact_turn_without_changing_the_displayed_ui; codex-rs/alab-tui/glue/backend_bookkeeping_tests.rs:102 @ d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; Existing owned actual parked/native backend ownership control; cloud marker is not a replacement authority.",
+        "Source selector (not_run): codex-tui --lib filter conflicting_backend_notifications_preserve_the_registered_thread_owner; codex-rs/alab-tui/glue/backend_bookkeeping_tests.rs:332 @ d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; Existing owned actual parked/native backend ownership control; cloud marker is not a replacement authority."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "5a6bbd29a45d81c69395c12f0d6fa5b31747aaa6",
+      "subject": "Clarify shell-specific login guidance for `exec_command` (#61744)",
+      "paths": [
+        "codex-rs/app-server/tests/prompt_prefix.rs",
+        "codex-rs/app-server/tests/suite/v2/snapshots/all__suite__v2__thread_sample__sample_inherits_parent_context.snap",
+        "codex-rs/core/src/guardian/snapshots/codex_core__guardian__tests__guardian_followup_review_request_layout.snap",
+        "codex-rs/core/src/guardian/snapshots/codex_core__guardian__tests__guardian_review_request_layout.snap",
+        "codex-rs/core/src/tools/handlers/shell_spec.rs",
+        "codex-rs/core/src/tools/handlers/shell_spec_tests.rs",
+        "codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs",
+        "codex-rs/core/src/tools/spec_plan.rs",
+        "codex-rs/core/tests/common/context_snapshot/context_snapshot_tests.rs",
+        "codex-rs/core/tests/common/context_snapshot/normalize.rs",
+        "codex-rs/core/tests/suite/remote_env.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_absent.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_blank.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_custom.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_disabled.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_empty.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_null.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_oversized.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__agent_message_board__remote__remote_board_permissions_direct.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__app_tool_exposure_CodeModeOnly.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_active_environment_selection.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_compaction_with_live_suffix.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_question_and_answer.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_code_mode_call_timing.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_disabled_executor_skills.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_executor_plugin_policy_refresh.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_interrupts_response.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_yields_code_mode_cell.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_kickoff_remote_compaction_windows.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_policy_limits_visible_skills.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_policy_without_skill_descriptions.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh_simplified_selection_hints_off.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh_simplified_selection_hints_on.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_settings_release_check_tool_shapes.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__attached_side_chat_preserves_model_context_on_cold_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__audio_file__file_backed_custom_tool_call_output_trace.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__audio_file__file_backed_function_call_output_trace.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__budget_context__host_budget_context_after_compaction.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__cached_stdio_stays_dormant_in_a_new_chat_until_first_use.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_approval_instructions__catalog_approval_headings_follow_selected_model.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_apps_instructions__catalog_apps_instructions_follow_selected_model.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_denied_reads_follow_selected_model.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_plugin_guidance_follows_model_and_survives_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_selected_plugin_omission_bounds_runtime_capabilities.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_selected_plugin_wording_apps_false_simplified_false.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_selected_plugin_wording_apps_true_simplified_false.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_selected_plugin_wording_apps_true_simplified_true.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_writable_roots_follow_selected_model.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__child_completion_wakes_parent_after_final_answer.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages_ranked_search.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_mcp_schema_limits.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_settled_helpers__code_mode_settled_helpers.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__command_sessions__command_sessions_world_state.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__compaction__remote_slash_compact.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__context_management_tools__catalog_context_tool_definitions_follow_captured_models.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__dynamic_tools__dynamic_tools_update_preserves_pending_calls_and_survives_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__exec_tools__incremental_exec_tools.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__exec_tools__incremental_exec_tools_catalog_messages.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__frozen_cloud_skills__frozen_cloud_skills_with_named_executor_request_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__gif_generation_preserves_animation_and_replays_a_still_preview.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_agent_messages__encrypted_native_history_custom_namespace.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_agent_messages__encrypted_native_history_default_namespace.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_agent_messages__encrypted_parent_reply_survives_incremental_guardian_reviews.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_checkpoint_migration.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_code_mode_messaging.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_mcp__guardian_direct_mcp.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_exec.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_exec_patch.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_patch.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_permissions.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_pre_tool_use_rewrite.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_elastic_budgeting.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_extra_policy__extra_policy_reaches_guardian_review.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_handoff__guardian_handoff_delegation.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_handoff__guardian_handoff_delegation_native.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_heartbeat__heartbeat_repetitions_keep_later_human_authorization.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_reconsideration__guardian_denial_reconsideration.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_sender_context__cross_host_sender_context.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tool_removals.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tool_removals_regular_responses.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tools.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tools_catalog_messages.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tools_regular_responses.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tools_responses_api.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tools_suppressed_announcements.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__prediction_fork_inherited_tools.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools_resume__disable_incremental_tools.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools_resume__legacy_resume_remote_compaction.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools_resume__legacy_resume_window_reset.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__indirect_namespace_prefixes__catalog_indirect_namespace_prefixes.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_ema__enterprise_failure_preserves_ordinary_mcp_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_ema__enterprise_revocation_preserves_history_and_ordinary_tools.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_resource_messages__mcp_resource_messages.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_sharing__shared_mcp_keeps_tools_and_model_requested_input_per_chat.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_tool_discovery_CodeModeOnly.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_tool_discovery_Direct.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__model_catalog_refresh_preserves_tools_and_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__model_instructions__incremental_model_instructions.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__model_instructions__originator_catalog_instructions_and_tools.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_catalog_parameters.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_native_tools_hidden.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_native_tools_hidden_proactive.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_environment_mcp__same_named_executor_mcps_keep_calls_and_approvals_separate.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__partial_answers__preserved_answer_fork.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__prediction_fork_inherits_parent_context.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__prediction_fork_preserves_context_above_compaction_threshold.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__provider_capabilities__custom_provider_capabilities.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__retained_tool_outputs__retained_tool_output_retention_disabled.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__retained_tool_outputs__retained_tool_output_survives_compaction_and_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_before_budgeting.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_without_descriptions.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__repository_skill_turn_grant.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__skill_catalog_deltas.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_read_installation_recovery_request_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__subagent_browser_auth.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__unavailable_images_are_rechecked_without_rewriting_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__unshared_apps_catalog_across_turns.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__web_search__literature_search_and_open.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__web_search__model_selected_search_preserves_discovery_and_call_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__world_state_prefix__extension_window_prefix_local.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__world_state_prefix__extension_window_prefix_remote.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__skills_extension__cloud_skills_across_executor_readiness.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__skills_extension__cloud_skills_across_executor_readiness_windows.snap",
+        "codex-rs/ext/history-notes/tests/snapshots/image_model_input__history_images_reach_the_next_model_request.snap",
+        "codex-rs/ext/multi-env-copy-file/tests/suite/snapshots/copy_file__suite__transfers__multi_env_copy_file.snap",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "execution-continuity",
+        "skill-discovery",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Describe omitted exec login as inherited and expose PowerShell profile guidance only when the actual environment reports PowerShell.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 5a6bbd29a45d81c69395c12f0d6fa5b31747aaa6; SHA256 f737742ffad8c1d4ddde387eb0b615ea8975d254cd35e9e6f2e5d6e44999b5cf (210157 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Retain actual shell execution/login configuration, exec permissions, TTY/environment parameters and runtime admission; this patch changes specification text/options construction, not shell startup authority or a new default.",
+        "Integration requirement: Keep shell readiness driven by actual selected turn environments. Portable snapshots may normalize only exact known PowerShell wording; other description changes must remain observable.",
+        "Integration requirement: Prompt-prefix compatibility accepts only exact released image/login tool-description changes and still compares the full result; it is not a blanket golden-file waiver.",
+        "Integration requirement: Preserve ALab model/tool completion, native Invocation attribution, current goal budget and prior81/92/f226 terminal/goal custody requirements. No autonomous shell profile or held remote path is enabled.",
+        "ALab interaction: No owned removed CommandToolOptions/create_exec_command_tool helper caller or ExecCommandHandlerOptions literal was found. All118 snapshot changes are exact hash-value-only diffs after hash-field normalization; actual source assertions and shell options were read independently.",
+        "Source selector (not_run): codex-core --lib filter login_description_follows_the_reported_shell; codex-rs/core/src/tools/handlers/shell_spec_tests.rs:101 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual schema wording for reported PowerShell/unix booleans.",
+        "Source selector (not_run): codex-core --lib filter exec_command_tool_matches_expected_spec; codex-rs/core/src/tools/handlers/shell_spec_tests.rs:10 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Full actual ToolSpec schema including login/permissions remains exact.",
+        "Source selector (not_run): core_test_support --lib filter portable_tool_schema_normalizes_only_the_exact_powershell_login_description; codex-rs/core/tests/common/context_snapshot/context_snapshot_tests.rs:386 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual portable normalizer checks exact Unix/PowerShell schema and embedded code-mode description; changed advice stays distinct.",
+        "Source selector (not_run): codex-core --test all filter remote_test_env_exposes_target_shell_and_exec_guidance_to_model; codex-rs/core/tests/suite/remote_env.rs:360 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual remote executor reports selected shell and model-facing login spec; test target/platform prerequisites still apply.",
+        "Source selector (not_run): codex-core --test all filter pending_attachment_installs_configuration_before_waiting_turn_resumes; codex-rs/core/tests/suite/remote_env.rs:1946 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual pending/ready environment requests compare schema; only exact shell guidance varies after readiness.",
+        "Source selector (not_run): codex-tui --lib filter cloud_resume_picker_reconciles_admitted_steers; codex-rs/tui/src/app/tests/session_lifecycle_requests.rs:322 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Existing real app-server cloud resume/steer transcript control; narrower bullet filter excludes unrelated rows, retains actual admitted responses."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "710bee73a89385aaf2afb41d885edf82473d941f",
+      "subject": "Refactor history and notes tool registration (#61747)",
+      "paths": [
+        "codex-rs/ext/history-notes/src/extension.rs",
+        "codex-rs/ext/history-notes/src/tools.rs",
+        "codex-rs/ext/history-notes/src/tools_tests.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "skill-discovery",
+        "account-isolation",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Split history and notes builders while selecting each namespace description from the actual step ExtensionData and optional actual backend.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 710bee73a89385aaf2afb41d885edf82473d941f; SHA256 eb9069f4c7eac3de5bba0b68ce7674e57cc474ebe8bbbed1d8f97c043ec4e15a (9005 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: An absent backend returns no tools; HTTP-backed installation keeps thread/config/prompt/tool registration together and preserves backend auth, routes, cancellation and encrypted history output.",
+        "Integration requirement: Retain captured model-specific HistoryToolMessages/NotesToolMessages at the actual step. Explicit empty description remains distinct from missing; do not substitute current global model/catalog on restored work.",
+        "Integration requirement: The refactor does not activate history-notes token-budget features, cloud refresh, apps/plugins or remote execution. Existing child token-budget capture/history/accepted-input obligations remain open.",
+        "ALab interaction: Builders remain crate-private and no owned direct call to removed signatures or literal was found. ALab child config explicitly preserves use_history_notes_extension independently of runtime authority.",
+        "Required source-coverage gap: Existing sparse-catalog control calls tool_spec directly; bundled contracts call the combined builder with step=None. Neither alone exercises the new per-namespace Some(step) or absent-backend path. An actual builder/ExtensionData control with model-specific and explicitly empty history/notes messages plus no-backend refusal remains required; context-management-tools scenarios are not substituted for this distinct history/notes contract.",
+        "Source selector (not_run): codex-history-notes-extension --lib filter bundled_tool_contracts; codex-rs/ext/history-notes/src/tools_tests.rs:195 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual generated history+notes tool schemas retain bundled contract.",
+        "Source selector (not_run): codex-history-notes-extension --lib filter sparse_catalog_messages_preserve_defaults_and_explicit_empty_descriptions; codex-rs/ext/history-notes/src/tools_tests.rs:166 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; ToolSpec distinguishes sparse/default and explicitly empty descriptions.",
+        "Source selector (not_run): codex-history-notes-extension --lib filter preserves_encrypted_history_output; codex-rs/ext/history-notes/src/tools_tests.rs:22 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Actual tool output metadata retains encrypted history rather than exposing private payload.",
+        "Source selector (not_run): codex-app-server --test all filter app_server_uses_configured_notes_backend_for_context_window_hints; codex-rs/app-server/tests/suite/v2/history_notes_extension.rs:39 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Five test_case variants preserve native hints/capability/no-notes/failure-no-bridge/explicit bridge routing; fixture activation only."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "0184dfa6a48f0110dd9c6835522492908e5abcf3",
+      "subject": "Fix the missing label style in the mention truncation test (#61762)",
+      "paths": [
+        "codex-rs/tui/src/bottom_pane/mentions_v2/render_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Complete the mention truncation fixture with the new plain label field introduced by630 without altering its Unicode/style assertions.",
+      "evidence": [
+        "Canonical cached patch read using git -c color.ui=false show --format=fuller --no-ext-diff --no-renames --binary 0184dfa6a48f0110dd9c6835522492908e5abcf3; SHA256 8b3ade50b23763c5d716c26e5b49ed707b396b3e095f60bc0bf2efa6abb3b582 (1185 bytes).",
+        "alab/reviews/upstream-intake-2026-11-16-afteraea.md; fixed main comparison d29e1f4de2b15d82de004ce6bb8c43eca8eb5b90; upstream target 0184dfa6a48f0110dd9c6835522492908e5abcf3. All tests are source-declared candidates not_run/UNRUN. No upstream import, code adaptation, Rust execution, runtime, native grant, default/hold/pin/profile/cache change or qualification is established.",
+        "Integration requirement: Retain all existing actual rendered text and bold-cell assertions; Plain models the local file result and does not activate cloud.",
+        "Integration requirement: This repairs an upstream fixture compile omission, not a tested runtime result or permission to relax future required fields.",
+        "ALab interaction: One upstream test line only. It completes the earlier eff grapheme and630 cloud-label composition; no owned production adaptation.",
+        "Source selector (not_run): codex-tui --lib filter fuzzy_matches_preserve_graphemes_when_truncated; codex-rs/tui/src/bottom_pane/mentions_v2/render_tests.rs:169 @ 0184dfa6a48f0110dd9c6835522492908e5abcf3; Same actual grapheme/style fixture on final complete literal; duplicate selector row is deliberate dependency evidence."
+      ],
+      "revisit": ""
+    }
+  ]
+}

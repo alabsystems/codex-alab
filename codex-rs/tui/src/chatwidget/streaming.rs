@@ -151,6 +151,8 @@ impl ChatWidget {
                 });
                 self.note_stream_consolidation_queued();
                 self.app_event_tx.send(AppEvent::ConsolidateAgentMessage {
+                    #[cfg(unix)]
+                    alab_source: self.alab_current_history_source(), // ALAB(retained-ui): original synchronous item owner, never inferred from text.
                     phase,
                     interrupted_item,
                     source,
@@ -257,6 +259,8 @@ impl ChatWidget {
                 None => true,
             });
         let display = CapturedSideDisplay {
+            #[cfg(unix)]
+            alab_history: self.alab_history.clone(), // ALAB(retained-ui): SAME original producer ledger travels with captured display/draft.
             rendered_completion_turn_ids: self.turn_lifecycle.rendered_completion_turn_ids.clone(),
             active,
             last_completed_agent_message: self.transcript.last_completed_agent_message.clone(),
@@ -585,7 +589,10 @@ impl ChatWidget {
             .with_phase(item.phase.clone());
             if let Some(item) = interrupted {
                 self.app_event_tx
-                    .send(AppEvent::CorrectFlushedAgentMessage { item, cell });
+                    .send(AppEvent::CorrectFlushedAgentMessage {
+                        #[cfg(unix)]
+                        alab_source:self.alab_current_history_source(), // ALAB(retained-ui): exact original completed item travels with original correction.
+                        item,cell });
             } else {
                 self.add_to_history(cell);
             }

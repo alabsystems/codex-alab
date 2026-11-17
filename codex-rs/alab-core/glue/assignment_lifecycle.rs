@@ -106,6 +106,15 @@ pub(crate) fn automatic_start(session: &Session) -> Option<Activity> {
 }
 
 impl DispatchGate {
+    /// Terminal teardown owns no queued source operation. Close admission first,
+    /// then drop both deferred and channel-resident submissions so every reply
+    /// waiter releases any native permit before extension retirement begins.
+    pub fn close_submission_admission(&mut self, receiver: &async_channel::Receiver<Submission>) {
+        receiver.close();
+        self.deferred.clear();
+        while receiver.try_recv().is_ok() {}
+    }
+
     pub fn has_deferred(&self) -> bool {
         !self.deferred.is_empty()
     }
@@ -827,6 +836,53 @@ mod tests {
         assert!(!gate.has_deferred());
         let (_, activity) = gate.admit(&session, original).await.unwrap();
         assert!(activity.is_some());
+    }
+
+    #[tokio::test]
+    async fn terminal_dispatch_drops_channel_and_assignment_queued_reply_owners() {
+        let (session, _) = super::super::tests::make_session_and_context().await;
+        let domain = session.services.auth_manager.alab_assignment_domain();
+        domain.request(intent(&session)).unwrap();
+        let mut gate = DispatchGate::default();
+
+        let (deferred_reply, deferred_result) = tokio::sync::oneshot::channel();
+        assert!(
+            gate.admit(
+                &session,
+                submission(
+                    "deferred-recovery",
+                    Op::RecoverTurn {
+                        thread_settings: codex_protocol::protocol::ThreadSettingsOverrides::default(
+                        ),
+                        start_options: codex_protocol::turn_input::TurnStartOptions::default(),
+                        reply: deferred_reply,
+                    },
+                ),
+            )
+            .await
+            .is_none()
+        );
+
+        let (sender, receiver) = async_channel::bounded(1);
+        let (queued_reply, queued_result) = tokio::sync::oneshot::channel();
+        sender
+            .send(submission(
+                "channel-recovery",
+                Op::RecoverTurn {
+                    thread_settings: codex_protocol::protocol::ThreadSettingsOverrides::default(),
+                    start_options: codex_protocol::turn_input::TurnStartOptions::default(),
+                    reply: queued_reply,
+                },
+            ))
+            .await
+            .unwrap();
+
+        gate.close_submission_admission(&receiver);
+
+        assert!(!gate.has_deferred());
+        assert!(sender.is_closed());
+        assert!(deferred_result.await.is_err());
+        assert!(queued_result.await.is_err());
     }
 
     #[tokio::test]

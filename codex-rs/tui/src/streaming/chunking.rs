@@ -455,3 +455,7 @@ mod tests {
         assert_eq!(severe.drain_plan, DrainPlan::Batch(64));
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_stream_chunking.rs"]
+pub(crate) mod alab_retained_chunking; // ALAB(retained-ui): preserve actual hysteresis deadlines.

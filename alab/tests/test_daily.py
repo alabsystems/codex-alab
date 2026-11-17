@@ -37,7 +37,7 @@ class DailyTests(unittest.TestCase):
         scripts = self.repo / "alab"
         scripts.mkdir()
         for name in ["daily.sh", "lib.sh", "retention.py", "pristine_state.py",
-                     "qualification.py", "upstream_intake.py", "source_content.py"]:
+                     "qualification.py", "cli_status.py", "file_hash.py", "upstream_intake.py", "source_content.py"]:
             shutil.copyfile(ROOT / "alab" / name, scripts / name)
         self.sync = self.repo / sync_name
         self.git("worktree", "add", "-q", "--detach", str(self.sync), "HEAD")
@@ -124,7 +124,7 @@ class DailyTests(unittest.TestCase):
         scripts = self.sync / "alab"
         scripts.mkdir()
         for name in ["daily.sh", "lib.sh", "retention.py", "pristine_state.py",
-                     "qualification.py", "upstream_intake.py", "source_content.py"]:
+                     "qualification.py", "cli_status.py", "file_hash.py", "upstream_intake.py", "source_content.py"]:
             shutil.copyfile(ROOT / "alab" / name, scripts / name)
         marker = self.repo / ".git/alab-preserve-builds"
         for kind in ["file", "directory", "dangling-symlink"]:

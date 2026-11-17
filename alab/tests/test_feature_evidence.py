@@ -246,14 +246,15 @@ class FeatureEvidenceTests(unittest.TestCase):
         self.assertEqual(len(exported['features'][0]['scenarios'][0]['checks']), 2)
         self.assertEqual(EVIDENCE.validate(exported, self.expected, destination), [])
 
-    def test_export_failure_removes_only_its_new_incomplete_destination(self):
+    def test_export_failure_retains_its_incomplete_destination(self):
         destination = self.repo / 'bundle'
         record = self.record()
         raw = self.log.read_bytes()
         with patch.object(EVIDENCE, 'log_bytes', side_effect=[raw, OSError('read failed')]):
             with self.assertRaisesRegex(OSError, 'read failed'):
                 EVIDENCE.bundle(record, self.expected, destination)
-        self.assertFalse(destination.exists())
+        self.assertTrue((destination / 'logs').is_dir())
+        self.assertFalse((destination / 'record.json').exists())
         self.assertEqual(self.log.read_bytes(), raw)
 
     def test_cli_bundle_requires_destination_and_validates_export(self):

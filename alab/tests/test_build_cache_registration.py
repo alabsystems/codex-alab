@@ -236,7 +236,7 @@ class BuildCacheRegistrationTests(unittest.TestCase):
         gate.chmod(0o700)
         # Exercise the real source-bound recorder too: its candidate must have
         # committed inputs and explicit local base/upstream identities.
-        for name in ("qualification.py", "upstream_intake.py", "source_content.py"):
+        for name in ("qualification.py", "cli_status.py", "file_hash.py", "upstream_intake.py", "source_content.py"):
             shutil.copyfile(ROOT / "alab" / name, gate.parent / name)
         self.environment["ALAB_PYTHON"] = sys.executable
         for arguments in (("init", "-q"), ("config", "user.name", "Fixture"),
@@ -264,53 +264,34 @@ class BuildCacheRegistrationTests(unittest.TestCase):
                     self.assertEqual(self.recorded(), [{
                         "kind": "gate", "cwd": str(self.workspace.parent), "target": target}])
 
-    def lane_fault_build(self):
-        """sync.sh's check_failed after a failed codex build: the contained command it runs to
-        tell an ALab fault from a lane fault, and its exit (the stand-in build succeeds)."""
-        pristine = self.home / "pristine/codex-rs"
-        pristine.mkdir(parents=True, exist_ok=True)
-        (pristine / "Cargo.toml").write_text("[workspace]\nmembers = []\n")
+    def mapped_check_failure(self, status):
+        """sync maps the selected gate's completed attribution without launching work."""
         state = self.fixture / "sync-state"
         state.mkdir(exist_ok=True)
         (state / "alab-sync-target").write_text("f" * 40 + "\n")
         body = self.sync_function("check_failed")
-        body += '\nwt="$1"; cargo=targo; state_path() { printf "%s/alab-sync-%s\\n" "$STATE" "$1"; }; '
-        body += 'alab_pristine_at() { :; }; alab_pristine() { printf "%s\\n" "$PRISTINE"; }; '
-        body += 'exit_with() { exit "$1"; }; '
-        body += 'alab_contained() { "$PYTHON" -c "import json, sys; print(json.dumps(sys.argv[1:]))" "$@" >> "$FIXTURE_ARGV"; }; '
-        body += 'check_failed 2'
-        argv = self.fixture / "contained-argv.jsonl"
-        argv.unlink(missing_ok=True)
-        self.environment.update(PRISTINE=str(pristine.parent), STATE=str(state), PYTHON=sys.executable,
-                                FIXTURE_ARGV=str(argv))
-        done = self.shell(body, self.workspace.parent)
-        return done, [json.loads(line) for line in argv.read_text().splitlines()]
+        body += '\nwt="$1"; state_path() { printf "%s/alab-sync-%s\\n" "$STATE" "$1"; }; '
+        body += 'exit_with() { printf "%s\\n" "$2" >&2; exit "$1"; }; '
+        body += 'alab_contained() { touch "$FIXTURE_UNEXPECTED"; return 99; }; '
+        body += 'check_failed "$2"'
+        unexpected = self.fixture / "unexpected-pristine-launch"
+        unexpected.unlink(missing_ok=True)
+        self.environment.update(STATE=str(state), FIXTURE_UNEXPECTED=str(unexpected))
+        done = self.shell(body, self.workspace.parent, status)
+        return done, unexpected
 
-    def test_the_lane_fault_build_takes_the_toolchain_sources_the_merge_carries(self):
-        """THE LANE-FAULT BUILD TAKES THE TOOLCHAIN SOURCES THE MERGE CARRIES: upstream alone
-        does not build under Trust (allocative 0.3.6: E0119), so every failed codex build was
-        named a lane fault (exit 6). Built with the crates the merge's alab/vendor carries, as
-        check.sh builds pristine upstream, a pristine build that succeeds names ALab's layer
-        (exit 4). NEGATIVE CONTROL: with nothing carried, no override and no extra read."""
-        done, calls = self.lane_fault_build()
-        self.assertEqual(done.returncode, 4, done.stderr)
-        self.assertEqual(len(calls), 1, calls)
-        self.assertNotIn("--config", calls[0])
-        vendored = self.workspace.parent / "alab/vendor/allocative"
-        vendored.mkdir(parents=True)
-        (vendored / "ALAB-SOURCE.json").write_text(json.dumps({
-            "crate": "allocative", "version": "0.3.6", "crate_sha256": "d8" * 32}))
-        done, calls = self.lane_fault_build()
-        self.assertEqual(done.returncode, 4, done.stderr)
-        self.assertEqual(len(calls), 1, calls)
-        argv = calls[0]
-        separator = argv.index("--")
-        self.assertIn(["--read", str(vendored.parent)],
-                      [argv[i:i + 2] for i in range(separator)], argv)
-        build = argv[argv.index("targo"):]
-        self.assertEqual(build[:4], ["targo", "--unverified", "run", "--quiet"], build)
-        self.assertEqual(build[build.index("--config") + 1], f'paths = ["{vendored}"]', build)
-        self.assertLess(build.index("--config"), build.index("--"), "a cargo option, not the binary's")
+    def test_sync_maps_certified_attribution_without_an_unverified_fallback(self):
+        source = self.sync_function("check_failed")
+        self.assertNotIn("--unverified", source)
+        for status, expected, message in ((2, 4, "ALab's layer broke"),
+                                          (6, 6, "Trust lane fault"),
+                                          (1, 4, "alab/check.sh failed"),
+                                          (37, 4, "alab/check.sh failed")):
+            with self.subTest(status=status):
+                done, unexpected = self.mapped_check_failure(status)
+                self.assertEqual(done.returncode, expected, done.stderr)
+                self.assertIn(message, done.stderr)
+                self.assertFalse(unexpected.exists(), "sync must not launch a second compiler lane")
 
     def test_real_metadata_resolver_registers_before_its_contained_command(self):
         (self.workspace / "Cargo.lock").write_text("fixture-lock\n")

@@ -187,7 +187,17 @@ struct State {
     closing: AtomicBool,
     changed: Notify,
     domains: Mutex<Vec<std::sync::Weak<crate::assignment::Domain>>>,
-    _lifetime: Option<crate::native_source_lifetime::Lifetime>,
+    lifetime: Mutex<Option<crate::native_source_lifetime::Lifetime>>,
+}
+impl State {
+    fn release_lifetime(&self) -> io::Result<()> {
+        // End observers may retain this state after completion. Keep the actual
+        // source owner through native cleanup, then release it before publishing
+        // End so a retained receipt cannot prevent member retirement.
+        let lifetime = self.lifetime.lock().map_err(|_| unavailable())?.take();
+        drop(lifetime);
+        Ok(())
+    }
 }
 static STATES: Mutex<Vec<std::sync::Weak<State>>> = Mutex::new(Vec::new());
 pub(crate) fn settled_for(domain: &Arc<crate::assignment::Domain>) -> bool {
@@ -308,7 +318,7 @@ impl ParentUseLease {
             closing: AtomicBool::new(false),
             changed: Notify::new(),
             domains: Mutex::new(domain.iter().map(Arc::downgrade).collect()),
-            _lifetime: lifetime,
+            lifetime: Mutex::new(lifetime),
         });
         {
             let mut states = STATES.lock().map_err(|_| unavailable())?;
@@ -397,6 +407,9 @@ async fn begin(state: Arc<State>) {
                 return;
             }
             Ok(UseOutcome::Closed | UseOutcome::Unsent) => {
+                if state.release_lifetime().is_err() {
+                    return;
+                }
                 if let Ok(mut progress) = state.progress.lock() {
                     progress.begin_done = true;
                     progress.failed = true;
@@ -474,6 +487,9 @@ async fn cleanup(state: Arc<State>) {
                     }
                 }
                 Ok(UseOutcome::Closed | UseOutcome::Unsent) => {
+                    if state.release_lifetime().is_err() {
+                        return;
+                    }
                     if let Ok(mut progress) = state.progress.lock() {
                         progress.ended = true;
                         progress.active = None;
@@ -647,7 +663,25 @@ mod tests {
     async fn cleanup_observation_waits_for_last_child_and_actual_end_ack_without_owning_use() {
         let peer = peer();
         peer.hold_end.store(true, Ordering::Release);
-        let root = ParentUseLease::start(peer.clone(), "2".repeat(32)).unwrap();
+        // Synthetic member protocol, real source Lifetime and ownership graph.
+        let lifetime = crate::native_source_lifetime::Lifetime::new(
+            crate::native_source_launch::Allocation {
+                operation: "3".repeat(32),
+                member: peer.clone(),
+                parent_use: None,
+                derived_parent: None,
+                target: None,
+            },
+        )
+        .unwrap();
+        let incarnation = lifetime.incarnation();
+        let root = ParentUseLease::start_for(
+            peer.clone(),
+            "2".repeat(32),
+            Arc::new(crate::assignment::Domain::default()),
+            lifetime,
+        )
+        .unwrap();
         peer.started.notified().await;
         peer.release.notify_one();
         root.ready().await.unwrap();
@@ -659,8 +693,13 @@ mod tests {
         tokio::select! { _ = &mut settled => panic!("actual child still owns native use"), _ = tokio::task::yield_now() => {} }
         drop(child);
         peer.end_started.notified().await;
+        assert!(incarnation.live(), "unacknowledged End retains its source");
         tokio::select! { _ = &mut settled => panic!("End has no native ACK yet"), _ = tokio::task::yield_now() => {} }
         peer.end_release.notify_one();
         settled.await.unwrap();
+        assert!(
+            !incarnation.live(),
+            "retained cleanup observer cannot retain an acknowledged source owner"
+        );
     }
 }

@@ -96,6 +96,7 @@ pub(super) enum ThreadEventAttachment {
 
 #[derive(Debug)]
 pub(super) struct ThreadEventStore {
+    #[cfg(unix)] pub(super) alab_side_delivery: super::alab_side_delivery::Store, // ALAB(retained-side): source-owned delivery identity, no wire permission.
     pub(super) session: Option<ThreadSessionState>,
     pub(super) turns: Vec<Turn>,
     pub(super) buffer: VecDeque<ThreadBufferedEvent>,
@@ -148,6 +149,7 @@ impl ThreadEventStore {
 
     pub(super) fn new(capacity: usize) -> Self {
         Self {
+            #[cfg(unix)] alab_side_delivery: super::alab_side_delivery::Store::default(), // ALAB(retained-side): actual new store incarnation.
             session: None,
             turns: Vec::new(),
             buffer: VecDeque::new(),
@@ -243,6 +245,7 @@ impl ThreadEventStore {
     }
 
     fn push_notification_inner(&mut self, notification: Cow<'_, ServerNotification>) {
+        #[cfg(unix)] self.alab_side_delivery.begin(notification.as_ref()); // ALAB(retained-side): capture original delivery before its real buffer clone.
         let user_item = match notification.as_ref() {
             ServerNotification::ItemStarted(n) => Some((&n.turn_id, &n.item.payload)),
             ServerNotification::ItemCompleted(n) => Some((&n.turn_id, &n.item.payload)),

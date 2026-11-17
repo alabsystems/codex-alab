@@ -17,6 +17,14 @@ use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 
+#[path = "editor_input.rs"]
+mod editor;
+pub use editor::EditorFence;
+pub use editor::EditorInputStage;
+pub use editor::EditorInputStageRefused;
+pub use editor::EditorInputStageRollbackRefused;
+pub use editor::EditorRestoreRefused;
+
 type Open = dyn Fn() -> io::Result<File> + Send + Sync;
 pub struct Broker {
     state: Mutex<State>,
@@ -30,6 +38,7 @@ struct State {
     driver: Option<Driver>,
     users: usize,
     frozen: bool,
+    editor: Option<Arc<editor::Token>>,
     committed: bool,
     failure: Option<String>,
     next_user: u64,
@@ -74,6 +83,7 @@ impl Broker {
                 driver: None,
                 users: 0,
                 frozen: false,
+                editor: None,
                 committed: false,
                 failure: None,
                 next_user: 0,

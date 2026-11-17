@@ -117,3 +117,7 @@ impl StreamingCodeHighlighter {
 #[cfg(test)]
 #[path = "highlight_streaming_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_stream_highlighter.rs"]
+pub(crate) mod alab_retained_highlighter; // ALAB(retained-ui): preserve exact native CPU parser cache replay.

@@ -41,7 +41,7 @@ class LocalUpdateJobTests(unittest.TestCase):
         FIXTURES.LocalUpdateTests.setUp(self)
         tooling = self.repo / "alab"
         tooling.mkdir()
-        for name in ("local_update.py", "promote.py", "lib.sh", "command_guard.py", "retention.py", "package_source.py", "source_content.py",
+        for name in ("local_update.py", "promote.py", "cli_status.py", "lib.sh", "command_guard.py", "retention.py", "package_source.py", "source_content.py",
                      "package_cache.py"):
             shutil.copyfile(ROOT / "alab" / name, tooling / name)
         self.cache = self.home / "cache"

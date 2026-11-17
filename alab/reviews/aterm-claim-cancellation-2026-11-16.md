@@ -1,0 +1,169 @@
+<!-- Copyright 2026 Andrew Yates. SPDX-License-Identifier: Apache-2.0 -->
+# Abandoned aterm claim transactions
+
+## Decision and scope
+
+An abandoned effectful `Client::claim` or `Client::reconfirm` transaction retires
+that Client's shared connection and local authority. A private borrowed guard
+closes the Client on cancellation, after claim-gate admission and the checks
+that can return without effect. Successful proof publication and guard disarming
+occur in the same synchronous state operation. A normally completed refusal,
+failed proof cleanup or success disarms the guard; cancelling a policy read or
+a caller still waiting for the claim gate leaves the connection healthy.
+
+Ordinary `meta set supervisor` claims belong to the connection and release at
+actual socket EOF. Native source-exec handoff custody is independently held by
+the host and may survive EOF for authorized re-adoption by the same fresh SDK
+actor. The guard retires this Client; it does not erase that custody or send an
+ordinary `meta unset` into the native handoff state.
+
+This addresses an API lifecycle gap. It does not establish a persistent leak
+through an existing production caller, fabricated holder proof, or authority to
+act without local proof.
+
+## Evidence and rejected alternative
+
+The audited base is `673c454e5d61f6f574a598103b08dde79cb183ff`, with original
+`client.rs` blob `f0a65ed2c120d32f367d7ba78a719d29ea3bf267`.
+
+`Conn::exchange` has no cancellation cleanup. The worker finishes a queued
+exchange and ignores failed oneshot reply delivery. More subtly, successful
+reply delivery can precede cancellation: dropping the caller then discards its
+buffered reply, which the worker cannot observe. `Client::claim` only performs
+its proof classification and compensating cleanup when its caller resumes.
+Keeping another Client clone alive therefore preserves the ordinary remote
+claim after an abandoned proof, while local `holds_claim()` remains false.
+
+A worker-side reply delivery check misses the buffered-reply schedule. A
+detached same-holder release after dropping the borrowed claim-gate permit can
+race a newer claim and clear it. Transferring that gate into asynchronous
+cleanup would require different ownership and runtime-shutdown handling.
+Synchronous close needs no allocation, task, or new API error and retires every
+clone before another transaction can borrow its authority.
+
+Production callers have additional protections. Exec admission and reconnect
+claims own newly created private clients. Ordinary supervisor claiming runs in
+its detached session task; the watch's `give_back_if_unheld` also reconciles
+abandoned takes after the policy refresh fence. Budgeted before-act checks can
+indirectly reach claiming during Off reconciliation. Closing their shared
+Client is recoverable: `session` observes `client.closed()`, retires the reader,
+awaits actual connection retirement and returns `Retry`; `run` then creates a
+fresh Client and gates. The existing
+`a_dead_request_connection_is_replaced_and_the_claim_taken_again` integration
+test covers that retry path.
+
+The host checkout inspected was `97291617aacada18e0e5b35881c6863db4299226`.
+`native_source_exec::retain_claim` records the actual EOF witness for retained
+settled custody; `adopt` permits a later socket to re-adopt after that witness.
+These are source observations, not measurements of the installed host.
+
+## Regression contract and validation boundary
+
+Test-only commit `b7fed467489abe92b5d1b2a47eaea2b7f38295c7` adds five cases to
+`claim_order_tests.rs`. Actual fake-host gates and a later `whoami` reply on the
+same connection establish that the earlier reply was delivered into its
+oneshot without resuming its caller. The future itself is then dropped while
+the Client and another clone remain alive.
+
+The expected pre-fix failures are buffered proving status, buffered initial
+claim-set acknowledgement and buffered reconfirmation that retook a locally
+lost claim. Each first proves the server effect is present and local authority
+absent; after cancellation it requires the retained connection to retire, then
+checks actual EOF cleanup. The proving-status case also reconnects and claims
+again. The two controls cancel a queued claim-gate waiter and a policy read with
+a buffered answer, requiring a healthy connection and successful subsequent
+work.
+
+The test-only commit retains the original production Client blob. No Rust,
+application build, compiler pin, proof profile or certification command was run
+in the implementation worktree. The following ordinary checks were executed
+separately in the managed native Trust worktree. They establish the stated API
+regressions and source behavior; they are not certified application proof.
+
+## Executed RED/GREEN evidence
+
+The coordinator used the existing protected profile and native-selected Trust
+27009, compiler `5062eed55c0bc9df8a79eba1368d88ffde76c741`, with
+`CARGO_BUILD_JOBS=1`. The pending lock was generated by native adoption; its
+SHA256 stayed
+`7c4c9f1a8f7f4950089d431ccab4d2e3e8b27baccf5e42d9242b36cc3de892f8`.
+It was not copied into another source tree, edited or committed. The retained
+archives contain inert pin bytes for attribution; they supply no execution
+authority. No compiler adoption, application build, proof or certification retry
+was performed for these checks.
+
+- **RED:** test-only source `e881c0e01595928ce21d6ec3d197a84f6ae76853`,
+  a cherry-pick of `b7fed467489abe92b5d1b2a47eaea2b7f38295c7`.
+  Production Client blob remained
+  `f0a65ed2c120d32f367d7ba78a719d29ea3bf267`; fixture blob was
+  `c73c03cde9d187abad0667b458dc11b66d5b76ce`.
+  Controller 71504 ran `targo --unverified test --locked -p codex-alab-aterm
+  --lib tests::claim_order_tests::dropping_` and exited 101 with three actual
+  assertion failures and two passing controls. It was not a fixture compile
+  failure. The failed cases were the buffered proving status, buffered initial
+  set reply, and buffered reconfirmation retake described above.
+- **GREEN:** source `175d6bd6309ee4227079093fda938c9b0ca304de`, applying
+  reviewed fix `17668cb03f1649e61957cc9cad8d1be4565c5942`.
+  Client blob was `b49a8102c8d278eea681c2c841ae771fcc1a9b8a`; final fixture
+  blob was `9f5cef3d3af2549292f68d61e87015d2c2f2e2aa`.
+  The fixture's RED-to-GREEN change only clarifies the ordinary/native EOF
+  custody distinction. Controller 33296 ran the full
+  `targo --unverified test --locked -p codex-alab-aterm`: **259 passed,
+  zero failed, three existing helper tests ignored; zero doctests**.
+  The full suite included and passed all five new cases; no separate filtered
+  GREEN run or extra count for those cases is claimed.
+- The same frozen GREEN source then passed
+  `targo tippy --locked -p codex-alab-aterm --no-deps --all-targets -- -D warnings`
+  with exit 0 (2m44s). Controller 33296 exited 0 after both commands.
+
+All five fully qualified new test names were present and successful in the
+full GREEN log:
+
+- `tests::claim_order_tests::dropping_a_claim_waiting_for_the_gate_keeps_the_active_transaction_healthy`
+- `tests::claim_order_tests::dropping_a_claim_with_a_buffered_proof_releases_its_retained_connection`
+- `tests::claim_order_tests::dropping_a_claim_with_a_buffered_set_reply_releases_its_retained_connection`
+- `tests::claim_order_tests::dropping_a_policy_read_with_a_buffered_answer_keeps_the_claim_connection_healthy`
+- `tests::claim_order_tests::dropping_a_reconfirmation_with_a_buffered_retake_releases_its_connection`
+
+Retained archives, each with immutable file hashes in `index.json`:
+
+| Executed source | Archive under `.git/alab-validation/<source>/trust27009-adoption/` | Index SHA256 |
+|---|---|---|
+| `e881c0e01595928ce21d6ec3d197a84f6ae76853` | `claim-cancellation-red` | `d9b8ad4ac07fcb6941339fbf840eebf3048ca20a695d0911b2637ddfd64481e5` |
+| `175d6bd6309ee4227079093fda938c9b0ca304de` | `claim-cancellation-green` | `2cf9f06d6cea9b35ab629cda6d023eda04a6f34426fa0d1c99bee578d9f2833c` |
+
+The RED archive retains runtime output, controller/inner scripts and log, and
+the working lock. GREEN additionally retains full-suite and strict all-target
+lint output. These are ordinary source observations, not native proof receipts,
+qualification of moving main, or evidence of a production-path claim leak.
+Compiler-pin acceptance and application proof remain separately blocked by
+required build-script execution verification.
+
+## Current-main component check
+
+The publication candidate `a27cffaf0cccf5db9f10efd3c1bb72a06023e8f0`, based on
+fresh main `b862d9138de9e1c8bf4726179d6b597433503973`, contains material Core
+dependency changes absent from the earlier GREEN source. They were retained and
+checked separately. Normal managed frontend selection accepted that exact
+detached candidate in the existing test worktree with the unchanged native-owned
+working pin; no pin was copied, edited, adopted or overridden.
+
+At that candidate, controller 49046 passed the full Aterm suite again: 259
+passed, zero failed, three existing helpers ignored, zero doctests, including
+all five new named controls. Strict no-deps all-target Tippy with `-D warnings`
+also exited zero. This additional run is justified by the changed dependency
+tree; the earlier observations remain attributed to their original sources.
+The named adoption branch was restored after all checks finished.
+
+The actual candidate inputs were Aterm tree
+`a66d9804f22d0ea7754d85fd4c474a76760cb01b`, Core tree
+`6370b3c447ac2e29cebdee66b41c464b21298e9e`, workspace manifest
+`5ec1cf5a4e8ba015a13c42f67a07aef610770725`, and workspace lock
+`056b394d785ce95003d83bd61aeddb6fca03d340`. The retained archive is
+`.git/alab-validation/a27cffaf0cccf5db9f10efd3c1bb72a06023e8f0/trust27009-adoption/aterm-publication-candidate-component/`,
+with index SHA256
+`4d89772e7a44b02b08e3459e2c8b5527fb016ade791f3a9c676033dd0f6c2723`.
+Root verified every retained file hash in all three archives and compared the
+publication component/dependency trees to this observed candidate. Later report
+edits change no Rust input. These remain ordinary component checks, with no
+application, compiler-pin or upstream integration qualification claimed.

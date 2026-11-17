@@ -419,7 +419,17 @@ impl PreparedExec {
         argv.push(std::ptr::null());
         let mut env = self.env.iter().map(|v| v.as_ptr()).collect::<Vec<_>>();
         env.push(std::ptr::null());
-        if let Some(capsule) = &self.capsule
+        let _fd_custody = match codex_alab_core::native_fd_custody::executing() {
+            Ok(guard) => guard,
+            Err(error) => return error,
+        };
+        if let Err(error) = remaining(deadline_us) {
+            return error;
+        }
+        // On every failure the actual capsule drops before FD exclusion ends,
+        // including a failed restoration of its CLOEXEC flag.
+        let capsule = self.capsule;
+        if let Some(capsule) = &capsule
             && let Err(error) = capsule.inherit()
         {
             return error;
@@ -430,7 +440,7 @@ impl PreparedExec {
             libc::execve(self.path.as_ptr(), argv.as_ptr(), env.as_ptr());
         }
         let error = std::io::Error::last_os_error();
-        if let Some(capsule) = &self.capsule {
+        if let Some(capsule) = &capsule {
             let _ = capsule.stop_inheriting();
         }
         error

@@ -1,0 +1,32 @@
+<!--
+Copyright 2026 Andrew Yates
+SPDX-License-Identifier: Apache-2.0
+-->
+# Bound retained frontier consumer
+
+The retained backend can now derive its Incoming, scheduling Gate and frontier consumer from the same actual BoundBackend. Its physical bind creates one Goal Owner with an initially closed Hold before its receiver starts. Accepted H1 workers retain that original owner independently of frontend/HTTP observation, drain its admission windows, store the same Hold, and only then acknowledge the physical request. Metadata selects work; it supplies no Native permission.
+
+The protected projection captures the completed initial operation's exact Core and PrimaryLease, verifies its actual manager registration under the original goal-resume serialization, and commands the existing listener. That listener subscribes the initialized recipient before reading history and reuses the original resume response/replay path. Generation-checked deferred writer data, the original durable reader or the actual ephemeral journal supply history. Canonical history mode and private-record filtering are preserved. Inherited deferred history_base remains explicitly unsupported in this unactivated consumer until the original lineage resolver is composed; there is no force-persist or empty-history substitute.
+
+The typed response is an attempted delivery, followed by a separately correlated ready/failed tail. Source observation retains its Hold while the frontend performs actual Native App promotion/current checks. Only the separate opaque Native RuntimeCommit can reach final release, after the final actual Core Current query and a synchronous ownership check. Confirmed Native denials keep the same closed Hold; transport/decoding uncertainty withdraws admission. Shutdown stops admission and joins accepted operations before listener/Core teardown, then joins the original SDK receiver/Goal workers. Cancelled waiters restore the same borrowed join handles. Drop is withdrawal, never settlement.
+
+Ordinary activation is still off. This component is not proof of a successful SDK/UI Go or image change. Required followups include the real ordinary caller and preserved CLI choices, startup NoPrimary and same closed-Hold transfer, every selected primary and pre-entry candidate inhibitors, the actual UI/pending/editor/input owners, deferred inherited lineage, replacement/provider ownership, paired signed-package G1/SETEXEC/E1 validation, and the certified application gate/main landing.
+
+## Validation so far
+
+The 41cb base plus exact dirty input is retained outside Source. Source-selected Trust 15698 and the existing protected profile were used without compiler, target, dependency-lock or proof-policy overrides. All runs are component tests/checks, with no application certificate claim.
+
+- SDK: 311 pass; four existing isolated child helpers ignored. All 12 new controls pass, including actual Unix/SCM framing, closed frontend envelopes and duplicate-live-attachment rejection. The complete parallel suite passed five consecutive runs (1,555 executions, 311 distinct cases). The feature-enabled library check exited zero; final Tippy also compiles the feature-enabled library/tests.
+- Protocol: 333 pass; the existing schema writer helper is ignored. This includes the closed ready/failed codec and complete stable/experimental fixture parity.
+- Client: 61 pass, including two new exact completion-decoding controls.
+- App server: 617 pass, including three owned metadata controls and canonical in-memory history behavior.
+- Python SDK: 10 contract/parity controls pass under the frozen test group. The original generator changed only two generated Python files.
+- UI event routing: seven pass; 6,470 other UI tests were filtered, not claimed executed. Final Tippy compiles all five affected packages and their tests, with owned/spanning/failing/build-script findings all zero; 12 upstream diagnostics are set aside. Their primary sites remain outside added hunks and match the committed base. All five selected packages have no build script.
+
+The 12 generated protocol fixtures come from the original stable/experimental writer. The explicit two fixture environment settings are supplied inside the unchanged sandbox because its normal environment scrub omits them. Only changed generated artifacts were copied; none were deleted. The maintained frozen Python generator refreshed its registry/models. No exporter/test allowlist was added.
+
+Preserved failed inputs explain the corrections: the first SDK run exposed duplicate nonces in two old queue fixtures; those now use distinct nonces and a new negative proves duplicate rejection. The protocol run exposed Serde accepting extra fields on a tagged unit Ready variant; Ready is now an empty struct variant with the same wire shape and strict decoding. Its three export-parity failures were fixed by normal generation. The first generator run lacked its required scrubbed environment. The first client compilation exposed an early-return Result<()> hook incorrectly mapped to Option; the hook now returns its owning handler's actual completion type. No Native positive or full UI/editor handoff is inferred from these results.
+
+Final checked code/generated input: base `41cb54a87d6b694fccd1bbdf69e3ccde56111754`, patch SHA256 `4761f39cf1f7d6f1947ca5aa3a3316853e59c43537fa4ebe63b9f79a5adeb2f5`, 59 paths. Across the five package libraries/focused UI route tests, 1,329 distinct cases pass, including all 20 new named controls. SDK repeats are executions, not additional distinct cases. The protocol's 18 relevant paths and UI route source paths are unchanged from their passing runs; final Tippy recompiles the integrated dependencies. Dependency/compiler locks and the frozen Python lock are unchanged.
+
+The lint followup shares immutable claim DATA through Arc instead of inflating every original RequestContext, boxes only the new listener projection command, pairs the original typed response with its originator, and fixes equivalent closures/borrows/if spelling. The affected SDK/client/server suites were rerun. One rerun exposed an intermittent early EOF in the new in-process descriptor fixture; the corrected fixture retains the sender copy until actual receive/adoption, as the Native offer does, then drops it before proving independent byte IO. Five subsequent parallel SDK runs pass. The failed input is retained; no production decoder or permission check was weakened, and no broader transport reliability is inferred.

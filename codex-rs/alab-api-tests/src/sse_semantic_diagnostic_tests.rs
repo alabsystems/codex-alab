@@ -4,6 +4,31 @@
 //! Typed semantic categories must survive the public SSE diagnostic boundary.
 
 use super::*;
+use codex_protocol::protocol::MisalignmentErrorDetails;
+use codex_protocol::protocol::MisalignmentSteer;
+
+const MISALIGNMENT_TYPE: &str = "never-log-private-misalignment-type";
+const MISALIGNMENT_EXPLANATION: &str = "never-log-private-misalignment-explanation";
+const MISALIGNMENT_STEER: &str = "never-log-private-misalignment-steer";
+const MISALIGNMENT_TARGET: &str = " RB/opaque== ";
+
+fn assert_misalignment_details(details: Option<&MisalignmentErrorDetails>, complete: bool) {
+    if !complete {
+        assert!(details.is_none());
+        return;
+    }
+    let details = details.expect("complete typed misalignment details");
+    assert_eq!(details.error_type.as_deref(), Some(MISALIGNMENT_TYPE));
+    assert_eq!(
+        details.detailed_explanation.as_deref(),
+        Some(MISALIGNMENT_EXPLANATION)
+    );
+    assert_eq!(
+        details.steer.as_ref().map(|steer| steer.message.as_str()),
+        Some(MISALIGNMENT_STEER)
+    );
+    assert_eq!(details.review_target.as_deref(), Some(MISALIGNMENT_TARGET));
+}
 
 #[derive(Clone, Copy, Debug)]
 enum Case {
@@ -21,6 +46,8 @@ enum Case {
     Cyber,
     Bio,
     Misalignment,
+    MisalignmentComplete,
+    MisalignmentMalformed,
     Flex,
     ContentFilter,
     InvalidPrompt,
@@ -43,7 +70,9 @@ impl Case {
             Self::ContentPolicy => "content_policy_violation",
             Self::Cyber => "cyber_policy",
             Self::Bio => "bio_policy",
-            Self::Misalignment => "misalignment_policy_violation",
+            Self::Misalignment | Self::MisalignmentComplete | Self::MisalignmentMalformed => {
+                "misalignment_policy_violation"
+            }
             Self::Flex => "flex_unavailable",
             Self::ContentFilter => "content_filter",
             Self::InvalidPrompt => "invalid_prompt",
@@ -78,7 +107,9 @@ impl Case {
             Self::ContentPolicy => "content_policy_violation",
             Self::Cyber => "cyber_policy",
             Self::Bio => "bio_policy",
-            Self::Misalignment => "misalignment_policy_violation",
+            Self::Misalignment | Self::MisalignmentComplete | Self::MisalignmentMalformed => {
+                "misalignment_policy_violation"
+            }
             Self::Flex => "flex_unavailable",
             Self::InvalidPrompt => "invalid_prompt",
             Self::Retryable => "unknown_failure",
@@ -87,6 +118,21 @@ impl Case {
         let mut detail = json!({"code":code, "message":PRIVATE});
         if let Some(wire_advice) = wire_advice {
             detail["headers"] = json!({"retry-after":wire_advice, "authorization":PRIVATE});
+        }
+        if matches!(
+            self,
+            Self::MisalignmentComplete | Self::MisalignmentMalformed
+        ) {
+            let mut details = json!({
+                "error_type":MISALIGNMENT_TYPE,
+                "detailed_explanation":MISALIGNMENT_EXPLANATION,
+                "steer":{"message":MISALIGNMENT_STEER},
+                "review_target":MISALIGNMENT_TARGET
+            });
+            if matches!(self, Self::MisalignmentMalformed) {
+                details["steer"]["message"] = json!(42);
+            }
+            detail["misalignment"] = details;
         }
         json!({"type":"response.failed", "response":{"error":detail}})
     }
@@ -126,10 +172,21 @@ impl Case {
             Self::Bio => ApiError::BioPolicy {
                 message: PRIVATE.into(),
             },
-            Self::Misalignment => ApiError::MisalignmentPolicyViolation {
-                message: PRIVATE.into(),
-                misalignment: None,
-            },
+            Self::Misalignment | Self::MisalignmentComplete | Self::MisalignmentMalformed => {
+                ApiError::MisalignmentPolicyViolation {
+                    message: PRIVATE.into(),
+                    misalignment: matches!(self, Self::MisalignmentComplete).then(|| {
+                        MisalignmentErrorDetails {
+                            error_type: Some(MISALIGNMENT_TYPE.into()),
+                            detailed_explanation: Some(MISALIGNMENT_EXPLANATION.into()),
+                            steer: Some(MisalignmentSteer {
+                                message: MISALIGNMENT_STEER.into(),
+                            }),
+                            review_target: Some(MISALIGNMENT_TARGET.into()),
+                        }
+                    }),
+                }
+            }
             Self::Flex => ApiError::FlexUnavailable,
             Self::ContentFilter => ApiError::ContentFilter,
             Self::InvalidPrompt => ApiError::InvalidPrompt {
@@ -249,7 +306,10 @@ async fn selected_with_advice(
             ApiError::ModelNotFound { status, .. }
             | ApiError::ContentPolicyViolation { status, .. } => assert!(status.is_none()),
             ApiError::MisalignmentPolicyViolation { misalignment, .. } => {
-                assert!(misalignment.is_none())
+                assert_misalignment_details(
+                    misalignment.as_ref(),
+                    matches!(case, Case::MisalignmentComplete),
+                );
             }
             _ => {}
         }
@@ -278,6 +338,26 @@ async fn selected_with_advice(
             "selection does not wait for idle timeout"
         );
         let mapped = codex_api::map_api_error(error);
+        if matches!(
+            case,
+            Case::Misalignment | Case::MisalignmentComplete | Case::MisalignmentMalformed
+        ) {
+            let CodexErrorDetails::MisalignmentPolicyViolation {
+                message,
+                misalignment,
+            } = mapped.details()
+            else {
+                panic!("expected mapped typed misalignment refusal");
+            };
+            assert_eq!(message, PRIVATE);
+            assert_misalignment_details(
+                misalignment.as_ref(),
+                matches!(case, Case::MisalignmentComplete),
+            );
+            assert!(mapped.retry_delay(1).is_none());
+            assert!(mapped.retry_after().is_none());
+            assert!(!mapped.requires_http_fallback());
+        }
         let mut expected = codex_api::map_api_error(expected);
         if let Some(advice) = advice {
             expected = expected.with_retry_after(advice);
@@ -324,6 +404,11 @@ async fn selected_with_advice(
             "error.message",
             "body",
             "payload",
+            "misalignment",
+            "error_type",
+            "detailed_explanation",
+            "steer",
+            "review_target",
         ] {
             assert!(
                 !record.contains_key(field),
@@ -331,7 +416,13 @@ async fn selected_with_advice(
             );
         }
     }
-    for private in ["never-log", "authorization", "x-unrelated", "retry-after"] {
+    for private in [
+        "never-log",
+        "authorization",
+        "x-unrelated",
+        "retry-after",
+        "RB/opaque==",
+    ] {
         assert!(
             !format!("{records:?}").contains(private),
             "private content is absent from metadata"
@@ -365,6 +456,19 @@ async fn categories(cases: &[Case]) {
     // before the old catch-all exposes the missing fixed labels.
     for (case, kind) in kinds {
         assert_eq!(kind, format!("{:?}", case.label()), "{case:?}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn misalignment_details_survive_selected_sse_failure() {
+    if isolated("semantic_categories::misalignment_details_survive_selected_sse_failure").await {
+        return;
+    }
+    codex_alab_core::activate();
+    for case in [Case::MisalignmentComplete, Case::MisalignmentMalformed] {
+        let (kind, advised) = selected_with_advice(case, Tail::Pending, false, Some("7")).await;
+        assert_eq!(kind.as_deref(), Some("\"misalignment_policy_violation\""));
+        assert!(advised.is_none());
     }
 }
 

@@ -1091,8 +1091,12 @@ record is never replaced; a record of an earlier schema, which no longer loads,
 is kept beside the new one as `build.json.legacy`.
 
 Only a `built-from-clean-commit` record whose self-run was made qualifies a
-run. `renewal_matrix.py` refuses any other before a case runs, because its
-`qualification.json` is read by its `passed` field and not by a sentence. A
+run. `renewal_matrix.py` refuses any other before a case runs. For the requested
+cases, retain the invocation's observed zero exit, `qualification.json` with
+`passed: true`, its source/image hashes and the referenced case results. The
+file alone is insufficient: a failed final save can leave passing bytes while
+the CLI exits nonzero. This evidence covers the requested cases; the report's
+coverage fields state whether the base or full available case set ran. A
 single case can still be run against a trial record with `renewal_follow.py`;
 its `result.json` carries `nativeHost.attestation` and
 `nativeHost.qualifies`, as the exec smokes' reports do.

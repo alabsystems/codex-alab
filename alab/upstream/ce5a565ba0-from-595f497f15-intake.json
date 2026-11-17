@@ -1,0 +1,289 @@
+{
+  "schema": 1,
+  "base": "595f497f15a3e3239a62f6b99cf61067df00f0d0",
+  "target": "ce5a565ba0f2e459e953bb18f1cedd5440f46d6b",
+  "frontier": "595f497f15a3e3239a62f6b99cf61067df00f0d0",
+  "commits": [
+    {
+      "sha": "8b5223dd7bb74bd486a6d126e388c1566f8a8ae7",
+      "subject": "Use Bazel's Python runtime for MCP permission hook tests (#62061)",
+      "paths": [
+        ".bazelrc",
+        "codex-rs/core/BUILD.bazel",
+        "codex-rs/core/src/mcp_tool_call_tests.rs",
+        "defs.bzl"
+      ],
+      "classes": [
+        "fix",
+        "packaging"
+      ],
+      "features": [
+        "qualification-fixtures",
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Use the declared Bazel Python runtime for existing MCP permission hook controls and fail bounded approval waits without changing production approval policy.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 232df3b852db78c2919a629d72581513f14c5b3cb7b67f356f2e7dd93d81aa5a; 8089 bytes / 199 lines. Exact single-parent/path identity is bound by raw index 060abb18ed93879904b2fab26f9d1f688c283629fbf4341671501c69b1e30732.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after595.md. Fixed ALab comparison 1db72614b0544fbcdee51b117e5e4b988983d147; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet c770d7db38103549c07be996b178b8459db2890efb550eeb15b9eb6b32e55543 binds 177 Git sources, twelve selected Rust declarations/fifteen literal cases before cfg filtering, eighteen module frontiers and three final-cohort manifests; all controls UNRUN. Original selected bodies and attributes are exact at final upstream ce5a565ba0f2e459e953bb18f1cedd5440f46d6b.",
+        "Bazel supplies declared Python interpreter/runtime runfiles; Rust hook fixture selects CARGO_BIN_EXE_python3 else platform fallback, invokes generated script as interpreter argument and bounds two approval waits at fifteen seconds. No production approval policy/default changes."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "0cc88d0c74e528b405b89ad4b82c97ad73604ecf",
+      "subject": "Reject conflicting remote endpoints for resume and fork (#62065)",
+      "paths": [
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/cli/tests/queue.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "native-session",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Reject conflicting root and resume/fork remote endpoints before token lookup, retaining command-specific errors and the existing agents check.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 3974bf8075977c1873200cd9d938ff2e2f89e60a905140246a510a6390d1f161; 3449 bytes / 85 lines. Exact single-parent/path identity is bound by raw index 060abb18ed93879904b2fab26f9d1f688c283629fbf4341671501c69b1e30732.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after595.md. Fixed ALab comparison 1db72614b0544fbcdee51b117e5e4b988983d147; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet c770d7db38103549c07be996b178b8459db2890efb550eeb15b9eb6b32e55543 binds 177 Git sources, twelve selected Rust declarations/fifteen literal cases before cfg filtering, eighteen module frontiers and three final-cohort manifests; all controls UNRUN. Original selected bodies and attributes are exact at final upstream ce5a565ba0f2e459e953bb18f1cedd5440f46d6b.",
+        "Root and agents/resume/fork endpoint mismatch rejected before token lookup; matching endpoints and other route behavior remain unchanged. One new CLI test loops over resume/fork, not two macro declarations.",
+        "Independent endpoint/interrupt source packet f73492183cf3868255ced25308d7b1f000c36bb60c172e2d04df9695fb7069a9 binds four exact bodies/attributes and five pre-cfg cases; retained trace addendum 77606e34262cccf7520a470665e39c53e77f967a9d1a2f39b52f26af92e483aa preserves original Client and Backend trace custody, not execution authority."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "58627e6feac9f69cbbb405d85f4f7343eca75a35",
+      "subject": "Fix turn interrupt reply ordering and shutdown handling (#62066)",
+      "paths": [
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/app-server/src/request_processors/thread_lifecycle.rs",
+        "codex-rs/app-server/src/request_processors/thread_listener_shutdown_tests.rs",
+        "codex-rs/app-server/src/request_processors/turn_interrupt_tests.rs",
+        "codex-rs/app-server/src/request_processors/turn_processor.rs",
+        "codex-rs/app-server/src/thread_state.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/state/turn.rs",
+        "codex-rs/core/src/tasks/mod.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "native-session",
+        "goal-storage-recovery",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Match interrupt acknowledgements to the actual terminal turn and settle pending requests on retired listener shutdown without granting authority from a status or history-only turn.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 22f3c5f6dbafa024ebb17ec8277e5eb7e7478d71d41d10737de701fa46943054; 38351 bytes / 903 lines. Exact single-parent/path identity is bound by raw index 060abb18ed93879904b2fab26f9d1f688c283629fbf4341671501c69b1e30732.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after595.md. Fixed ALab comparison 1db72614b0544fbcdee51b117e5e4b988983d147; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet c770d7db38103549c07be996b178b8459db2890efb550eeb15b9eb6b32e55543 binds 177 Git sources, twelve selected Rust declarations/fifteen literal cases before cfg filtering, eighteen module frontiers and three final-cohort manifests; all controls UNRUN. Original selected bodies and attributes are exact at final upstream ce5a565ba0f2e459e953bb18f1cedd5440f46d6b.",
+        "Pending interrupt queue retains actual target turn ID. Terminal completion/abort drains only matching target; review delegates resolve to owning turn. Current Core slot ID persists through stop hooks. Listener shutdown closes registration and settles queued interrupts under generation/ThreadState lock; later detached Core status changes cannot reopen it. Fixes prior recorded untagged-drain candidate.",
+        "Independent endpoint/interrupt source packet f73492183cf3868255ced25308d7b1f000c36bb60c172e2d04df9695fb7069a9 binds four exact bodies/attributes and five pre-cfg cases; retained trace addendum 77606e34262cccf7520a470665e39c53e77f967a9d1a2f39b52f26af92e483aa preserves original Client and Backend trace custody, not execution authority."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "7444076df4fbbc7cb265f6ca35d194dcb4b67af6",
+      "subject": "Refresh dependency locks and RustSec advisory exceptions (#62067)",
+      "paths": [
+        "MODULE.bazel.lock",
+        "codex-rs/.cargo/audit.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/deny.toml"
+      ],
+      "classes": [
+        "security",
+        "packaging"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt upstream dependency identities and paired advisory maintenance, retaining explicit remaining exception conditions and source-only limits.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 3b86c7d2d2d407986fdf9d1d78673c1690b14097b80901667a7f304978fe4a74; 44205 bytes / 353 lines. Exact single-parent/path identity is bound by raw index 060abb18ed93879904b2fab26f9d1f688c283629fbf4341671501c69b1e30732.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after595.md. Fixed ALab comparison 1db72614b0544fbcdee51b117e5e4b988983d147; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet c770d7db38103549c07be996b178b8459db2890efb550eeb15b9eb6b32e55543 binds 177 Git sources, twelve selected Rust declarations/fifteen literal cases before cfg filtering, eighteen module frontiers and three final-cohort manifests; all controls UNRUN. Original selected bodies and attributes are exact at final upstream ce5a565ba0f2e459e953bb18f1cedd5440f46d6b.",
+        "Cargo locks zip9.0.5/libz1.1.33/lzma0.22/constant_time_eq0.6.1 and new zstd0.14.3/zstd-safe8.2.0/zstd-sys2.1.2 alongside older zstd0.13.3/zstd-safe7.2.4 consumers. Removes two advisory exceptions; adds chrono unmaintained and three hickory DNSSEC exceptions with explicit recheck conditions.",
+        "Root independent projection review 38d6aef0a99aecf4aa038353ba7fb38eaab342d232c4008c10a8daa25ade74f9 rederives exact Cargo package/dependency changes, all seventeen Module JSON fact leaves and all twenty-four Guardian snapshot hashes/changed-line groups. Unchanged giant lock strings/repeated snapshot bodies are mechanically bound, not whole-text review or external advisory/runtime proof."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "c6a41e32f673bf8bc57684b7ac699c11b3b14a83",
+      "subject": "Upgrade XML dependencies and remove obsolete advisory ignores (#62068)",
+      "paths": [
+        "MODULE.bazel.lock",
+        "codex-rs/.cargo/audit.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/deny.toml"
+      ],
+      "classes": [
+        "security",
+        "packaging"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the consolidated patched XML dependency identities and remove obsolete upstream audit/deny exceptions without hand editing lock entries.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 b9605d0efe150a4e1f03c45f95fa2025077fd6ac7ccc61da7bc944df61c30f83; 142182 bytes / 142 lines. Exact single-parent/path identity is bound by raw index 060abb18ed93879904b2fab26f9d1f688c283629fbf4341671501c69b1e30732.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after595.md. Fixed ALab comparison 1db72614b0544fbcdee51b117e5e4b988983d147; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet c770d7db38103549c07be996b178b8459db2890efb550eeb15b9eb6b32e55543 binds 177 Git sources, twelve selected Rust declarations/fifteen literal cases before cfg filtering, eighteen module frontiers and three final-cohort manifests; all controls UNRUN. Original selected bodies and attributes are exact at final upstream ce5a565ba0f2e459e953bb18f1cedd5440f46d6b.",
+        "plist1.10.0 and wayland-scanner0.31.11 consolidate quick-xml0.41.0 and remove0.39.4; removes0194/0195 audit+deny and2024-0320 audit exception.",
+        "Root independent projection review 38d6aef0a99aecf4aa038353ba7fb38eaab342d232c4008c10a8daa25ade74f9 rederives exact Cargo package/dependency changes, all seventeen Module JSON fact leaves and all twenty-four Guardian snapshot hashes/changed-line groups. Unchanged giant lock strings/repeated snapshot bodies are mechanically bound, not whole-text review or external advisory/runtime proof."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "b271854568d6c9282e999d6f36e5e85f447d027d",
+      "subject": "Allow the expanded agent model shortlist in prompt-prefix tests (#62070)",
+      "paths": [
+        "codex-rs/app-server/tests/prompt_prefix.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__statusline_authoring__explicit_statusline_mention_loads_the_bundled_skill.snap"
+      ],
+      "classes": [
+        "fix",
+        "model"
+      ],
+      "features": [
+        "model-discovery",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Keep exact release-prefix comparison while recognizing the specified shortlist expansion; this test helper grants no model entitlement or new default.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 eb35bb108f267c3e9f2674c02cc2c1d822b4888c58d29587643274de658171e0; 6210 bytes / 109 lines. Exact single-parent/path identity is bound by raw index 060abb18ed93879904b2fab26f9d1f688c283629fbf4341671501c69b1e30732.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after595.md. Fixed ALab comparison 1db72614b0544fbcdee51b117e5e4b988983d147; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet c770d7db38103549c07be996b178b8459db2890efb550eeb15b9eb6b32e55543 binds 177 Git sources, twelve selected Rust declarations/fifteen literal cases before cfg filtering, eighteen module frontiers and three final-cohort manifests; all controls UNRUN. Original selected bodies and attributes are exact at final upstream ce5a565ba0f2e459e953bb18f1cedd5440f46d6b.",
+        "Release-prefix comparison accepts only exact five-model description plus four specified additions when whole resulting description equals current. All other description bytes remain checked. Test compatibility helper only; no model authorization/default activation."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "cac9284d24cc01f85df2d470717749514d06f02e",
+      "subject": "Test prompt-prefix preservation across app-server resume (#62071)",
+      "paths": [
+        "codex-rs/app-server/tests/prompt_prefix.rs",
+        "codex-rs/app-server/tests/prompt_prefix/resume_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "history-pagination",
+        "native-session",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Carry the persisted resume prefix regression fixture and exact appended-declaration assertions; released/current skew remains unexecuted.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 cf57f6bf2bf1bae1581410e6a3beb879e4a7065f7647434a26d23f957d559896; 9263 bytes / 210 lines. Exact single-parent/path identity is bound by raw index 060abb18ed93879904b2fab26f9d1f688c283629fbf4341671501c69b1e30732.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after595.md. Fixed ALab comparison 1db72614b0544fbcdee51b117e5e4b988983d147; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet c770d7db38103549c07be996b178b8459db2890efb550eeb15b9eb6b32e55543 binds 177 Git sources, twelve selected Rust declarations/fifteen literal cases before cfg filtering, eighteen module frontiers and three final-cohort manifests; all controls UNRUN. Original selected bodies and attributes are exact at final upstream ce5a565ba0f2e459e953bb18f1cedd5440f46d6b.",
+        "New actual two-process persisted resume fixture changes catalog description between runs and checks original instructions/tools/full input prefix retained with one updated appended declaration. Optional CONTRACT_EXECUTOR_BIN first run otherwise same current binary twice."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "02d60fb5ccdbb77ae63a12c5f9448363ea0db285",
+      "subject": "Preserve client attribution when spawning subagents (#62072)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/client_metadata.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/types.rs",
+        "codex-rs/core/src/session/turn_input.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/thread_spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/turn_metadata.rs",
+        "codex-rs/core/src/turn_metadata_tests.rs",
+        "codex-rs/core/tests/suite/code_mode_agent_message_tests.rs",
+        "codex-rs/protocol/src/turn_input.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "native-session"
+      ],
+      "decision": "adapt",
+      "reason": "Preserve both queued-child inherited attribution and the full original active-turn client map through strict recovery; require a coherent source cut and destination reservation proof before implementation.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 a45f4ad3d3fe3d3d07a98d4b592297a7e87086a4c9a8e3cb096581d8e0cd6a82; 25237 bytes / 580 lines. Exact single-parent/path identity is bound by raw index 060abb18ed93879904b2fab26f9d1f688c283629fbf4341671501c69b1e30732.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after595.md. Fixed ALab comparison 1db72614b0544fbcdee51b117e5e4b988983d147; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet c770d7db38103549c07be996b178b8459db2890efb550eeb15b9eb6b32e55543 binds 177 Git sources, twelve selected Rust declarations/fifteen literal cases before cfg filtering, eighteen module frontiers and three final-cohort manifests; all controls UNRUN. Original selected bodies and attributes are exact at final upstream ce5a565ba0f2e459e953bb18f1cedd5440f46d6b.",
+        "Capture original-turn client metadata for child initial turn across legacy/v2 and yielded old CodeMode cell. Exclude misalignment_override, parent_response_id, mcp_request_meta; reserved IDs remain filtered by existing metadata update. Later parent steering cannot mutate copied child/grandchild map.",
+        "Required owned adaptation remains UNIMPLEMENTED: preserve the queued SavedStart inherited_client_metadata through both conversions and its explicit initializer, AND capture the full current map from the original post-join root/child TurnContext through FrozenTurn, InputMetadata, active input snapshot and Prepared. TurnAttribution::start_options defaults non-lineage fields; recovered-turn setup then installs an empty inherited map, so SavedStart alone is insufficient. This is a source finding, not an observed runtime loss.",
+        "Restore the full same-turn map only after real original-turn native admission and reservation validation, outside active-turn/turn-state/mailbox guards and before notification/task start, through the existing reserved-ID/protected-continuation metadata update. Same-turn restore retains legitimate parent-only fields; new children still use the different upstream child filter. Copied metadata grants no Goal, model, SDK or native authority.",
+        "Strict required fields and early validation require active input5 and batch3; joined VERSION/MAGIC3 and current-only readers are conditional on confirming3 remains unallocated at implementation. No legacy empty-map defaults or advertised old readers. Keep tree4, pending2, forest1 and custody2 distinct, preserve prior signed-image lease/native grant/capsule descriptor actions, and retain SourceV1/full-capsule/all-root activation holds.",
+        "Design packet14f21ed86199ad3a84b8361fa88f9ad36a67b397dbfd89135eea2f7a8a5506ec (design0929fe1e/proposal049490e0) and independent peer016661375d3e990796752521b3d7b85b5f5046c484a354cb1c71bb02c684a5d0 bind fixed eadce833278128585acd2b57741fb3b08aa1b5ba/upstreamce5 sources. Its43 Git identities,20 old baseline bodies,7 module frontiers and30 named constructor/type spans are source anchors, all baseline controls UNRUN; this metadata adds no test coverage.",
+        "Implementation readiness remains UNSETTLED: R1 must establish a coherent cut across all actual writer gates and native active-owner lifetime, with real held-steer/cancellation oracles. R2 must prove destination reservation exclusion across admission or carry the minimal actual expected-reservation witness, refusing supersession before queue/map mutation. A current/source-child Arc or matching decoded IDs is not that proof; no race was demonstrated."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "ce5a565ba0f2e459e953bb18f1cedd5440f46d6b",
+      "subject": "Simplify Guardian history review preambles (#62074)",
+      "paths": [
+        "codex-rs/core/src/guardian/snapshots/codex_core__guardian__tests__guardian_followup_review_request_layout.snap",
+        "codex-rs/core/src/guardian/snapshots/codex_core__guardian__tests__guardian_review_request_layout.snap",
+        "codex-rs/core/src/guardian/snapshots/codex_core__guardian__tests__network_access_guardian_prompt_layout.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_agent_messages__encrypted_native_history_custom_namespace.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_agent_messages__encrypted_native_history_default_namespace.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_agent_messages__encrypted_parent_reply_survives_incremental_guardian_reviews.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_checkpoint_migration.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_code_mode_messaging.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_mcp__guardian_direct_mcp.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_exec.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_exec_patch.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_patch.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_permissions.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_direct_review__guardian_direct_pre_tool_use_rewrite.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_elastic_budgeting.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_extra_policy__extra_policy_reaches_guardian_review.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_handoff__guardian_handoff_delegation.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_handoff__guardian_handoff_delegation_native.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_heartbeat__heartbeat_repetitions_keep_later_human_authorization.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_nested_elicitation.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_orchestrator_connector__host_owned_orchestrator_connector_request_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_reconsideration__guardian_denial_reconsideration.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_sender_context__cross_host_sender_context.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_environment_mcp__same_named_executor_mcps_keep_calls_and_approvals_separate.snap",
+        "codex-rs/guardian-context/src/composition.rs"
+      ],
+      "classes": [
+        "security",
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Carry the shorter Guardian evidence preambles and matching snapshots while preserving transcript separation and existing policy authority.",
+      "evidence": [
+        "Canonical fuller-show patch SHA256 9eb72d97e1d578cb9c3ecd897bf5eb55ab3d19220da783ecd58dc7b05de247e1; 45398 bytes / 501 lines. Exact single-parent/path identity is bound by raw index 060abb18ed93879904b2fab26f9d1f688c283629fbf4341671501c69b1e30732.",
+        "Owned source review: alab/reviews/upstream-intake-2026-11-17-after595.md. Fixed ALab comparison 1db72614b0544fbcdee51b117e5e4b988983d147; metadata only, no source import, compilation, Send, native runtime, lint, certification or adoption credit.",
+        "Source/control packet c770d7db38103549c07be996b178b8459db2890efb550eeb15b9eb6b32e55543 binds 177 Git sources, twelve selected Rust declarations/fifteen literal cases before cfg filtering, eighteen module frontiers and three final-cohort manifests; all controls UNRUN. Original selected bodies and attributes are exact at final upstream ce5a565ba0f2e459e953bb18f1cedd5440f46d6b.",
+        "Initial/delta Guardian history preambles shorten evidence wording while retaining instruction/evidence boundary and transcript delimiters. No tool permission, approval-policy or default activation changes.",
+        "Root independent projection review 38d6aef0a99aecf4aa038353ba7fb38eaab342d232c4008c10a8daa25ade74f9 rederives exact Cargo package/dependency changes, all seventeen Module JSON fact leaves and all twenty-four Guardian snapshot hashes/changed-line groups. Unchanged giant lock strings/repeated snapshot bodies are mechanically bound, not whole-text review or external advisory/runtime proof."
+      ],
+      "revisit": ""
+    }
+  ]
+}

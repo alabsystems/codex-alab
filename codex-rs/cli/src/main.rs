@@ -60,6 +60,8 @@ mod alab_native_source_proof; // ALAB(accounts): opt-in isolated SDK proof uses 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
 mod config_override_args;
+#[path = "../../alab-core/glue/retained_cli_dispatch.rs"]
+mod alab_retained_cli; // ALAB(owned-local): original parser with actual bound backend custody, no frontend selector.
 mod daemon_install;
 mod daemon_telemetry;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1065,6 +1067,7 @@ fn stage_str(stage: Stage) -> &'static str {
 fn main() -> anyhow::Result<()> {
     // SAFETY: main's first operation has exclusive ownership of inherited exec custody descriptors.
     unsafe { codex_alab_tui::upgrade_exec_custody::adopt_before_threads()?; } // ALAB(upgrade): first synchronous hook exclusively adopts same-PID exec custody before runtime threads.
+    unsafe { codex_tui::pin_retained_image_custody_before_threads()?; } // ALAB(retained-ui): pin actual inherited image mailboxes before descriptor reuse; E1 authenticates later claims.
     codex_alab_core::activate(); // ALAB(core): this process is codex-alab; every ALab behavior keys off it
     let _upgrade_recovery = alab_upgrade_startup::stage()?; // ALAB(upgrade): adopt terminal data and own failure recovery before runtime or credential readers.
     codex_alab_core::initialize_running_build!()?; // ALAB(version): final executable owns the running stamp
@@ -1072,7 +1075,14 @@ fn main() -> anyhow::Result<()> {
     codex_build_info::initialize!();
     let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
-        codex_alab_core::native_source_launch::enter().await?; // ALAB(accounts): validate native constructor before config or credentials.
+        #[cfg(unix)]
+        if alab_retained_frontend_cli::run_if_requested(arg0_paths.clone(), remote_control_disabled).await? { return Ok(()); } // ALAB(retained-ui): actual E1/whole decoder before Source seed or credentials.
+        #[cfg(unix)]
+        if alab_retained_cli::run_if_requested(arg0_paths.clone(), remote_control_disabled).await? { return Ok(()); } // ALAB(owned-local): actual retained bind precedes original Source seed/config/auth.
+        #[cfg(unix)]
+        let _owned_backend = codex_alab_tui::frontend_control::enter_source_when_unretained().await?; // ALAB(retained-readers): only actual entered scope omits a new Source constructor.
+        #[cfg(not(unix))]
+        let _owned_backend = codex_alab_core::native_backend_startup::enter().await?; // ALAB(accounts): bind owned backend custody before config or credentials.
         #[cfg(all(feature = "alab-native-source-proof", debug_assertions))]
         if alab_native_source_proof::requested() { return alab_native_source_proof::run().await.map_err(Into::into); } // ALAB(accounts): isolated proof dispatch follows actual startup admission.
         // Finish polling the large subcommand dispatcher before polling interactive TUI events.
@@ -1093,7 +1103,9 @@ async fn dispatch_cli(
         remote,
         mut interactive,
         subcommand,
-    } = alab_upgrade_startup::parse(config_override_args::try_parse_from(std::env::args_os()))?; // ALAB(upgrade): a custodied forest cannot fall through ordinary resume or bypass terminal recovery.
+    } = alab_upgrade_startup::parse(config_override_args::try_parse_from(alab_retained_frontend_cli::arguments()?))?; // ALAB(upgrade): a custodied forest cannot fall through ordinary resume or bypass terminal recovery.
+    alab_retained_frontend_cli::validate_route(subcommand.as_ref())?; // ALAB(retained-ui): actual entered scope runs only the original interactive workflow.
+    alab_retained_cli::validate_route(subcommand.as_ref())?; // ALAB(owned-local): no other original command may run under this bound backend route.
     codex_alab_tui::life::capture_cli(<MultitoolCli as clap::CommandFactory>::command); // ALAB(life): codex's own clap definition rebuilds the record's resumeArgv
     // Retain the launch target through TUI exit, even if a launcher changes selection.
     let daemon_cli_executable = arg0_paths
@@ -2598,6 +2610,8 @@ async fn run_interactive_tui(
         interactive.prompt = Some(prompt.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
+    #[cfg(unix)]
+    if let Some(exit) = alab_retained_cli::start_backend_if_bound(&interactive, remote.as_deref(), remote_auth_token_env.as_deref(), &arg0_paths).await? { return Ok(exit); } // ALAB(owned-local): original parsed/finalized inputs build the independent backend, not a frontend terminal.
     let terminal_info = codex_terminal_detection::terminal_info();
     if terminal_info.name == TerminalName::Dumb {
         if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
@@ -5128,3 +5142,6 @@ mod daemon_update_tests;
 #[cfg(test)] #[path = "../../alab-tui/glue/cli_resume_tests.rs"] mod alab_resume_tests; // ALAB(life): resumeArgv against the real MultitoolCli
 
 #[path = "../../alab-tui/glue/upgrade_cli_startup.rs"] mod alab_upgrade_startup; // ALAB(upgrade): validate explicit local routing before decoding custodied runtime data.
+
+#[path = "../../alab-core/glue/retained_frontend_cli.rs"]
+mod alab_retained_frontend_cli; // ALAB(retained-ui): actual earliest entered owner, ordinary selector remains inactive.

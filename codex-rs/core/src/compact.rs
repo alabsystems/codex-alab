@@ -350,7 +350,7 @@ async fn run_compact_task_inner_impl(
             }
             Err(e) if crate::responses_retry::alab_capacity_retry::recover_compaction_weekly(&e, &sess, turn_context.as_ref()).await? => continue, // ALAB(weekly-reset): verified earned reset retries this compaction with its original history and prompt.
             Err(e) if crate::responses_retry::alab_capacity_retry::should_retry(&e, turn_context.as_ref()) => crate::responses_retry::alab_capacity_retry::compact_capacity_wait(&mut capacity, e, &sess, turn_context.as_ref()).await, // ALAB(capacity): retry the same compaction without shrinking history or spending ordinary retries
-            Err(e) if crate::responses_retry::alab_capacity_retry::compact_should_stop(&e, turn_context.as_ref()) => return Err(e), // ALAB(recovery): remember compaction advice and stop terminal refusals before replaying them
+            Err(e) if crate::responses_retry::alab_capacity_retry::compact_should_stop(&e, turn_context.as_ref(), &mut client_session) => return Err(e), // ALAB(recovery): remember compaction advice, stop terminal refusals before replaying them, and give up a returned WebSocket that did not carry this request.
             Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
                 if turn_input_len > 1 {
                     // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.

@@ -138,6 +138,47 @@ class ReviewContinuityTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "incomplete or replayed"):
                     self.verify_ephemeral(self.ephemeral_events() + [event])
 
+    def test_ephemeral_review_rejects_work_outside_its_turn(self):
+        for item in ("command", "answer"):
+            for where in ("before-start", "after-end"):
+                with self.subTest(item=item, where=where):
+                    events = self.ephemeral_events()
+                    event = events.pop(2 if item == "command" else 3)
+                    events.insert(1 if where == "before-start" else len(events), event)
+                    with self.assertRaisesRegex(RuntimeError, "original turn order"):
+                        self.verify_ephemeral(events)
+
+    def test_ephemeral_review_rejects_reversed_lifecycle_or_work(self):
+        for change in ("turn-boundaries", "answer-before-command"):
+            with self.subTest(change=change):
+                events = self.ephemeral_events()
+                left, right = (1, 4) if change == "turn-boundaries" else (2, 3)
+                events[left], events[right] = events[right], events[left]
+                with self.assertRaisesRegex(RuntimeError, "original turn order"):
+                    self.verify_ephemeral(events)
+
+    def test_ephemeral_control_keeps_the_same_ordered_work_requirement(self):
+        oracle = review.Review(accounts.find_tool, control=True)
+        requests = self.requests[:2]
+        report = {}
+        oracle.verify(self.root, requests, report, "root", ephemeral=True,
+                      events=self.ephemeral_events())
+        self.assertEqual(report["reviewContinuity"]["evidence"], "exec-json-control")
+        self.assertIsNone(report["reviewContinuity"]["parentTurn"])
+        events = self.ephemeral_events()
+        events[2], events[3] = events[3], events[2]
+        report = {}
+        with self.assertRaisesRegex(RuntimeError, "original turn order"):
+            oracle.verify(self.root, requests, report, "root", ephemeral=True, events=events)
+        self.assertNotIn("reviewContinuity", report)
+
+    def test_ephemeral_review_allows_nonfatal_warnings_and_reasoning(self):
+        events = self.ephemeral_events()
+        events.insert(2, {"type": "item.completed", "item": {
+            "type": "error", "message": "Retrying the original review"}})
+        events.insert(4, {"type": "item.completed", "item": {"type": "reasoning", "text": ""}})
+        self.assertTrue(self.verify_ephemeral(events)["renderedResult"])
+
     def test_ephemeral_review_rejects_wrong_root_or_lost_command(self):
         events = self.ephemeral_events()
         events[0]["thread_id"] = "another-root"

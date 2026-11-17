@@ -17,7 +17,7 @@ pub(super) struct TurnTips {
     starts: usize,
     completions_shown: usize,
     next_completion: usize,
-    previous: Option<&'static str>,
+    previous: Option<codex_alab_tui::retained_tip_template::Template>, // ALAB(retained-ui): chosen old-build text remains owned after update.
     current: Option<TurnTipState>,
 }
 
@@ -27,7 +27,7 @@ struct TurnTipState {
     started_at: Instant,
     phase: Phase,
     has_final_answer: bool,
-    template: Option<&'static str>,
+    template: Option<codex_alab_tui::retained_tip_template::Template>, // ALAB(retained-ui): original literals borrow; retained text owns its lifetime.
     shown: bool,
 }
 
@@ -137,7 +137,7 @@ impl TurnTips {
             && !current.shown
         {
             current.shown = true;
-            self.previous = current.template;
+            self.previous = current.template.clone(); // ALAB(retained-ui): retain the same chosen text without a static arena.
             if surface == TipSurface::Completion {
                 self.completions_shown += 1;
                 self.next_completion = self.starts.saturating_add(COMPLETION_INTERVAL);
@@ -220,15 +220,15 @@ impl App {
             current.template = templates
                 .iter()
                 .copied()
-                .filter(|template| Some(*template) != self.turn_tips.previous)
+                .filter(|template| Some(*template) != self.turn_tips.previous.as_deref()) // ALAB(retained-ui): compare exact text across borrowed/owned storage.
                 .find(|template| render(template).is_some())
                 .or_else(|| {
                     templates
                         .into_iter()
                         .find(|template| render(template).is_some())
-                });
+                }).map(codex_alab_tui::retained_tip_template::literal); // ALAB(retained-ui): the original chooser still supplies actual literals.
         }
-        let line = render(current.template?)?;
+        let line = render(current.template.as_deref()?)?; // ALAB(retained-ui): render the exact chosen old-build text.
         let line = prefix_hyperlink_lines(vec![line], "  └ ".dim(), "    ".dim())
             .pop()?
             .style(crate::style::secondary_text_style());
@@ -245,3 +245,7 @@ impl App {
 #[cfg(test)]
 #[path = "turn_tips_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_turn_tips.rs"]
+pub(in crate::app) mod alab_retained; // ALAB(retained-ui): retain chosen tip text and original exposure state.

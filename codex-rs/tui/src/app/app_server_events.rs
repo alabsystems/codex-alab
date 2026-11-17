@@ -71,6 +71,11 @@ impl App {
     ) {
         codex_alab_tui::upgrade::native_event(); // ALAB(upgrade): late goal, background-task and thread notifications invalidate the handoff.
         super::alab_session::stream(self, app_server_client.backend_id(), &event); // ALAB(turns): a turn's end and a thread's close reach the seen book before any routing return; a lag or a disconnect lets only that backend's seen turns go.
+        #[cfg(unix)] // ALAB(retained-frontier): terminal failure cannot hide behind an inactive primary's replay buffer.
+        if let AppServerEvent::ServerNotification(notification) = &event
+            && let ServerNotification::AlabRetainedFrontier(tail) = notification.as_ref()
+            && super::alab_retained_ui::failed_tail(self, app_server_client, tail)
+        { return; }
         match event {
             AppServerEvent::Lagged { skipped } => {
                 tracing::warn!(
@@ -117,8 +122,17 @@ impl App {
                     notification.as_ref(),
                     ServerNotification::ServerRequestResolved(_)
                 );
+                #[cfg(unix)] // ALAB(retained-ui): retain exact notification identity before original semantic dismissal.
+                let callback_resolved = match notification.as_ref() {
+                    ServerNotification::ServerRequestResolved(actual) => Some((actual.thread_id.clone(), actual.request_id.clone())),
+                    _ => None,
+                };
                 self.handle_server_notification_event(app_server_client, *notification)
                     .await;
+                #[cfg(unix)] // ALAB(retained-ui): endpoint bookkeeping follows the actual original UI handler, never the wire arrival alone.
+                if let Some((thread, id)) = callback_resolved
+                    && let Err(error) = self.alab_after_callback_resolved(app_server_client, &thread, &id).await
+                { tracing::warn!(%error, "retained callback semantic retirement remains owned"); }
                 if request_resolved {
                     self.repaint_agents_overview();
                 }
@@ -330,6 +344,8 @@ impl App {
         }
         match &notification {
             ServerNotification::ServerRequestResolved(notification) => {
+                #[cfg(unix)] let _original_input_resolved = super::app_server_requests::alab_retained_replies::original_input::resolving(&notification.request_id); // ALAB(retained-ui): only same actual RPC can dismiss a protected queued item.
+                #[cfg(unix)] self.pending_app_server_requests.alab_retained_replies.retire_unused_input(&notification.thread_id, &notification.request_id); // ALAB(retained-ui): an unanswered local claim retires only after actual original closed notification.
                 if let Some((_, task)) = self.dynamic_tool_tasks.remove(&notification.request_id) {
                     task.abort();
                 }

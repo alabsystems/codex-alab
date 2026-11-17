@@ -124,6 +124,7 @@ fn try_parse_retry_delay(err: &Error) -> Option<Duration> {
             if unit == "s" || unit.starts_with("second") {
                 return Duration::try_from_secs_f64(value).ok();
             } else if unit == "ms" {
+                if codex_alab_core::active() { return alab_retry_delay::milliseconds(value); } // ALAB(recovery): accepted fractional milliseconds keep their sub-millisecond delay.
                 return Some(Duration::from_millis(value as u64));
             }
         }
@@ -156,3 +157,10 @@ mod tests;
 #[cfg(test)]
 #[path = "../../../alab-core/glue/responses_error_quota_tests.rs"]
 mod alab_quota_tests; // ALAB(quota): isolated parser controls live in ALab core.
+
+#[cfg(test)]
+#[path = "../../../alab-core/glue/responses_retry_delay_tests.rs"]
+mod alab_retry_delay_tests; // ALAB(recovery): preserve fractional plaintext retry advice through actual parser and event paths.
+
+#[path = "../../../alab-core/glue/responses_retry_delay.rs"]
+mod alab_retry_delay; // ALAB(recovery): checked millisecond conversion lives outside the upstream parser.

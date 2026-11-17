@@ -12,12 +12,12 @@
 //! An unavailable native observation cannot settle anything; an unavailable filing retains
 //! upstream's banner fallback. No account identifiers are logged or sent to aterm.
 
-use crate::app_event::AppEvent;
-use crate::app_event_sender::AppEventSender;
-use crate::app_server_session::AppServerSession;
 use super::Config;
 use super::Identity;
 use super::Notice;
+use crate::app_event::AppEvent;
+use crate::app_event_sender::AppEventSender;
+use crate::app_server_session::AppServerSession;
 use codex_alab_tui::notices::ObservedLater;
 use codex_alab_tui::notices::RoutedNotice;
 use codex_app_server_protocol::ClientRequest;
@@ -31,6 +31,7 @@ pub(crate) struct Fetched {
     pub(crate) notice: Option<Notice>,
     observed: Option<ObservedLater>,
     delivery: Delivery,
+    account_reader: crate::owned_local_managed_readers::AccountReader,
 }
 
 impl Fetched {
@@ -43,7 +44,15 @@ impl Fetched {
             notice,
             observed,
             delivery,
+            account_reader: Default::default(),
         }
+    }
+    fn with_account_reader(
+        mut self,
+        actual: crate::owned_local_managed_readers::AccountReader,
+    ) -> Self {
+        self.account_reader = actual;
+        self
     }
 }
 
@@ -76,12 +85,17 @@ pub(crate) trait TestTransport: Send + Sync {
 }
 
 impl Delivery {
-    async fn begin(&self, config: &Config) -> Option<(Identity, Option<ObservedLater>)> {
-        let auth = config.auth_config().load_auth(false).await.ok().flatten()?;
-        if !matches!(auth, codex_login::CodexAuth::Chatgpt(_)) || auth.is_fedramp_account() {
-            return None;
-        }
-        let identity = Identity::from_auth(&auth)?;
+    async fn begin(
+        &self,
+        config: &Config,
+        reader: &crate::owned_local_managed_readers::AccountReader,
+    ) -> Option<(Identity, Option<ObservedLater>)> {
+        let observed = reader.observe(&config.auth_config()).await.ok()?;
+        let (account, user) = observed.notice_identity()?;
+        let identity = Identity {
+            account: account.into(),
+            user: user.into(),
+        };
         let observed = self.observe(&identity).await;
         Some((identity, observed))
     }
@@ -123,10 +137,11 @@ pub(crate) fn prefetch_using(
         return None;
     }
     let config = config.clone();
+    let account_reader = crate::owned_local_managed_readers::AccountReader::for_session(server);
     let request_handle = server.request_handle();
     Some(tokio::spawn(async move {
         let result = tokio::time::timeout(Duration::from_secs(3), async {
-            let (identity, observed) = delivery.begin(&config).await?;
+            let (identity, observed) = delivery.begin(&config, &account_reader).await?;
             let response: GetAccountSecuritySetupResponse = request_handle
                 .request_typed(ClientRequest::GetAccountSecuritySetup {
                     request_id: RequestId::String(Uuid::new_v4().to_string()),
@@ -138,13 +153,8 @@ pub(crate) fn prefetch_using(
             if notice.as_ref().is_some_and(|notice| !notice.valid()) {
                 return None;
             }
-            let current = config
-                .auth_config()
-                .load_auth(/*enable_codex_api_key_env*/ false)
-                .await
-                .ok()
-                .flatten()?;
-            if Identity::from_auth(&current).as_ref() != Some(&identity) {
+            let current = account_reader.observe(&config.auth_config()).await.ok()?;
+            if current.identity() != Some((identity.account.as_str(), identity.user.as_str())) {
                 tracing::debug!("security setup identity changed during fetch");
                 return None;
             }
@@ -158,7 +168,8 @@ pub(crate) fn prefetch_using(
             tx.send(AppEvent::SecuritySetupLoaded {
                 request_id,
                 identity,
-                notice: Fetched::new(notice, observed, delivery),
+                notice: Fetched::new(notice, observed, delivery)
+                    .with_account_reader(account_reader),
             });
         }
     }))
@@ -204,15 +215,12 @@ pub(crate) async fn accept(
 ) -> Option<(Identity, Notice)> {
     let current = tokio::time::timeout(
         Duration::from_secs(3),
-        config
-            .auth_config()
-            .load_auth(/*enable_codex_api_key_env*/ false),
+        fetched.account_reader.observe(&config.auth_config()),
     )
     .await
     .ok()?
-    .ok()
-    .flatten()?;
-    if Identity::from_auth(&current).as_ref() != Some(&identity) {
+    .ok()?;
+    if current.identity() != Some((identity.account.as_str(), identity.user.as_str())) {
         return None;
     }
     if let Some(notice) = fetched.notice {

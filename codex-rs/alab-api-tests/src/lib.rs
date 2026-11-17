@@ -10,9 +10,15 @@ mod child_capture_tests;
 #[cfg(test)]
 mod http_error_body_capture_tests;
 #[cfg(test)]
+mod http_operation_diagnostic_tests;
+#[cfg(test)]
 mod http_retry_diagnostic_tests;
 #[cfg(test)]
+mod http_wire_retry_tests;
+#[cfg(test)]
 mod marker_capture_tests;
+#[cfg(test)]
+mod memories_decode_contract_tests;
 #[cfg(test)]
 mod sse_audio_rejection_tests;
 #[cfg(test)]

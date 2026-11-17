@@ -6,6 +6,10 @@
 //! Committed snapshots share a byte budget. One pending edit snapshot has its own matching cap,
 //! so canceled commands cannot evict committed history.
 
+#[cfg(unix)]
+#[path = "../../../../alab-tui/glue/editor_upgrade_vim_history.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): carry native structured draft data and register relationships.
+
 use std::collections::VecDeque;
 
 use super::super::textarea::VimPersistentState;

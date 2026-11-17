@@ -736,6 +736,104 @@ fn assert_phase(capture: &Capture, outcome: &str, bytes: Option<usize>) {
     assert!(!fields.contains("never-log-buffered-provider-content"));
 }
 
+fn body_bytes_read(capture: &Capture) -> Option<usize> {
+    let records = capture.0.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    let phase = &records[0];
+    for name in phase.keys() {
+        assert!(
+            matches!(
+                name.as_str(),
+                "message"
+                    | "phase"
+                    | "http_status"
+                    | "body_capture"
+                    | "body_wait_ms"
+                    | "rejection_body_bytes"
+                    | "rejection_body_bytes_read"
+                    | "retry_advised"
+                    | "request_id"
+                    | "cf_ray"
+                    | "thread_id"
+                    | "thread.id"
+                    | "turn.id"
+                    | "http.method"
+                    | "api.path"
+            ),
+            "unexpected capture field {name}"
+        );
+    }
+    assert_eq!(phase["http.method"], "POST");
+    assert_eq!(phase["api.path"], "\"images/generations\"");
+    phase
+        .get("rejection_body_bytes_read")
+        .map(|value| value.parse().expect("numeric decoded-entity byte count"))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn buffered_http_capture_counts_entity_bytes_before_strict_utf8_conversion() {
+    if isolated("buffered_http_capture_counts_entity_bytes_before_strict_utf8_conversion").await {
+        return;
+    }
+    codex_alab_core::activate();
+    let (complete, capture) = rejection(captured_images(Plan::rejection(false)).await);
+    assert_wire(&complete);
+    assert_eq!(complete.posts.len(), 1);
+    assert_http(&complete, Some(BODY));
+    assert_phase(&capture, "complete", Some(BODY.len()));
+    let advice = match &complete.error {
+        ApiError::Transport(TransportError::Http { retry_after, .. }) => *retry_after,
+        _ => unreachable!(),
+    };
+    let mapped = codex_api::map_api_error(complete.error);
+    assert_eq!(mapped.retry_after(), advice);
+    assert_eq!(mapped.http_status_code_value(), Some(429));
+    assert!(mapped.retry_delay(1).is_some());
+    eprintln!("ALAB_BUFFERED_BODY_READ_PROGRESS:case=complete:stage=late_metric");
+    assert_eq!(body_bytes_read(&capture), Some(BODY.len()));
+    eprintln!("ALAB_BUFFERED_BODY_READ_PROGRESS:case=complete:stage=complete");
+
+    for (bytes, expected) in [(Vec::new(), Some("")), (b"invalid \xff".to_vec(), None)] {
+        let length = bytes.len();
+        let (case, capture) = rejection(captured_images(Plan::complete(bytes)).await);
+        assert_wire(&case);
+        assert_eq!(case.posts.len(), 1);
+        assert_http(&case, expected);
+        assert_phase(&capture, "complete", Some(length));
+        assert_eq!(
+            body_bytes_read(&capture),
+            Some(length),
+            "count entity bytes before strict text decoding"
+        );
+    }
+    let (truncated, capture) = rejection(captured_images(Plan::rejection(true)).await);
+    assert_wire(&truncated);
+    assert_eq!(truncated.posts.len(), 1);
+    assert_http(&truncated, None);
+    assert_phase(&capture, "read_error", None);
+    assert!(
+        body_bytes_read(&capture).expect("chunk phase began") <= BODY.len(),
+        "successful chunks may be fewer than bytes written to TCP"
+    );
+
+    let (declared, capture) = rejection(
+        captured_images(Plan {
+            declared: 64 * 1024 + 1,
+            ..Plan::complete(Vec::new())
+        })
+        .await,
+    );
+    assert_wire(&declared);
+    assert_eq!(declared.posts.len(), 1);
+    assert_http(&declared, None);
+    assert_phase(&capture, "too_large", None);
+    assert_eq!(
+        body_bytes_read(&capture),
+        None,
+        "declared oversize did not begin body collection"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn complete_buffered_rejections_keep_strict_utf8_decoding_and_measured_bytes() {
     if isolated("complete_buffered_rejections_keep_strict_utf8_decoding_and_measured_bytes").await {

@@ -33,6 +33,9 @@ use tracing::warn;
 
 use crate::error_code::internal_error;
 use crate::server_request_error::TURN_TRANSITION_PENDING_REQUEST_ERROR_REASON;
+
+#[path = "../../alab-core/glue/retained_human_approval_wait.rs"]
+mod alab_retained_human_approval_wait; // ALAB(upgrade): actual retained input owns waiting, never approval authority.
 pub(crate) use codex_app_server_transport::ConnectionId;
 pub(crate) use codex_app_server_transport::OutgoingError;
 pub(crate) use codex_app_server_transport::OutgoingMessage;
@@ -75,6 +78,20 @@ pub(crate) struct RequestContext {
     span: Span,
     parent_trace: Option<W3cTraceContext>,
     _diagnostics_guard: Arc<GaugeGuard>,
+    pub(crate) alab_callback_claim: Option<Arc<alab_callback_claim::metadata::Request>>, // ALAB(retained-ui): Source endpoint selectors, not authority.
+    #[cfg(unix)]
+    pub(crate) alab_input_ingress: Option<Arc<alab_callback_outcomes::ingress::FrameLease>>, // ALAB(retained-ui): actual queued input dispatch custody.
+    pub(crate) alab_reader_claim: Option<Arc<alab_reader_claim::Selection>>, // ALAB(retained-readers): immutable reader selection DATA shares actual request custody.
+    pub(crate) alab_configured_claim: Option<Arc<alab_configured_claim::Claim>>, // ALAB(retained-frontier): immutable configured correlation DATA shares actual request custody.
+    pub(crate) alab_side_rollback: Option<Arc<alab_side_rollback_claim::Claim>>, // ALAB(retained-side): immutable original rollback DATA.
+    pub(crate) alab_side_view: Option<Arc<alab_side_view_claim::Claim>>, // ALAB(retained-side): DATA selecting an actual private installed view.
+    pub(crate) alab_side_injection: Option<Arc<alab_side_boundary_claim::Claim>>, // ALAB(retained-side): DATA only; original context retains actual origin.
+    pub(crate) alab_source_selection: Option<Arc<alab_source_selection_claim::Claim>>, // ALAB(owned-local): distinct Source S2 DATA; actual accepted resource remains separate.
+    pub(crate) alab_frontier_claim: Option<Arc<alab_frontier_claim::Claim>>, // ALAB(retained-frontier): share immutable correlation DATA without enlarging every original request context.
+    pub(crate) alab_initial_claim: Option<alab_initial_claim::Claim>, // ALAB(owned-local): complete original selection DATA, never admission.
+    pub(crate) alab_client_preparation: Option<alab_initial_claim::PreparationClaim>, // ALAB(owned-local): frozen preparation DATA, actual context/origin remains separate.
+    pub(crate) alab_client_construction: Option<alab_initial_claim::ClientClaim>, // ALAB(owned-local): real later request DATA, not replay/permission.
+    pub(crate) alab_connection_resource: Option<codex_alab_core::connection_resource::ConnectionResource>, // ALAB(owned-local): same original request custody, never authorization.
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -109,6 +126,20 @@ impl RequestContext {
             span,
             parent_trace,
             _diagnostics_guard: Arc::new(IN_FLIGHT_REQUESTS.track()),
+            alab_callback_claim: None, // ALAB(retained-ui): ordinary requests carry no endpoint selection.
+            #[cfg(unix)]
+            alab_input_ingress: None, // ALAB(retained-ui): only actual same-session dispatch can populate.
+            alab_reader_claim: None, // ALAB(retained-readers): ordinary request owns no retained reader selection.
+            alab_configured_claim: None, // ALAB(retained-frontier): ordinary contexts invent no configured observation.
+            alab_side_rollback: None, // ALAB(retained-side): no ordinary rollback selection.
+            alab_side_view: None, // ALAB(retained-side): no installed-view selection on ordinary requests.
+            alab_side_injection: None, // ALAB(retained-side): ordinary injection has no owned selection.
+            alab_source_selection: None, // ALAB(owned-local): ordinary requests carry no Source selection.
+            alab_frontier_claim: None, // ALAB(retained-frontier): ordinary constructors supply no physical frontier.
+            alab_initial_claim: None, // ALAB(owned-local): only actual parsed RPC metadata supplies selection DATA.
+            alab_client_preparation: None, // ALAB(owned-local): ordinary requests reserve no operation.
+            alab_client_construction: None, // ALAB(owned-local): plain contexts fabricate no accepted construction.
+            alab_connection_resource: None, // ALAB(owned-local): plain constructors cannot invent native origin.
         }
     }
 
@@ -139,13 +170,17 @@ pub(crate) enum OutgoingEnvelope {
 
 /// Sends messages to the client and manages request callbacks.
 pub(crate) struct OutgoingMessageSender {
+    #[cfg(test)] alab_selection_context_capture: std::sync::Mutex<Option<std::sync::Arc<alab_selection_request_capture::Gate>>>, // ALAB(owned-local): actual-context publication controls only.
     verification_auth: OnceLock<Arc<codex_login::AuthManager>>,
     verification_connections: Mutex<HashSet<ConnectionId>>,
     human_approval_connections: Mutex<HashSet<ConnectionId>>,
+    alab_approval_wait: alab_retained_human_approval_wait::WaitOwner, // ALAB(upgrade): absent for ordinary app-server constructors.
     next_server_request_id: AtomicI64,
     sender: mpsc::Sender<OutgoingEnvelope>,
     process_reply_sender: mpsc::Sender<OutgoingEnvelope>,
     request_id_to_callback: Mutex<HashMap<RequestId, PendingCallbackEntry>>,
+    #[cfg(unix)]
+    alab_callback_outcomes: Option<Arc<alab_callback_outcomes::Ledger>>, // ALAB(retained-ui): only actual retained Incoming enables Source callback facts.
     /// Incoming requests that are still waiting on a final response or error.
     /// We keep them here because this is where responses, errors, and
     /// disconnect cleanup all get handled.
@@ -166,6 +201,8 @@ struct PendingCallbackEntry {
     verification_auth_revision: Option<u64>,
     verification_identity: Option<user_verification_auth::Identity>,
     callback: oneshot::Sender<ClientRequestResult>,
+    #[cfg(unix)]
+    alab_outcome: Option<alab_callback_outcomes::Endpoint>, // ALAB(retained-ui): unmarked callback destruction stays Unknown.
     thread_id: Option<ThreadId>,
     request: ServerRequest,
     _diagnostics_guard: GaugeGuard,
@@ -278,10 +315,14 @@ impl OutgoingMessageSender {
             verification_auth: OnceLock::new(),
             verification_connections: Mutex::new(HashSet::new()),
             human_approval_connections: Mutex::new(HashSet::new()),
+            alab_approval_wait: Default::default(), // ALAB(upgrade): ordinary no-recipient behavior stays unchanged.
             next_server_request_id: AtomicI64::new(0),
             process_reply_sender: sender.clone(),
             sender,
             request_id_to_callback: Mutex::new(HashMap::new()),
+            #[cfg(unix)]
+            alab_callback_outcomes: None, // ALAB(retained-ui): ordinary senders retain original callback behavior.
+            #[cfg(test)] alab_selection_context_capture: Default::default(), // ALAB(owned-local): ordinary dispatch has no context tap.
             request_contexts: Mutex::new(HashMap::new()),
             analytics_events_client,
         }
@@ -339,6 +380,8 @@ impl OutgoingMessageSender {
             .await;
         let mut request_contexts = self.request_contexts.lock().await;
         request_contexts.retain(|request_id, _| request_id.connection_id != connection_id);
+        #[cfg(unix)]
+        if let Some(ledger) = &self.alab_callback_outcomes { ledger.connection_closed(connection_id); } // ALAB(retained-ui): existing captures retain exact cells across C1 EOF.
     }
 
     pub(crate) async fn request_trace_context(
@@ -426,7 +469,10 @@ impl OutgoingMessageSender {
                 .copied()
                 .filter(|id| eligible.contains(id))
                 .collect::<Vec<_>>();
-            if human_connections.is_empty() {
+            // ALAB(upgrade): a thread approval may wait on the actual retained input, with no recipient invented.
+            if human_connections.is_empty()
+                && !self.alab_approval_wait.keep_gap(&request, thread_id)
+            {
                 return (outgoing_message_id, rx_approve);
             }
             Some(human_connections.as_slice())
@@ -452,6 +498,11 @@ impl OutgoingMessageSender {
         };
         {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            if !self.alab_approval_wait.registration_open() { // ALAB(upgrade): serialize registration with retained-host withdrawal.
+                return (outgoing_message_id, rx_approve);
+            }
+            #[cfg(unix)]
+            let (alab_outcome,tx_approve)=match self.alab_register_callback_endpoint(&request,thread_id,connection_ids,tx_approve){Ok(accepted)=>accepted,Err(())=>return(outgoing_message_id,rx_approve)}; // ALAB(retained-ui): capacity failure reaches original waiter before publication.
             request_id_to_callback.insert(
                 id,
                 PendingCallbackEntry {
@@ -464,6 +515,8 @@ impl OutgoingMessageSender {
                     verification_auth_revision,
                     verification_identity: verification_identity.clone(),
                     callback: tx_approve,
+                    #[cfg(unix)]
+                    alab_outcome, // ALAB(retained-ui): same pre-publication admitted endpoint.
                     thread_id,
                     request: request.clone(),
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
@@ -521,7 +574,10 @@ impl OutgoingMessageSender {
         if let Err(err) = send_result {
             warn!("failed to send request {outgoing_message_id:?} to client: {err:?}");
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
-            request_id_to_callback.remove(&outgoing_message_id);
+            if let Some(entry) = request_id_to_callback.remove(&outgoing_message_id) {
+                #[cfg(unix)]
+                if let Some(endpoint) = entry.alab_outcome.as_ref() { endpoint.close(alab_callback_outcomes::Closed::Withdrawn); } // ALAB(retained-ui): actual failed-send removal, no delivery/NoExec claim.
+            }
         }
         (outgoing_message_id, rx_approve)
     }
@@ -530,13 +586,15 @@ impl OutgoingMessageSender {
         &self,
         connection_id: ConnectionId,
         thread_id: ThreadId,
-    ) {
+    ) -> std::io::Result<()> { // ALAB(retained-ui): replay admission failure is observed by the real listener.
         let requests = self.pending_requests_for_thread(thread_id).await;
         let human_approval = self
             .human_approval_connections
             .lock()
             .await
             .contains(&connection_id);
+        #[cfg(unix)]
+        let alab_replay=requests.reserve(self,connection_id,human_approval)?; // ALAB(retained-ui): reserve entire replay before any send or authorization mutation.
         for request in requests {
             if requires_human_approval(&request) {
                 if !human_approval {
@@ -550,6 +608,8 @@ impl OutgoingMessageSender {
                 };
                 entry.human_approval_recipients.insert(connection_id);
             }
+            #[cfg(unix)]
+            if let Some(reserved)=&alab_replay { reserved.install(&request)?; } // ALAB(retained-ui): actual reserved cell only at original send point.
             if let Err(err) = self
                 .sender
                 .send(OutgoingEnvelope::ToConnection {
@@ -562,6 +622,7 @@ impl OutgoingMessageSender {
                 warn!("failed to resend request to client: {err:?}");
             }
         }
+        Ok(())
     }
 
     pub(crate) async fn notify_client_response(
@@ -574,6 +635,8 @@ impl OutgoingMessageSender {
 
         match entry {
             Some((id, entry)) => {
+                #[cfg(unix)]
+                if let Some(endpoint) = entry.alab_outcome.as_ref() { endpoint.close(alab_callback_outcomes::Closed::Response); } // ALAB(retained-ui): actual Source callback acceptance, not Core/Native settlement.
                 let completed_at_ms = now_unix_timestamp_ms();
                 if entry.verification_owner.is_none()
                     && let Ok(response) = entry.request.response_from_result(result.clone())
@@ -584,7 +647,10 @@ impl OutgoingMessageSender {
                             .track_server_response(completed_at_ms, response);
                     }
                 }
-                if entry.callback.send(Ok(result)).is_err() {
+                let delivered = entry.callback.send(Ok(result));
+                #[cfg(unix)]
+                self.alab_original_input_sent(&delivered); // ALAB(retained-ui): SAME actual send result, never inferred from endpoint state.
+                if delivered.is_err() {
                     warn!("could not notify callback for {id:?}: receiver dropped");
                 }
             }
@@ -604,6 +670,8 @@ impl OutgoingMessageSender {
 
         match entry {
             Some((id, entry)) => {
+                #[cfg(unix)]
+                if let Some(endpoint) = entry.alab_outcome.as_ref() { endpoint.close(alab_callback_outcomes::Closed::ClientError); } // ALAB(retained-ui): actual accepted Source error; no error text retained.
                 // Don't log error messages or data because they may contain credentials.
                 warn!(code = error.code, "client responded with error for {id:?}");
                 self.analytics_events_client
@@ -621,6 +689,8 @@ impl OutgoingMessageSender {
     pub(crate) async fn cancel_request(&self, id: &RequestId) -> bool {
         let entry = self.take_request_callback(id).await;
         if let Some((request_id, _entry)) = entry {
+            #[cfg(unix)]
+            if let Some(endpoint) = _entry.alab_outcome.as_ref() { endpoint.close(alab_callback_outcomes::Closed::Cancelled); } // ALAB(retained-ui): actual endpoint removal, never inferred from absence.
             self.analytics_events_client
                 .track_server_request_aborted(now_unix_timestamp_ms(), request_id);
             true
@@ -632,6 +702,7 @@ impl OutgoingMessageSender {
     pub(crate) async fn cancel_all_requests(&self, error: Option<JSONRPCErrorError>) {
         let entries = {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            self.alab_approval_wait.close(); // ALAB(upgrade): under this same callback lock, no late registration can follow the drain.
             request_id_to_callback
                 .drain()
                 .map(|(_, entry)| entry)
@@ -639,6 +710,8 @@ impl OutgoingMessageSender {
         };
 
         for entry in entries {
+            #[cfg(unix)]
+            if let Some(endpoint) = entry.alab_outcome.as_ref() { endpoint.close(alab_callback_outcomes::Closed::Cancelled); } // ALAB(retained-ui): real host/thread callback drain owns this transition.
             self.analytics_events_client
                 .track_server_request_aborted(now_unix_timestamp_ms(), entry.request.id().clone());
             if let Some(error) = error.as_ref()
@@ -686,13 +759,15 @@ impl OutgoingMessageSender {
                 return None;
             }
         }
+        #[cfg(unix)]
+        if !self.alab_original_input_matches(entry) { return None; } // ALAB(retained-ui): expected private cell only, original recipient policy remains above.
         callbacks.remove_entry(id)
     }
 
     pub(crate) async fn pending_requests_for_thread(
         &self,
         thread_id: ThreadId,
-    ) -> Vec<ServerRequest> {
+    ) -> alab_callback_replay::PendingRequests { // ALAB(retained-ui): pins actual endpoints through the replay snapshot race.
         let request_id_to_callback = self.request_id_to_callback.lock().await;
         let mut requests = request_id_to_callback
             .values()
@@ -702,7 +777,7 @@ impl OutgoingMessageSender {
             })
             .collect::<Vec<_>>();
         requests.sort_by(|left, right| left.id().cmp(right.id()));
-        requests
+        alab_callback_replay::PendingRequests::new(self,&request_id_to_callback,requests) // ALAB(retained-ui): original map guard is still held here.
     }
 
     pub(crate) async fn cancel_requests_for_thread(
@@ -729,6 +804,8 @@ impl OutgoingMessageSender {
         };
 
         for entry in entries {
+            #[cfg(unix)]
+            if let Some(endpoint) = entry.alab_outcome.as_ref() { endpoint.close(alab_callback_outcomes::Closed::Cancelled); } // ALAB(retained-ui): real host/thread callback drain owns this transition.
             self.analytics_events_client
                 .track_server_request_aborted(now_unix_timestamp_ms(), entry.request.id().clone());
             if let Some(error) = error.as_ref()
@@ -1791,3 +1868,43 @@ mod tests {
 }
 
 #[path = "../../alab-autopilot/glue/goal_status_outgoing.rs"] mod alab_goal_status_outgoing; // ALAB(storage-status): actual native enqueue acknowledgement, never inferred from a swallowed send error.
+
+#[path = "../../alab-core/glue/connection_resource_context.rs"]
+mod alab_connection_resource; // ALAB(owned-local): actual request retains accepted resource allocation.
+
+#[path = "../../alab-core/glue/initial_session_claim.rs"]
+pub(crate) mod alab_initial_claim; // ALAB(owned-local): strip only owned metadata before the original typed parser.
+
+#[cfg(test)]
+#[path = "../../alab-core/glue/initial_selection_request_capture.rs"]
+pub(crate) mod alab_selection_request_capture; // ALAB(owned-local): real-dispatch publication controls, no Native grants.
+
+#[path = "../../alab-core/glue/retained_frontier_claim.rs"]
+pub(crate) mod alab_frontier_claim; // ALAB(retained-frontier): owned metadata DATA before original parser.
+
+#[path = "../../alab-core/glue/retained_source_selection_claim.rs"]
+pub(crate) mod alab_source_selection_claim; // ALAB(owned-local): closed S2 codec, no R/native role cast.
+
+#[path = "../../alab-core/glue/retained_configured_claim.rs"]
+pub(crate) mod alab_configured_claim; // ALAB(retained-frontier): closed configured request DATA before original typed parsing.
+
+#[path = "../../alab-core/glue/retained_reader_claim.rs"]
+pub(crate) mod alab_reader_claim; // ALAB(retained-readers): closed owned DATA parser, never reader authority.
+#[cfg(unix)]
+#[path = "../../alab-core/glue/retained_callback_outcomes.rs"]
+pub(crate) mod alab_callback_outcomes; // ALAB(retained-ui): Source endpoint lifecycle facts, never Native permission.
+
+#[path = "../../alab-core/glue/retained_callback_claim.rs"]
+pub(crate) mod alab_callback_claim; // ALAB(retained-ui): reject competing owned namespaces before parsing.
+
+#[path="../../alab-core/glue/retained_callback_replay.rs"]
+mod alab_callback_replay; // ALAB(retained-ui): bounded pre-publication and replay admission, never Native permission.
+
+#[path = "../../alab-core/glue/retained_side_boundary_claim.rs"]
+pub(crate) mod alab_side_boundary_claim; // ALAB(retained-side): first parser preserves foreign metadata and rejects combined owned claims.
+
+#[path="../../alab-core/glue/retained_side_view_claim.rs"]
+pub(crate) mod alab_side_view_claim; // ALAB(retained-side): closed view selectors, actual Native A remains mandatory.
+
+#[path="../../alab-core/glue/retained_side_rollback_claim.rs"]
+pub(crate) mod alab_side_rollback_claim; // ALAB(retained-side): closed original delete extension.

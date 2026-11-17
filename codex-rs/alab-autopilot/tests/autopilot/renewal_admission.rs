@@ -690,7 +690,7 @@ fn resumed_revoked_goal_intent_releases_deferral_for_the_new_goal() {
     });
 }
 
-async fn set_goal_runtime_enabled(h: &Harness, enabled: bool) {
+fn set_goal_runtime_enabled(h: &Harness, enabled: bool) {
     let mut builder = codex_extension_api::ExtensionRegistryBuilder::<Config>::new();
     codex_goal_extension::install_with_backend(
         &mut builder,
@@ -706,19 +706,13 @@ async fn set_goal_runtime_enabled(h: &Harness, enabled: bool) {
     );
     let registry = builder.build();
     let session = codex_extension_api::ExtensionData::new(h.thread.clone());
-    for contributor in registry.thread_lifecycle_contributors() {
-        contributor
-            .on_thread_start(codex_extension_api::ThreadStartInput {
-                config: &h.test.config,
-                session_source: &codex_protocol::protocol::SessionSource::Exec,
-                persistent_thread_state_available: true,
-                environments: &[],
-                mcp_resource_client: None,
-                extension_metrics: None,
-                session_store: &session,
-                thread_store: h.test.codex.thread_extension_data(),
-            })
-            .await;
+    for contributor in registry.config_contributors() {
+        contributor.on_config_changed(
+            &session,
+            h.test.codex.thread_extension_data(),
+            &h.test.config,
+            &h.test.config,
+        );
     }
 }
 
@@ -750,7 +744,7 @@ fn disabled_goals_keep_standalone_custody_without_installing_a_future_deferral()
             Some(Arc::new(codex_goal_extension::GoalService::new())),
         )
         .await;
-        set_goal_runtime_enabled(&h, false).await;
+        set_goal_runtime_enabled(&h, false);
         h.test
             .submit_turn("Standalone with goals disabled.")
             .await
@@ -811,7 +805,7 @@ fn disabled_goals_keep_standalone_custody_without_installing_a_future_deferral()
                 .expect("deferral")
         );
         assert_eq!(h.mock.requests().len(), 2);
-        set_goal_runtime_enabled(&h, true).await;
+        set_goal_runtime_enabled(&h, true);
         let goal = db
             .thread_goals()
             .replace_thread_goal(
@@ -916,7 +910,7 @@ fn disabling_goals_does_not_downgrade_an_associated_recovery_to_standalone() {
             rule: Some("login-back@v1".into()),
             ..Default::default()
         }));
-        set_goal_runtime_enabled(&h, false).await;
+        set_goal_runtime_enabled(&h, false);
         let session = codex_extension_api::ExtensionData::new(h.thread.clone());
         codex_extension_api::ThreadLifecycleContributor::on_thread_resume(
             h.autopilot.as_ref(),
@@ -1396,6 +1390,7 @@ fn in_flight_goal_replacement_runs_its_own_goal_turn_after_auth_recovery() {
             wiremock::ResponseTemplate::new(401).set_body_json(serde_json::json!({"error": {
             "message":"fixture auth expired", "type":"invalid_request_error", "code":"invalid_api_key"}}))
         };
+        let goals = Arc::new(codex_goal_extension::GoalService::new());
         let h = harness_login(
             Mode::Current,
             vec![
@@ -1417,7 +1412,7 @@ fn in_flight_goal_replacement_runs_its_own_goal_turn_after_auth_recovery() {
                 ..Timing::default()
             },
             |_| {},
-            Some(Arc::new(codex_goal_extension::GoalService::new())),
+            Some(Arc::clone(&goals)),
         )
         .await;
         let db = h.test.codex.state_db().expect("DB");
@@ -1442,30 +1437,48 @@ fn in_flight_goal_replacement_runs_its_own_goal_turn_after_auth_recovery() {
             .expect("start A");
         wait_until("A model request", || h.mock.requests().len() == 1).await;
         let original_turn = h.shared.latest_turn(&h.thread).expect("A native ID");
-        let replacement = db
-            .thread_goals()
-            .replace_thread_goal(
-                id,
-                "Replacement goal B owns new work",
-                codex_state::ThreadGoalStatus::Active,
-                None,
-            )
+        let replacement_id = goals
+            .alab_scope_host_goal_mutation(id, async {
+                let cleared = goals
+                    .clear_thread_goal(&db, id, async { Ok(()) })
+                    .await
+                    .expect("clear A through its native goal service");
+                assert!(cleared.cleared(), "A existed before its replacement");
+                cleared.apply_runtime_effects(&goals).await;
+                drop(cleared);
+                let replacement = goals
+                    .set_thread_goal(
+                        &db,
+                        codex_goal_extension::GoalSetRequest {
+                            thread_id: id,
+                            objective: codex_goal_extension::GoalObjectiveUpdate::Set(
+                                "Replacement goal B owns new work",
+                            ),
+                            status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                            token_budget: codex_goal_extension::GoalTokenBudgetUpdate::Set(None),
+                            max_goal_token_budget: None,
+                        },
+                        async { Ok(()) },
+                    )
+                    .await
+                    .expect("create B through its native goal service");
+                replacement.apply_runtime_effects(&goals).await;
+                db.thread_goals()
+                    .get_thread_goal(id)
+                    .await
+                    .expect("read B created by the native goal service")
+                    .expect("B exists after its runtime effects")
+                    .goal_id
+            })
             .await
-            .expect("goal B");
-        let replacement_id = replacement.goal_id.clone();
+            .expect("retain the original native goal owner through replacement");
+        assert_ne!(replacement_id, old.goal_id, "B has its own goal identity");
         let runtime = h
             .test
             .codex
             .thread_extension_data()
             .get::<codex_goal_extension::GoalRuntimeHandle>()
             .expect("runtime");
-        runtime
-            .apply_external_goal_set(
-                replacement,
-                Some(codex_goal_extension::PreviousGoalSnapshot::from(&old)),
-            )
-            .await
-            .expect("native replacement effects");
         wait_until("B starts its own native goal request", || {
             h.mock.requests().len() == 2
         })
@@ -1861,7 +1874,7 @@ fn provider_change_retires_standalone_custody_with_disabled_or_absent_goals() {
                 .expect("provider wall");
             let wall = h.shared.latest_turn(&h.thread).expect("wall");
             if disabled {
-                set_goal_runtime_enabled(&h, false).await;
+                set_goal_runtime_enabled(&h, false);
             }
             let mut expected_goal = None;
             if let Some(db) = h.test.codex.state_db() {
@@ -2367,7 +2380,7 @@ fn same_file_subscription_recovery_without_enabled_goals_keeps_original_input_an
             )
             .await;
             if disabled {
-                set_goal_runtime_enabled(&h, false).await;
+                set_goal_runtime_enabled(&h, false);
             }
             h.test
                 .submit_turn("Keep this original task and the completed plan result.")
@@ -3342,7 +3355,7 @@ fn new_native_work_retires_a_passive_capture_left_before_intent_persistence() {
             )
             .await;
             if disabled {
-                set_goal_runtime_enabled(&h, false).await;
+                set_goal_runtime_enabled(&h, false);
             }
             h.test
                 .submit_turn("The first native work leaves an unwritten intent.")

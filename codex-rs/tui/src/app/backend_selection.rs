@@ -43,7 +43,7 @@ impl BackendPreferenceContext {
         }
     }
 
-    async fn scope(&self) -> Option<(String, String)> {
+    async fn scope(&self, actual: &AppServerSession) -> Option<(String, String)> {
         let cwd = AbsolutePathBuf::from_absolute_path(self.local_cwd.as_deref()?).ok()?;
         let project = codex_config::loader::find_project_root(
             codex_exec_server::LOCAL_FS.as_ref(),
@@ -52,25 +52,8 @@ impl BackendPreferenceContext {
         )
         .await
         .ok()?;
-        let auth = self
-            .auth
-            .load_auth(/*enable_codex_api_key_env*/ false)
-            .await
-            .ok()?;
-        let user = if let Some(id) = auth
-            .as_ref()
-            .and_then(codex_login::CodexAuth::get_chatgpt_user_id)
-        {
-            format!("chatgpt:{id}")
-        } else if auth
-            .as_ref()
-            .is_some_and(codex_login::CodexAuth::is_chatgpt_auth)
-        {
-            return None;
-        } else {
-            // A local profile without an account is already private to its CODEX_HOME.
-            "local".to_string()
-        };
+        let user = crate::owned_local_managed_readers::AccountReader::for_session(actual)
+            .observe(&self.auth).await.ok()?.preference_user()?; // ALAB(retained-readers): preserve original user key from actual same-backend account DATA.
         Some((
             codex_config::loader::project_trust_key(project.as_path()),
             user,
@@ -91,12 +74,12 @@ impl App {
         }
     }
 
-    pub(super) async fn new_thread_host_preference(&self) -> Option<&str> {
+    pub(super) async fn new_thread_host_preference(&self, actual: &AppServerSession) -> Option<&str> {
         let defaults = &self.local_settings.tui.default_hosts;
         if defaults.is_empty() {
             return None;
         }
-        let (project, user) = self.backend_preference_context.scope().await?;
+        let (project, user) = self.backend_preference_context.scope(actual).await?;
         defaults.get(&project)?.get(&user).map(String::as_str)
     }
 
@@ -105,7 +88,7 @@ impl App {
         backends: &BackendSessions,
     ) -> Option<crate::backend_id::BackendId> {
         backends
-            .preferred_listening_backend(self.new_thread_host_preference().await)
+            .preferred_listening_backend(self.new_thread_host_preference(backends.session_at(backends.displayed)).await)
             .filter(|owner| *owner != backends.displayed_owner())
     }
 
@@ -156,7 +139,7 @@ impl App {
             && let Some(key) = backends.preference_key(slot)
         {
             self.backend_preference_context
-                .scope()
+                .scope(backends.session_at(outgoing_slot))
                 .await
                 .map(|(project, user)| (project, user, key.to_owned()))
         } else {

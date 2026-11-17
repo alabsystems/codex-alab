@@ -505,3 +505,7 @@ impl TranscriptView {
 #[cfg(test)]
 #[path = "select_mode_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_transcript_select_mode.rs"]
+pub(in crate::transcript_view) mod alab_retained_select; // ALAB(retained-ui): retain original mark and saved search-origin anchors through the shared native graph.

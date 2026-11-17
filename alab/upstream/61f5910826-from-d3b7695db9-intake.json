@@ -1,0 +1,517 @@
+{
+  "schema": 1,
+  "base": "d3b7695db912fd7fc8c30d814d172e75fefbadde",
+  "target": "61f59108263da04deaacd51f12991b454d6b6b52",
+  "frontier": "d3b7695db912fd7fc8c30d814d172e75fefbadde",
+  "commits": [
+    {
+      "sha": "1443c64c625e2941ef233de7da0c9ee3aecab74f",
+      "subject": "Add undo and redo to the non-Vim prompt composer (#61954)",
+      "paths": [
+        "codex-rs/config/src/tui_keymap.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/edit_history.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/edit_history_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/paste_input.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/reconnect.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/reconnect_tests.rs",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__ordinary_composer_undo.snap",
+        "codex-rs/tui/src/bottom_pane/startup.rs",
+        "codex-rs/tui/src/chatwidget/input_restore.rs",
+        "codex-rs/tui/src/chatwidget/reconnect.rs",
+        "codex-rs/tui/src/chatwidget/tests/composer_submission.rs",
+        "codex-rs/tui/src/keymap.rs",
+        "codex-rs/tui/src/keymap/bindings.rs",
+        "codex-rs/tui/src/keymap/chords.rs",
+        "codex-rs/tui/src/keymap/chords_tests.rs",
+        "codex-rs/tui/src/keymap_setup/actions.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_custom.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_fast_mode_enabled.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_first_actions.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_global_chord.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_narrow.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_wide.snap"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "execution-continuity"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt ordinary grouped edit history only after adapting the actual owned retained-editor codec and bounds. New native transient typing groups and history shape cannot be silently discarded or recreated during transfer.",
+      "evidence": [
+        "Canonical patch SHA256 1520e20d1cdbd5e30657b06b2ff6d3921ee089cb5366a08246d5b6a6dfb91139; 67262 bytes / 1536 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Carry forward the prior EditHistory migration: fixed-main editor_upgrade_vim_history.rs still names VimHistory, MAX_VIM_UNDO_* and a strict undo/redo/pending-only remote codec. Preserve or explicitly finalize/refuse native typing, typing_edit and backspace grouping containing Instant; do not stamp an old group as newly typed.",
+        "Integration requirement: Reconcile the native 8 MiB history budget with actual owned editor payload, version and preflight limits; do not blindly widen transport or silently evict undo/redo/pending state. Preserve attachment and paste ownership through supported typed transfer.",
+        "Integration requirement: Preserve ordinary undo_enabled=true, embedded=false, protected startup text, accepted-submission history clearing, disconnected redo invalidation and native Vim/key-conflict handling.",
+        "Coverage limit: Selected pure composer/keymap controls are source declarations; Windows AltGr remains cfg(windows). No real keyboard, memory/performance or retained-transfer execution is claimed.",
+        "Coverage limit: The required owned codec/schema policy and retained editor migration controls remain unimplemented."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "50c227a6e24eef3e1cd21321348be812b6d2d87c",
+      "subject": "Bound item loading for paginated `read_thread` calls (#61955)",
+      "paths": [
+        "codex-rs/tui/src/dynamic_tools.rs",
+        "codex-rs/tui/src/dynamic_tools_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "history-pagination",
+        "execution-continuity"
+      ],
+      "decision": "adapt",
+      "reason": "Apply the actual metadata-first/newest-20 item strategy in both native TUI and the owned retained task backend while preserving the shared owned formatter and lifecycle controls.",
+      "evidence": [
+        "Canonical patch SHA256 d0221ad6ac54a50c297175700981719fea0b11bf77dea50ce67f33a93bcdeafa; 10015 bytes / 227 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Put the shared 20-item limit in owned task_read_policy and adapt TUI and retained_task_read to fetch turn metadata first, then a bounded newest page per turn, restoring chronological order. Retain shared read_limits/read_result/turn_summary; do not restore the removed upstream formatter.",
+        "Integration requirement: Preserve issuing parent identity, incoming-owner withdrawal, cancellation, actual runtime lifetime, history-pagination unsupported fallback and existing bounded output projection. Returned IDs/metadata do not admit work or establish account/root permission.",
+        "Coverage limit: At most 10 selected turns and 20 items per turn are count bounds, not byte bounds or a bound on backend history-index IO.",
+        "Coverage limit: The selected embedded-server persisted-rollout test loops includeOutputs false/true inside one declaration; the owned retained mirror and cancellation/fallback control are still required."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "e9a2a9e11525d30727ecee93eb15121476e4f87d",
+      "subject": "Support saved environments when starting Cloud threads (#61956)",
+      "paths": [
+        "codex-rs/app-server-client/src/cloud.rs",
+        "codex-rs/app-server-client/src/cloud_backend/connection_tests.rs",
+        "codex-rs/app-server-client/src/cloud_backend/mod.rs",
+        "codex-rs/app-server-client/src/cloud_backend/requests.rs",
+        "codex-rs/app-server-client/src/lib.rs",
+        "codex-rs/cloud-client/src/client_tests.rs",
+        "codex-rs/cloud-client/src/lib.rs",
+        "codex-rs/cloud-client/src/prewarm.rs",
+        "codex-rs/tui/src/app/backend_selection.rs",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/app_server_session/cloud_project_tests.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-session",
+        "account-isolation",
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Keep saved Cloud environment selection as backend-scoped data and let the actual original authenticated Cloud host perform startup and readiness.",
+      "evidence": [
+        "Canonical patch SHA256 c960633ce97da9af79313b37355728b6e704e5357575f5d4d4b2a8ce693037b4; 31388 bytes / 689 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Retain the original authenticated Cloud owner through discovery await and the post-catalog model_catalog_is_current check. A saved environment ID/name is not native admission, provider/account/root or cwd authority.",
+        "Integration requirement: Saved-environment startup sends no local cwd/runtime_workspace_roots override. Preserve default server settings, original worker cancellation and serialized mutation, executor deferred readiness and same-request host selection.",
+        "Integration requirement: No Cloud, SDK, default or held receiver activation follows from the new API.",
+        "Coverage limit: The command-channel control deliberately returns checkout failure and checks seven routes; it is not a remote executor success test.",
+        "Coverage limit: Encoded prewarm request checks do not complete the account-switch, readiness-failure or cancellation matrix."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "44834c58fa99d0a04f222e18817b99b430f7c0e8",
+      "subject": "Support turn-scoped exhaustion in host usage accounting (#61958)",
+      "paths": [
+        "codex-rs/core/src/agent/host/usage.rs",
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/client/response_delivery.rs",
+        "codex-rs/core/src/client_common.rs",
+        "codex-rs/core/src/session/rollout_budget.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/tests/suite/rollout_budget.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "native-session",
+        "provider-recovery",
+        "goal-storage-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve exactly-once completed usage/output posting while reporting a host-selected turn-only exhaustion, leaving subsequent turns eligible. This is host accounting and does not certify original Goal authority.",
+      "evidence": [
+        "Canonical patch SHA256 e78d8d3945f12095722cf46d99980a8f08673ebb4a4b4c5e7491fc28738cae67; 21608 bytes / 474 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Carry ChargePosting Unposted/Posted/PostedTurnExhausted through producer settlement and consumer usage. Post the real bill and completed output before emitting the deferred failure, without a second bill on error delivery.",
+        "Integration requirement: Keep observed-completion accounting ahead of queued steer/mailbox followup; true turn cancellation retains priority and actual stream/tool cleanup remains. Preserve old usage and independent current native Goal/host budget enforcement.",
+        "Integration requirement: SessionBudgetExceeded is shared by provider/interceptor/native producers; the enum, missing Auth or late error arrival cannot create original request/Goal authority. Retain original Cause, selected attempt and the separate 81/92/f226/2875 terminal Err/EOF and native completion obligations.",
+        "Coverage limit: Host controls use the supported accounting callback with an explicitly configured ExhaustedForTurnOnce fixture. They are not Goal SQL/native Goal-budget or actual original-request policy proof.",
+        "Coverage limit: Network/helper prerequisites and all selected cases remain unrun; bill-only waiting does not independently resolve Err/EOF withheld behind synchronous post hooks."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "65a44508861af9d78435872ca6633f88b8c406cf",
+      "subject": "Prewarm restored file images on cold resume (#61959)",
+      "paths": [
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/startup_prewarm.rs",
+        "codex-rs/core/tests/suite/client_websockets.rs",
+        "codex-rs/core/tests/suite/scenarios.rs",
+        "codex-rs/core/tests/suite/scenarios_restored_history_prewarm.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__restored_history_prewarm__vision_resume_resends_previously_omitted_image_then_continues_from_generation.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__restored_history_prewarm__warmup_includes_interrupted_image_and_generation_adds_injected_image.snap",
+        "codex-rs/features/src/lib.rs"
+      ],
+      "classes": [
+        "background",
+        "feature"
+      ],
+      "features": [
+        "native-session",
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Retain the under-development restored_history_prewarm feature as opt-in, preserving real generation history and original warmup/account/media custody.",
+      "evidence": [
+        "Canonical patch SHA256 400d38a494b872bf3deeb602a81ca172c13c0c151cb0c11b59af7fe46b96060d; 39259 bytes / 933 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Feature::RestoredHistoryPrewarm is UnderDevelopment/default false and absent from both ALab default files. Do not enable it to obtain controls.",
+        "Integration requirement: Keep Warmup nonforeground masks, actual selected credentials, country, source and image-store account ownership, plus startup cancellation/retirement. generate=false or historical image IDs do not grant accepted-step/Goal authority.",
+        "Integration requirement: Discard the warmed-image response ID before awaiting warmup while retaining the actual socket and normalized image cache. Real generation resends current history; HTTP426 fallback defers image preparation to generation.",
+        "Coverage limit: Four genuine WS/HTTP mock controls are unrun; their 500ms delayed accept is fixture ordering, not latency evidence.",
+        "Coverage limit: Row8 revises one of these same declarations at the final cohort; it is not a second runtime case."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "d8d840d32a8ebf9ec75603e6aa9cd88a58a444a2",
+      "subject": "Capture local attachments before queuing turn input (#61962)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/core/src/agent/api.rs",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/control_tests.rs",
+        "codex-rs/core/src/codex_delegate.rs",
+        "codex-rs/core/src/codex_delegate_tests.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/compact.rs",
+        "codex-rs/core/src/compact_tests.rs",
+        "codex-rs/core/src/guardian/input_budget.rs",
+        "codex-rs/core/src/guardian/input_budget_tests.rs",
+        "codex-rs/core/src/guardian/review_session.rs",
+        "codex-rs/core/src/guardian/review_session_tests.rs",
+        "codex-rs/core/src/hook_runtime.rs",
+        "codex-rs/core/src/prompt_debug.rs",
+        "codex-rs/core/src/realtime_conversation/transcript_tail.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/input_queue.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/notification_tests.rs",
+        "codex-rs/core/src/session/review.rs",
+        "codex-rs/core/src/session/step_activation_tests.rs",
+        "codex-rs/core/src/session/submission.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/session/turn_input.rs",
+        "codex-rs/core/src/session/turn_input_agent.rs",
+        "codex-rs/core/src/session/turn_input_tests.rs",
+        "codex-rs/core/src/tasks/compact.rs",
+        "codex-rs/core/src/tasks/mod_tests.rs",
+        "codex-rs/core/src/tasks/review.rs",
+        "codex-rs/core/src/thread_manager/helper_daybreak_tests.rs",
+        "codex-rs/core/src/thread_manager_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/send_input.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/tests/suite/agent_mailbox.rs",
+        "codex-rs/core/tests/suite/client.rs",
+        "codex-rs/core/tests/suite/host_turn_admission.rs",
+        "codex-rs/core/tests/suite/scenarios_compaction_tests.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/protocol/src/turn_input.rs",
+        "codex-rs/user-input/Cargo.toml",
+        "codex-rs/user-input/src/lib.rs",
+        "codex-rs/user-input/src/local_media.rs",
+        "codex-rs/user-input/src/message.rs",
+        "codex-rs/user-input/src/message_tests.rs",
+        "codex-rs/user-input/src/resolved_user_input.rs",
+        "codex-rs/user-input/src/resolved_user_input_tests.rs"
+      ],
+      "classes": [
+        "protocol",
+        "security"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff",
+        "account-isolation"
+      ],
+      "decision": "adapt",
+      "reason": "Adapt owned submission, retained input and portable codecs to native resolved input that owns actual submitting-host media bytes/errors. A display projection must not silently turn transfer into destination rereading.",
+      "evidence": [
+        "Canonical patch SHA256 69c8c1b8ef024f5c231a1c3dc151f2585cb52c846f192393891c543660531501; 132226 bytes / 3163 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Reapply actual assignment, submission, channel boxing, accepted-input, retained-op and exec-queue guards to SubmissionOp::TurnInput versus boxed ProtocolOp. Fixed-main assignment_lifecycle matches removed Op::TurnInput and upgrade_submission constructs actual queued Submission.",
+        "Integration requirement: Carry ResolvedUserInput through TurnInputRequest, TurnInput, AgentInput and all owned Vec<UserInput>/codec call sites with captured bytes/errors and original display/path positions. Version/preflight or explicitly refuse unsupported transfer; never restore removed blanket conversion/raw-policy APIs.",
+        "Integration requirement: ResolvedUserInput::to_user_input is a display projection that discards captured bytes/errors. It cannot satisfy an old retained codec or justify destination file access. Preserve original host/account/root/capability/input/frame/FD/native lease custody and held SourceV1/all-root boundaries.",
+        "Coverage limit: File.take(max+1).read_to_end enforces a per-file observed bound, not aggregate attachments, serialized transfer budget or decoded image memory.",
+        "Coverage limit: Actual resolved-media roundtrip and supported pending-admission controls remain unrun; no new permission, compatibility fallback or default activation is implemented."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "c8d1ba814eb984e8fdd2f595ffd9b287e825a5b3",
+      "subject": "Add HTTP/2 fallback for SSH tunnels (#61964)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/tcp-tunnel/Cargo.toml",
+        "codex-rs/tcp-tunnel/src/http2.rs",
+        "codex-rs/tcp-tunnel/src/http2_tests.rs",
+        "codex-rs/tcp-tunnel/src/lib.rs",
+        "codex-rs/tcp-tunnel/src/lib_tests.rs",
+        "codex-rs/tcp-tunnel/src/ssh.rs",
+        "codex-rs/tcp-tunnel/src/ssh_tests.rs",
+        "codex-rs/tcp-tunnel/src/transport.rs",
+        "codex-rs/tcp-tunnel/src/transport_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "security"
+      ],
+      "features": [
+        "native-session",
+        "account-isolation",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Race verified H2 after the QUIC head start and choose an actually admitted CONNECT while preserving the single original SSH stream and gateway credential boundary.",
+      "evidence": [
+        "Canonical patch SHA256 9eeb51def83d2d9f7852f654a521e335a353c27b10cb5d72cb5ff5c1cfc25d33; 42718 bytes / 1118 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Keep trusted gateway/CONNECT authority, TLS readiness plus SETTINGS before credential polling, exactly one chosen credential future and terminal rejection without replaying SSH bytes.",
+        "Integration requirement: Preserve the 250ms QUIC head start, existing asynchronous setup deadline, bounded 64 KiB copy/flow buffers and SSH remote EOF behavior. Row11 removes obsolete generic listener/stdin/JSON interfaces; select final-cohort APIs, not removed selectors.",
+        "Integration requirement: An accepted tunnel is transport admission, not native account/root/Goal/exec authority. No live Cloud or held route is activated.",
+        "Coverage limit: Local TLS/H3/H2 fixtures are source-only and do not qualify live gateway credentials or executor handoff. Some related peers abort without explicit join.",
+        "Coverage limit: Asynchronous setup timing is not a universal synchronous file-read/cleanup deadline or performance proof."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "39b590389871c8db85381daa9504886276bbc7c6",
+      "subject": "Set explicit image detail in the restored-history prewarm test (#61969)",
+      "paths": [
+        "codex-rs/core/tests/suite/scenarios_restored_history_prewarm.rs"
+      ],
+      "classes": [
+        "other"
+      ],
+      "features": [
+        "qualification-fixtures",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Use the actual explicit High image detail in the existing restored-history prewarm test after removal of the blanket conversion.",
+      "evidence": [
+        "Canonical patch SHA256 92b42451ba2ad6c82777a6a1b60f81f0f26701d495edccbcbc53e1f1bd37d654; 1707 bytes / 40 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Preserve the same real injected-image bytes and original input/request detail; no fabricated image or source/Cause authority is added.",
+        "Coverage limit: This is a test-only correction to the same declaration selected for row5. It adds neither production behavior nor a distinct declared/runtime case."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "c826ca128699b5464724c8757638ae79f51a45f2",
+      "subject": "Preserve accepted tool outputs and local resets in rollout traces (#61973)",
+      "paths": [
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/src/compact_token_budget.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/rollout-trace/src/capture_tests.rs",
+        "codex-rs/rollout-trace/src/compaction.rs",
+        "codex-rs/rollout-trace/src/inference.rs",
+        "codex-rs/rollout-trace/src/inference_recording_tests.rs",
+        "codex-rs/rollout-trace/src/raw_event.rs",
+        "codex-rs/rollout-trace/src/reducer/acceptance_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation/normalize.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/inference.rs",
+        "codex-rs/rollout-trace/src/reducer/inference_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/mod.rs",
+        "codex-rs/rollout-trace/src/reducer/test_support.rs",
+        "codex-rs/rollout-trace/src/reducer/tool.rs",
+        "codex-rs/rollout-trace/src/reducer/tool/agents_tests.rs",
+        "codex-rs/rollout-trace/src/thread.rs",
+        "codex-rs/rollout-trace/src/thread_tests.rs",
+        "codex-rs/rollout-trace/src/writer.rs"
+      ],
+      "classes": [
+        "fix",
+        "telemetry"
+      ],
+      "features": [
+        "native-session",
+        "goal-storage-recovery",
+        "history-pagination"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve accepted tool results independently of later inference and freeze local compaction input/replacement at their actual native selection and installation boundaries.",
+      "evidence": [
+        "Canonical patch SHA256 a598857c845c4378a39656948b87245b0997a7949ec896961d8a6739ad7c4fd0; 52874 bytes / 1168 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Retain accepted-output order and native identity for equal-body/different-call outputs. Restore stripped IDs only in the replay copy; raw captured wire bytes stay unchanged. Graph IDs/accepted_seq are observation, not request/tool/Goal permission.",
+        "Integration requirement: Select compaction trace input before install and capture the installed replacement under the actual State lock, including existing Goal edits. Later mutable history edits must not replace that checkpoint evidence.",
+        "Integration requirement: Keep actual trace capture limits, private payload/account custody, optional serde fields and disabled no-op behavior; do not conflate trace budget with rollout or Goal budget.",
+        "Coverage limit: Two pure reducer declarations loop cases; loops are not macro expansions. The actual Core checkpoint control is not native Goal mutation, usage or authorization proof.",
+        "Coverage limit: Collecting references in a Vec avoids those body copies at that call but is not allocation-free or a universal IO/memory bound."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "9a5a78925d556c565367cbd01fac62617756c955",
+      "subject": "Add a Cloud environment picker for new TUI conversations (#61974)",
+      "paths": [
+        "codex-rs/config/src/tui_keymap.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/agents_overview.rs",
+        "codex-rs/tui/src/app/agents_overview_threads.rs",
+        "codex-rs/tui/src/app/backend_selection.rs",
+        "codex-rs/tui/src/app/cloud_environments.rs",
+        "codex-rs/tui/src/app/cloud_environments_tests.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/tests/key_chords.rs",
+        "codex-rs/tui/src/app/tests/model_defaults_tests.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/workspace_hud.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/app_server_session/user_message_submission.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/interaction.rs",
+        "codex-rs/tui/src/chatwidget/rendering.rs",
+        "codex-rs/tui/src/keymap.rs",
+        "codex-rs/tui/src/keymap/bindings.rs",
+        "codex-rs/tui/src/keymap/chords.rs",
+        "codex-rs/tui/src/keymap/chords/leader_defaults.rs",
+        "codex-rs/tui/src/keymap/chords_tests.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "native-session",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Expose the explicit Cloud environment picker while preserving backend-scoped drafts, source readiness and staged first-turn settings.",
+      "evidence": [
+        "Canonical patch SHA256 1fb76c447d143c98b1a60914691cb13d3d86cddd6978a928f598b80e9a816097; 62032 bytes / 1398 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Keep connected-Cloud, blank-draft and no-active-modal gates. No ordinary local startup catalog fetch or apps/Cloud default change follows.",
+        "Integration requirement: Preserve rich composer/input ownership, queued source conversation, stale StartCloudConversation rejection, saved choice scoped to the same backend, staged model/reasoning/tier first POST and local workspace/account/policy reprojection on a host switch.",
+        "Integration requirement: Keep actual destination credentials and readiness separate from UI source IDs. KeymapContextSet u32-to-u64 is internal: actual owned Tasks/Details wrappers use the public constructor/delegation, not serialized bits or storage width.",
+        "Coverage limit: Pure picker/keymap and embedded/fake Cloud command-channel controls remain unrun; they do not qualify a live catalog, account or remote executor.",
+        "Coverage limit: A dismissed loading view or explicit Default fallback cannot bless a different backend owner."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "98323eddf944b765a391fda552be32df46f4bbbd",
+      "subject": "Simplify SSH tunneling and honor system HTTPS proxies (#61975)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/tcp-tunnel/Cargo.toml",
+        "codex-rs/tcp-tunnel/README.md",
+        "codex-rs/tcp-tunnel/src/control.rs",
+        "codex-rs/tcp-tunnel/src/diagnostics.rs",
+        "codex-rs/tcp-tunnel/src/diagnostics_tests.rs",
+        "codex-rs/tcp-tunnel/src/http2.rs",
+        "codex-rs/tcp-tunnel/src/http2_tests.rs",
+        "codex-rs/tcp-tunnel/src/lib.rs",
+        "codex-rs/tcp-tunnel/src/lib_tests.rs",
+        "codex-rs/tcp-tunnel/src/ssh.rs",
+        "codex-rs/tcp-tunnel/src/ssh_tests.rs",
+        "codex-rs/tcp-tunnel/src/transport.rs",
+        "codex-rs/tcp-tunnel/src/transport_tests.rs",
+        "codex-rs/tcp-tunnel/tests/real-ssh.sh"
+      ],
+      "classes": [
+        "security",
+        "refactor"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "native-session"
+      ],
+      "decision": "adapt",
+      "reason": "Keep the simplified SSH-only, verified gateway/system HTTPS proxy path, but require an actual bounded token-file read with observed byte-count and encoding validation rather than relying only on metadata length.",
+      "evidence": [
+        "Canonical patch SHA256 763c7ab3d498125401dee2549aa03fdd056b1d2c3ba3f23befc435fe5bb050af; 110934 bytes / 2840 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: The canonical private token path fstats a regular file with length below 64 KiB and private Unix mode, unlinks it, then calls plain read_to_string. Another existing writer can grow that inode after fstat; require a bounded read with a one-byte overflow sentinel plus validation of actual bytes/UTF-8/token syntax before constructing the bearer.",
+        "Integration requirement: Preserve one-use unlink and actual Unix mode-bit privacy checking (not an owner-UID, ACL or symlink guarantee), exact trusted gateway verification before polling credentials, OAuth environment versus legacy IPv4+token-file authority, sensitive header isolation through gateway TLS, sanitized peer errors and exactly one actual credential future.",
+        "Integration requirement: Keep removed unowned listener/stdin-control/JSON-diagnostic compatibility APIs deleted. The fixed-main owned API census found no callers; no compatibility restoration is justified.",
+        "Integration requirement: Retain synchronous IO limitations: an asynchronous setup timeout does not preempt blocking file open/read. Do not claim a universal read/deadline/ACL bound, particularly without platform-specific controls.",
+        "Coverage limit: Current tests cover typed validation and gateway/proxy routing, not token-file growth, observed-cap, encoding/private ACL or unlink/read-failure cases. Those bounded-reader controls remain required; no implementation is authorized by this intake.",
+        "Coverage limit: The system-proxy test injects an explicit Matcher, not a system proxy/OS matrix. Real SSH is Linux-only and ignored, requiring explicit sshd/key/proxy env plus ssh/sshd/Python/timeout; its fixture disables host-key checking and is not production host-key proof."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "61f59108263da04deaacd51f12991b454d6b6b52",
+      "subject": "Add mouse scroll speed to the TUI config panel (#61976)",
+      "paths": [
+        "codex-rs/tui/src/app/config_panel.rs",
+        "codex-rs/tui/src/app/config_panel_tests.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/chatwidget/config_panel.rs",
+        "codex-rs/tui/src/config_panel/config_panel_tests.rs",
+        "codex-rs/tui/src/config_panel/mod.rs",
+        "codex-rs/tui/src/config_panel/render.rs",
+        "codex-rs/tui/src/config_panel/snapshots/codex_tui__config_panel__tests__config_Input.snap",
+        "codex-rs/tui/src/config_panel/snapshots/codex_tui__config_panel__tests__config_mouse_scroll_speed_choice.snap",
+        "codex-rs/tui/src/config_panel/toggle.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Expose the existing scroll-speed setting with presets while preserving custom values, live application and trusted project settings scope.",
+      "evidence": [
+        "Canonical patch SHA256 56da4e88917d196ad4d14b47e092dcc9f69768123b51688ab596acca88169acc; 16946 bytes / 370 lines. Whole primary source review shared across first-six C subreview and root last-six reading; author independently checks critical production/oracles and final-cohort declaration/caller evidence.",
+        "alab/reviews/upstream-intake-2026-11-17-afterd3b769.md; fixed main 4da443a5f0b8b29ea78c3174057e0a1e10081d31; canonical cohort 61f59108263da04deaacd51f12991b454d6b6b52. Source only: all candidates not_run/UNRUN, final_binding null, no import or runtime qualification.",
+        "Integration requirement: Preserve custom current value, native defaults, managed ALab defaults, actual settings-file ownership and live transcript updates; working-directory reprojection retains project trust/permissions/history/hooks.",
+        "Integration requirement: ConfigPreference loses Eq because it carries f64. The bounded owned census finds no affected exhaustive literal/match/layout dependency; do not reset unrelated preferences or retained UI owners.",
+        "Coverage limit: Pure panel/snapshot and actual temporary settings/cwd controls remain unrun; no mouse hardware, terminal rendering or performance claim.",
+        "Coverage limit: The cwd selector is the real annotated changing_directory_preserves_project_trust_permissions_history_and_hooks wrapper. change_directory_scenario is only its helper; the wrapper deliberately uses a 16 MiB thread and is not normal stack/depth evidence."
+      ],
+      "revisit": ""
+    }
+  ]
+}

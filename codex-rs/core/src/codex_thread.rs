@@ -1,3 +1,11 @@
+// ALAB(retained-history): same Core session's persistence handle, never an ID-selected substitute.
+#[path = "../../alab-core/glue/retained_deferred_core.rs"]
+mod alab_retained_deferred;
+
+#[path = "../../alab-core/glue/retained_side_core.rs"]
+pub(crate) mod alab_retained_side; // ALAB(retained-side): same original injection/canonical occurrence owner.
+pub use alab_retained_side::{PreparedSideBoundary, RecordedSideBoundary};
+
 use crate::WithTurnExtensionData;
 use crate::agent::AgentStatus;
 use crate::agent::api::AgentControl;

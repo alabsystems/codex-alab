@@ -57,6 +57,7 @@ pub async fn start_stdio_connection(
             connection_id,
             origin: ConnectionOrigin::Stdio,
             auth: None,
+            resource: None, // ALAB(owned-local): this transport supplies no native accepted resource.
             writer: writer_tx,
             disconnect_sender: None,
         })

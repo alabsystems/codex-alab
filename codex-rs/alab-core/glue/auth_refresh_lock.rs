@@ -209,7 +209,21 @@ impl AuthManager {
     /// file (aterm's pool keeps its logins apart). Otherwise the hold to keep through the request
     /// and `persist_tokens`: unlocked only where no file lock applies. A busy or refused
     /// file lock returns a transient error without sending a single-use token.
-    pub(super) async fn alab_admit_refresh(
+    pub(super) fn alab_admit_refresh<'a>(
+        &'a self,
+        auth: &'a ChatgptAuth,
+        tokens: &'a TokenData,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<RefreshHold>, RefreshTokenError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(self.alab_admit_refresh_inner(auth, tokens))
+    }
+
+    async fn alab_admit_refresh_inner(
         &self,
         auth: &ChatgptAuth,
         tokens: &TokenData,
@@ -349,7 +363,17 @@ impl AuthManager {
         }
         self.alab_managed_refresh_owned(slot, tokens).await
     }
-    async fn alab_managed_refresh_owned(
+    fn alab_managed_refresh_owned<'a>(
+        &'a self,
+        slot: &'a str,
+        tokens: &'a TokenData,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), RefreshTokenError>> + Send + 'a>,
+    > {
+        Box::pin(self.alab_managed_refresh_operation(slot, tokens))
+    }
+
+    async fn alab_managed_refresh_operation(
         &self,
         slot: &str,
         tokens: &TokenData,

@@ -13,6 +13,7 @@ use tracing::warn;
 pub(super) async fn suspend_turn_and_shutdown(
     session: &Arc<Session>,
     submission_id: String,
+    before_shutdown: impl FnOnce() + Send, // ALAB(shutdown): close queued permit owners only after suspension becomes terminal.
 ) -> CodexResult<SuspendTurnOutcome> {
     {
         let active = session.active_turn.lock().await;
@@ -96,6 +97,7 @@ pub(super) async fn suspend_turn_and_shutdown(
     // other local session, even if the suspension caller disconnects during cleanup.
     // The host owns the separate tree-cleanup wait and any persistence-writer fencing.
     session.services.local_agent_runtime.request_shutdown();
+    before_shutdown(); // ALAB(shutdown): reject queued source work before extension retirement can wait on its permits.
 
     // Stop all producers before flushing their final history and closing its writer.
     // If either persistence step fails, do not report success: the current worker

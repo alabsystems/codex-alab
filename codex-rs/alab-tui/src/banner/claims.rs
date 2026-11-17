@@ -91,55 +91,59 @@ pub enum Run {
 impl Claim {
     /// The ways to say what this row backs, longest first; none when its numbers back no claim.
     pub fn forms(&self) -> Vec<Vec<Run>> {
-        let figure = |n: u32| Run::Figure(n.to_string());
-        let words = |s: &str| Run::Words(s.to_owned());
-        let (alab, upstream) = (self.alab, self.upstream);
-        match self.measure {
-            Measure::FootprintMb if alab < upstream => {
-                // A ratio, rounded down, once it is at least 2; a percentage below that.
-                let by = if alab > 0 && upstream / alab >= 2 {
-                    format!("{}×", upstream / alab)
-                } else {
-                    format!(
-                        "{}%",
-                        u64::from(upstream - alab) * 100 / u64::from(upstream)
-                    )
-                };
-                let less = [Run::Figure(by), words(" less memory")];
-                let numbers = [figure(alab), words(" vs "), figure(upstream), words(" MB)")];
-                let than = Run::Words(format!(" than codex {} (", self.against));
-                vec![
-                    [&less[..], &[than], &numbers].concat(),
-                    [&less[..], &[words(" (")], &numbers].concat(),
-                    less.to_vec(),
-                ]
-            }
-            Measure::Daemons if alab == 0 && upstream > 0 => {
-                vec![
-                    vec![words("no background daemon")],
-                    vec![words("no daemon")],
-                ]
-            }
-            Measure::IdleConnections if alab < upstream => {
-                let (noun, short) = if alab == 1 {
-                    ("connection", "socket")
-                } else {
-                    ("connections", "sockets")
-                };
-                vec![
-                    vec![
-                        figure(alab),
-                        Run::Words(format!(" idle {noun} vs ")),
-                        figure(upstream),
-                    ],
-                    vec![
-                        figure(alab),
-                        Run::Words(format!(" idle {short} vs ")),
-                        figure(upstream),
-                    ],
-                ]
-            }
-            Measure::FootprintMb | Measure::Daemons | Measure::IdleConnections => Vec::new(),
+        forms(self.measure, self.alab, self.upstream, self.against)
+    }
+}
+
+/// The SAME original claim reducer serves borrowed live and owned historical values.
+pub(super) fn forms(measure: Measure, alab: u32, upstream: u32, against: &str) -> Vec<Vec<Run>> {
+    let figure = |n: u32| Run::Figure(n.to_string());
+    let words = |s: &str| Run::Words(s.to_owned());
+    match measure {
+        Measure::FootprintMb if alab < upstream => {
+            // A ratio, rounded down, once it is at least 2; a percentage below that.
+            let by = if alab > 0 && upstream / alab >= 2 {
+                format!("{}×", upstream / alab)
+            } else {
+                format!(
+                    "{}%",
+                    u64::from(upstream - alab) * 100 / u64::from(upstream)
+                )
+            };
+            let less = [Run::Figure(by), words(" less memory")];
+            let numbers = [figure(alab), words(" vs "), figure(upstream), words(" MB)")];
+            let than = Run::Words(format!(" than codex {against} ("));
+            vec![
+                [&less[..], &[than], &numbers].concat(),
+                [&less[..], &[words(" (")], &numbers].concat(),
+                less.to_vec(),
+            ]
         }
+        Measure::Daemons if alab == 0 && upstream > 0 => {
+            vec![
+                vec![words("no background daemon")],
+                vec![words("no daemon")],
+            ]
+        }
+        Measure::IdleConnections if alab < upstream => {
+            let (noun, short) = if alab == 1 {
+                ("connection", "socket")
+            } else {
+                ("connections", "sockets")
+            };
+            vec![
+                vec![
+                    figure(alab),
+                    Run::Words(format!(" idle {noun} vs ")),
+                    figure(upstream),
+                ],
+                vec![
+                    figure(alab),
+                    Run::Words(format!(" idle {short} vs ")),
+                    figure(upstream),
+                ],
+            ]
+        }
+        Measure::FootprintMb | Measure::Daemons | Measure::IdleConnections => Vec::new(),
     }
 }

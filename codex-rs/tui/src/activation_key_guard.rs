@@ -74,3 +74,7 @@ impl ActivationKeyGuard {
 #[cfg(test)]
 #[path = "activation_key_guard_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../alab-tui/glue/retained_bottom_activation_guard.rs"]
+pub(crate) mod alab_retained_guard; // ALAB(retained-ui): preserve exact native pane state with enclosing resource bindings.

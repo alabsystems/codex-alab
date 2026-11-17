@@ -57,7 +57,8 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
-    let tools = installed_tools(runtime.clone(), thread_id).await;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    let tools = harness.tools(); // ALAB(storage): mutation execution retains its registered runtime owner.
 
     let create_tool = tool_by_name(&tools, "create_goal");
     let invocation = tool_call(
@@ -842,7 +843,6 @@ async fn turn_error_usage_limit_accounts_progress_and_clears_accounting() -> any
 
 #[tokio::test]
 async fn policy_refusals_keep_goal_active_for_idle_continuation() -> anyhow::Result<()> {
-    codex_alab_core::activate();
     for (info, details) in [
         (
             codex_protocol::protocol::CodexErrorInfo::CyberPolicy,
@@ -1335,7 +1335,7 @@ async fn external_goal_mutation_start_accounts_active_goal_progress() -> anyhow:
     assert_eq!(23, goal.tokens_used);
     assert_eq!(
         vec![CapturedGoalEvent {
-            event_id: "turn-1:external-goal-mutation".to_string(),
+            event_id: "turn-1:retained-goal-mutation".to_string(),
             turn_id: Some("turn-1".to_string()),
             status: ThreadGoalStatus::Active,
             tokens_used: 23,
@@ -1468,13 +1468,21 @@ async fn thread_stop_unregisters_goal_runtime_from_service() -> anyhow::Result<(
         .await;
     harness.stop_thread().await;
 
-    assert!(
-        harness
-            .goal_service
-            .clear_thread_goal(runtime.as_ref(), thread_id, std::future::ready(Ok(())))
-            .await?
+    let cleared = harness
+        .goal_service
+        .clear_thread_goal(runtime.as_ref(), thread_id, std::future::ready(Ok(())))
+        .await?;
+    assert!(cleared.cleared());
+    cleared.apply_runtime_effects(&harness.goal_service).await;
+    assert_eq!(
+        vec![CapturedGoalEvent {
+            event_id: "turn-1:retained-goal-mutation".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            status: ThreadGoalStatus::Active,
+            tokens_used: 10,
+        }],
+        harness.sink.goal_events()
     );
-    assert_eq!(Vec::<CapturedGoalEvent>::new(), harness.sink.goal_events());
     Ok(())
 }
 
@@ -1521,8 +1529,10 @@ async fn thread_resume_rehydrates_active_goal_idle_accounting() -> anyhow::Resul
     );
     assert_eq!(
         vec![CapturedGoalEvent {
-            event_id: format!("{thread_id}:external-goal-mutation"),
-            turn_id: None,
+            event_id: format!("{thread_id}:retained-idle-goal-mutation"),
+            turn_id: Some(
+                codex_alab_core::goal_persistence::IDLE_ACCOUNTING_TURN_ID.to_string(),
+            ),
             status: ThreadGoalStatus::Active,
             tokens_used: 23,
         }],
@@ -1561,6 +1571,7 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
     let set = api
         .set_thread_goal(runtime.as_ref(), request, std::future::ready(Ok(())))
         .await?;
+    set.apply_runtime_effects(&api).await;
     let get = api
         .get_thread_goal(runtime.as_ref(), thread_id)
         .await?
@@ -1582,26 +1593,29 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
             thread_id,
             std::future::ready(Err(failure.clone()))
         )
-        .await,
-        Err(failure),
+        .await
+        .unwrap_err(),
+        failure,
     );
     assert_eq!(
         api.get_thread_goal(runtime.as_ref(), thread_id).await?,
         Some(get)
     );
 
-    assert!(
-        api.clear_thread_goal(runtime.as_ref(), thread_id, std::future::ready(Ok(())))
-            .await?
-    );
+    let cleared = api
+        .clear_thread_goal(runtime.as_ref(), thread_id, std::future::ready(Ok(())))
+        .await?;
+    assert!(cleared.cleared());
+    cleared.apply_runtime_effects(&api).await;
     assert_eq!(
         None,
         api.get_thread_goal(runtime.as_ref(), thread_id).await?
     );
-    assert!(
-        !api.clear_thread_goal(runtime.as_ref(), thread_id, std::future::ready(Ok(())))
-            .await?
-    );
+    let absent = api
+        .clear_thread_goal(runtime.as_ref(), thread_id, std::future::ready(Ok(())))
+        .await?;
+    assert!(!absent.cleared());
+    absent.apply_runtime_effects(&api).await;
     Ok(())
 }
 
@@ -1626,6 +1640,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
             std::future::ready(Ok(())),
         )
         .await?;
+    goal.apply_runtime_effects(&service).await;
     assert_eq!(goal.goal.token_budget, Some(100));
 
     let error = service
@@ -1668,6 +1683,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
             std::future::ready(Ok(())),
         )
         .await?;
+    goal.apply_runtime_effects(&service).await;
     assert_eq!(goal.goal.token_budget, Some(99));
 
     let goal = service
@@ -1683,6 +1699,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
             std::future::ready(Ok(())),
         )
         .await?;
+    goal.apply_runtime_effects(&service).await;
     assert_eq!(goal.goal.token_budget, Some(100));
     Ok(())
 }
@@ -2032,6 +2049,7 @@ fn tool_call(tool_name: &str, call_id: &str, arguments: serde_json::Value) -> To
 }
 
 async fn test_runtime() -> anyhow::Result<Arc<codex_state::StateRuntime>> {
+    codex_alab_core::activate(); // ALAB(storage): every backend case deterministically exercises the ALab custody path.
     let tempdir = TempDir::new()?;
     codex_state::StateRuntime::init(
         codex_state::SqliteConfig::new_for_testing(tempdir.keep().as_path().abs()),
@@ -2041,7 +2059,7 @@ async fn test_runtime() -> anyhow::Result<Arc<codex_state::StateRuntime>> {
 }
 
 fn test_thread_id() -> anyhow::Result<ThreadId> {
-    ThreadId::from_string("11111111-1111-4111-8111-111111111111").map_err(anyhow::Error::msg)
+    Ok(ThreadId::new()) // ALAB(storage): parallel backend cases must not share one process-wide runtime-registry key.
 }
 
 async fn seed_thread_metadata(

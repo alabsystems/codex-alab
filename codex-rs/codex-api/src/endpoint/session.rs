@@ -125,6 +125,7 @@ impl<T: HttpTransport> EndpointSession<T> {
         path: &str,
         extra_headers: HeaderMap,
         body: Option<EncodedJsonBody>,
+        alab_diagnostic: Option<&super::alab_request_diagnostics::RequestDiagnostic>, // ALAB(recovery): bind operation telemetry to this request without shared session mutation.
         configure: C,
     ) -> Result<StreamResponse, ApiError>
     where
@@ -138,7 +139,7 @@ impl<T: HttpTransport> EndpointSession<T> {
 
         let stream = run_with_request_telemetry(
             self.provider.retry.to_policy(),
-            self.request_telemetry.clone(),
+            super::alab_request_diagnostics::http_operations::request_telemetry(alab_diagnostic, self.request_telemetry.clone()), // ALAB(recovery): retain original callbacks and add local per-operation metadata.
             make_request,
             |req| {
                 let auth = self.auth.clone();

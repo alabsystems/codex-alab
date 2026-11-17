@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -116,7 +117,7 @@ class Scratch(unittest.TestCase):
         """ALab's tooling, VERSION, alab/client-version and (unless None) the ledger, committed
         and (with `land`) pushed as origin's main, this clone's origin/main moving with it."""
         (self.alab / "alab").mkdir(exist_ok=True)
-        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py", "versions.py",
+        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py", "cli_status.py", "file_hash.py", "versions.py",
                      "qualification.py", "source_content.py", "upstream_intake.py"):
             shutil.copy2(ROOT / "alab" / name, self.alab / "alab" / name)
         # Version tests stop at the real hook's separate native proof boundary.
@@ -594,6 +595,19 @@ class ReleaseRecordTests(Scratch):
                 self.assertFalse((self.alab / ".git/proof-gate-called").exists())
                 self.git(self.alab, "checkout", "-q", "--detach", source)
 
+    def test_pre_promote_refuses_a_substituted_shared_hash_helper_before_native_gate(self):
+        self.on(self.u3, "main-on-u3")
+        source, _ = self.layer(ledger=HEADER + self.row("0.1.0", "0.164.0"))
+        helper = self.alab / "alab/file_hash.py"
+        helper.write_text(helper.read_text() + "\n# substituted bounded hash helper\n")
+        self.git(self.alab, "add", "alab/file_hash.py")
+        self.commit(self.alab, "different hash helper", "2026-10-23T15:01:00+0000")
+        process = self.hook(PUB_SOURCE_COMMIT=source, PUB_VERSION="0.1.0")
+        self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
+        self.assertIn("this checkout's release gate", process.stderr)
+        self.assertIn("alab/file_hash.py", process.stderr)
+        self.assertFalse((self.alab / ".git/proof-gate-called").exists())
+
     @unittest.skip(CERTIFIED_HOOK_NOTE)
     def test_pre_promote_cannot_prove_modified_inputs_for_an_unmodified_release_source(self):
         self.on(self.u3, "main-on-u3")
@@ -762,6 +776,44 @@ class OriginMainTests(Scratch):
 class WholeHistoryTests(Scratch):
     """The history the gate reads is the one the repository holds: no shallow cut, grafts
     file or replacement object hides an edited row."""
+
+    def test_a_missing_historical_ledger_blob_is_refused(self):
+        first, _, _ = self.edited()
+        blob = self.git(self.alab, "rev-parse", f"{first}:{VERSIONS.LEDGER}")
+        # Keep the committed tree entry while making its original ledger unreadable.
+        # Losing that blob must not erase the row whose later edit the gate refuses.
+        (self.alab / ".git" / "objects" / blob[:2] / blob[2:]).unlink()
+        self.assertIsNotNone(VERSIONS.entry(str(self.alab), first))
+        self.refused(self.package("--release-version"),
+                     f"cannot read {VERSIONS.LEDGER} at {first[:12]}")
+
+    def test_a_historical_commit_without_a_ledger_is_allowed(self):
+        self.on(self.u3, "main-on-u3")
+        legacy, _ = self.layer(ledger=None)
+        self.assertIsNone(VERSIONS.ledger_at(str(self.alab), legacy))
+        self.layer(ledger=HEADER + self.row("0.1.0", "0.164.0"))
+        released = self.package("--release-version")
+        self.assertEqual(released.returncode, 0, released.stderr)
+        self.assertEqual(released.stdout, "0.1.0+codex.0.164.0\n")
+
+    def test_oversized_shallow_metadata_cannot_hide_a_parent_boundary(self):
+        self.on(self.u3, "main-on-u3")
+        root_record = (self.u1 + "\n").encode("ascii")
+        (self.alab / ".git/shallow").write_bytes(root_record + (self.u3 + "\n").encode("ascii"))
+        self.assertEqual(self.git(self.alab, "rev-list", "--count", "HEAD"), "1")
+        # Keep the real Git fixture small while putting the parent-bearing cut
+        # immediately after the metadata limit, where it must never be ignored.
+        with mock.patch.object(VERSIONS, "LIMIT", len(root_record)):
+            with self.assertRaisesRegex(VERSIONS.Refused, "shallow file.*over"):
+                VERSIONS.whole_history(str(self.alab))
+
+    def test_root_shallow_metadata_at_the_limit_cuts_nothing(self):
+        self.on(self.u3, "main-on-u3")
+        root_record = (self.u1 + "\n").encode("ascii")
+        (self.alab / ".git/shallow").write_bytes(root_record)
+        self.assertEqual(self.git(self.alab, "rev-list", "--count", "HEAD"), "3")
+        with mock.patch.object(VERSIONS, "LIMIT", len(root_record)):
+            VERSIONS.whole_history(str(self.alab))
 
     def edited(self):
         """0.1.0's row recorded, then edited to another baseline, then rust-v0.165.0's branch

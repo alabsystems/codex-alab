@@ -9,6 +9,11 @@
 
 mod broker;
 pub use broker::Broker;
+pub use broker::EditorFence;
+pub use broker::EditorInputStage;
+pub use broker::EditorInputStageRefused;
+pub use broker::EditorInputStageRollbackRefused;
+pub use broker::EditorRestoreRefused;
 pub use broker::Fence;
 pub use broker::Subscription;
 mod parse;

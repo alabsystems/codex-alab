@@ -33,6 +33,9 @@ use super::renewal_admission::subscription_fixture;
 use super::*;
 use codex_alab_tui::record;
 use codex_alab_tui::session::Writer;
+use codex_config::Constrained;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::SessionSource;
 use std::sync::Mutex;
@@ -246,7 +249,18 @@ async fn session() -> Session {
             reset_jitter: Duration::ZERO,
             ..Timing::default()
         },
-        move |config| config.chatgpt_base_url = usage_base,
+        move |config| {
+            config.chatgpt_base_url = usage_base;
+            // The dev servers run without core's command sandbox. macOS refuses to apply one
+            // inside another, so under the gate's containment `sandbox-exec` ended each
+            // `sleep` at once ("sandbox_apply: Operation not permitted") and no background
+            // terminal ever ran.
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::Disabled)
+                .unwrap_or_else(|err| panic!("run the dev servers unsandboxed: {err}"));
+        },
         None,
     )
     .await;

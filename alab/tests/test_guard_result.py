@@ -38,6 +38,54 @@ class GuardResultTests(unittest.TestCase):
         self.assertEqual(result["timeout_seconds"], timeout)
         return code, result
 
+    def anonymous_result(self, initial=b"", offset=0, read_only=False):
+        writer, name = tempfile.mkstemp(dir=self.root, prefix="anonymous-")
+        path = Path(name)
+        if initial:
+            os.write(writer, initial)
+        os.lseek(writer, offset, os.SEEK_SET)
+        reader = os.open(path, os.O_RDONLY)
+        if read_only:
+            os.close(writer)
+            writer = os.open(path, os.O_RDONLY)
+            os.lseek(writer, offset, os.SEEK_SET)
+        path.unlink()
+        self.addCleanup(self.close_fd, reader)
+        self.addCleanup(self.close_fd, writer)
+        return reader, writer
+
+    @staticmethod
+    def close_fd(descriptor):
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            if error.errno != errno.EBADF:
+                raise
+
+    @staticmethod
+    def fd_bytes(descriptor):
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+
+    @staticmethod
+    def completion_bytes(command, status):
+        return json.dumps({"schema": 1, "kind": "guardian-command-completion",
+                           "completed": True, "argv": command,
+                           "normalized_exit_status": status,
+                           "cleanup_scope": "owned command process group"},
+                          ensure_ascii=True).encode() + b"\n"
+
+    def result_fd_cli(self, writer, command, *options, pass_fds=()):
+        return subprocess.run(
+            [sys.executable, "-I", "-B", str(ROOT / "alab/command_guard.py"),
+             "--inherit-fds", "--result-fd", str(writer), *options, "--", *command],
+            pass_fds=(writer, *pass_fds), capture_output=True, timeout=60)
+
     def test_normal_nonzero_and_timeout_shaped_exit_are_not_signals_or_timeouts(self):
         for code in (0, 23, 124, 143):
             with self.subTest(code=code):
@@ -94,6 +142,134 @@ class GuardResultTests(unittest.TestCase):
              "raise SystemExit(23)"], capture_output=True, timeout=60)
         self.assertEqual(done.returncode, 23, done.stderr)
         self.assertEqual(json.loads(path.read_text())["normalized_exit_status"], 23)
+
+    def test_anonymous_result_fd_records_exact_status_and_is_not_inherited(self):
+        for command, expected in (
+                (["/usr/bin/true"], 0),
+                (["/bin/sh", "-c", "exit 23"], 23),
+                (["/bin/sh", "-c", "kill -TERM $$"], 128 + signal.SIGTERM)):
+            with self.subTest(command=command):
+                reader, writer = self.anonymous_result()
+                done = self.result_fd_cli(writer, command)
+                self.assertEqual(done.returncode, expected, done.stderr)
+                self.assertEqual(self.fd_bytes(reader), self.completion_bytes(command, expected))
+
+        marker, marker_name = tempfile.mkstemp(dir=self.root, prefix="preserved-")
+        Path(marker_name).unlink()
+        saved = None
+        try:
+            try:
+                saved = os.dup(43)
+            except OSError as error:
+                self.assertEqual(error.errno, errno.EBADF)
+            os.dup2(marker, 43, inheritable=True)
+            os.write(43, b"x")
+            os.lseek(43, 0, os.SEEK_SET)
+            reader, writer = self.anonymous_result()
+            state = os.fstat(writer)
+            source = '''
+import os,sys
+result,device,inode=map(int,sys.argv[1:])
+assert not os.path.exists(f"/dev/fd/{result}")
+assert os.read(43,1)==b"x"
+parent=f"/proc/{os.getppid()}/fd"
+if os.path.isdir(parent):
+    for name in os.listdir(parent):
+        try: value=os.stat(os.path.join(parent,name))
+        except OSError: continue
+        assert (value.st_dev,value.st_ino)!=(device,inode)
+'''
+            command = [sys.executable, "-I", "-c", source, str(writer),
+                       str(state.st_dev), str(state.st_ino)]
+            done = self.result_fd_cli(writer, command, pass_fds=(43,))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(self.fd_bytes(reader), self.completion_bytes(command, 0))
+        finally:
+            os.close(marker)
+            if saved is None:
+                self.close_fd(43)
+            else:
+                os.dup2(saved, 43)
+                os.close(saved)
+
+    def test_anonymous_result_fd_refuses_invalid_shapes_without_modifying_them(self):
+        linked, linked_name = tempfile.mkstemp(dir=self.root, prefix="linked-")
+        os.write(linked, b"linked")
+        os.lseek(linked, 0, os.SEEK_SET)
+        self.addCleanup(self.close_fd, linked)
+        self.addCleanup(Path(linked_name).unlink, missing_ok=True)
+        nonempty_reader, nonempty = self.anonymous_result(b"nonempty")
+        offset_reader, offset = self.anonymous_result(offset=1)
+        readonly_reader, readonly = self.anonymous_result(read_only=True)
+        pipe_reader, pipe_writer = os.pipe()
+        self.addCleanup(self.close_fd, pipe_reader)
+        self.addCleanup(self.close_fd, pipe_writer)
+        for descriptor, reader, original in (
+                (linked, linked, b"linked"),
+                (nonempty, nonempty_reader, b"nonempty"),
+                (offset, offset_reader, b""),
+                (readonly, readonly_reader, b""),
+                (pipe_writer, None, None)):
+            with self.subTest(descriptor=descriptor, original=original):
+                before_offset = None
+                try:
+                    before_offset = os.lseek(descriptor, 0, os.SEEK_CUR)
+                except OSError:
+                    pass
+                done = self.result_fd_cli(descriptor, ["/usr/bin/true"])
+                self.assertEqual(done.returncode, 1, done.stderr)
+                if reader is not None:
+                    self.assertEqual(self.fd_bytes(reader), original)
+                if before_offset is not None and descriptor != linked:
+                    self.assertEqual(os.lseek(descriptor, 0, os.SEEK_CUR), before_offset)
+
+    def test_anonymous_result_options_are_single_and_mutually_exclusive(self):
+        reader, writer = self.anonymous_result()
+        for options in (
+                ["--result-fd", str(writer), "--result-fd", str(writer)],
+                ["--result-fd", str(writer), "--result-file", str(self.root / "unused")],
+                ["--result-file", str(self.root / "unused"), "--result-fd", str(writer)]):
+            with self.subTest(options=options):
+                done = subprocess.run(
+                    [sys.executable, "-I", "-B", str(ROOT / "alab/command_guard.py"),
+                     *options, "--", "/usr/bin/true"], pass_fds=(writer,),
+                    capture_output=True, timeout=60)
+                self.assertEqual(done.returncode, 2, done.stderr)
+                self.assertEqual(self.fd_bytes(reader), b"")
+
+    def test_anonymous_result_failures_leave_no_exact_completion(self):
+        for command, options, expected in (
+                ([str(self.root / "missing-command")], (), 1),
+                (["/usr/bin/true"], ("--resource-stop", "--min-free-gib", "1e20",
+                                     "--disk-path", "/tmp"), 75)):
+            with self.subTest(command=command):
+                reader, writer = self.anonymous_result()
+                done = self.result_fd_cli(writer, command, *options)
+                self.assertEqual(done.returncode, expected, done.stderr)
+                self.assertEqual(self.fd_bytes(reader), b"")
+
+        for failure in ("observer", "partial", "zero"):
+            with self.subTest(failure=failure):
+                reader, writer = self.anonymous_result()
+                if failure == "observer":
+                    contexts = (mock.patch.object(GUARD, "run",
+                                                   side_effect=RuntimeError("observer")),)
+                else:
+                    def broken(descriptor, data, operation=failure):
+                        if operation == "partial":
+                            os.write(descriptor, data[:7])
+                            raise OSError(errno.EIO, "partial")
+                        raise OSError(errno.EIO, "zero")
+                    contexts = (mock.patch.object(GUARD, "run", return_value=0),
+                                mock.patch.object(GUARD, "write_all", side_effect=broken))
+                with contexts[0]:
+                    if len(contexts) == 1:
+                        with self.assertRaises(RuntimeError):
+                            GUARD.run_recorded_fd(["/usr/bin/true"], result_fd=writer)
+                    else:
+                        with contexts[1], self.assertRaises(OSError):
+                            GUARD.run_recorded_fd(["/usr/bin/true"], result_fd=writer)
+                self.assertEqual(self.fd_bytes(reader), b"")
 
     def test_empty_claim_precedes_launch_and_completion_follows_writer_retirement(self):
         path = self.root / "retired.json"

@@ -249,6 +249,7 @@ async fn execute(
         .map(ThreadEventChannel::attachment);
     let mut view = server.request_view();
     let tx = app.app_event_tx.clone();
+    let close=(action==Action::CloseTab).then(||view.alab_unsubscribe_side_view(target)); // ALAB(side-boundary): own exact unsubscribe before original interrupt worker awaits.
     tokio::spawn(async move {
         let result = match action {
             Action::Archive => view
@@ -262,8 +263,7 @@ async fn execute(
                         .map_err(|err| {
                             format!("Failed to interrupt side conversation {target}: {err}")
                         })?;
-                    view.thread_unsubscribe(target)
-                        .await
+                    match close {Some(close)=>close.await,None=>Err(color_eyre::eyre::eyre!("original side close owner missing"))}
                         .map_err(|err| format!("Failed to close side conversation {target}: {err}"))
                 }
                 .await

@@ -3,6 +3,7 @@
 """Exercise the production concurrent-main function at its ancestry boundary."""
 
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import tempfile
@@ -20,7 +21,7 @@ class ConcurrentMainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="sync-ancestry-") as temporary:
             root = Path(temporary)
             harness = root / "run.sh"
-            harness.write_text("set -euo pipefail\n" + source[begin:end] + r'''
+            harness.write_text("set -euo pipefail\n. " + shlex.quote(str(ROOT / "alab/lib.sh")) + "\n" + source[begin:end] + r'''
 wt=candidate
 repo_root=source
 record() { printf '%s\n' "$1" >>"${ACTIONS}"; }
@@ -61,7 +62,7 @@ take_concurrent_main
                 result, actions = self.run_concurrent_main(ancestry=status)
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertEqual(actions, ["ancestry"])
-                self.assertIn("cannot read upstream ancestry", result.stderr)
+                self.assertIn("cannot read ancestry", result.stderr)
                 self.assertNotIn("--abort", result.stderr)
                 self.assertNotIn("main merged upstream", result.stderr)
 

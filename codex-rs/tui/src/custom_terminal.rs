@@ -422,8 +422,12 @@ where
                         let id = first_id + index as u32;
                         self.backend
                             .write_all(crate::pets::kitty_delete_image(id).as_bytes())?;
+                        crate::retained_tui_images::deleted(id); // ALAB(retained-ui): exact original delete stays provisional until outer write commit.
                     }
-                    crate::pets::ImageProtocol::Sixel => self.invalidate_viewport(),
+                    crate::pets::ImageProtocol::Sixel => {
+                        self.invalidate_viewport();
+                        crate::retained_tui_images::viewport_repaint_erases(placement, first_id + index as u32, self.previous_buffer().area); // ALAB(retained-ui): original full Sixel repaint retires only after the same outer write commits.
+                    }
                 }
             }
         }
@@ -456,13 +460,13 @@ where
                 } else {
                     crate::pets::KittyPlacement::Cursor(id)
                 };
-                placement.file = placement
-                    .image
-                    .draw(
+                placement.file = crate::retained_tui_images::draw_owned( // ALAB(retained-ui): bind original placement/raster to same pre-write file owner.
+                        &placement.image,
                         &mut self.backend,
                         placement.area,
                         placement.first_row,
                         kitty_placement,
+                        id,
                     )
                     .map_err(io::Error::other)?;
             }
@@ -481,6 +485,7 @@ where
         self.swap_buffers();
 
         Backend::flush(&mut self.backend)?;
+        crate::retained_tui_images::flushed(retained_images, first_id)?; // ALAB(retained-ui): actual backend completion supplies the real placement census.
 
         Ok(())
     }
@@ -914,6 +919,10 @@ mod tests {
 
     #[path = "cursor_tests.rs"]
     mod cursor;
+
+    #[cfg(unix)]
+    #[path = "../../../../alab-tui/glue/retained_tui_sixel_tests.rs"]
+    mod alab_retained_images; // ALAB(retained-ui): exercise actual Sixel repaint and outer-write custody without a Native grant.
 
     struct CaptureBackend {
         output: Vec<u8>,
@@ -1507,3 +1516,7 @@ mod tests {
 }
 
 #[cfg(unix)] #[path = "../../alab-tui/glue/upgrade_viewport.rs"] mod alab_upgrade_viewport; // ALAB(upgrade): carry the existing viewport and visible inline history without terminal I/O.
+
+#[cfg(unix)]
+#[path="../../alab-tui/glue/retained_image_terminal.rs"]
+mod alab_image_owner; // ALAB(retained-ui): exact original terminal image generation is observation DATA only.

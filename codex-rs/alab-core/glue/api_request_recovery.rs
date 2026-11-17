@@ -43,15 +43,12 @@ pub(super) fn opaque_bad_request(
 }
 
 fn correlation_id<'a>(headers: Option<&'a http::HeaderMap>, name: &str) -> Option<&'a str> {
-    let value = headers?.get(name)?.to_str().ok()?;
-    // IDs are diagnostic data from an untrusted response. Reject oversized or
-    // non-token values rather than truncate them into a misleading identifier.
-    (!value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
-    .then_some(value)
+    codex_alab_core::diagnostic_id::first_safe(
+        headers?
+            .get_all(name)
+            .iter()
+            .filter_map(|value| value.to_str().ok()),
+    )
 }
 
 fn classify(active: bool, body: &str) -> Option<CodexErr> {

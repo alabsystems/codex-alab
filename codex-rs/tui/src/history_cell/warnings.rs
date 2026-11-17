@@ -103,3 +103,8 @@ pub(crate) fn warning_count(cells: &[Arc<dyn HistoryCell>]) -> usize {
 #[cfg(test)]
 #[path = "warnings_tests.rs"]
 mod tests;
+
+// ALAB(retained-ui): retain original auxiliary cell fields, not rendered substitutes.
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_history_warnings.rs"]
+pub(in crate::history_cell) mod alab_retained_warnings;

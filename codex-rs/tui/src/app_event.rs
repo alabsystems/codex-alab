@@ -313,6 +313,8 @@ pub(crate) enum CapturedSideStream {
 /// Presentation retained alongside the transcript while its composer is inactive.
 #[derive(Debug)]
 pub(crate) struct CapturedSideDisplay {
+    #[cfg(unix)]
+    pub(crate) alab_history: crate::app::AlabSideProvenance, // ALAB(retained-ui): SAME real provenance travels with original draft/display owner.
     pub(crate) rendered_completion_turn_ids: std::collections::HashMap<String, bool>,
     pub(crate) active: Option<Box<dyn HistoryCell>>,
     pub(crate) auxiliary: Vec<crate::terminal_hyperlinks::HyperlinkLine>,
@@ -535,6 +537,8 @@ pub(crate) enum AppEvent {
     },
 
     /// Submit an op to the specified thread, regardless of current focus.
+    #[cfg(unix)] // ALAB(retained-ui): private original callback/value owner frozen BEFORE enqueue.
+    AlabOriginalInput(crate::app::retained_original_input::PublicationEvent),
     SubmitThreadOp {
         thread_id: ThreadId,
         op: AppCommand,
@@ -1342,6 +1346,7 @@ pub(crate) enum AppEvent {
     FollowTranscript,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
+    AlabInsertSideHistory { source: crate::app::AlabSideCellSource, cell: Box<dyn HistoryCell> }, // ALAB(retained-ui): actual item producer travels with its original FIFO cell.
     /// FIFO barrier after the completed turn's history insertions.
     TurnTipReady {
         thread_id: ThreadId,
@@ -1366,6 +1371,10 @@ pub(crate) enum AppEvent {
 
     /// Finish buffering initial resume replay after all replay events have been queued.
     EndInitialHistoryReplayBuffer,
+    #[cfg(unix)]
+    AlabRetainedReplayEnd(crate::app_server_session::alab_retained_ui::ReplayEnd), // ALAB(retained-frontier): actual same-session typed FIFO barrier.
+    #[cfg(unix)]
+    AlabRetainedCallback(crate::app::RetainedCallbackUpdate), // ALAB(retained-ui): result already retained by actual observer before enqueue.
 
     /// Replace the contiguous run of streaming `AgentMessageCell`s at the end of
     /// the transcript with a single `AgentMarkdownCell` that stores the raw
@@ -1380,6 +1389,8 @@ pub(crate) enum AppEvent {
     /// `deferred_history_cell` lets callers add the final stream tail to the
     /// transcript without first writing its provisional render to scrollback.
     ConsolidateAgentMessage {
+        #[cfg(unix)]
+        alab_source: Option<crate::app::AlabSideCellSource>, // ALAB(retained-ui): actual original side item accompanies consolidation.
         phase: Option<codex_protocol::models::MessagePhase>,
         interrupted_item: Option<(String, String)>,
         source: String,
@@ -1392,6 +1403,8 @@ pub(crate) enum AppEvent {
 
     /// Update a message already committed before a tool started with its completed text.
     CorrectFlushedAgentMessage {
+        #[cfg(unix)]
+        alab_source: Option<crate::app::AlabSideCellSource>, // ALAB(retained-ui): retain exact source while original correction replaces a real cell.
         item: (String, String),
         cell: crate::history_cell::AgentMarkdownCell,
     },

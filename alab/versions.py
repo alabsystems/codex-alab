@@ -60,7 +60,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import tempfile
 
 
 # -I deliberately excludes the script directory from sys.path. Load the
@@ -211,9 +210,12 @@ def whole_history(repo):
     if out.strip() == b"true":
         try:
             with open(git_path(repo, "shallow"), "rb") as stream:
-                cuts = stream.read(LIMIT).split()
+                metadata = stream.read(LIMIT + 1)
         except OSError as error:
             raise Refused(f"cannot read {repo}'s shallow file: {error}") from None
+        if len(metadata) > LIMIT:
+            raise Refused(f"{repo}'s shallow file is over {LIMIT} bytes")
+        cuts = metadata.split()
         for cut in cuts:
             code, body = git(repo, "cat-file", "commit", cut.decode("ascii", "replace"))
             if code != 0:
@@ -230,8 +232,8 @@ def whole_history(repo):
 
 def ledger_at(repo, commit):
     """The ledger text at `commit`, or None when the commit has none."""
-    code, out = git(repo, "cat-file", "-e", f"{commit}:{LEDGER}")
-    if code != 0:
+    # A listed path whose object is missing is unreadable, never an absent ledger.
+    if entry(repo, commit) is None:
         return None
     code, out = git(repo, "show", f"{commit}:{LEDGER}")
     if code != 0:
@@ -294,7 +296,7 @@ def released(repo, url, main):
     v<X.Y.Z> tag), checked against this clone: each is a snapshot of a dev commit on `main`
     whose ledger is the snapshot's. {dev commit: [public refs]}. A release whose dev commit
     is gone from `main` means origin/main was rewritten after it: refused."""
-    with tempfile.TemporaryDirectory(prefix="alab-released-") as scratch:
+    with GITHUB.temporary_directory(prefix="alab-released-") as scratch:
         code, _ = git(scratch, "init", "-q", "--bare")
         if code != 0:
             raise Refused(f"cannot make a scratch repository to read {url}")
@@ -302,7 +304,8 @@ def released(repo, url, main):
             observed = GITHUB.list_refs(scratch, url, ["refs/heads/main", "refs/tags/v*"], anonymous=True)
         except (GITHUB.Refused, OSError, subprocess.TimeoutExpired) as error:
             raise Refused(f"cannot list the releases at {url} (the public release repository): "
-                          f"a release is checked against every release before it: {error}") from None
+                          f"a release is checked against every release before it: "
+                          f"{GITHUB.failure_detail(error)}") from None
         refs = sorted(ref for ref in observed if RELEASED_REF.fullmatch(ref))
         sources = {}
         if not refs:
@@ -313,7 +316,7 @@ def released(repo, url, main):
             GITHUB.fetch(scratch, url, [f"{ref}:{ref}" for ref in refs], anonymous=True,
                          snapshot=observed, snapshot_refs=True)
         except (GITHUB.Refused, OSError, subprocess.TimeoutExpired) as error:
-            raise Refused(f"cannot fetch the releases at {url}: {error}") from None
+            raise Refused(f"cannot fetch the releases at {url}: {GITHUB.failure_detail(error)}") from None
         for ref in refs:
             code, out = git(scratch, "rev-parse", "-q", "--verify", f"{ref}^{{commit}}")
             if code != 0:
@@ -585,9 +588,12 @@ def main(argv=None):
             if not mine:
                 raise Refused(f"{LEDGER} at {commit[:9]} records no baseline for {args.version}")
             print(mine[0]["baseline"])
+    except SystemExit as error:
+        if not GITHUB.successful_exit(error):
+            raise
+        return GITHUB.report_failure('alab: versions: ', error, incomplete=True)
     except (Refused, UnicodeDecodeError, OSError) as error:
-        print(f"alab: versions: {error}", file=sys.stderr)
-        return 1
+        return GITHUB.report_failure('alab: versions: ', error)
     return 0
 
 

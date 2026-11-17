@@ -34,6 +34,8 @@
 //! table (`fixtures/needs-table.txt`, [`crate::needs`]'), whose bodies are aterm main
 //! `66894933d2`'s byte for byte. A local correction additionally keeps a negative control that
 //! failed to perform its check (`failed to fail`) open; ordinary proof by failing still stands.
+//! Subsequent local Cruise corrections recognize explicitly completed follow-ups and whole
+//! historical skipped checks that now pass; those corrections leave Land's reading unchanged.
 //! The rows codex-alab once
 //! held ahead of aterm's `LAND_STATUS` (the review of 2a9241bbf, finding 7) are aterm's own now,
 //! folded into its families and its defense table. The retired token line is left out of a report
@@ -3206,7 +3208,8 @@ fn open_work_read_as(tail: &str, land: Option<&[LandFamily]>, defense: bool) -> 
             let Some((head, rest)) = head else {
                 let (line, len) = (&words[starts[k]..], end(k) - starts[k]);
                 let word = match land {
-                    None => open_status(line, len, &STATUS_PHRASES),
+                    None => open_status(line, len, &STATUS_PHRASES)
+                        .or_else(|| open_status(line, len, &CRUISE_STATUS_PHRASES)),
                     Some(families) => {
                         land_status(line, len, &words[..starts[k]], families, said_main)
                     }
@@ -3961,6 +3964,10 @@ impl Phrases {
 /// [`OPEN_STATUS`] for [`phrases_in`].
 const STATUS_PHRASES: Phrases = Phrases::of(OPEN_STATUS);
 
+/// Additional explicit current work for Cruise only, after shared status priorities.
+/// Land keeps the original table, ranking and tags.
+const CRUISE_STATUS_PHRASES: Phrases = Phrases::of(&["remains pending"]);
+
 /// Each phrase of `phrases` (each begins with a [`word_char`]) that stands in
 /// `text` as whole words, with where it begins: one pass over the words of
 /// `text`, a word whose first byte begins no phrase passed at one look, and
@@ -4006,6 +4013,143 @@ fn negated(item: &str) -> bool {
         || item.starts_with("n/a")
 }
 
+/// Recognize a whole follow-up completion in its own clause. Unknown scope
+/// and predicate tails stay open; a green check or completed documentation is
+/// not itself a claim that the follow-up work is done.
+fn completed_follow_up(s: &str, at: usize, word: &'static str) -> bool {
+    if !matches!(word, "follow-up" | "follow-ups") || asks(s) {
+        return false;
+    }
+    const DONE: &[&str] = &[
+        "complete",
+        "completed",
+        "done",
+        "finished",
+        "addressed",
+        "resolved",
+        "closed",
+        "merged",
+        "landed",
+    ];
+    let end = at + word.len();
+    let from = clause_start(s, at);
+    let to = clause_end(s, end);
+    // Do not detach an aside or exception after a comma/bracket/dash from a
+    // completion claim. A semicolon starts an independent statement.
+    if s[to..].starts_with([',', ':', '(', ')', '—', '–']) {
+        return false;
+    }
+    let before: Vec<&str> = s[from..at]
+        .split_whitespace()
+        .map(bare)
+        .filter(|w| !w.is_empty())
+        .collect();
+    let after: Vec<&str> = s[end..to]
+        .split_whitespace()
+        .map(bare)
+        .filter(|w| !w.is_empty())
+        .collect();
+    let whole = |words: &[&str]| {
+        let named = match words {
+            []
+            | ["the" | "a" | "an" | "this" | "that" | "these" | "those" | "my" | "our" | "their"]
+            | ["available"]
+            | ["the", "available"]
+            | ["both"] => true,
+            [head, rest @ ..] if matches!(*head, "all" | "every" | "each") => rest
+                .iter()
+                .all(|w| matches!(*w, "of" | "the" | "available") || count(w).is_some()),
+            _ => false,
+        };
+        named
+            && !words
+                .iter()
+                .enumerate()
+                .any(|(i, w)| *w == "of" && short_count(&words[..i], &words[i + 1..].join(" ")))
+    };
+    let past = |w: &str| DONE.contains(&w) && !matches!(w, "complete" | "done");
+    let tail = |words: &[&str], was_done: bool| {
+        words.is_empty()
+            || words.iter().all(|w| matches!(*w, "now" | "already"))
+            || (was_done
+                && words.first() == Some(&"after")
+                && (3..=5).contains(&words.len())
+                && words.last().is_some_and(|w| {
+                    matches!(*w, "passed" | "completed" | "finished" | "succeeded")
+                })
+                && !words[1..words.len() - 1].iter().any(|w| {
+                    negation(w)
+                        || UNSETTLED.contains(w)
+                        || CUTS.contains(w)
+                        || CONDITIONS.contains(w)
+                }))
+    };
+    // A past worker action settles only its complete object, never an audit
+    // of that object or an unspecified subset (`some follow-ups`). Read the
+    // whole worker prefix; a conjunction must not discard a condition.
+    if let Some(v) = before.iter().rposition(|w| past(w))
+        && worker_did(&before[..v])
+        && !before[..v].iter().any(|w| matches!(*w, "and" | "then"))
+        && whole(&before[v + 1..])
+    {
+        return tail(&after, true);
+    }
+    if !whole(&before) {
+        return false;
+    }
+    let mut predicate = after.as_slice();
+    let mut was_done = false;
+    loop {
+        let skip = predicate.iter().take_while(|w| AUX.contains(w)).count();
+        was_done |= predicate[..skip].iter().any(|w| PAST_AUX.contains(w));
+        let Some(done) = predicate.get(skip) else {
+            return false;
+        };
+        if !DONE.contains(done) {
+            return false;
+        }
+        was_done |= past(done);
+        predicate = &predicate[skip + 1..];
+        if predicate
+            .first()
+            .is_some_and(|w| matches!(*w, "and" | "then"))
+        {
+            predicate = &predicate[1..];
+        } else {
+            return tail(predicate, was_done);
+        }
+    }
+}
+
+/// A whole historical check subject with an explicit current passing predicate.
+/// Keep the complete sentence prefix and tail: conditions, partial subjects,
+/// questions and unknown wording must not turn an old skip into completion.
+fn completed_historical_skip(s: &str, at: usize, word: &'static str) -> bool {
+    if word != "skipped" || asks(s) {
+        return false;
+    }
+    let before: Vec<&str> = s[..at].split_whitespace().collect();
+    if before.len() != 2 || before[0] != "the" || !PAST_MARKERS.contains(&before[1]) {
+        return false;
+    }
+    // sentence_starts leaves the statement separator and its following space.
+    // Remove at most that one separator, never a question mark or clause tail.
+    let after = s[at + word.len()..].trim_end();
+    let after = after
+        .strip_suffix('.')
+        .or_else(|| after.strip_suffix(';'))
+        .or_else(|| after.strip_suffix('!'))
+        .unwrap_or(after);
+    let after: Vec<&str> = after.split_whitespace().collect();
+    matches!(
+        after.as_slice(),
+        ["probe" | "test" | "check", "now", "passes"]
+            | ["probe" | "test" | "check", "now", "runs", "and", "passes"]
+            | ["probes" | "tests" | "checks", "now", "pass"]
+            | ["probes" | "tests" | "checks", "now", "run", "and", "pass"]
+    )
+}
+
 /// The status word the sentence of its first `len` bytes reports open work
 /// with (`phrases`' table, [`OPEN_STATUS`]: Cruise's reading), if one stands
 /// there undescribed, unnegated, unquoted and not before a reason that leaves
@@ -4027,6 +4171,8 @@ fn open_status(line: &str, len: usize, phrases: &Phrases) -> Option<&'static str
                 && !(word == "skipped" && prev.is_some_and(|p| ["is", "are", "be"].contains(&p)))
                 && !quoted(sentence, at)
                 && !nothing_to_do(&line[at + word.len()..])
+                && !completed_follow_up(sentence, at, word)
+                && !completed_historical_skip(sentence, at, word)
         })
     })
 }

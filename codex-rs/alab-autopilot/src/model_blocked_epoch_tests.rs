@@ -83,12 +83,7 @@ async fn live_round_trip() {
         .await
         .expect("read live native proof")
         .expect("the real Active-to-Blocked commit supplies proof");
-    assert_eq!(
-        lock(&h.rt.model_blocked_goal)
-            .as_ref()
-            .map(|binding| &binding.goal),
-        Some(&source)
-    );
+    assert_eq!(lock(&h.rt.model_blocked_goal).as_ref(), Some(&source));
     host_round_trip(&h, &goals).await;
     let stopped = goal(&h).await;
     let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
@@ -486,13 +481,23 @@ async fn writing_duplicate() {
         .expect("release the actual native duplicate write");
     writer.close().await.expect("close the scratch writer");
     completed(&h).await;
+    let recovered = h
+        .autopilot
+        .current_model_goal(&h.rt)
+        .await
+        .expect("read custody after the real duplicate commits")
+        .expect("the valid duplicate restores actionable source custody");
     assert_eq!(
-        h.autopilot
-            .current_model_goal(&h.rt)
-            .await
-            .expect("read custody after the real duplicate commits"),
-        Some(source),
+        recovered.goal, source.goal,
         "a passive lookup cannot erase the original source of a valid duplicate"
+    );
+    assert_ne!(
+        recovered.epoch, source.epoch,
+        "the duplicate advances custody to its exact mutation epoch"
+    );
+    assert!(
+        goals.alab_model_goal_epoch_current(h.rt.id, &recovered.epoch),
+        "the recovered source belongs to the live native mutation owner"
     );
     let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
     drop(evaluation);
@@ -521,36 +526,12 @@ async fn replaced_native_owner() {
     let before = goals
         .alab_model_goal_epoch(h.rt.id)
         .expect("the original native owner");
-    let mut builder = codex_extension_api::ExtensionRegistryBuilder::<Config>::new();
-    codex_goal_extension::install_with_backend(
-        &mut builder,
-        h.test.codex.state_db().expect("native goal database"),
-        codex_analytics::AnalyticsEventsClient::disabled(),
-        None,
-        Arc::downgrade(&h.test.thread_manager),
-        Arc::clone(&goals),
-        |config: &Config| codex_goal_extension::GoalExtensionConfig {
-            enabled: true,
-            max_goal_token_budget: config.max_goal_token_budget,
-        },
-    );
-    let registry = builder.build();
+    let original_session = ExtensionData::new(h.rt.id.to_string());
+    h.stop_goal_lifecycle(&original_session, h.test.codex.thread_extension_data())
+        .await;
     let session = ExtensionData::new("replacement-native-session");
     let replacement = ExtensionData::new(h.rt.id.to_string());
-    for contributor in registry.thread_lifecycle_contributors() {
-        contributor
-            .on_thread_start(ThreadStartInput {
-                config: &h.test.config,
-                session_source: &codex_protocol::protocol::SessionSource::Exec,
-                persistent_thread_state_available: true,
-                environments: &[],
-                mcp_resource_client: None,
-                extension_metrics: None,
-                session_store: &session,
-                thread_store: &replacement,
-            })
-            .await;
-    }
+    h.start_goal_lifecycle(&session, &replacement).await;
     let after = goals
         .alab_model_goal_epoch(h.rt.id)
         .expect("the actual replacement native owner is registered");
@@ -579,6 +560,7 @@ async fn replaced_native_owner() {
             .len(),
         2
     );
+    h.stop_goal_lifecycle(&session, &replacement).await;
     finish(&h).await;
 }
 
@@ -864,7 +846,8 @@ async fn duplicate_before_known_history(case: PendingHistory) {
         h.autopilot
             .current_model_goal(&h.rt)
             .await
-            .expect("validate the pending original source after the duplicate"),
+            .expect("validate the pending original source after the duplicate")
+            .map(|binding| binding.goal),
         recover.then_some(source),
         "the early duplicate must retain the original history boundary: {case:?}"
     );

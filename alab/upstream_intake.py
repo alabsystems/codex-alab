@@ -92,6 +92,27 @@ def validate(record, expected, feature_ids=None):
     return errors
 
 
+def catalog_feature_ids(inventory):
+    """Validate the feature IDs consumed by intake, status and admission readers."""
+    if (not isinstance(inventory, dict) or type(inventory.get('schema')) is not int
+            or inventory['schema'] != 1):
+        raise ValueError('unsupported feature inventory schema')
+    features = inventory.get('features')
+    if not isinstance(features, list):
+        raise ValueError('feature inventory features must be a list')
+    identities = set()
+    for feature in features:
+        if not isinstance(feature, dict):
+            raise ValueError('feature must be a table')
+        identity = feature.get('id')
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError('feature ID required')
+        if identity in identities:
+            raise ValueError('duplicate feature ID: ' + identity)
+        identities.add(identity)
+    return identities
+
+
 def main():
     import tomllib
 
@@ -116,9 +137,7 @@ def main():
                 raise ValueError('record must be an object')
             with (args.repo / 'alab/features.toml').open('rb') as source:
                 inventory = tomllib.load(source)
-            if type(inventory.get('schema')) is not int or inventory.get('schema') != 1:
-                raise ValueError('unsupported feature inventory schema')
-            feature_ids = {feature['id'] for feature in inventory['features']}
+            feature_ids = catalog_feature_ids(inventory)
             errors = validate(record, expected, feature_ids)
             if errors:
                 print('\n'.join(errors), file=sys.stderr)

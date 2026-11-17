@@ -405,3 +405,7 @@ impl TranscriptView {
         entry.row.clone()
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_transcript_turn_details.rs"]
+pub(in crate::transcript_view) mod alab_retained_turns; // ALAB(retained-ui): retain native turn indexes and shared tool-group aliases.

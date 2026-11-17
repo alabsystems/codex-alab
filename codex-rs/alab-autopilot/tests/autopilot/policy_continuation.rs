@@ -131,7 +131,7 @@ pub(super) async fn assert_cyber_continuation(
                 ..codex_core::StartThreadOptions::new(h.test.config.clone())
             })
             .await
-            .expect("unrelated root");
+            .unwrap_or_else(|err| panic!("unrelated root: {err:?}"));
         h.shared.note_root_thread(&other.thread_id.to_string());
         other
             .thread
@@ -140,7 +140,7 @@ pub(super) async fn assert_cyber_continuation(
                 text_elements: Vec::new(),
             }]))
             .await
-            .expect("unrelated root starts after terminal refusal");
+            .unwrap_or_else(|err| panic!("unrelated root starts after terminal refusal: {err:?}"));
         wait_for_event_with_timeout(&other.thread, |event| {
             matches!(event, EventMsg::TurnComplete(done)
                 if done.error.is_none() && done.last_agent_message.as_deref() == Some("Completed the unrelated root task."))
@@ -153,7 +153,7 @@ pub(super) async fn assert_cyber_continuation(
             .thread
             .shutdown_and_wait()
             .await
-            .expect("unrelated root shutdown");
+            .unwrap_or_else(|err| panic!("unrelated root shutdown: {err:?}"));
     }
     h.test
         .codex

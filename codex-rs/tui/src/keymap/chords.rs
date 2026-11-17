@@ -996,3 +996,7 @@ Choose a different chord and retry.",
 #[cfg(test)]
 #[path = "chords_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_bottom_chords.rs"]
+pub(crate) mod alab_retained; // ALAB(retained-ui): exact pure native keymap fields share one enclosing alias table.

@@ -17,6 +17,9 @@ use codex_app_server_protocol::ThreadItemsListResponse;
 
 #[path = "history_completion.rs"]
 mod completion;
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/owned_local_side_history.rs"]
+pub(crate) mod alab_retained_side_history; // ALAB(retained-ui): original side history/store/cell reconciliation.
 
 impl App {
     /// Start one bounded page request shared by scrollback refill and the transcript overlay.
@@ -257,6 +260,8 @@ impl App {
         for (group, turn_end) in completion::group_turn_items(&items, turns) { // ALAB(history): borrowed groups cannot form a reversed slice.
             // Internal prompts stay invisible, but still separate adjacent tool groups.
             for visible in group.split(|item| hidden_item_ids.contains(item.payload.id())) { // ALAB(history): split the already bounded group.
+                #[cfg(unix)]
+                let alab_start = cells.len(); // ALAB(retained-ui): exact cells created for these original turn/item identities.
                 cells.extend(thread_items_to_transcript_cells(
                     Some(thread_id),
                     cwd,
@@ -264,6 +269,8 @@ impl App {
                     visibility,
                     Some(&self.config),
                 ));
+                #[cfg(unix)]
+                self.alab_record_side_history_group(thread_id, visible, &cells[alab_start..]); // ALAB(retained-ui): keep real producer identities, never match rendered text.
             }
             let Some(turn) = turn_end else { continue };
             if turn.status == TurnStatus::Interrupted && !self.side_threads.contains_key(&thread_id)
@@ -286,7 +293,10 @@ impl App {
                         .completion_cell(turn, Some(ReplayKind::ResumeInitialMessages))
                 }
             {
-                cells.push(Arc::new(completion));
+                let cell: Arc<dyn HistoryCell> = Arc::new(completion);
+                #[cfg(unix)]
+                self.alab_record_side_history_end(thread_id, &turn.id, &cell); // ALAB(retained-ui): completion rows retain their actual turn producer.
+                cells.push(cell);
             }
         }
         for cell in cells.iter_mut().filter_map(Arc::get_mut) {

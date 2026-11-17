@@ -232,6 +232,7 @@ mod selection_tabs;
 pub(crate) use selection_tabs::render_filled_tab_bar;
 mod startup;
 mod textarea;
+#[cfg(unix)] #[path = "../../../alab-tui/glue/retained_editor_graph.rs"] pub(crate) mod alab_retained_editors; // ALAB(retained-ui): share one whole-App native editor generation graph without exposing textarea internals.
 pub(crate) use textarea::TextArea;
 pub(crate) use textarea::TextAreaState;
 mod unified_exec_footer;
@@ -292,6 +293,8 @@ pub(crate) use list_selection_view::SelectionItem;
 pub(crate) use list_selection_view::SelectionSecondaryAction;
 
 struct DelayedApprovalRequest {
+    #[cfg(unix)]
+    alab_original_input: Option<std::sync::Arc<crate::app::retained_original_input::Item>>, // ALAB(retained-ui): actual timed queue retains its original reply owner.
     request: ApprovalRequest,
     features: Features,
 }
@@ -316,6 +319,8 @@ pub(crate) struct BottomPane {
     pub(crate) questions: Option<Box<AsyncQuestions>>,
     delayed_approval_requests: VecDeque<DelayedApprovalRequest>,
     last_composer_activity_at: Option<Instant>,
+    #[cfg(unix)]
+    alab_delay_activity: alab_retained_delayed_approval::ActivityGeneration, // ALAB(retained-ui): new actual typing cannot be overwritten by saved timer DATA.
 
     app_event_tx: AppEventSender,
     frame_requester: FrameRequester,
@@ -416,6 +421,8 @@ impl BottomPane {
             view_transition_key_guard: None,
             questions: None,
             delayed_approval_requests: VecDeque::new(),
+            #[cfg(unix)]
+            alab_delay_activity: Default::default(), // ALAB(retained-ui): original native pane before any actual input.
             last_composer_activity_at: None,
             app_event_tx,
             frame_requester,
@@ -710,6 +717,7 @@ impl BottomPane {
     }
 
     pub(crate) fn restore_kill_buffer_snapshot(&mut self, snapshot: KillBufferSnapshot) {
+        #[cfg(unix)] self.alab_delay_activity.editor_event(); // ALAB(retained-ui): original register recovery is a real destination editor mutation, never clock DATA.
         self.composer.restore_kill_buffer_snapshot(snapshot);
     }
 
@@ -807,7 +815,9 @@ impl BottomPane {
     }
 
     fn approval_prompt_delay_remaining(&self, now: Instant) -> Option<Duration> {
-        self.last_composer_activity_at.and_then(|last_activity_at| {
+        let last_composer_activity_at = self.last_composer_activity_at;
+        #[cfg(unix)] let last_composer_activity_at = self.alab_delay_activity.activity(last_composer_activity_at); // ALAB(retained-ui): real pump and widget share the original live typing deadline during startup.
+        last_composer_activity_at.and_then(|last_activity_at| {
             last_activity_at
                 .checked_add(APPROVAL_PROMPT_TYPING_IDLE_DELAY)
                 .and_then(|show_at| show_at.checked_duration_since(now))
@@ -816,6 +826,7 @@ impl BottomPane {
     }
 
     pub(crate) fn record_composer_activity_at(&mut self, now: Instant) {
+        #[cfg(unix)] self.alab_delay_activity.changed(now); // ALAB(retained-ui): exact original activity precedes deadline mutation.
         self.last_composer_activity_at = Some(now);
         if self.has_pending_approval()
             && let Some(delay) = self.approval_prompt_delay_remaining(now)
@@ -839,6 +850,7 @@ impl BottomPane {
         let Some(first) = self.delayed_approval_requests.pop_front() else {
             return;
         };
+        #[cfg(unix)] let _first_input_scope = crate::app::retained_original_input::scope_item(first.alab_original_input.clone()); // ALAB(retained-ui): native modal inherits actual oldest delayed callback.
         let mut modal = ApprovalOverlay::new(
             first.request,
             self.app_event_tx.clone(),
@@ -847,6 +859,7 @@ impl BottomPane {
             self.keymap.list.clone(),
         );
         while let Some(delayed) = self.delayed_approval_requests.pop_back() {
+            #[cfg(unix)] let _input_scope = crate::app::retained_original_input::scope_item(delayed.alab_original_input.clone()); // ALAB(retained-ui): original LIFO insertion retains each actual delayed owner.
             modal.enqueue_request(delayed.request);
         }
         self.pause_status_timer_for_modal();
@@ -1011,6 +1024,7 @@ impl BottomPane {
                 return InputResult::None;
             }
             if self.alab_stash_key(key_event) { return InputResult::None; } // ALAB(stash): Ctrl+S stashes only when no active native binding or search owns it
+            #[cfg(unix)] self.alab_delay_activity.editor_event(); // ALAB(retained-ui): local-only editor mutation witness also covers unchanged-text Vim/cursor/Ctrl keys.
             let (input_result, needs_redraw) = self.composer.handle_key_event(key_event);
             if records_composer_activity {
                 self.record_composer_activity_at(Instant::now());
@@ -2085,6 +2099,7 @@ impl BottomPane {
 
     /// Called when the agent requests user approval.
     pub fn push_approval_request(&mut self, request: ApprovalRequest, features: &Features) {
+        #[cfg(unix)] crate::app::retained_original_input::approvals::bind_features(features); // ALAB(retained-ui): keep the actual per-item feature policy before either queue path.
         let request = if let Some(view) = self.view_stack.last_mut() {
             match view.try_consume_approval_request(request) {
                 Some(request) => request,
@@ -2103,6 +2118,7 @@ impl BottomPane {
         {
             self.delayed_approval_requests
                 .push_back(DelayedApprovalRequest {
+                    #[cfg(unix)] alab_original_input: crate::app::retained_original_input::approvals::bind_current(&request), // ALAB(retained-ui): pin before timed queue loses original request scope.
                     request,
                     features: features.clone(),
                 });
@@ -2258,7 +2274,10 @@ impl BottomPane {
     ) -> bool {
         let delayed_len = self.delayed_approval_requests.len();
         self.delayed_approval_requests
-            .retain(|delayed| !delayed.request.matches_resolved_request(request));
+            .retain(|delayed| {
+                #[cfg(unix)] if delayed.alab_original_input.as_ref().is_some_and(|item| !item.matches_resolved()) { return true; } // ALAB(retained-ui): only exact Source-resolved RPC removes a protected delayed item.
+                !delayed.request.matches_resolved_request(request)
+            });
         let delayed_changed = self.delayed_approval_requests.len() != delayed_len;
 
         if self.view_stack.is_empty() {
@@ -4386,3 +4405,14 @@ mod tests {
         assert_eq!(lower_view_handle_calls.get(), 0);
     }
 }
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_pending_views.rs"]
+pub(crate) mod alab_retained_views; // ALAB(retained-ui): pending variants cannot disappear from whole UI transfer.
+
+#[cfg(unix)]
+pub(crate) use approval_overlay::alab_retained_approval; // ALAB(retained-ui): closed native approval DATA, no callback constructor.
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_delayed_approval.rs"]
+pub(crate) mod alab_retained_delayed_approval; // ALAB(retained-ui): restore the actual delayed approval queue deadline under original reply owners.

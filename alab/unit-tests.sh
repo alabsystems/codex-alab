@@ -17,12 +17,27 @@ native_v8_env() (
     --target "${native_target}" --cache "${cache}/alab-v8-inputs"
 )
 
-# native_test_requirements: plan once from the caller's packages array. The caller
-# declares the four need_* locals and uses the same plan for allocation and prep.
+# native_test_requirements <lib|default> | test all: plan once from the caller's
+# -p package pairs. Allocation and preparation consume these same five need_* locals.
+# The only named integration scope supported here is codex-tui's test/all target;
+# this prepares prerequisites, not an integration runner or result contract.
 native_test_requirements() {
-  local package
-  need_metadata=0 need_v8=0 need_stdio=0 need_host=0
-  for package in "${packages[@]}"; do
+  local scope="${1:-}" target="${2:-}" package at
+  need_metadata=0 need_v8=0 need_stdio=0 need_host=0 need_cli=0
+  case "${scope}" in
+    lib | default) [[ $# -eq 1 ]] || return 1 ;;
+    test) [[ $# -eq 2 && "${target}" == all ]] || return 1 ;;
+    *) return 1 ;;
+  esac
+  [[ ${#packages[@]} -gt 0 && $((${#packages[@]} % 2)) -eq 0 ]] || return 1
+  for ((at = 0; at < ${#packages[@]}; at += 2)); do
+    [[ "${packages[$at]}" == -p ]] || return 1
+    package="${packages[$((at + 1))]}"
+    [[ "${package}" == [a-zA-Z0-9_]* && "${package}" != *[!a-zA-Z0-9_-]* ]] || return 1
+    [[ "${scope}" != test || "${package}" == codex-tui ]] || return 1
+  done
+  for ((at = 1; at < ${#packages[@]}; at += 2)); do
+    package="${packages[$at]}"
     case "${package}" in
       codex-core | codex-app-server)
         need_stdio=1 need_host=1 need_metadata=1 need_v8=1
@@ -34,8 +49,13 @@ native_test_requirements() {
         need_v8=1
         ;;
       codex-mcp)
-        # Its CLI preparation remains specific to unit_tests below.
-        need_metadata=1
+        need_cli=1 need_metadata=1
+        ;;
+      codex-tui)
+        # Default Cargo targets also include test/all; library-only runs do not.
+        if [[ "${scope}" != lib ]]; then
+          need_cli=1 need_stdio=1 need_metadata=1
+        fi
         ;;
     esac
   done
@@ -47,14 +67,15 @@ native_test_requirements() {
 # owns helper-dir (unused/possibly empty for helperless runs) and EXIT cleanup.
 native_test_prerequisites() {
   local tree="$1" target_dir="$2" helper_root="$3" metadata_required="$4" retain_artifacts="$5"
-  local v8 archive binding artifacts helpers stdio host requirement
+  local v8 archive binding artifacts helpers stdio host cli requirement
   local result_python="${ALAB_PYTHON:-/usr/bin/python3}"
   local helper_metadata="${helper_root}/metadata.json"
   local native_helper_build=() native_helper_selectors=()
   for requirement in "${metadata_required}" "${retain_artifacts}" "${need_metadata:-}" "${need_v8:-}" \
-      "${need_stdio:-}" "${need_host:-}"; do
+      "${need_stdio:-}" "${need_host:-}" "${need_cli:-}"; do
     [[ "${requirement}" == 0 || "${requirement}" == 1 ]] || return 1
   done
+  [[ "${need_cli}" == 0 || "${need_metadata}" == 1 ]] || return 1
   if [[ "${metadata_required}" == 1 || "${need_metadata}" == 1 ]]; then
     [[ -n "${helper_root}" && -d "${helper_root}" ]] || return 1
   fi
@@ -99,6 +120,25 @@ native_test_prerequisites() {
         "CARGO_BIN_EXE_codex_code_mode_host=${host}")
     fi
   fi
+  if [[ "${need_cli}" == 1 ]]; then
+    # Preserve the CLI's separate feature graph, artifact log and startup check.
+    artifacts="$(cd "${tree}/codex-rs" && alab_build_command "${cargo}" --unverified build --locked ${tree_config[@]+"${tree_config[@]}"} \
+      -p codex-cli --bin codex --message-format=json-render-diagnostics)" || return $?
+    if [[ "${retain_artifacts}" == 1 ]]; then
+      printf '%s\n' "${artifacts}" >"${helper_root}/helper-cli.jsonl" || return $?
+    fi
+    helpers="$(printf '%s\n' "${artifacts}" | "${result_python}" -I "${alab_library_root}/alab/native_helpers.py" \
+      --repo "${tree}" --target-dir "${target_dir}" --metadata "${helper_metadata}" \
+      --helper codex-cli/codex)" || return $?
+    cli="$(printf '%s\n' "${helpers}" | jq -e -r '.codex')" || return $?
+    # A fresh macOS executable can spend longer in first-launch loading than
+    # the capability probe's timeout. Verify this exact artifact is ready.
+    "${cli}" --version >/dev/null || {
+      echo "alab/check.sh: the prepared codex test helper failed to start" >&2
+      return 1
+    }
+    test_command+=("CARGO_BIN_EXE_codex=${cli}")
+  fi
 }
 
 # all_alab_tests <tree> <target-dir> <helper-dir> <-p package>...: preserve Cargo's
@@ -106,13 +146,13 @@ native_test_prerequisites() {
 all_alab_tests() (
   [[ $# -gt 3 ]] || return 1
   local tree="$1" target_dir="$2" helper_root="$3"
-  local need_metadata need_v8 need_stdio need_host
+  local need_metadata need_v8 need_stdio need_host need_cli
   local test_command=(/usr/bin/env) tree_config=() packages=()
   shift 3
   packages=("$@")
   cd "${tree}/codex-rs" || return $?
-  export CARGO_TARGET_DIR="${target_dir}"
-  native_test_requirements
+  export RUST_MIN_STACK=8388608 CARGO_TARGET_DIR="${target_dir}"
+  native_test_requirements default || return $?
   if [[ "${need_metadata}" == 1 ]]; then
     mkdir -m 700 "${helper_root}" || return $?
   fi
@@ -125,11 +165,11 @@ all_alab_tests() (
 # cargo and packages are supplied by check.sh, including its pristine comparisons, whose
 # --config every cargo call in the tree takes (lib.sh, alab_pristine_config).
 unit_tests() (
-  local tree="$1" target_dir="$2" package artifacts cli
+  local tree="$1" target_dir="$2" package artifacts
   local result_mode="" result_state="" result_plan="" result_parser result_runner result_python runner_config
   local runner_key result_round result_rounds result_status result_overall=0
-  local proxy_home helper_scratch helper_metadata helpers helper_root metadata_required=0
-  local need_metadata need_v8 need_stdio need_host
+  local proxy_home helper_scratch helpers helper_root metadata_required=0
+  local need_metadata need_v8 need_stdio need_host need_cli
   local test_command=(/usr/bin/env) tree_config=()
   trap '[[ -z "${helper_scratch:-}" ]] || rm -rf -- "${helper_scratch}"; [[ -z "${proxy_home:-}" ]] || rm -rf -- "${proxy_home}"' EXIT
   shift 2
@@ -151,6 +191,7 @@ unit_tests() (
       shift 3
       ;;
   esac
+  native_test_requirements lib || return $?
   if [[ -n "${result_mode}" ]]; then
     [[ ${#packages[@]} -gt 0 ]] || return 1
     mkdir -p "${result_state}" || return $?
@@ -173,7 +214,6 @@ unit_tests() (
     export CARGO_BUILD_BUILD_DIR="${target_dir}/build.noindex"
   fi
   result_python="${ALAB_PYTHON:-/usr/bin/python3}"
-  native_test_requirements
   helper_root=""
   if [[ -n "${result_mode}" ]]; then
     helper_root="${result_state}"
@@ -182,35 +222,8 @@ unit_tests() (
     helper_scratch="$(mktemp -d "${target_dir}/alab-helpers.XXXXXX")" || return $?
     helper_root="${helper_scratch}"
   fi
-  helper_metadata="${helper_root:+${helper_root}/metadata.json}"
   native_test_prerequisites "${tree}" "${target_dir}" "${helper_root}" \
     "${metadata_required}" "${metadata_required}" || return $?
-  select_helpers() {
-    printf '%s\n' "${artifacts}" | "${result_python}" -I "${alab_library_root}/alab/native_helpers.py" \
-      --repo "${tree}" --target-dir "${target_dir}" --metadata "${helper_metadata}" "$@"
-  }
-  for package in "${packages[@]}"; do
-    case "${package}" in
-      codex-mcp)
-        # Its sandbox-capability tests need the full CLI, not the libtest binary.
-        artifacts="$(alab_build_command "${cargo}" --unverified build --locked ${tree_config[@]+"${tree_config[@]}"} \
-          -p codex-cli --bin codex --message-format=json-render-diagnostics)" || return $?
-        if [[ -n "${result_mode}" ]]; then
-          printf '%s\n' "${artifacts}" >"${result_state}/helper-cli.jsonl" || return $?
-        fi
-        helpers="$(select_helpers --helper codex-cli/codex)" || return $?
-        cli="$(printf '%s\n' "${helpers}" | jq -e -r '.codex')" || return $?
-        # A fresh macOS executable can spend longer in first-launch loading than
-        # the capability probe's timeout. Verify this exact artifact is ready.
-        "${cli}" --version >/dev/null || {
-          echo "alab/check.sh: the prepared codex test helper failed to start" >&2
-          return 1
-        }
-        test_command+=("CARGO_BIN_EXE_codex=${cli}")
-        break
-        ;;
-    esac
-  done
   if [[ -n "${result_mode}" ]]; then
     result_parser="${alab_library_root}/alab/unit_results.py"
     # The runtime adapter belongs to ALab even when testing pristine upstream.

@@ -59,3 +59,7 @@ impl StatusTimer {
 #[cfg(test)]
 #[path = "timer_tests.rs"]
 mod tests;
+
+#[cfg(unix)]
+#[path = "../../../alab-tui/glue/retained_bottom_status_timer.rs"]
+pub(crate) mod alab_retained_timer; // ALAB(retained-ui): preserve exact native pane state with enclosing resource bindings.

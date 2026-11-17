@@ -1,0 +1,480 @@
+{
+  "schema": 1,
+  "base": "a11d2403a5c8f346527379ccd061c2aa95e7edc4",
+  "target": "4f556fdd6db3f614207bacc037b1bc4452e301bf",
+  "frontier": "a11d2403a5c8f346527379ccd061c2aa95e7edc4",
+  "commits": [
+    {
+      "sha": "b08fd8a6f175b932b9abd0df68b1fc5ba7674ea9",
+      "subject": "Filter thread listings before scanning rollout previews (#61902)",
+      "paths": [
+        "codex-rs/rollout/src/list.rs",
+        "codex-rs/rollout/src/tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "history-pagination",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Apply thread source/provider/cwd/attached filters to the first canonical session metadata before scanning rollout preview text.",
+      "evidence": [
+        "Canonical patch SHA256 12e96494bc30f08c2f1c19598e7bd92806344a5a6f95cacc409ccff187d5700f; 6609 bytes / 175 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: Keep the first canonical SessionMeta as the filter identity; copied fork metadata later in a rollout cannot reclassify its owning source/provider/workspace. Preserve attached-thread selection and existing ordering/pagination.",
+        "Integration requirement: A filtered rollout may stop before preview extraction. Opening/decoding and buffered read-ahead still occur; this is not a zero-I/O or measured performance claim. No migration or index numbering is changed.",
+        "Coverage limit: The new real-file control supplies canonical Exec then copied Cli metadata and verifies interactive exclusion; it does not benchmark disk behavior or prove native admission."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "837f8b50be09c62467021c5f37091bb82588ddc6",
+      "subject": "Pass a per-call voice session ID through TUI realtime startup (#61908)",
+      "paths": [
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/tests/realtime_handoff_e2e.rs",
+        "codex-rs/tui/src/app/tests/realtime_requests.rs",
+        "codex-rs/tui/src/app_server_session/realtime.rs",
+        "codex-rs/tui/src/realtime_call.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "native-ui",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Generate one voice-session UUID per call and pass that same value through the actual call header and app-server start request.",
+      "evidence": [
+        "Canonical patch SHA256 cd8c9cbd0c6b55017d44a4cbf3898e1815c65361cec02b79cdef2848ccc2abc8; 6356 bytes / 142 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: The UUID is distinct from ThreadId and stays with its call through asynchronous result delivery. Keep existing call-attempt/backend ownership, cancellation and selected remote voice preference.",
+        "Integration requirement: No microphone, voice, Cloud, apps/plugins or credential default is activated. A correlation UUID is not account, Goal, native-source or execution authority. No owned direct thread_realtime_start caller or CreatedCall literal was found.",
+        "Coverage limit: The actual remote voice test checks both header and RPC UUID; its helper loops are one declaration, not additional macro cases. Hardware/audio-provider qualification remains unrun."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "cff061fca9f811ea07416793214b45eddf66965e",
+      "subject": "Add opt-in item-boundary interrupts for subagents (#61909)",
+      "paths": [
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/api.rs",
+        "codex-rs/core/src/agent/control/interrupt.rs",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/sampling_interrupt.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/session/turn_input.rs",
+        "codex-rs/core/src/state/turn.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/tests/suite/agent_mailbox.rs",
+        "codex-rs/features/src/feature_configs.rs",
+        "codex-rs/features/src/tests.rs",
+        "codex-rs/protocol/src/protocol.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "refactor"
+      ],
+      "features": [
+        "native-session",
+        "execution-continuity",
+        "goal-storage-recovery"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Retain optional V2 child interruption at one model-item boundary, with immediate tool/MCP cancellation and exact retained-item cleanup, behind its default-false configuration.",
+      "evidence": [
+        "Canonical patch SHA256 47c6e37adc51421879c83609d1331c033cefbbc387f4540b6dd5d0bcf7271258; 45956 bytes / 1084 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: interrupt_at_item_boundary stays false by default and only applies to V2 children with a real parent. V1/ordinary interrupt retains hard cancellation; no held SourceV1/all-root receiver route is enabled to obtain a control.",
+        "Integration requirement: Preserve separate sampling/tool/MCP cancellation, actual cell cancellation feature checks, between-item ordering, undispatched-tool aborted result, finished-token wait and no automatic idle restart. A retained model item is data, never proof that its tool dispatched or permission to run it.",
+        "Integration requirement: Reapply actual ALab assignment/task-launch/input-mailbox and goal-completion hooks through take_active_turn/abort_taken_tasks and cancellation. Drain/join real task/tool completion before source retirement; do not infer cancellation implies rollback. No direct owned MultiAgentV2Config, RunningTask/ActiveTurn constructor, interrupt_task or interrupt_agent caller was found at fixed main.",
+        "Integration requirement: Preserve original request/step Cause across interruption/recovery and keep real usage/current budget independent. The prior 81/92/f226 terminal-custody and retained native Goal obligations remain open; this source decision does not import private candidate repairs.",
+        "Coverage limit: The two message/tool macro cases run real stream/child/settings/resume/history paths but may skip without network. No executed cancellation/Goal/native acceptance evidence is claimed. The outer run_sampling_request signature is unchanged; owned outer helpers do not require an inferred ninth argument."
+      ],
+      "revisit": "Before enabling item-boundary interrupts for ALab children or portability/recovery routes, run both actual retained-item cases plus ordinary interrupt, held SyncPost Err/EOF steering, actual tool dispatch/completion/cancellation, retained Goal usage and source-handoff controls under the admitted native build; require fail-closed unsupported recovery without enabling held routes."
+    },
+    {
+      "sha": "c9df641eac7631027d5e933feca1b10e1cc25a86",
+      "subject": "Preserve native sandbox executable paths and PTY dispatch names (#61910)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/app-server/src/command_exec.rs",
+        "codex-rs/cli/tests/daemon_startup.rs",
+        "codex-rs/cli/tests/worktree.rs",
+        "codex-rs/core/src/exec.rs",
+        "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/core/src/sandboxing/mod.rs",
+        "codex-rs/core/src/spawn.rs",
+        "codex-rs/core/src/tasks/user_shell.rs",
+        "codex-rs/core/src/tools/sandboxing.rs",
+        "codex-rs/core/src/unified_exec/mod_tests.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/core/src/unified_exec/process_manager_tests.rs",
+        "codex-rs/exec-server/src/fs_sandbox.rs",
+        "codex-rs/exec-server/src/fs_sandbox_windows_tests.rs",
+        "codex-rs/exec-server/src/local_process.rs",
+        "codex-rs/exec-server/src/process_sandbox.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/backend_tests.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/bubblewrap.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/dependencies.rs",
+        "codex-rs/exec-server/src/shell_snapshot.rs",
+        "codex-rs/sandboxing/src/launch.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/sandboxing/src/manager_tests.rs",
+        "codex-rs/sandboxing/src/spawn.rs",
+        "codex-rs/sandboxing/src/terminal_queries_tests.rs",
+        "codex-rs/utils/pty/Cargo.toml",
+        "codex-rs/utils/pty/src/pty.rs",
+        "codex-rs/utils/pty/src/spawn_helper_tests.rs",
+        "codex-rs/utils/pty/src/tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor",
+        "packaging"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve the exact native sandbox executable separately from display argv and dispatch arg0 through pipe, inherited-terminal and PTY execution.",
+      "evidence": [
+        "Canonical patch SHA256 653585444277ff0170bc2db6aa650f92904883e35d8f6957fae68dc25ac63559; 47865 bytes / 1222 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: Move native_program through sandbox transforms and actual command preparation, use the native OsStr as the executable, and treat arg0 solely as explicit dispatch identity. Windows paths remain explicit UTF8 requirements rather than lossy authority substitutions.",
+        "Integration requirement: PTY dispatch with explicit arg0 uses the native launcher even without inherited FDs. Preserve controlling-terminal/FD custody and the existing native wrappers, admission descriptors, source cwd/root/parent and exec-tree leases. Child HOME/PATH resolution follows the actual supplied environment/cwd; do not grant a root from a display path.",
+        "Integration requirement: No owned direct SpawnRequest/SandboxExecRequest/CoreExecRequest/native PTY constructor caller was found in bounded ALab Rust sources. Upstream nix/Cargo.lock changes require the maintained resolver during eventual integration, never manual upstream lock edits.",
+        "Coverage limit: Actual native/nonUTF8 helper tests are platform scoped. completed_local_commands_preserve_exit_code has pipe plus a Linux-only cfg_attr test_case, not two unconditional cases. Existing controlling-terminal zero-fork checks are conditional on helper availability. No latency/portability/native permission qualification is implied."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "56e43660f8c8743a43117da53add23c0608e6a8e",
+      "subject": "Default Statsig metrics exports to Zstandard compression (#61911)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/otel/Cargo.toml",
+        "codex-rs/otel/src/metrics/client.rs"
+      ],
+      "classes": [
+        "telemetry",
+        "defaults",
+        "packaging"
+      ],
+      "features": [
+        "product-policy",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Use Zstd for the Statsig OTLP metrics default only when none of the four documented compression/header environment overrides is present.",
+      "evidence": [
+        "Canonical patch SHA256 1a6c3883a840ab3104c845aac6024b353f97cf69b5e2199508f981e802bccad5; 4386 bytes / 109 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: Presence via var_os, including empty or nonUTF8 values, of OTEL_EXPORTER_OTLP_METRICS_COMPRESSION, OTEL_EXPORTER_OTLP_COMPRESSION, OTEL_EXPORTER_OTLP_METRICS_HEADERS or OTEL_EXPORTER_OTLP_HEADERS preserves SDK-controlled behavior. Keep the existing exporter consent, Statsig headers and managed HTTP client.",
+        "Integration requirement: Compression changes neither telemetry consent nor event contents, credential source or ALab provider/plugin/apps defaults. Preserve exact dependency resolution without editing upstream lock entries.",
+        "Coverage limit: No new focused test declaration covers this default or the four presence overrides. Existing exporter consent and real loopback temporality tests are selected controls only; add/execute an actual compression/header override matrix before claiming that branch qualified. No bandwidth/CPU measurement."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "30be9534c8c3b7c527d7e2988e228fd7a396b0d5",
+      "subject": "Fall back to the built-in status line for invalid providers (#61915)",
+      "paths": [
+        "codex-rs/cli/tests/features.rs",
+        "codex-rs/config/src/config_layer_source.rs",
+        "codex-rs/config/src/loader/mod.rs",
+        "codex-rs/config/src/strict_config.rs",
+        "codex-rs/tui/src/local_settings_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Fall back to builtin status rendering for a malformed winning provider while retaining strict validation and original diagnostic config layers.",
+      "evidence": [
+        "Canonical patch SHA256 c6b0d51417b08d3965371d670ccda948775d86673d178a4b6b854087d06ca745; 9925 bytes / 242 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: Keep the actual layer precedence, complete plugin/skill identity validation and source restrictions. Normal loading strips invalid effective provider data; strict mode still rejects malformed ignored/project/packaged values and the unmodified layer remains available to diagnostics.",
+        "Integration requirement: Builtin fallback does not bootstrap a plugin, activate cloud catalogs or widen approvals. Preserve ALab native display/clipboard/title and actual settings authority. No direct owned new provider helper/caller was found.",
+        "Coverage limit: Incomplete identities are a loop in one actual declaration. Config fallback is not a runtime provider, plugin or approval authorization test."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "f8e58064fccfdf9c220996bdb26d081a6a732d9f",
+      "subject": "Preserve remote compaction summaries when interrupting child agents (#61916)",
+      "paths": [
+        "codex-rs/core/src/compact_remote_v2.rs",
+        "codex-rs/core/src/session/sampling_interrupt.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/tasks/regular.rs",
+        "codex-rs/core/tests/suite/scenarios_compaction_tests.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__compaction__interrupt_during_remote_compaction_preserves_summary_on_resume.snap"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "execution-continuity",
+        "native-session",
+        "history-pagination",
+        "goal-storage-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Retain an actually installed remote compaction summary and an already finished answer when optional child item-boundary interruption arrives.",
+      "evidence": [
+        "Canonical patch SHA256 89b8f2b474ef52291da9dc6e3e04cd63633fe979e2c732bc8c22e41c7f35f77a; 28753 bytes / 632 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: Keep sampling-interrupt registration alive until the real summary is installed; only then observe the request and skip the post-compaction hook. Failed request cleanup unregisters correctly. Already finished answer remains the real answer, and queued user input remains a later native turn.",
+        "Integration requirement: The feature gate from row3 remains off. Summary/answer retention grants no Source, EmptyResponse, Goal mutation or new request authority. Preserve original causal A for pre-next/Guardian compaction and explicit post-turn Goal denial; real fresh B must follow actual native admission.",
+        "Integration requirement: Keep ALab mailbox/accepted-input/history/compaction metadata, real usage/budget, task completion and retained native Goal source ordering. Prior request/Empty and terminal Err/EOF custody gaps remain open.",
+        "Coverage limit: One actual network-skippable declaration loops mid/post-turn cases with gates, settings ACK, resumed IDs/history and installed summary; source result retention is not native policy or durability proof."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "a669d8ffb230fb117e8763245dc3a93ef81f923e",
+      "subject": "Add sidebar image previews and present generated images after answers (#61919)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/history_pagination.rs",
+        "codex-rs/tui/src/app/history_pagination_tests.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/owned_transcript_tests.rs",
+        "codex-rs/tui/src/app/side_companion.rs",
+        "codex-rs/tui/src/app/sidebar_document.rs",
+        "codex-rs/tui/src/app/sidebar_document_tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session/fs.rs",
+        "codex-rs/tui/src/app_server_session/history.rs",
+        "codex-rs/tui/src/chatwidget/input_restore.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/replay.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__image_generation_call_history_snapshot.snap",
+        "codex-rs/tui/src/chatwidget/streaming.rs",
+        "codex-rs/tui/src/chatwidget/tests/exec_flow.rs",
+        "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
+        "codex-rs/tui/src/chatwidget/turn_lifecycle.rs",
+        "codex-rs/tui/src/custom_terminal.rs",
+        "codex-rs/tui/src/history_cell/notices.rs",
+        "codex-rs/tui/src/history_cell/patches.rs",
+        "codex-rs/tui/src/history_cell/separators.rs",
+        "codex-rs/tui/src/history_cell/tests.rs",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/markdown_render/local_links.rs",
+        "codex-rs/tui/src/pager_overlay/transcript.rs",
+        "codex-rs/tui/src/pets/image_protocol.rs",
+        "codex-rs/tui/src/pets/mod.rs",
+        "codex-rs/tui/src/sidebar_image.rs",
+        "codex-rs/tui/src/startup_draft.rs",
+        "codex-rs/tui/src/terminal_probe.rs",
+        "codex-rs/tui/src/terminal_probe/startup_replay.rs",
+        "codex-rs/tui/src/terminal_probe/startup_replay_tests.rs",
+        "codex-rs/tui/src/transcript_image.rs",
+        "codex-rs/tui/src/transcript_image/composer.rs",
+        "codex-rs/tui/src/transcript_view.rs",
+        "codex-rs/tui/src/transcript_view/layout.rs",
+        "codex-rs/tui/src/transcript_view/layout_tests.rs",
+        "codex-rs/tui/src/transcript_view/search.rs",
+        "codex-rs/tui/src/transcript_view/search_tests.rs",
+        "codex-rs/tui/src/transcript_view/snapshots/codex_tui__transcript_view__layout__tests__fullscreen_image_artifact_rows.snap",
+        "codex-rs/tui/src/transcript_view/text.rs",
+        "codex-rs/tui/src/tui.rs",
+        "codex-rs/tui/src/tui/inline_image_history_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "features": [
+        "native-ui",
+        "history-pagination",
+        "exec-handoff",
+        "product-policy"
+      ],
+      "decision": "adapt",
+      "reason": "Add bounded image decoding and generated-image/sidebar rendering while adapting ALab terminal startup handoff to preserve the exact new graphics capability.",
+      "evidence": [
+        "Canonical patch SHA256 4e30b93d7763cc5a8fc71a873b330382c174c34adbd9ebc729addf9a066c4632; 107117 bytes / 2616 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: Required owned adaptation: alab-tui/glue/upgrade_startup.rs:67 builds InitializedTerminal and must supply herdr_kitty_graphics. Capture/strict Snapshot/restore/finish must carry the actual Option<bool> fact, preserving true/false/unknown without requerying the terminal, inferring from environment or silently blessing missing transfer data. The existing Snapshot denies unknown fields, accepts version==1 and requires explicit optional-field presence; choose a reviewed schema/version/preflight treatment and update the actual startup-exec fixture together; retain no-query and partial-paste/native-owner oracles.",
+        "Integration requirement: Preserve the upgrade-input hook when startup_replay_input becomes parse_startup_input: feed its parsed replay bytes to codex_alab_tui::input::buffer_input, not directly to a separate crossterm owner. Consume only the actual probe reply; bracketed paste remains user input. The new probe is specifically unmultiplexed term_program=herdr, not an ALab aterm alias.",
+        "Integration requirement: Keep saved/completed-image and actual turn ordering across pagination/interruption and the original backend/source/request view for sidebar reads. Preserve validated WorkspaceFile/TrustedFile and copy authority; no frontend-local fallback for remote source.",
+        "Integration requirement: Decoder allocation limit is 32 MiB, supported formats PNG/JPEG/GIF/WebP and sidebar retained raster at most 768x768; transcript source file gate 32 MiB is separate from remote server reads. Keep Sixel/tmux placement budgets and terminal image cleanup on screen/overlay/exec changes. There is no explicit total PendingGeneratedImages count cap or server read-size proof.",
+        "Integration requirement: At fixed500 comparison, no owned CapturedSideDisplay/ImagePlacement/InterruptionNotice literal or removed new_interruption_notice caller was found. Generated image metadata and terminal probe responses do not authorize tools, Goal/Empty policy, receiver roots or native admission.",
+        "Coverage limit: Captured Kitty byte counters prove fixture output only, not actual terminal/device compatibility or speed. The inherited document-preview test explicitly uses a 16 MiB test thread and is not normal-depth/Send proof. Actual ALab startup-exec tri-state preservation requires an adapted real test; current source fixture does not test the new field.",
+        "Integration requirement: Newer-main compatibility at a4c6d583e9f0cd68e2168e2c364ee45e03e959dc (separate from fixed500 comparison): eight owned ImagePlacement literals now exist in retained composer/TUI image production and test paths. Add explicit destination-local terminal_id handling while preserving actual renderer/raster/unlink custody; never copy a source terminal ID as destination authority. Exact caller/blob and two current-main test declarations are retained separately. The ScrollState concern is refuted by the direct import in actual request_user_input parent.",
+        "Integration requirement: Further exact a4c6 row8 DATA obligations: retained_text_layout.rs captures/restores TextLayout and must retain the new image_left_aligned bit rather than defaulting or rerendering. retained_history_separator_cells.rs production/test literals and strict codec must preserve actual FinalMessageSeparator.turn_id (Some/None). retained_history_image_cells.rs and its fixture literal must preserve the new ImageGenerationHistoryCell.id in the actual generated-cell codec, never derive it from display lines or current state. The native history graph has a closed exact-variant codec and currently cannot encode the new InterruptionNotice; supported typed transfer must retain its original optional turn identity, or remain explicitly unsupported. No flattening, default identity, late recapture, source-root activation or graphics/native permission follows from these DATA fields. Pending generated-image state likewise cannot be silently discarded by an unsupported transfer."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "fd05a402b294fe115d1459276e7bce00e8a44d05",
+      "subject": "Track conversation files for the TUI sidebar (#61920)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/history_pagination.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/sidebar.rs",
+        "codex-rs/tui/src/app/sidebar_document.rs",
+        "codex-rs/tui/src/app/sidebar_files.rs",
+        "codex-rs/tui/src/app/sidebar_files_tests.rs",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/tests/pagination_completion_tests.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session/history.rs",
+        "codex-rs/tui/src/markdown_render.rs",
+        "codex-rs/tui/src/terminal_hyperlinks.rs"
+      ],
+      "classes": [
+        "feature",
+        "background"
+      ],
+      "features": [
+        "native-ui",
+        "history-pagination",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Track file destinations for each owning conversation and scan older item pages independently of transcript history without accepting stale backend/request completions.",
+      "evidence": [
+        "Canonical patch SHA256 2b247fb997a294470d583058a70836eabe8b2ce9bef208e287ceca21286ae398; 47115 bytes / 1188 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: Inventory only links/plan/user text, successful file changes excluding deletions, completed saved images and prior reader opens. Preserve typed voice/review hiding across page boundaries, source line/column metadata, newest-reference ordering and dedup by destination.",
+        "Integration requirement: Read only the owning source/backend after actual replay completes. Exact backend/parent/request IDs fence pages; hide/thread-switch/reconnect abort the active handle and invalidate stale completion. Keep a separate next cursor, retry failed pages on reopen and stop repeated cursors; do not advance transcript history.",
+        "Integration requirement: Pages request 100 items and input link paths reject empty/control/>4096-byte values. Local directory probes apply only to actual embedded/server-local paths; remote unresolved paths stay with the original reader. This inventory is not filesystem permission, no-follow containment, accepted input, native ownership or a Goal receipt.",
+        "Integration requirement: No total inventory/older_turn/opened_files cap is introduced; scanning older history may cost multiple reads/allocations. Do not claim bounded whole-conversation memory or zero I/O. Preserve backend account/source custody, existing app event FIFO, native history/mailbox and clipboard trust.",
+        "Coverage limit: Real embedded-server controls cover wrong displayed thread, hidden/reopened chooser, stale reconnect page and unchanged transcript cursor; pure inventory controls cover ordering/remote paths/review+voice. No live cross-account remote permissions or full-history memory measurement."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "42248f5ef988883cebce298c2279ce22cb536726",
+      "subject": "Add conversation files to the TUI sidebar chooser (#61922)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/sidebar.rs",
+        "codex-rs/tui/src/app/sidebar_document_tests.rs",
+        "codex-rs/tui/src/app/sidebar_files.rs",
+        "codex-rs/tui/src/app/sidebar_files_tests.rs",
+        "codex-rs/tui/src/app/sidebar_loading.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__tests__saved_chat_discovery_states.snap",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/test_support.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/agents_navigation_tests.rs",
+        "codex-rs/tui/src/app/tests/key_chords.rs",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__key_chords__sidebar_new_chat.snap",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__saved_chat_loading__waiting_and_retry_rows.snap",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/sidebar_chooser.rs",
+        "codex-rs/tui/src/sidebar_tab_strip.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__sidebar_existing_chat.snap"
+      ],
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "features": [
+        "native-ui",
+        "account-isolation",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Display conversation files in the sidebar chooser with stable selection, separate wheel/path scrolling and exact press-release target validation.",
+      "evidence": [
+        "Canonical patch SHA256 65ea0b791597ab091d4fbb6b5ce39dacc3814a812b27a59e9779d41b8f5d5ae9; 117182 bytes / 2898 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: Files open through the original backend and displayed source thread; chooser opening clears location only for whole-file preview while transcript links retain coordinates. Cloud inventory stays unavailable; unsupported Windows/sandbox hosts display a reason and cannot activate preview rows.",
+        "Integration requirement: Match mouse down/up by parent, full sidebar input state, target, rectangle and button; reject drags, stale/reordered/scrolled targets and hidden selection. Selection follows destination across inventory reorder. File path display is presentation, not a local read or authority grant.",
+        "Integration requirement: Preserve ALab actual human-input grace (press, not release), overlay/modal holds, native thread/fork/close, backend bookkeeping and validated copy/PRIMARY semantics. Existing liveness control moves to agents_navigation_tests without behavior deletion. No owned ChatTabs/SidebarStyle/ConversationFrame literal or removed ScrollState/TabStrip::hit caller was found.",
+        "Coverage limit: Tests cover actual app-side press/release and inventory/path/scroll geometry. They do not qualify a physical mouse/terminal, remote credential switch, native approval or root receiver route."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "885a1df5ee5f18172233b12d6c94544a24e7b338",
+      "subject": "Allow agent search by thread ID and Git branch (#61926)",
+      "paths": [
+        "codex-rs/tui/src/app/agent_center_tests.rs",
+        "codex-rs/tui/src/app/agents_overview_discovery.rs",
+        "codex-rs/tui/src/app/agents_overview_discovery_tests.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "history-pagination"
+      ],
+      "decision": "adopt",
+      "reason": "Include thread ID and recorded Git branch in case-normalized live and persisted agent search.",
+      "evidence": [
+        "Canonical patch SHA256 61f35f3f7d251f85df092df7d1c1d1935b53af14875f5ad94db05f7a02fd3be9; 4942 bytes / 120 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: Retain current data source/account/backend and existing archived/read-only/interactive source filters and cursor semantics. Search matches recorded metadata only; it does not run Git, change branch, wake a thread or establish native identity.",
+        "Integration requirement: The mixed-source discovery wrapper verifies persisted branch/ID plus paginated previews; the live-center declaration verifies branch/ID/name editing behavior. No owned matches_query direct caller requires adaptation.",
+        "Coverage limit: Do not credit the Cloud-only interactive-page control with persisted legacy preview rejection; those checks are in the separate mixed-source discovery declaration. No search latency measurement."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "4f556fdd6db3f614207bacc037b1bc4452e301bf",
+      "subject": "Encapsulate app-server thread-list locking in `ThreadListState` (#61928)",
+      "paths": [
+        "codex-rs/app-server/src/message_processor.rs",
+        "codex-rs/app-server/src/request_processors.rs",
+        "codex-rs/app-server/src/request_processors/projects.rs",
+        "codex-rs/app-server/src/request_processors/thread_list_state.rs",
+        "codex-rs/app-server/src/request_processors/thread_listener_shutdown_tests.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "history-pagination",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Encapsulate the existing shared one-permit thread-list serialization state without changing acquisition ordering or error mapping.",
+      "evidence": [
+        "Canonical patch SHA256 1eff6f7293d24583f6a313e68e0df00068fea07f0c07e16c1c77eaf5ef124d25; 8879 bytes / 208 lines. All production, tests, snapshots and manifest hunks read in full.",
+        "alab/reviews/upstream-intake-2026-11-17-aftera11d.md; fixed comparison main 50017324104c25b9e20f334703fc9292a8bcb6d4, final upstream cohort 4f556fdd6db3f614207bacc037b1bc4452e301bf. Source-only; every test candidate not_run/UNRUN, final_binding null; no Rust, import or qualification.",
+        "Integration requirement: Both ProjectRequestProcessor and ThreadRequestProcessor retain the same Arc<ThreadListState>; acquire_exclusive still uses one Semaphore permit and the same internal-error response. Default construction is shared, not one gate per request.",
+        "Integration requirement: Module/type/method visibility permits actual request-processor children and listener fixture; no owned ThreadListState constructor was found. Preserve ALab listener event ordering, retained recovery turn, actual source/goal metadata and account isolation. No later parallel-resume behavior is included.",
+        "Coverage limit: Selected existing listener tests use the changed fixture but add no new focused serialization/concurrency declaration. Encapsulation alone is not measured throughput or race qualification."
+      ],
+      "revisit": ""
+    }
+  ]
+}

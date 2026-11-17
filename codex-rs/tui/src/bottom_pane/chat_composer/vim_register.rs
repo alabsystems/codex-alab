@@ -4,6 +4,10 @@
 //! The live register travels with composer replacement; repeat/undo generations stay local.
 //! Like the text register, this state survives draft clears and undo, but is not a system clipboard.
 
+#[cfg(unix)]
+#[path = "../../../../alab-tui/glue/editor_upgrade_vim_register.rs"]
+mod alab_editor_upgrade; // ALAB(upgrade): carry native structured draft data and register relationships.
+
 use crate::bottom_pane::textarea::TextElementSnapshot;
 use std::collections::HashMap;
 use std::path::PathBuf;

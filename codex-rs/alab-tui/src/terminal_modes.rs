@@ -20,13 +20,29 @@ pub fn disable_raw_mode() -> io::Result<()> {
     crossterm::terminal::disable_raw_mode()
 }
 #[cfg(unix)]
+pub use native::EditorModes;
+#[cfg(unix)]
+pub use native::EditorModesStage;
+#[cfg(unix)]
+pub use native::EditorModesStageRefused;
+#[cfg(unix)]
+pub use native::EditorModesStageRollbackRefused;
+#[cfg(unix)]
+pub use native::ParentStdioWriter;
+#[cfg(unix)]
 pub use native::Prepared;
 #[cfg(unix)]
 pub use native::Snapshot;
 #[cfg(unix)]
 pub use native::adopt;
 #[cfg(unix)]
+pub use native::hold_original_editor;
+#[cfg(unix)]
+pub use native::parent_stdio_writer;
+#[cfg(unix)]
 pub use native::prepare_upgrade;
+#[cfg(unix)]
+pub use native::restore_cancelled_original_editor;
 
 /// Actual native original-mode ownership, not a decoded snapshot claim.
 pub fn original_retained() -> bool {
@@ -38,9 +54,25 @@ pub fn original_retained() -> bool {
     false
 }
 
-/// Only a committed native terminal owner can preserve the TUI's exit modes.
-/// Adopted snapshot data alone never establishes a source transfer.
+/// Restrict-only local ownership, including interrupted/uncertain editor work.
+/// No decoded mode snapshot, Native permission or input readiness sets it.
+pub fn editor_owns_terminal() -> bool {
+    #[cfg(unix)]
+    {
+        native::editor_owned()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+/// Actual editor custody or a committed transfer preserves the exit modes.
+/// Mode snapshot DATA alone establishes neither local resource.
 pub fn preserve_on_exit() -> bool {
+    #[cfg(unix)]
+    if native::editor_owned() {
+        return true;
+    }
     #[cfg(unix)]
     if crate::input::owned() && !std::thread::panicking() {
         return native::preserve_on_exit();
@@ -70,14 +102,37 @@ mod native {
     static ORIGINAL: Mutex<State> = Mutex::new(State {
         started: false,
         original: None,
+        editor: None,
     });
     struct State {
         started: bool,
         original: Option<Original>,
+        editor: Option<Arc<EditorModeState>>,
     }
     struct Original {
         terminal: File,
         mode: libc::termios,
+    }
+
+    /// Synchronous exclusion with the SAME editor-installation boundary.
+    /// Keep it through the whole original stderr mutation. It admits no IO
+    /// after an editor owns this terminal, no Native role and no execution.
+    /// Never call terminal-mode functions or await while holding it.
+    #[must_use = "retain the parent stdio writer guard through the entire mutation"]
+    pub struct ParentStdioWriter {
+        _held: std::sync::MutexGuard<'static, State>,
+    }
+    pub fn parent_stdio_writer() -> io::Result<ParentStdioWriter> {
+        let held = ORIGINAL
+            .lock()
+            .map_err(|_| invalid("parent stdio mode boundary poisoned"))?;
+        if held.editor.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "actual original editor retains parent stdio",
+            ));
+        }
+        Ok(ParentStdioWriter { _held: held })
     }
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -200,6 +255,9 @@ mod native {
         let mut state = ORIGINAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.editor.is_some() {
+            return Err(invalid("actual original editor owns terminal modes"));
+        }
         state.started = true;
         if state.original.is_none() {
             if crossterm::terminal::is_raw_mode_enabled()? {
@@ -234,6 +292,9 @@ mod native {
         let mut state = ORIGINAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.editor.is_some() {
+            return Err(invalid("actual original editor owns terminal modes"));
+        }
         state.started = true;
         crossterm::terminal::disable_raw_mode()?;
         if let Some(owner) = state.original.as_ref() {
@@ -249,6 +310,9 @@ mod native {
         Ok(())
     }
     fn snapshot(state: &State) -> io::Result<Snapshot> {
+        if state.editor.is_some() {
+            return Err(invalid("editor modes require their same actual owner"));
+        }
         if !crate::input::owned() {
             return Err(invalid("terminal mode has no ALab owner"));
         }
@@ -346,6 +410,18 @@ mod native {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.original.is_some() && admission().committed()
+    }
+    include!("terminal_original_editor_modes.rs");
+    #[cfg(test)]
+    mod original_editor_tests {
+        include!("terminal_original_editor_modes_tests.rs");
+    }
+    pub(super) fn editor_owned() -> bool {
+        ORIGINAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .editor
+            .is_some()
     }
     /// Restore data ownership on a freshly opened, matching native TTY. This
     /// does not change its modes or consume input. Call before the first enable.

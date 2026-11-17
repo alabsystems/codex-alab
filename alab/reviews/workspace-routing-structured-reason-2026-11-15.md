@@ -38,6 +38,28 @@ is deliberately inside the request deadline, and resetting afterward could
 turn a 15-second read into 30 seconds or more. Correct shared-result
 coordination would require substantially broader lifecycle work.
 
+A later consumer-policy audit found that every matching-reason control still
+used the legacy message, while the sole present-data rejection control supplied
+an explicitly different reason. It therefore did not prove that the reason
+alone was sufficient or that data lacking a reason disabled legacy fallback.
+Decision: add a changed-message/matching-reason control and exact-message
+controls with empty, unrelated and mismatched structured data. This locks the
+stable reason as authoritative while keeping legacy message fallback
+fail-closed whenever data is present. No production behavior changes.
+
+The focused unverified TUI lane passes all ten startup-account-read tests,
+including the expanded authority matrix, with 6,436 unrelated tests filtered
+out.
+Scoped all-target Tippy exits zero; its warnings remain confined to unchanged
+upstream sources.
+
+After clean composition onto the then-current remote main, an exact focused
+rerun was admitted but spent more than ten minutes behind Cargo's package-cache
+lock, held by a concurrent `targo clean`, without reaching compilation. It was
+stopped rather than bypassing that shared lock. The incoming commit set did not
+touch this glue or review; the evidence above applies to this topic before that
+non-overlapping composition. No merged-tree rerun is claimed.
+
 Application certification remains unavailable at Trust 15698's independently
 reproduced in-process proc-macro admission boundary, documented in
 `targo-macro-admission-2026-11-14.md`. These are source, runtime-test and lint

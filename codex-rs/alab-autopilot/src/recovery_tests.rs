@@ -36,7 +36,7 @@ fn native_turn_retries_opaque_http_400_but_not_a_specific_refusal() {
 }
 
 #[test]
-fn native_websocket_handshake_retries_opaque_400_then_falls_back_to_http() {
+fn native_websocket_handshake_retries_opaque_400_on_the_socket_before_http() {
     native_request_recovery(true);
 }
 
@@ -125,9 +125,10 @@ fn native_request_recovery(websocket: bool) {
                             request.method == "GET" && request.url.path().ends_with("/responses")
                         })
                         .count();
-                    // Startup prewarm and the original turn's handshake precede
-                    // one clean HTTP replay, without retrying the rejected socket.
-                    assert_eq!(handshakes, 2);
+                    // Startup prewarm and the original turn's handshake. An opaque
+                    // rejection then spends the stream budget on the socket it arrived
+                    // on, and only upstream's exhausted budget moves the turn to HTTPS.
+                    assert_eq!(handshakes, if recover { 4 } else { 2 });
                 }
                 if recover {
                     assert_eq!(completed.last_agent_message.as_deref(), Some("RECOVERED"));
@@ -149,7 +150,7 @@ fn native_request_recovery(websocket: bool) {
 }
 
 #[test]
-fn native_opaque_handshake_fallback_preserves_provider_deadline() {
+fn native_opaque_handshake_retries_and_fallback_preserve_provider_deadline() {
     core_test_support::test_codex::run_test_with_large_stack(
         "opaque handshake deadline",
         || async move {
@@ -227,11 +228,17 @@ fn native_opaque_handshake_fallback_preserves_provider_deadline() {
                 let post_times = posts.lock().unwrap().clone();
                 assert_eq!(
                     handshake_times.len(),
-                    2,
-                    "prewarm and original request only"
+                    if recover { 4 } else { 2 },
+                    "prewarm and original request, then the stream budget on the socket"
                 );
                 assert_eq!(post_times.len(), usize::from(recover));
                 if recover {
+                    for retry in handshake_times.windows(2).skip(1) {
+                        assert!(
+                            retry[1].duration_since(retry[0]) >= Duration::from_secs(1),
+                            "a socket retry must retain the rejected handshake's provider deadline"
+                        );
+                    }
                     assert!(
                         post_times[0].duration_since(*handshake_times.last().unwrap())
                             >= Duration::from_secs(1),
@@ -364,6 +371,113 @@ fn native_repeated_opaque_http_400_exhausts_retries_without_repeating_completed_
         },
     )
     .expect("bounded native request recovery");
+}
+
+/// The recorded rejections were HTTPS replies to turns still replaying the routing token
+/// their first response issued. The first replay is unchanged; a second rejection drops
+/// the token, and the token the accepted replay issues is the one the turn sends next.
+#[test]
+fn native_repeated_opaque_http_400_is_replayed_without_the_turn_routing_token() {
+    core_test_support::test_codex::run_test_with_large_stack(
+        "opaque replay drops the turn routing token",
+        || async move {
+            use core_test_support::responses;
+            use core_test_support::test_codex::test_codex;
+            use wiremock::ResponseTemplate;
+
+            const TURN_STATE: &str = "x-codex-turn-state";
+            codex_alab_core::activate();
+            let plan = |call: &str, step: &str| {
+                responses::sse(vec![
+                    responses::ev_response_created(call),
+                    responses::ev_function_call(
+                        call,
+                        "update_plan",
+                        &json!({"plan":[{"step":step,"status":"completed"}]}).to_string(),
+                    ),
+                    responses::ev_completed(call),
+                ])
+            };
+            let server = responses::start_mock_server().await;
+            let rejection =
+                ResponseTemplate::new(400).set_body_json(json!({"detail":"Bad Request"}));
+            let requests = responses::mount_response_sequence(
+                &server,
+                vec![
+                    responses::sse_response(plan("first-plan", "Issue the routing token"))
+                        .insert_header(TURN_STATE, "issued-at-turn-start"),
+                    rejection.clone(),
+                    rejection,
+                    responses::sse_response(plan("second-plan", "Issue it again"))
+                        .insert_header(TURN_STATE, "issued-after-the-drop"),
+                    responses::sse_response(responses::sse(vec![
+                        responses::ev_response_created("recovered"),
+                        responses::ev_assistant_message("answer", "RECOVERED"),
+                        responses::ev_completed("recovered"),
+                    ])),
+                ],
+            )
+            .await;
+            let test = test_codex()
+                .with_config(|config| {
+                    config.update_plan_enabled = true;
+                    config.model_provider.supports_websockets = false;
+                    config.model_provider.request_max_retries = Some(0);
+                    config.model_provider.stream_max_retries = Some(2);
+                })
+                .build(&server)
+                .await?;
+            test.codex
+                .start_or_steer_turn(codex_core::TurnInputRequest::user_input(vec![
+                    codex_protocol::user_input::UserInput::Text {
+                        text: "Plan twice, then return RECOVERED.".into(),
+                        text_elements: Vec::new(),
+                    },
+                ]))
+                .await?;
+            let mut plan_updates = 0;
+            let end = core_test_support::wait_for_event(&test.codex, |event| {
+                if matches!(event, EventMsg::PlanUpdate(_)) {
+                    plan_updates += 1;
+                }
+                matches!(event, EventMsg::TurnComplete(_))
+            })
+            .await;
+            let EventMsg::TurnComplete(completed) = end else {
+                unreachable!()
+            };
+            assert!(completed.error.is_none(), "{completed:?}");
+            assert_eq!(completed.last_agent_message.as_deref(), Some("RECOVERED"));
+            assert_eq!(plan_updates, 2, "each completed tool executes once");
+            let captured = requests.requests();
+            let sent = captured
+                .iter()
+                .map(|request| request.header(TURN_STATE))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                sent,
+                [
+                    None,
+                    Some("issued-at-turn-start".to_string()),
+                    Some("issued-at-turn-start".to_string()),
+                    None,
+                    Some("issued-after-the-drop".to_string()),
+                ],
+                "rejected request, unchanged replay, replay without the token, reissued token"
+            );
+            let rejected = captured[1].body_json()["input"].clone();
+            for replay in &captured[2..4] {
+                assert_eq!(
+                    replay.body_json()["input"],
+                    rejected,
+                    "a replay changes no input"
+                );
+            }
+            test.codex.shutdown_and_wait().await?;
+            Ok(())
+        },
+    )
+    .expect("opaque replay without the turn routing token");
 }
 
 #[test]

@@ -41,6 +41,8 @@ impl ChatWidget {
                 ("esc".into(), "cancel".into()),
             ]));
         }
+        #[cfg(unix)]
+        if self.alab_holds_retained_startup() { return; } // ALAB(retained-ui): retain original confirmation/cancel owner until actual primary commit.
         if pending_draft.is_some()
             || !self.is_session_configured()
             || self
